@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  installStandalonePackage,
+  RESOLVE_LOCKFILE_ARGS,
   resolveConcurrency,
   runWithConcurrency,
 } from "../build-standalone-public-packages.mjs";
@@ -128,4 +130,37 @@ test("resolveConcurrency never returns more than the package count", () => {
       process.env.STANDALONE_BUILD_CONCURRENCY = previous;
     }
   }
+});
+
+test("a package with a current lockfile installs it frozen once", async () => {
+  const calls = [];
+  await installStandalonePackage({ hasLockfile: true, lockfile: "pkg/pnpm-lock.yaml", log: () => {}, run: async (args) => { calls.push(args); } });
+  assert.deepEqual(calls, [["install", "--ignore-workspace", "--frozen-lockfile"]]);
+});
+
+test("a stale committed lockfile is resolved in place, then installed frozen", async () => {
+  const calls = [];
+  const logs = [];
+  await installStandalonePackage({
+    hasLockfile: true,
+    lockfile: "pkg/pnpm-lock.yaml",
+    log: (line) => logs.push(line),
+    run: async (args) => {
+      calls.push(args);
+      if (calls.length === 1) throw new Error("ERR_PNPM_OUTDATED_LOCKFILE");
+    },
+  });
+  assert.deepEqual(calls, [
+    ["install", "--ignore-workspace", "--frozen-lockfile"],
+    RESOLVE_LOCKFILE_ARGS,
+    ["install", "--ignore-workspace", "--frozen-lockfile"],
+  ]);
+  assert.ok(RESOLVE_LOCKFILE_ARGS.includes("--resolution-only") && RESOLVE_LOCKFILE_ARGS.includes("--ignore-scripts"));
+  assert.match(logs[0], /pkg\/pnpm-lock\.yaml/);
+});
+
+test("a package without a lockfile installs without writing one", async () => {
+  const calls = [];
+  await installStandalonePackage({ hasLockfile: false, lockfile: "pkg/pnpm-lock.yaml", log: () => {}, run: async (args) => { calls.push(args); } });
+  assert.deepEqual(calls, [["install", "--ignore-workspace", "--no-lockfile"]]);
 });

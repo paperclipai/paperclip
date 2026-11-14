@@ -5,9 +5,10 @@ import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, closeRegisteredClients, companies, completionContracts, createDb, executionWorkspaces,
-  heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
+  heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { reconcileOfflineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
+import { reconcileOfflineWorkspaceOperations, reconcileOnlineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "./adapter-execution-control.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -227,5 +228,79 @@ describe.skipIf(!support.supported)("offline workspace operation receipts", () =
       await db.execute(sql`drop trigger reject_operation_audit on activity_log`);
       await db.execute(sql`drop function reject_operation_audit()`);
     }
+  });
+
+  it("reconciles exact superseded receipts online while unrelated work, held files, and task intent remain", async () => {
+    const f = await fixture(), other = await fixture(), root = await mkdtemp(path.join(os.tmpdir(), "online-receipt-files-"));
+    const [oldRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [active] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: oldRun.agentId,
+      status: "running", runtimeMode: "native", controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1" } } }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: randomUUID(), nextAction: "Keep the warning" });
+    const retained = async () => ({
+      runs: await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId)),
+      owners: await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, f.companyId)),
+      issues: await db.select().from(issues).where(eq(issues.companyId, f.companyId)),
+      actions: await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId)),
+    });
+    try {
+      await writeFile(path.join(root, "saved.txt"), "Unpublished user files\n");
+      await db.update(executionWorkspaces).set({ cwd: root }).where(eq(executionWorkspaces.id, f.workspaceId));
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
+      const before = await retained(), receipt = await operation(f.receiptId), otherAttempt = await operation(other.operationId);
+      expect(await reconcileOnlineWorkspaceOperations(db, { companyId: f.companyId, signal: new AbortController().signal }))
+        .toMatchObject({ inspected: 1, reconciled: 1, held: [] });
+      expect(await operation(f.operationId)).toMatchObject({ status: "failed", metadata: { original: "keep",
+        onlineReconciliation: { schema: "paperclip.online-workspace-operation-reconciliation.v1",
+          reason: "superseded_workspace_finalization", supersedingOperationId: f.receiptId, resultId: f.resultId } } });
+      expect(await operation(f.receiptId)).toEqual(receipt);
+      expect(await operation(other.operationId)).toEqual(otherAttempt);
+      expect(await retained()).toEqual(before);
+      expect(await readFile(path.join(root, "saved.txt"), "utf8")).toBe("Unpublished user files\n");
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.operationId))).toHaveLength(1);
+    } finally {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, active.id));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["expired_owner", "physical_owner", "adapter_control", "uncertain", "worktree_prepare"])("keeps an online %s obligation held", async kind => {
+    const f = await fixture();
+    if (kind === "expired_owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "surviving-owner", leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (kind === "physical_owner") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...f.profile, nativeWorkspaceFinalizationOwner: { token: "unverified-physical-owner" } } }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "adapter_control") adapterExecutionControls.set(f.runId, createAdapterExecutionControl());
+    if (kind === "uncertain") await db.update(workspaceOperations).set({ metadata: { ...f.metadata, uncertain: true } }).where(eq(workspaceOperations.id, f.operationId));
+    if (kind === "worktree_prepare") await db.update(workspaceOperations).set({ phase: "worktree_prepare" }).where(eq(workspaceOperations.id, f.operationId));
+    const before = await operation(f.operationId), receipt = await operation(f.receiptId);
+    try {
+      expect(await reconcileOnlineWorkspaceOperations(db, { companyId: f.companyId, signal: new AbortController().signal }))
+        .toMatchObject({ inspected: 1, reconciled: 0, held: [{ operationId: f.operationId }] });
+      expect(await operation(f.operationId)).toEqual(before);
+      expect(await operation(f.receiptId)).toEqual(receipt);
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.operationId))).toHaveLength(0);
+    } finally { adapterExecutionControls.delete(f.runId); }
+  });
+
+  it("keeps the online attempt unchanged while a workspace publication owns its row", async () => {
+    const f = await fixture();
+    let release!: () => void, ready!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; }), locked = new Promise<void>(resolve => { ready = resolve; });
+    const publisher = db.transaction(async tx => {
+      await tx.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1" } } })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      ready(); await barrier;
+    });
+    await locked;
+    const before = await operation(f.operationId);
+    try {
+      expect(await reconcileOnlineWorkspaceOperations(db, { companyId: f.companyId, signal: new AbortController().signal }))
+        .toMatchObject({ reconciled: 0, held: [{ operationId: f.operationId, reason: "execution_rows_busy" }] });
+      expect(await operation(f.operationId)).toEqual(before);
+    } finally { release(); await publisher; }
+    expect(await reconcileOnlineWorkspaceOperations(db, { companyId: f.companyId, signal: new AbortController().signal }))
+      .toMatchObject({ inspected: 0, reconciled: 0 });
   });
 });

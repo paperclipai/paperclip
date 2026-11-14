@@ -4,7 +4,6 @@ import type { Issue } from "@paperclipai/shared";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  RECENT_TASKS_LIMIT,
   RECENT_TASKS_UPDATED_EVENT,
   getRecentTasksStorageKey,
   migrateRecentTasks,
@@ -38,19 +37,19 @@ describe("recent task persistence", () => {
     );
   });
 
-  it("deduplicates, only promotes newer activity, and stays bounded", () => {
-    for (let index = 0; index < RECENT_TASKS_LIMIT + 2; index += 1) {
+  it("retains the full history, deduplicates, and only promotes newer activity", () => {
+    for (let index = 0; index < 20; index += 1) {
       recordRecentTask(issue(String(index)), "user-1", index);
     }
     recordRecentTask(issue("4"), "user-1", 4);
 
     let entries = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
-    expect(entries[0]?.id).toBe("6");
+    expect(entries[0]?.id).toBe("19");
 
     recordRecentTask(issue("4"), "user-1", 99);
 
     entries = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
-    expect(entries).toHaveLength(RECENT_TASKS_LIMIT);
+    expect(entries).toHaveLength(20);
     expect(entries[0]?.id).toBe("4");
     expect(entries.filter((entry) => entry.id === "4")).toHaveLength(1);
   });

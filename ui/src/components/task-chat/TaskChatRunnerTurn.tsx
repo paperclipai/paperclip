@@ -1,3 +1,9 @@
+import { groupImageResources } from "./image-resources";
+import { AgentQueueWait } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf } from "@/lib/agent-queue-wait";
+import { WAITING_TO_START_LABEL, useWaitingToStart } from "./useWaitingToStart";
+import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressRunProvider } from "./tool-call-progress";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -93,7 +99,7 @@ function RunnerTurnStatus({
   const label = terminal ? (failed ? "Stopped" : "Worked") : waitingLabel ?? "Working";
   const suffix = terminal
     ? elapsed ? ` ${failed ? "after" : "for"} ${elapsed}` : ""
-    : waitingLabel ? elapsed ? ` · ${elapsed}` : "" : ` for ${elapsed ?? "0s"}`;
+    : elapsed ? `${waitingLabel ? " · " : " for "}${elapsed}` : "";
 
   return (
     <span
@@ -130,19 +136,30 @@ interface RunnerHeaderProps {
   continuedAfterSteering?: boolean;
 }
 
-function runnerWaitingLabel({ runId, status, execution, preparationLabel }: RunnerHeaderProps) {
+function runnerWaitingLabel({ runId, status, execution, preparationLabel }: RunnerHeaderProps, waitingToStart = false) {
   if (isTerminalRunStatus(status)) return null;
   if (execution?.phase === "waiting_for_provider") return execution.label;
   if (!runId && preparationLabel) return preparationLabel;
-  return status === "queued" ? execution?.label ?? "Queued" : null;
+  if (status === "queued" && execution?.cause) return execution.label;
+  return waitingToStart ? WAITING_TO_START_LABEL : null;
+}
+
+/** A run's queued turn with no named hold, past the startup grace period. */
+function useRunnerWaitingToStart({ runId, status, execution, startedAtMs }: Pick<RunnerHeaderProps, "runId" | "status" | "execution" | "startedAtMs">) {
+  return useWaitingToStart(status === "queued" && !!runId && !execution?.cause, startedAtMs);
+}
+
+function agentQueueWaitFor({ status, execution }: Pick<RunnerHeaderProps, "status" | "execution">) {
+  return status === "queued" ? agentQueueWaitOf(execution) : null;
 }
 
 /** One identity stays mounted while admission discovers the run's renderer. */
 export function TaskChatRunnerHeader({ statusContent, ...props }: RunnerHeaderProps & { statusContent?: ReactNode }) {
+  const waitingToStart = useRunnerWaitingToStart(props);
   return <div className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2" data-testid="task-chat-runner-identity-row">
     {props.agentName ? <TaskChatAgentIdentity agentName={props.agentName} agentIcon={props.agentIcon} agent={props.agent} /> : null}
-    {statusContent ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
-      continuedAfterSteering={props.continuedAfterSteering} waitingLabel={runnerWaitingLabel(props)} />}
+    {statusContent ?? (agentQueueWaitFor(props) ? <AgentQueueWait queue={agentQueueWaitFor(props)!} /> : null) ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
+      continuedAfterSteering={props.continuedAfterSteering} waitingLabel={runnerWaitingLabel(props, waitingToStart)} />}
   </div>;
 }
 
@@ -198,7 +215,8 @@ export function TaskChatRunnerTurn({
 }) {
   const { failures: mcpStartupFailures, rest: turnItems } = partitionRunHealthItems(items);
   const terminal = isTerminalRunStatus(status);
-  const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs });
+  const waitingToStart = useRunnerWaitingToStart({ runId, status, execution, startedAtMs });
+  const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs }, waitingToStart);
   const yielded = turnItems.some(
     (item) =>
       item.kind === "protocol" &&
@@ -244,13 +262,13 @@ export function TaskChatRunnerTurn({
   const final = finalRef.current.item;
   const timelineItems = paperclipRunnerTimelineItems(turnItems);
   const currentActivityItems = currentActivityStatusItems(timelineItems);
-  const timelineRows = buildTurnTimelineRows(
+  const timelineRows = groupImageResources(buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
     !terminal,
-  );
+  ));
 
   return (
-    <TaskChatShimmerScope items={items}><div
+    <TaskChatShimmerScope items={items}><ToolCallProgressRunProvider runId={runId}><div
       className="flex min-w-0 flex-col"
       data-testid="task-chat-runner-turn"
       data-phase={status === "queued" ? "startup" : undefined}
@@ -306,6 +324,7 @@ export function TaskChatRunnerTurn({
           ))}
         </div>
       ) : null}
+      <McpAppTurnViews runId={runId} refreshKey={mcpAppRunRefreshKey(turnItems, status)} />
       {final ? (
         <div
           className="w-full"
@@ -319,7 +338,9 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
-    </div></TaskChatShimmerScope>
+      {/* The header's waiting line already names the agent's queue; no second line. */}
+      {!final && currentActivityItems.length === 0 && !agentQueueWaitFor({ status, execution })
+        ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
+    </div></ToolCallProgressRunProvider></TaskChatShimmerScope>
   );
 }

@@ -86,14 +86,16 @@ profile/environment selector, nor a scheduled campaign selects them. Only the
 pnpm test:e2e:runner -- --list --suite everyday-workflows --group reliability
 pnpm test:e2e:runner -- --suite everyday-workflows --group reliability --max-parallel 2
 pnpm test:e2e:runner -- --suite everyday-workflows --case queue-steer
+pnpm test:e2e:runner -- --id everyday-workflows.runner-opencode-deepseek-1017.local.interrupt-redirect
 pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.interrupt-redirect
 ```
 
-**Cadence:** run the whole group before a release and after a risky runner,
-recovery, queue, tree-control or restart change. Do not run it per PR. It is
-paid: ten Daytona cells, single attempt each, with a 1,000-cent company and
-lead-agent hard stop. Missing provider or Daytona credentials, or a mutable
-Daytona image, stop the launch before any provider spend.
+**Cadence:** launch the [TestOps Reliability plan](#testops-reliability-plan)
+before a release and after a risky runner, recovery, queue, tree-control or
+restart change. Do not run it per PR, and it has no schedule. It is paid:
+single attempt per cell, with a 1,000-cent company and lead-agent hard stop.
+Missing provider or Daytona credentials, or a mutable Daytona image, stop the
+launch before any provider spend.
 
 **Product rule (every case):** work interrupted by a restart, Stop,
 reassignment or lost runner must resume automatically, or offer a Retry that
@@ -122,15 +124,91 @@ message delivered by more than one successful run is duplicate execution.
 | `queue-steer` | H2 | During an active run, queue three follow-ups through the public comment API; edit one, discard one, and steer one (retrying only `steering_temporarily_unavailable`, for up to two minutes). | Edited text reaches the agent and the original never does; the discarded text never reaches the agent; the steered message is acknowledged by the active turn and never replayed; the remaining message is handled by exactly one run. |
 | `queued-across-restart` | S55/U9 (fix #19431) | Queue a follow-up through the composer while a run is active, then restart the controller with the existing restart machinery. | The follow-up dispatches only after the restart, automatically within six minutes, exactly once; every observed `queued` wait names a cause (`server_restarting`, `task_drain`, …) rather than a bare "Queued"; any offered Retry works on first use. |
 
-**Matrix (10 cells).** Each case runs once on native Codex (`runner-codex`,
-`gpt-5.6-sol`) on Daytona: the warm environment, except `three-turn-revise` on
-the per-turn lease. `long-silent-command` also runs on the released ACPX
-facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`) and OpenRouter/Pi
-(`runner-acpx-pi`), which hung 3/3 before the fix. They run as ordinary released
-profiles, as in the rolling-deployment matrix; a profile whose ACPX
-qualification returns to pending drops out of the group automatically. Their
-credentials (`XAI_API_KEY`, `KIMI_API_KEY`, `OPENROUTER_API_KEY`) are only
-required when those cells are selected.
+**Matrix (16 cells).** The `reliability` group selects the seven TestOps plan
+cells and nine explicit-only extras. Six plan cells use native OpenCode with
+DeepSeek 1017 via OpenRouter. `queue-steer` must steer an active turn, and the
+OpenCode server driver declares `steering: false`, so the queued-comment route
+answers `steering_unsupported`. Its plan cell is the existing steering-capable
+native Codex Daytona cell.
+
+| Case | Plan cell | Why this profile and environment |
+|---|---|---|
+| `interrupt-redirect` | `runner-opencode-deepseek-1017.local` | S47 is control-plane interrupt and Stop-settlement dispatch. |
+| `reassign-midrun` | `runner-opencode-deepseek-1017.local` | S48 is the reassignment request and native stop settlement. |
+| `three-turn-revise` | `runner-opencode-deepseek-1017.daytona` (per-turn lease) | S49 hit turn 3 on an ephemeral Daytona lease. |
+| `long-silent-command` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S52/S52b hung on remote runners during a silent command. |
+| `tree-pause-release` | `runner-opencode-deepseek-1017.local` | S50/S50b is tree-hold and parked-retry scheduling. |
+| `queue-steer` | `runner-codex.daytona` (warm lease, `gpt-6.1-sol`) | H2 needs a steering-capable driver; OpenCode has no steering. |
+| `queued-across-restart` | `runner-opencode-deepseek-1017.daytona` (warm lease) | S55/U9 happened across a restart with a remote lease. |
+
+The local plan cells cannot reproduce Daytona-only signatures: the remote
+`workspace_busy` save after Stop (S47's sandbox variant), remote stop
+settlement during reassignment, and a lost or replaced remote runner during a
+tree hold. The S51 lost-runner signature has no case yet. The explicit-only
+native Codex Daytona extra for each case still covers the sandbox variants of
+S47, S48 and S50.
+
+The extras are outside the TestOps plan. Every case except `queue-steer` (whose
+Codex cell is the plan cell) also runs once on native Codex (`runner-codex`,
+`gpt-6.1-sol`) on Daytona: the warm environment, except `three-turn-revise` on
+the per-turn lease. `long-silent-command` also runs on
+the released ACPX facades Grok (`runner-acpx-grok`), Kimi (`runner-acpx-kimi`)
+and OpenRouter/Pi (`runner-acpx-pi`), which hung 3/3 before the fix. They run
+as ordinary released profiles, as in the rolling-deployment matrix; a profile
+whose ACPX qualification returns to pending drops out of the group
+automatically. Their credentials (`OPENAI_API_KEY`, `XAI_API_KEY`,
+`KIMI_API_KEY`, `OPENROUTER_API_KEY`) are only required when those cells are
+selected.
+
+### TestOps Reliability plan
+
+The **Reliability — staging soak** TestOps plan is a sibling of the standing
+Product regression plan (plan 2). It uses the same trusted
+`runner-full-stack-e2e.yml` lane, the same TestOps GitHub job, selection,
+paid admission, cells, retained report and dashboard, Allure projection,
+upload verification and failure classes. Its mapping lives in
+`reliability-testops.mjs`; `product-regression-testops.mjs` selects either
+plan. A launch selects cases from exactly one plan; mixing them fails. Each
+plan keeps its own denominator: only a complete seven-case selection is a full
+Reliability verdict, and plan 2 still needs its 20 cases. Reports tag each
+reliability result with its soak signature (`soak-S55/U9`, for example). A
+launch needs `OPENROUTER_API_KEY`, `DAYTONA_API_KEY` and, for `queue-steer`,
+`OPENAI_API_KEY`; the workflow passes each only to the cells that declare it.
+
+A launch from TestOps dispatches the workflow with `ALLURE_JOB_RUN_ID`; the
+selected case IDs choose the plan and its cells. To bootstrap one manually:
+
+```sh
+gh workflow run runner-full-stack-e2e.yml --ref master -f all=false \
+  -f testops_plan=reliability -f testops_case=all       # or a case name or ID
+```
+
+The plan has no schedule. A weekly run would add a paid 50-minute Daytona
+cell to every week, but these signatures move with release-risky changes
+rather than with time. Launch it from TestOps before releases instead.
+
+**Registration.** TestOps assigns case and plan IDs, and this repository never
+invents them. Until `reliabilityRegistration` in `reliability-testops.mjs`
+holds the plan ID and all seven case IDs, selection fails closed
+(`product_regression_testops_reliability_unregistered` for a bootstrap,
+`case_mismatch` for a TestOps launch) before any provider spend. A partial,
+duplicate or plan-2 registration fails too. To register:
+
+1. Dispatch `runner-e2e-testops-registration.yml` from master with
+   `operation=inspect`. It only reads TestOps and reports existing cases, the
+   plan and the job assigned to plan 2.
+2. Dispatch it again with `operation=register`. It reuses cases with the same
+   full name, creates any missing case and the plan, and assigns the plan to
+   plan 2's GitHub job with plan 2's job parameters. A rerun changes nothing.
+3. Copy the `reliabilityRegistration` snippet from the run summary (or the
+   `reliability-testops-registration-*` receipt artifact) into
+   `reliability-testops.mjs`, and merge it in one reviewed PR.
+4. Launch the plan from TestOps. Tag only a complete seven-case attempt
+   `full-run`.
+
+Only the registration job receives `ALLURE_TOKEN`, from the protected
+`runner-e2e-testops-reporting` environment, and it runs only trusted default-branch
+code for allowlisted actors. It never runs a provider cell.
 
 **Coverage boundary.** The graders and selection are calibrated by
 `everyday-reliability.test.ts` against passing and plausible failing
@@ -143,7 +221,7 @@ cause" contract is checked only if a loss happens naturally.
 
 ## Matrix and running
 
-The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+The local matrix has fourteen cases on native Codex `gpt-6.1-sol`, native ACPX Claude
 `claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
 on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,

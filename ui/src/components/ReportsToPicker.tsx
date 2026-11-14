@@ -6,9 +6,9 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { User } from "lucide-react";
+import { FlyoutAppearanceProvider, FlyoutHeader, FlyoutOptions } from "./ui/flyout";
+import { Check, User } from "lucide-react";
 import { cn } from "../lib/utils";
-import { roleLabels } from "./agent-config-primitives";
 
 export function ReportsToPicker({
   agents,
@@ -41,7 +41,7 @@ export function ReportsToPicker({
   const unknownManager = Boolean(value && !current);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <FlyoutAppearanceProvider><Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         {trigger ?? <button
           type="button"
@@ -79,9 +79,12 @@ export function ReportsToPicker({
           )}
         </button>}
       </PopoverTrigger>
-      <PopoverContent className={trigger ? "w-64 max-h-80 overflow-y-auto p-1" : "w-48 p-1"} align="start" aria-label="Choose manager">
+      <PopoverContent className="w-64" align="start" aria-label="Choose manager">
+        <FlyoutHeader>Reports to</FlyoutHeader>
+        <FlyoutOptions className="max-h-80 overflow-y-auto">
         <button
           type="button"
+          aria-pressed={value === null}
           className={cn(
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
             value === null && "bg-accent",
@@ -91,7 +94,9 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          No manager
+          <User className="size-5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 text-left">No manager</span>
+          {value === null && <Check className="size-4 shrink-0" aria-hidden />}
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
@@ -110,6 +115,7 @@ export function ReportsToPicker({
           <button
             type="button"
             key={a.id}
+            aria-pressed={a.id === value}
             disabled={disabledAgentIds.includes(a.id)}
             title={disabledAgentIds.includes(a.id) ? "Would create a reporting loop" : undefined}
             className={cn(
@@ -121,12 +127,13 @@ export function ReportsToPicker({
               setOpen(false);
             }}
           >
-            <AgentAvatar agent={a} size={16} className="shrink-0 h-3 w-3 text-muted-foreground"/>
-            <span className="min-w-0 truncate">{a.name}</span>
-            <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
+            <AgentAvatar agent={a} size={24} className="size-6 shrink-0"/>
+            <span className="min-w-0 flex-1 truncate text-left">{a.name}</span>
+            {a.id === value && <Check className="size-4 shrink-0" aria-hidden />}
           </button>
         ))}
+        </FlyoutOptions>
       </PopoverContent>
-    </Popover>
+    </Popover></FlyoutAppearanceProvider>
   );
 }

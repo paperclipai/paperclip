@@ -162,7 +162,7 @@ export async function preserveWorkspaceSnapshot(input: {
 /** Recovered files are an attachment to a fresh attempt, never an overlay.
  * Atomically publish each immutable snapshot directory after verification. */
 export async function attachPreservedWorkspaceSnapshots(input: {
-  db: Db; companyId: string; issueId: string; sourceRunIds: string[]; cwd: string;
+  db: Db; companyId: string; issueId: string; sourceRunIds: string[]; cwd: string; retiredOperationIds?: ReadonlySet<string>;
 }) {
   const storage = getStorageService();
   const results: Array<{ operationId: string; path: string; sourceRunId: string }> = [];
@@ -173,6 +173,7 @@ export async function attachPreservedWorkspaceSnapshots(input: {
       eq(workspaceOperations.heartbeatRunId, sourceRunId), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),
       eq(workspaceOperations.status, "succeeded")));
     for (const operation of rows) {
+      if (input.retiredOperationIds?.has(operation.id)) continue;
       const saved = readSnapshot(operation.metadata, input.companyId, sourceRunId);
       const parent = path.join(await realpath(input.cwd), ".paperclip-recovered");
       await mkdir(parent, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });

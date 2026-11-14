@@ -17,6 +17,8 @@ import {
 } from "@chat-adapter/discord";
 import type { SlackAdapterConfig } from "@chat-adapter/slack";
 import { PaperclipSlackAdapter } from "./chat-channels/slack/adapter.js";
+import { verifySlackSignature } from "@chat-adapter/slack/webhook";
+import { slackCloudAcceptedAt } from "./chat-channels/slack/cloud-event.js";
 import {
   createTeamsAdapter,
   type TeamsAdapter,
@@ -1361,6 +1363,13 @@ function createProviderAdapter(
     case "slack": {
       const adapterConfig: SlackAdapterConfig = {
         ...config.credentials,
+        webhookVerifier: async (request, body) => {
+          await verifySlackSignature(body, request.headers, {
+            signingSecret: config.credentials.signingSecret,
+            now: () => slackCloudAcceptedAt(request) ?? Date.now(),
+          });
+          return true;
+        },
         logger: resolvedLogger,
         mode: "webhook",
         nativeStreaming: true,

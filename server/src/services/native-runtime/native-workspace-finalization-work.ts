@@ -82,7 +82,8 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     }));
     if (outcome.kind === "retry") return { ...due, dueAt: outcome.retryAt.getTime() };
     if (outcome.kind === "waiting") {
-      if (outcome.reason === "busy" || outcome.reason === "platform_stop_pending") {
+      // A pending stop proof rechecks on its own; the board action stays visible meanwhile.
+      if (outcome.reason === "busy" || outcome.reason === "platform_stop_pending" || outcome.reason === "local_stop_pending") {
         return { ...due, dueAt: Date.now() + OWNERSHIP_RECHECK_MS };
       }
       // This run is revisited only after a restart or a release notification.
@@ -91,7 +92,7 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
       }
       return null;
     }
-    if (outcome.kind !== "completed" || outcome.operation.status === "succeeded") return null;
+    if (outcome.kind === "inactive" || (outcome.kind === "completed" && outcome.operation.status === "succeeded")) return null;
     const failure = await recordNativeWorkspaceFinalizationFailure(db, current.id, outcome.operation);
     if (failure.phase === "terminal_failure") {
       await options.onWorkspaceSettled({ runId: row.id, companyId: row.companyId, agentId: row.agentId, succeeded: false });

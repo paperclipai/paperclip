@@ -1,10 +1,12 @@
+import type { IdleIssueWait } from "./idle-deadline-types.js";
 import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { AGENT_STATUSES, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { AGENT_STATUSES, issueExecutionPolicySchema, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import type { ScheduledWake } from "./idle-scheduled-work.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./recovery/onboarding-first-task-wait.js";
 import { completedAgentUnblockRequest, responseDrivenIssueWait } from "./idle-work-proof.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { passiveIdleConversation } from "./conversation-idle-proof.js";
 
 const processGeneration = randomUUID();
@@ -14,7 +16,7 @@ const agentStatuses = new Set<string>(AGENT_STATUSES);
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number): Promise<{
+export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number, waits: readonly IdleIssueWait[] = []): Promise<{
   blocked: boolean;
   inspectionComplete?: false;
   scheduledWake?: ScheduledWake;
@@ -59,14 +61,36 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     WHERE i.status NOT IN ('done', 'cancelled') ORDER BY i.id LIMIT ${limit + 1}`);
   if (rows.length > limit) return { blocked: true, inspectionComplete: false };
   let earliest = Infinity;
+  const waitsByIssue = new Map(waits.map(wait => [wait.issueId, wait]));
   for (const row of rows) {
+    const wait = waitsByIssue.get(row.id);
+    const reviewRetry = wait?.kind === "current_review_retry" ? wait : undefined;
+    const retry = wait?.kind === "scheduled_retry" ? wait : reviewRetry;
+    const quota = wait?.kind === "provider_quota" ? wait : undefined;
     const policy = record(row.execution_policy);
     const state = record(row.execution_state);
+    let currentReviewRetry = false;
+    if (reviewRetry) {
+      const execution = parseIssueExecutionState(row.execution_state);
+      const parsedPolicy = issueExecutionPolicySchema.safeParse(row.execution_policy);
+      const stage = parsedPolicy.success ? parsedPolicy.data.stages.find(stage => stage.id === reviewRetry.stageId) : undefined;
+      currentReviewRetry = row.status === "in_review" && !row.assignee_user_id
+        && execution?.status === "pending" && execution.currentStageType === "review"
+        && execution.currentStageId === reviewRetry.stageId
+        && execution.currentParticipant?.type === "agent" && execution.currentParticipant.agentId === reviewRetry.reviewerAgentId
+        && stage?.type === "review" && stage.participants.some(participant =>
+          participant.type === "agent" && participant.agentId === reviewRetry.reviewerAgentId)
+        && parsedPolicy.success && execution.currentStageIndex === parsedPolicy.data.stages.findIndex(stage => stage.id === reviewRetry.stageId);
+      if (!currentReviewRetry) return { blocked: true };
+    }
     if (!statuses.has(row.status) || row.company_status !== "active" || row.scoped !== true
       || (row.assignee_agent_id && !agentStatuses.has(row.agent_status ?? ""))
-      || row.unsafe_dependencies !== false || row.checkout_run_id || row.execution_run_id
+      || row.unsafe_dependencies !== false
+      || (row.checkout_run_id && row.checkout_run_id !== retry?.runId)
+      || (row.execution_run_id && row.execution_run_id !== retry?.runId)
       || (row.conversation_agent_id && row.passive_conversation !== true) || row.monitor_wake_requested_at
-      || (row.execution_state !== null && state?.status !== "idle")
+      || (row.execution_state !== null && state?.status !== "idle"
+        && !currentReviewRetry && !(quota?.reviewer && row.status === "in_review" && state?.status === "pending"))
       || (row.execution_policy !== null && !policy)) return { blocked: true };
     if (row.status === "blocked" && row.dependency_ready) return { blocked: true };
     if (row.monitor_next_check_at !== null) {
@@ -76,7 +100,8 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
         || !["in_progress", "in_review"].includes(row.status)
         || !["idle", "active", "error"].includes(row.agent_status ?? "")
         || !Number.isFinite(at) || at <= now || Date.parse(monitor.data.nextCheckAt) !== at
-        || monitor.data.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+        || (monitor.data.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+          && (!quota || monitor.data.externalRef !== quota.sourceRunId))
         || !Number.isSafeInteger(row.monitor_attempt_count) || row.monitor_attempt_count < 0
         || (monitor.data.timeoutAt && Date.parse(monitor.data.timeoutAt) <= at)
         || (monitor.data.maxAttempts !== null && row.monitor_attempt_count >= monitor.data.maxAttempts)) return { blocked: true };
@@ -85,7 +110,8 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     }
     if (policy?.monitor != null) return { blocked: true };
     const unblock = record(row.unblock_descriptor);
-    const passive = row.passive_conversation === true || row.status === "backlog"
+    const retryWait = currentReviewRetry || wait?.kind === "scheduled_retry" && ["todo", "in_progress"].includes(row.status) && Boolean(row.assignee_agent_id) && !row.assignee_user_id;
+    const passive = retryWait || row.passive_conversation === true || row.status === "backlog"
       || (row.status === "todo" && !row.assignee_agent_id)
       || (row.status === "todo" && row.assignee_agent_id && row.agent_status === "idle" && row.untouched_onboarding === true)
       || (row.status === "blocked" && (row.unblock_descriptor === null || unblock?.owner === "board"

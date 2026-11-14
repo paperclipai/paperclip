@@ -13,6 +13,14 @@ export interface RunnerExecutionDriver {
   codexSourceRecoveryVersion?: 1;
   /** The driver verifies a stopped, idle source for the selected ACPX provider before launch. */
   acpxSourceRecoveryVersion?: 1;
+  /** An explicitly supported host release/resume pair; absence keeps ordinary warm ownership.
+   * Release and released-source adoption require the registration checkpoint cleanup hook. */
+  releaseResume?: {
+    release(identity: DurableRecoveryIdentity): Promise<void>;
+    resume(identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable">;
+    /** Confirmed Core-owned completed-session proof, used only for cache adoption. */
+    releasedSource?: DurableRecoveryIdentity;
+  };
   /** Current authenticated lease/checkpoint-writer owner; may change during warm reuse. */
   authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */
@@ -40,6 +48,10 @@ export interface RunnerExecutionDriver {
       | "runner_ingress_unavailable";
     /** Persists only exact, independently verified suspended remote state. */
     checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
+    /** Core committed the Runner's exit (its close suspend completed). Stop
+     * treating a dropped connection as transport loss, so a Core-dialed route
+     * neither redials nor fails; keep the established receive/ACK path. */
+    quiesce?: () => void;
     release: (reason?: "detach") => Promise<void> | void;
   }>;
   /** Register source and target checkpoint ownership before staging changes the stored run. */

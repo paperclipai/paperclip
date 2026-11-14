@@ -8,9 +8,11 @@ import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
@@ -35,8 +37,9 @@ export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | nu
 }
 
 /** The workspace archive is built inside the sandbox, so a full sandbox disk stops the save. */
+export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
-  "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+  `${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}: the sandbox disk is full; free space in the sandbox before saving the workspace`;
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};const failureDetail=${remoteWorkspaceFailureDetail.toString()};`;
@@ -62,7 +65,7 @@ const SETUP_FAILURE_CHECK = String.raw`const setupFailure=(prefix,stage,error)=>
  return prefix+': '+fields.join(' ');};`;
 const SANDBOX_SETUP_CAUSE = /^remote_workspace_(prepare|repository|restore)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}$/;
 
-type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup";
+type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup" | "recovery_attachment";
 
 export class RemoteWorkspaceOperationTimeoutError extends Error {
   constructor(readonly operation: RemoteWorkspaceOperation, readonly timeoutMs: number) {
@@ -86,11 +89,16 @@ export class RemoteWorkspaceOperationError extends Error {
  * The server-built diagnostic for a remote workspace failure, or null when the
  * error text is not one of these redacted forms and must stay off the record.
  */
+const READONLY_CAPTURE_FAILURE_CAUSE =
+  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
+
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
   if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError
     || error instanceof RemoteWorkspaceRestoreError) return error.message;
   if (!(error instanceof Error)) return null;
   if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
+  // A read-only capture failure is server-built from closed fields.
+  if (READONLY_CAPTURE_FAILURE_CAUSE.test(error.message)) return error.message;
   const operation = providerRefusals.get(error);
   return operation ? remoteWorkspaceProviderRefusalCause(operation, error) : null;
 }
@@ -149,6 +157,8 @@ export function findRemoteWorkspaceRestoreError(error: unknown): RemoteWorkspace
 const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
   [/daytona_sandbox_not_found/i, "daytona_sandbox_not_found"],
   [/sandbox lease \S+ is no longer active/i, "sandbox_lease_inactive"],
+  // The provider was still stopping, archiving, or starting the sandbox.
+  [/state change in progress|\bis still [a-z_]+ at its start deadline\b/i, "sandbox_state_transition"],
   [/\b(?:EACCES|EPERM|permission denied)\b/i, "permission_denied"],
   [/\b(?:not (?:started|running)|is stopped|state[^A-Za-z]{1,4}stopped|stopped sandbox)\b/i, "sandbox_not_running"],
   [/\b(?:timed? ?out|timeout|ETIMEDOUT)\b/i, "transport_timeout"],
@@ -203,10 +213,12 @@ export function sandboxProviderFailureLabel(error: unknown): { label: string; co
   return { label, code, status };
 }
 
+const WORKSPACE_COMMAND_TIMEOUT_MS = 300_000;
+
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
-  args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
+  args: string[], env?: Record<string, string>, timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
-    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
+    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env, NODE_NO_WARNINGS: "1" }, timeoutMs, bypassSession: true });
   // Copy-back and restore record why the provider refused the command.
   const result = operation === "capture" || operation === "archive_helper" || operation === "restore"
     ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })
@@ -231,6 +243,58 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     throw new RemoteWorkspaceOperationError(`remote_workspace_operation_failed: ${status}${cause ? `; ${cause}` : ""}`);
   }
   return result.stdout;
+}
+
+const RECOVERY_ATTACHMENT = String.raw`
+const fs=require('node:fs/promises'),path=require('node:path');
+(async()=>{
+ const [root,raw]=process.argv.slice(1),input=JSON.parse(raw);
+ if(!path.isAbsolute(root)||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.operationId)
+  ||typeof input.provenance!=='string'||Buffer.byteLength(input.provenance)>16384)throw Error('invalid_attachment');
+ const inspect=async p=>{try{return await fs.lstat(p)}catch(e){if(e.code==='ENOENT')return null;throw e}};
+ const safeDirectory=async p=>{const s=await inspect(p);if(!s)return false;
+  if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_attachment');return true};
+ if(!await safeDirectory(root))throw Error('missing_workspace');
+ const parent=path.join(root,'.paperclip-recovered'),destination=path.join(parent,input.operationId);
+ // Removal first renames a verified attachment here, so an interrupted delete
+ // never leaves a proofless attachment behind; the next removal finishes it.
+ const retiring=path.join(parent,'.retiring-'+input.operationId);
+ const unlock=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())return;
+  await fs.chmod(p,0o700);for(const name of await fs.readdir(p))await unlock(path.join(p,name))};
+ const discard=async()=>{await unlock(retiring);await fs.rm(retiring,{recursive:true});
+  await fs.rmdir(parent).catch(e=>{if(e.code!=='ENOTEMPTY'&&e.code!=='EEXIST')throw e})};
+ if(!await safeDirectory(parent)){process.stdout.write('missing');return}
+ let resumed=false;
+ if(input.remove===true&&await safeDirectory(retiring)){await discard();resumed=true}
+ if(!await safeDirectory(destination)){process.stdout.write(resumed?'removed':'missing');return}
+ const proof=path.join(destination,'provenance.json'),s=await inspect(proof);
+ if(!s?.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384||await fs.readFile(proof,'utf8')!==input.provenance)
+  throw Error('attachment_proof_changed');
+ if(input.remove!==true){process.stdout.write('present');return}
+ await fs.rename(destination,retiring);await discard();
+ process.stdout.write('removed');
+})().catch(()=>{process.stderr.write('remote_workspace_recovery_attachment_invalid');process.exitCode=1});`;
+
+/** Reuse a restored attachment only with its exact provenance. User edits to
+ * its files remain intact; unknown destinations are never overwritten. */
+export async function hasRemoteRecoveryAttachment(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; provenance: string;
+}) {
+  const output = await command(input.target, "recovery_attachment", ["-e", RECOVERY_ATTACHMENT,
+    input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance })], undefined, 30_000);
+  if (output !== "present" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
+  return output === "present";
+}
+
+/** Remove a retired attachment, but only while its exact provenance is still
+ * in place; anything else at that path is left alone. */
+export async function removeRemoteRecoveryAttachment(input: {
+  target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string; provenance: string;
+}) {
+  const output = await command(input.target, "recovery_attachment", ["-e", RECOVERY_ATTACHMENT,
+    input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance, remove: true })]);
+  if (output !== "removed" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
+  return output === "removed";
 }
 
 const PREPARE = String.raw`
@@ -429,15 +493,30 @@ export async function captureRemoteWorkspaceArchive(input: {
     // it, then normalize and seal it on the controller. Failed verification
     // retains the original disk-full failure and never permits source cleanup.
     try { return await captureReadOnlyWorkspaceArchive(input); }
-    catch (cause) { throw new Error(error.message, { cause }); }
+    catch (cause) {
+      // The read-only copy writes nothing to the sandbox. When only its
+      // connection dropped, a later copy-back can succeed, so finalization
+      // keeps its bounded retry. Any other fallback failure keeps the
+      // disk-full code, which finalization does not retry.
+      if (isTransientReadOnlyCaptureFailure(cause)) throw cause;
+      throw new Error(error.message, { cause });
+    }
   }
 }
 
-async function captureReadOnlyWorkspaceArchive(input: {
+const TRANSIENT_READONLY_CAPTURE_FAILURE =
+  /^remote_workspace_readonly_capture_failed: stage=[a-z]+ reason=operation_failed transport=(?:transport_closed|provider_unavailable|provider_rate_limited|sandbox_state_transition)(?: |$)/;
+function isTransientReadOnlyCaptureFailure(error: unknown) {
+  return error instanceof Error && TRANSIENT_READONLY_CAPTURE_FAILURE.test(error.message);
+}
+
+/** Captures a sandbox directory without writing to the sandbox. The copy is
+ * verified against an inventory taken before and after the transfer. */
+export async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
-  const inspect = async (timeoutMs = 300_000) => {
+  const inspect = async (timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) => {
     const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd], undefined, timeoutMs)) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
     if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
       || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
@@ -466,11 +545,15 @@ async function captureReadOnlyWorkspaceArchive(input: {
     const same = (observed: typeof before) => observed.sha256 === before.sha256
       && observed.byteSize === before.byteSize && observed.entries === before.entries;
     if (!same(received) || !same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
+    const finalVerificationBudget = remaining();
     stage = "archive";
-    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: verificationSignal });
+    const captureSignal = AbortSignal.timeout(WORKSPACE_COMMAND_TIMEOUT_MS);
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: captureSignal });
+    captureSignal.throwIfAborted();
     stage = "verify";
-    if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
-    verificationSignal.throwIfAborted();
+    const finalVerificationSignal = AbortSignal.timeout(finalVerificationBudget);
+    if (!same(await inspect(finalVerificationBudget))) throw new Error("remote_workspace_readonly_capture_changed");
+    finalVerificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
     await removeTaskDirectoryTree(copy);
     const savedRoot = root;
@@ -545,7 +628,7 @@ async function captureSandboxWorkspaceArchive(input: {
     timing.transferMs = elapsedSince(transferStarted);
     const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
     timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
@@ -556,33 +639,56 @@ async function captureSandboxWorkspaceArchive(input: {
   }
 }
 
+/** A full sandbox disk repeats on every retry of the same restore, so it names a refusal reason. */
+function restoreDiskFull(operation: RemoteWorkspaceOperation, stage: "helper" | "upload") {
+  return new RemoteWorkspaceOperationError(
+    `remote_workspace_operation_failed: operation=${operation}; remote_workspace_restore_failed: stage=${stage} reason=sandbox_disk_full`);
+}
+
+/** Provider text only selects this answer; it is never copied. */
+function sandboxDiskFull(error: unknown) {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    const { code, message } = cause as { code?: unknown; message?: unknown };
+    if (code === "ENOSPC" || code === "EDQUOT"
+      || (typeof message === "string" && /\bENOSPC\b|\bEDQUOT\b|No space left on device|Disk quota exceeded/i.test(message))) return true;
+  }
+  return false;
+}
+
 export async function restoreRemoteWorkspaceDirectory(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; allowEmptyRoot?: boolean;
+  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; restorationEpoch?: number; allowEmptyRoot?: boolean;
   allocationFiles?: Array<{ relativePath: string; sha256: string }>;
   /** The server proved this sandbox's root is the workspace's own earlier allocation, fully saved. */
   replaceRetiredRoot?: boolean;
 }) {
   if (input.replaceRetiredRoot && input.allowEmptyRoot) throw new Error("remote_workspace_restore_mode_invalid");
+  if (input.restorationEpoch !== undefined && (!Number.isSafeInteger(input.restorationEpoch) || input.restorationEpoch < 1))
+    throw new Error("remote_workspace_restore_epoch_invalid");
   if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
+  if (!/^[a-f0-9]{64}$/.test(input.manifestDigest)) throw new Error("remote_workspace_restore_manifest_invalid");
   const id = input.restorationIdentity;
   const operationId = `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
-  const staged = await installArchiveHelper(input.target, parent, operationId);
-  await stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
-    files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }], archive.size)).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
   ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
-  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles,replaceRetired]=process.argv.slice(1),files=JSON.parse(rawFiles);
-   if(!/^[a-f0-9]{64}$/.test(identity)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
+  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles,replaceRetired,rawEpoch,phase]=process.argv.slice(1),files=JSON.parse(rawFiles);
+   // The reclaim phase runs before the upload: it frees what this root's
+   // earlier attempts and proven retired files hold, then stops before extraction.
+   const reclaimOnly=phase==='reclaim';
+   const validEpoch=value=>Number.isSafeInteger(value)&&value>0,restorationEpoch=rawEpoch===undefined||rawEpoch===''?null:Number(rawEpoch);
+   if(restorationEpoch!==null&&!validEpoch(restorationEpoch))throw Error('invalid_epoch');
+   const completedReceipt=(id,manifestDigest,epoch)=>epoch===null?{identity:id,manifestDigest}
+    :{schema:'paperclip.workspace-restored.v1',root,restorationEpoch:epoch,identity:id,manifestDigest};
+   if(!/^[a-f0-9]{64}$/.test(identity)||!/^[a-f0-9]{64}$/.test(digest)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
    for(const file of files)if(!/^\.paperclip-runtime\/[a-zA-Z0-9_-]+\.json$/.test(file.relativePath)
      ||file.relativePath==='.paperclip-runtime/workspace-restored.json'||!/^[a-f0-9]{64}$/.test(file.sha256))throw Error('invalid_allocation');
    if(new Set(files.map(file=>file.relativePath)).size!==files.length)throw Error('invalid_allocation');
    const stat=async p=>fs.lstat(p).catch(e=>{if(e.code==='ENOENT')return null;throw e});
    const directory=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_root')};
+   const readJson=async(file,reason)=>{const body=await fs.readFile(file,'utf8');try{return JSON.parse(body)}catch{throw Error(reason)}};
    const allocation=async p=>{
     await directory(p);const names=await fs.readdir(p);
     if(names.length===0&&files.length===0)return [];
@@ -601,7 +707,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     for(const [name,key] of [['workspace-restored.json','identity'],['workspace-ready.json','preparationIdentity']]){
      const file=path.join(runtime,name),s=await stat(file);if(!s)continue;
      if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384)throw Error('unsafe_receipt');
-     if(/^[a-f0-9]{64}$/.test(String(JSON.parse(await fs.readFile(file,'utf8'))?.[key])))return true;}
+     if(/^[a-f0-9]{64}$/.test(String((await readJson(file,'unsafe_receipt'))?.[key])))return true;}
     return false;
    };
    const parked=root+'.allocation-'+identity,retired=root+'.retired-'+identity;
@@ -612,22 +718,130 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    // of the same restore finishes an interrupted carry without a new proof.
    // Saved directory modes can be read-only. Make the parked tree's own directories
    // owner-writable without following symlinks, then remove it.
+   const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
+    await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
    const removeRetired=async()=>{if(!await stat(retired))return;
     stage='carry_runtime';const from=path.join(retired,'.paperclip-runtime'),to=path.join(root,'.paperclip-runtime');
     if(await stat(from)){await directory(from);await directory(to);
      for(const name of await fs.readdir(from)){
       if(['workspace-ready.json','workspace-restored.json','workspace-snapshots'].includes(name)||await stat(path.join(to,name)))continue;
       await fs.rename(path.join(from,name),path.join(to,name));}}
-    stage='cleanup_parked';const open=async d=>{const s=await fs.lstat(d);if(!s.isDirectory()||s.isSymbolicLink())return;
-     await fs.chmod(d,(s.mode&0o7777)|0o700);for(const name of await fs.readdir(d))await open(path.join(d,name));};
-    await open(retired);await fs.rm(retired,{recursive:true,force:true});};
+    stage='cleanup_parked';await open(retired);await fs.rm(retired,{recursive:true,force:true});};
+   const pendingInPlace=receipt=>receipt.schema==='paperclip.workspace-restore-pending.v1'&&receipt.root===root&&validEpoch(receipt.restorationEpoch)
+    &&typeof receipt.pendingIdentity==='string'&&/^[a-f0-9]{64}$/.test(receipt.pendingIdentity)
+    &&typeof receipt.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(receipt.manifestDigest)
+    &&Number.isSafeInteger(receipt.inPlaceMode)&&receipt.inPlaceMode>=0&&receipt.inPlaceMode<=0o7777;
+   const finishInPlace=async receipt=>{
+    if(!pendingInPlace(receipt))throw Error('unsafe_receipt');
+    stage='cleanup_replaced';await fs.rm(path.join(root,'.paperclip-runtime','workspace-ready.json'),{force:true});
+    await fs.chmod(root,receipt.inPlaceMode);
+    stage='commit_replaced';const marker=path.join(root,'.paperclip-runtime','workspace-restored.json'),pending=marker+'.'+crypto.randomUUID()+'.tmp';
+    const completed=completedReceipt(receipt.pendingIdentity,receipt.manifestDigest,receipt.restorationEpoch);
+    try{await fs.writeFile(pending,JSON.stringify(completed),{flag:'wx',mode:0o600});await fs.rename(pending,marker);return completed;}
+    finally{await fs.rm(pending,{force:true});}
+   };
+   const replaceInPlace=async staged=>{stage='replace_in_place';const runtime=path.join(root,'.paperclip-runtime');
+    const s=await fs.lstat(root);await fs.chmod(root,(s.mode&0o7777)|0o700);
+    for(const name of await fs.readdir(root))if(name!=='.paperclip-runtime'){await open(path.join(root,name));await fs.rm(path.join(root,name),{recursive:true,force:true});}
+    if(await stat(path.join(runtime,'workspace-snapshots'))){await open(path.join(runtime,'workspace-snapshots'));
+     await fs.rm(path.join(runtime,'workspace-snapshots'),{recursive:true,force:true});}
+    for(const name of await fs.readdir(staged))if(name!=='.paperclip-runtime')await fs.rename(path.join(staged,name),path.join(root,name));
+    const receiptFile=path.join(staged,'.paperclip-runtime','workspace-restored.json'),receipt={schema:'paperclip.workspace-restore-pending.v1',
+     root,pendingIdentity:identity,manifestDigest:digest,restorationEpoch,inPlaceMode:(await fs.lstat(staged)).mode&0o7777};
+    await fs.writeFile(receiptFile,JSON.stringify(receipt),{mode:0o600});
+    await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json'),path.join(runtime,'workspace-restored.json'));
+    await finishInPlace(receipt);};
+   // The reclaim phase runs before the helper install, so it creates the
+   // operation's staging folder itself without following a symlink.
+   if(reclaimOnly){stage='create_parent';let current='/';
+    for(const part of path.dirname(archive).split('/').filter(Boolean)){current=path.join(current,part);
+     await fs.mkdir(current,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+     const s=await fs.lstat(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error('unsafe_root');}}
+   stage='restore_lock';await directory(path.dirname(root));
+   const lockRoot=path.join(path.dirname(root),'.paperclip-runtime','workspace-restore-locks');
+   await directory(path.dirname(lockRoot));
+   for(const parent of [path.dirname(root),path.dirname(lockRoot)]){const s=await fs.lstat(parent);
+    if(s.uid!==process.getuid()||(s.mode&0o022)!==0)throw Error('unsafe_restore_lock');}
+   await fs.mkdir(lockRoot,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+   await directory(lockRoot);const lockDirectory=await fs.lstat(lockRoot);
+   if(lockDirectory.uid!==process.getuid()||(lockDirectory.mode&0o077)!==0)throw Error('unsafe_restore_lock');
+   const lockPath=path.join(lockRoot,crypto.createHash('sha256').update(root).digest('hex')+'.sqlite'),lockStat=await stat(lockPath);
+   if(lockStat&&(!lockStat.isFile()||lockStat.isSymbolicLink()||lockStat.nlink!==1||lockStat.uid!==process.getuid()||lockStat.size>65536))throw Error('unsafe_restore_lock');
+   const lock=new(require('node:sqlite').DatabaseSync)(lockPath,{allowExtension:false});
+   try{
+    await fs.chmod(lockPath,0o600);lock.exec('PRAGMA busy_timeout=0');const deadline=performance.now()+120000;
+    while(true){try{lock.exec('BEGIN IMMEDIATE');break}catch(e){if(typeof e.errcode!=='number'||(e.errcode&255)!==5)throw e;
+     if(performance.now()>=deadline)throw Error('restore_lock_busy');await new Promise(resolve=>setTimeout(resolve,50));}}
+   stage='restore_fence';const fencePath=lockPath.slice(0,-7)+'.fence.json';
+   const checkedJson=async file=>{const s=await stat(file);if(!s)return null;
+    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid()||s.size>16384)throw Error('unsafe_restore_fence');
+    const value=await readJson(file,'unsafe_restore_fence');if(!value||typeof value!=='object'||Array.isArray(value))throw Error('unsafe_restore_fence');return value;};
+   const validFence=value=>value.schema==='paperclip.workspace-restore-fence.v1'&&value.root===root&&validEpoch(value.epoch)
+    &&typeof value.identity==='string'&&/^[a-f0-9]{64}$/.test(value.identity)
+    &&typeof value.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(value.manifestDigest);
+   const persisted=await checkedJson(fencePath);if(persisted&&!validFence(persisted))throw Error('unsafe_restore_fence');
+   let latest=persisted;
+   for(const location of [root,parked,retired]){
+    if(!await stat(location))continue;await directory(location);const runtime=path.join(location,'.paperclip-runtime');
+    if(!await stat(runtime))continue;await directory(runtime);const receipt=await checkedJson(path.join(runtime,'workspace-restored.json'));
+    if(!receipt)continue;
+    if(receipt.restorationEpoch===undefined){if(receipt.schema!==undefined)throw Error('unsafe_restore_fence');continue;}
+    const pending=receipt.schema==='paperclip.workspace-restore-pending.v1';
+    if(receipt.root!==root||!validEpoch(receipt.restorationEpoch)||!(pending?pendingInPlace(receipt)
+      :receipt.schema==='paperclip.workspace-restored.v1'&&typeof receipt.identity==='string'&&/^[a-f0-9]{64}$/.test(receipt.identity)
+       &&typeof receipt.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(receipt.manifestDigest)))throw Error('unsafe_restore_fence');
+    const observed={schema:'paperclip.workspace-restore-fence.v1',root,epoch:receipt.restorationEpoch,
+     identity:pending?receipt.pendingIdentity:receipt.identity,manifestDigest:receipt.manifestDigest};
+    if(latest&&observed.epoch===latest.epoch&&(observed.identity!==latest.identity||observed.manifestDigest!==latest.manifestDigest))throw Error('unsafe_restore_fence');
+    if(!latest||observed.epoch>latest.epoch)latest=observed;
+   }
+   if(latest&&restorationEpoch===null)throw Error('restore_fence_required');
+   if(latest&&(restorationEpoch<latest.epoch||restorationEpoch===latest.epoch&&(identity!==latest.identity||digest!==latest.manifestDigest)))throw Error('workspace_owner_changed');
+   if(restorationEpoch!==null&&(!persisted||persisted.epoch!==restorationEpoch||persisted.identity!==identity||persisted.manifestDigest!==digest)){
+    const pending=fencePath+'.'+crypto.randomUUID()+'.tmp';
+    try{await fs.writeFile(pending,JSON.stringify({schema:'paperclip.workspace-restore-fence.v1',root,epoch:restorationEpoch,identity,manifestDigest:digest}),{flag:'wx',mode:0o600,flush:true});
+     await fs.rename(pending,fencePath);const directory=await fs.open(lockRoot,'r');try{await directory.sync();}finally{await directory.close();}}
+    finally{await fs.rm(pending,{force:true});}
+   }
+   // Only a restore of this root, under this lock, creates its staging folders
+   // and binds its archive staging to the root. While the lock is held, any
+   // such leftover is from an attempt that died, and its bytes are disposable:
+   // the saved version in control-plane storage is the source of truth.
+   stage='reclaim';const stagingRoot=path.dirname(archive),snapshotsRoot=path.dirname(stagingRoot);
+   const discard=async p=>{await open(p);await fs.rm(p,{recursive:true,force:true});};
+   // Uploads are named by the attempt's start time. An older attempt's upload is
+   // abandoned once a newer attempt holds the lock; a newer one is left alone.
+   const attemptOf=name=>name==='workspace.pcws'?0:Number(/^workspace-([0-9]{16})-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pcws$/.exec(name)?.[1]??NaN);
+   const ownAttempt=attemptOf(path.basename(archive));if(!Number.isSafeInteger(ownAttempt)||ownAttempt<1)throw Error('invalid_attempt');
+   for(const name of await fs.readdir(stagingRoot))
+    if(/\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name)||attemptOf(name)<ownAttempt)
+     await fs.rm(path.join(stagingRoot,name),{force:true});
+   const stagingPrefix=path.basename(root)+'.restoring-';
+   for(const name of await fs.readdir(path.dirname(root))){
+    if(!name.startsWith(stagingPrefix)||!/^[A-Za-z0-9]{6}$/.test(name.slice(stagingPrefix.length)))continue;
+    const s=await fs.lstat(path.join(path.dirname(root),name));if(s.isDirectory()&&!s.isSymbolicLink())await discard(path.join(path.dirname(root),name));}
+   for(const name of await fs.readdir(snapshotsRoot)){
+    if(name===path.basename(stagingRoot)||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(name))continue;
+    const directory=path.join(snapshotsRoot,name),s=await fs.lstat(directory);if(!s.isDirectory()||s.isSymbolicLink())continue;
+    const bound=await stat(path.join(directory,'restore-target.json'));if(!bound||!bound.isFile()||bound.nlink!==1||bound.size>16384)continue;
+    const value=await readJson(path.join(directory,'restore-target.json'),'unsafe_staging').catch(()=>null);
+    if(value?.schema==='paperclip.workspace-restore-staging.v1'&&value.root===root)await discard(directory);}
+   // Bind this attempt's staging only after the space is reclaimed.
+   const binding=path.join(stagingRoot,'restore-target.json'),bindingTemp=binding+'.'+crypto.randomUUID()+'.tmp';
+   try{await fs.writeFile(bindingTemp,JSON.stringify({schema:'paperclip.workspace-restore-staging.v1',root}),{flag:'wx',mode:0o600});
+    await fs.rename(bindingTemp,binding);}finally{await fs.rm(bindingTemp,{force:true});}
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
    if(prior&&await stat(marker)){
     stage='existing_receipt';await directory(path.dirname(marker));const file=await fs.lstat(marker);
     if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
-    const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
+    let receipt=await readJson(marker,'unsafe_receipt');
+    if(receipt.schema==='paperclip.workspace-restore-pending.v1'){
+     if(!pendingInPlace(receipt))throw Error('unsafe_receipt');
+     if(receipt.pendingIdentity===identity?receipt.manifestDigest!==digest:replaceRetired!=='true')throw Error('workspace_owner_changed');
+     receipt=await finishInPlace(receipt);
+    }
     if(receipt.identity===identity&&receipt.manifestDigest===digest){
      if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}
      await removeRetired();return;}
@@ -637,27 +851,57 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    // Replacing is allowed only for a root the server proved is this workspace's
    // own earlier allocation whose last use ended in a completed final save.
    const retire=Boolean(prior)&&replaceRetired==='true'&&await ownReceipt(root);
+   if(retire&&restorationEpoch===null)throw Error('restore_fence_required');
    if(prior&&!retire&&allowEmpty!=='true')throw Error('occupied_root');
    stage='allocation';const retained=prior&&!retire?await allocation(root):[];
    if(!prior&&files.length)throw Error('allocation_missing');
-   stage='extract';const staged=await fs.mkdtemp(root+'.restoring-');
+   // The server proved this root's files are already in the saved lineage being
+   // restored, so they are removed before extraction instead of after it. Its
+   // receipt and runtime state stay, so an interrupted restore repeats this step.
+   if(retire){stage='reclaim_retired';const s=await fs.lstat(root);await fs.chmod(root,(s.mode&0o7777)|0o700);
+    for(const name of await fs.readdir(root))if(name!=='.paperclip-runtime')await discard(path.join(root,name));
+    if(await stat(path.join(root,'.paperclip-runtime','workspace-snapshots')))await discard(path.join(root,'.paperclip-runtime','workspace-snapshots'));}
+   if(reclaimOnly)return;
+   stage='extract';const staging=await fs.mkdtemp(root+'.restoring-'),staged=path.join(staging,'tree');
+   // A private name keeps a later upload to the same path out of this extraction.
+   const consuming=archive+'.'+crypto.randomUUID()+'.consuming';
    try{
-    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
+    await fs.rename(archive,consuming);
+    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',consuming,staged,digest,'consume'],{maxBuffer:1048576});
     stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
-    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify(completedReceipt(identity,digest,restorationEpoch)),{flag:'wx',mode:0o600});
     stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
     const holding=retire?retired:parked;
     if(prior){if(retire){if(!await ownReceipt(root))throw Error('occupied_root');}else await allocation(root);
-     if(await stat(holding))throw Error('occupied_parking');await fs.rename(root,holding);}
+     if(await stat(holding))throw Error('occupied_parking');
+     try{await fs.rename(root,holding);}catch(e){if(!retire||e?.code!=='EXDEV')throw e;await replaceInPlace(staged);return;}}
     try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(holding,root);throw e;}
     stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
     await removeRetired();
-   }finally{await fs.rm(staged,{recursive:true,force:true});}
-  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
-  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
+   }finally{await fs.rm(consuming,{force:true});await open(staging).catch(()=>{});await fs.rm(staging,{recursive:true,force:true});}
+   }finally{lock.close();}
+  })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,diskFull(error)?Error('sandbox_disk_full'):error));process.exitCode=1});`;
+  // Each attempt uploads to its own name, so a delayed command of an earlier
+  // attempt with the same identity never removes or consumes this upload.
+  const directory = path.posix.join(parent, ".paperclip-runtime", "workspace-snapshots", operationId);
+  const archive = path.posix.join(directory, `workspace-${String(Date.now()).padStart(16, "0")}-${randomUUID()}.pcws`);
+  const args = (phase: "reclaim" | "extract") => ["-e", restore, path.posix.join(directory, "archive.cjs"), archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
-    String(input.replaceRetiredRoot === true)]);
+    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch), phase];
+  // Free what this root's earlier attempts left before anything new needs space.
+  await command(input.target, "restore", args("reclaim"));
+  const staged = await installArchiveHelper(input.target, parent, operationId).catch((error: unknown) => {
+    throw error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL ? restoreDiskFull("archive_helper", "helper") : error;
+  });
+  if (staged.directory !== directory) throw new Error("remote_workspace_operation_identity_invalid");
+  await measureRunPhase("workspace.snapshot.sandbox_upload", () => stat(input.archivePath).then(source => transferArchive(input.target, "syncIn", [{ operationId,
+    files: [{ kind: "file", sourcePath: input.archivePath, targetPath: archive }],
+  }], source.size))).catch((error: unknown) => {
+    if (sandboxDiskFull(error)) throw restoreDiskFull("upload", "upload");
+    noteProviderRefusal("upload", error); throw error;
+  });
+  await measureRunPhase("workspace.snapshot.sandbox_extract", () => command(input.target, "restore", args("extract")));
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

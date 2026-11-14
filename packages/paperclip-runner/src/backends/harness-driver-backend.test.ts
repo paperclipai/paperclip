@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
-import { PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../contracts/harness-driver.js";
+import {
+  NativeRunnerSourceReconciliationRequiredError,
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+  PROVIDER_STATE_INCOMPATIBLE,
+  runnerRecoveryFailureClass,
+} from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { NativeSessionProtocolIntegrityError, type NativeSession } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
@@ -117,6 +123,25 @@ describe("HarnessDriverBackend", () => {
     await expect(opened.startTurn({ message })).resolves.toEqual({ turnId: "turn-1" });
     expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
   });
+
+  it.each([
+    { cancelled: false, failureCleanup: false, retainUnsettledRemoteRunner: true },
+    { cancelled: true, failureCleanup: false, retainUnsettledRemoteRunner: false },
+    { cancelled: true, failureCleanup: true, retainUnsettledRemoteRunner: true },
+  ])("asks to retain an unsettled remote Runner on close only when the run was not stopped (cancelled=$cancelled, failureCleanup=$failureCleanup)",
+    async ({ cancelled, failureCleanup, retainUnsettledRemoteRunner }) => {
+      const close = vi.fn(async () => {});
+      const session = Object.assign(new FakeHarnessSession(), { close });
+      const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+      const opened = await backend.openSession({ identity: {
+        runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+      } });
+      if (cancelled) await cancelSession(opened, { reason: failureCleanup ? "Native session event consumption failed." : "Stop requested",
+        signal: new AbortController().signal, ...(failureCleanup ? { failureCleanup } : {}) }).cleanup;
+      if (failureCleanup) expect(await opened.result()).toBeNull();
+      await opened.close({ reason: "native session execution complete" });
+      expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "native session execution complete", retainUnsettledRemoteRunner });
+    });
 
   it("forwards reasoning when the provider explicitly supports it", async () => {
     const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
@@ -344,6 +369,19 @@ describe("HarnessDriverBackend", () => {
       enumerable: false,
     });
     expect(runnerRecoveryFailureClass(unclassified)).toBeUndefined();
+    for (const classification of [PROVIDER_ATTACH_REFUSED, PROVIDER_SIDE_EFFECT_PENDING]) {
+      const refused = Object.defineProperty(new Error("PRP command run.attach failed"), "runnerCommandResult", {
+        value: { status: "failed", result: { code: "command_execution_failed", classification } },
+        enumerable: false,
+      });
+      expect(runnerRecoveryFailureClass(new Error("wrapped", { cause: refused }))).toBe(classification);
+    }
+    const pendingSource = new NativeRunnerSourceReconciliationRequiredError("semantic");
+    expect(pendingSource.message).toBe("native_runner_source_semantic_reconciliation_required");
+    expect(runnerRecoveryFailureClass(pendingSource)).toBe(PROVIDER_SIDE_EFFECT_PENDING);
+    expect(runnerRecoveryFailureClass(new Error("wrapped", { cause: new NativeRunnerSourceReconciliationRequiredError("runtime") })))
+      .toBe(PROVIDER_SIDE_EFFECT_PENDING);
+    expect(runnerRecoveryFailureClass(new Error("native_runner_source_semantic_reconciliation_required"))).toBeUndefined();
 
     const backend = new HarnessDriverBackend({
       ...driver,

@@ -58,7 +58,9 @@ describe("passive maintenance PostgreSQL observer", () => {
 
 let databaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_MAINTENANCE_TEST_DATABASE_URL");
 let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
-const databaseSupport = await maintenanceDatabaseSupport(databaseUrl);
+const databaseSupport = process.env.PAPERCLIP_MAINTENANCE_PG0_CONTROLS === '1'
+  ? { supported: false, reason: 'Explicit PG0 controls defer the complete real-PostgreSQL observer suite without probing native support.' }
+  : await maintenanceDatabaseSupport(databaseUrl);
 const describeDatabase = databaseSupport.supported ? describe : describe.skip;
 if (!databaseSupport.supported) console.warn(`Skipping maintenance PostgreSQL tests: ${databaseSupport.reason ?? "unsupported environment"}`);
 describeDatabase("maintenance observer against PostgreSQL", () => {

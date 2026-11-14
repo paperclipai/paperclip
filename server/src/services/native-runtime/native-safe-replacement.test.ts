@@ -16,6 +16,11 @@ import {
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
+import { hasNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { executionControlSchedule } from "../execution-control-work.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,6 +31,8 @@ import {
   agents,
   companies,
   createDb,
+  environmentLeases,
+  subscribeDatabaseWork,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
@@ -41,7 +48,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
-import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
+import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
@@ -219,6 +226,103 @@ const support = externalDatabaseUrl
         }
       },
     );
+    it("wakes a completed replacement scan after actual local stop proof commits", async () => {
+      const source = await seed(2);
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-stop-"));
+      const child = spawn(process.execPath, ["-e", "process.exit(0)"], { detached: true, stdio: "ignore" });
+      const pid = child.pid!;
+      await new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+      await persistHeartbeatRunProcessMetadata(db, source.runId, { pid, processGroupId: pid,
+        startedAt: new Date().toISOString(), targetKind: "local" });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(), runnerProfileJson: {
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        eventType: "harness.ready", stream: "system", message: "Provider started before its transport failed." });
+      const verifyStoppedSession = async () => await hasNativeLocalProcessStop(db, source.companyId, source.runId)
+        ? { evidence: {}, retire: () => true } : null;
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await db.transaction(async tx => {
+          expect(await releaseSettledNativeRunProcess(tx as unknown as typeof db, source.runId)).toBe("released");
+          expect(wakes).toBe(0);
+        });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+        expect(successors).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
+    it("wakes completed recovery when the real task becomes eligible", async () => {
+      const source = await seed();
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-eligibility-"));
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { recoveryEventInventoryVersion: 1,
+        nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await issueService(db).update(source.issueId, { status: "backlog" });
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      let wakes = 0;
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") { wakes++; invalidateNativeReplacementDiscovery(db); }
+      });
+      try {
+        await issueService(db).update(source.issueId, { status: "in_progress" });
+        expect(wakes).toBeGreaterThan(0);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(1);
+      } finally { unsubscribe(); await rm(workspace, { recursive: true, force: true }); }
+    });
+    it("advances past a failed full page and retries it after later work progresses", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-failed-page-"));
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index++) {
+        const source = await seed(); sources.push(source);
+        await db.update(heartbeatRuns).set({ runnerProfileJson: {
+          nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: workspace } },
+        } }).where(eq(heartbeatRuns.id, source.runId));
+        await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed" })
+          .where(eq(nativeRunFinalizations.runId, source.runId));
+      }
+      sources.sort((a, b) => a.runId.localeCompare(b.runId));
+      const later = sources.at(-1)!;
+      let failing = true;
+      const verifyStoppedSession = vi.fn(async (run: typeof heartbeatRuns.$inferSelect) => {
+        if (failing && run.id !== later.runId) throw new Error("Controlled stopped-session verifier failure");
+        return { evidence: {}, retire: () => true };
+      });
+      invalidateNativeReplacementDiscovery(db);
+      try {
+        await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession }))
+          .rejects.toThrow("native_replacement_decision_retry_required");
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(25);
+        expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 1 });
+        expect(verifyStoppedSession).toHaveBeenCalledTimes(26);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, later.runId))).toHaveLength(1);
+        failing = false;
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 25 });
+        expect(await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).toMatchObject({ scheduled: 0 });
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        const successors = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.retryOfRunId, sources.map(source => source.runId)));
+        expect(successors).toHaveLength(26);
+      } finally { await rm(workspace, { recursive: true, force: true }); }
+    }, 60_000);
     it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
       const source = await seed(2);
       await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
@@ -235,8 +339,11 @@ const support = externalDatabaseUrl
         eventType: "tool.execution.started", stream: "system",
         payload: { name: "paperclip_finish", executionId: "completion", transport: "process" },
       });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
-      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      for (let sweep = 0; sweep < 2; sweep++) {
+        const decision = reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+        if (mode === "changed") await expect(decision).rejects.toThrow("native_replacement_decision_retry_required");
+        else await decision;
+      }
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
       expect(successors).toHaveLength(mode === "verified" ? 1 : 0);
       const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
@@ -351,6 +458,114 @@ const support = externalDatabaseUrl
       expect(task.status).toBe("in_progress");
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
       expect(action.status).toBe("active");
+    });
+    async function seedUnprovenOwner(finishedAgoMs: number) {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ finishedAt: sql`now() - ${finishedAgoMs}::integer * interval '1 millisecond'`,
+        processPid: process.pid, processHostHash: "another-server" }).where(eq(heartbeatRuns.id, source.runId));
+      invalidateNativeReplacementDiscovery(db);
+      return source;
+    }
+    async function freshContinuations(issueId: string) {
+      const holds = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      return holds.flatMap(hold => hold.evidence.freshContinuation ? [hold.evidence.freshContinuation as Record<string, unknown>] : []);
+    }
+    it.each([["just past the deadline", 6 * 60_000], ["stuck since before this release", 2 * 24 * 60 * 60_000]] as const)(
+      "continues a terminal failure whose previous provider is never proven stopped (%s)", async (_label, finishedAgoMs) => {
+        const source = await seedUnprovenOwner(finishedAgoMs);
+        expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+        const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(decision!.failureDetail).toMatchObject({ replacementDenied: "provider_ownership_unverified" });
+        expect(String(decision!.failureDetail?.nextAction)).not.toMatch(/[a-z]+_[a-z_]+|[0-9a-f]{8}-/);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+        expect(await executionControlSchedule(db).replacement()).toBeNull();
+        await settleUnrecoverableExecutions(db);
+        await settleUnrecoverableExecutions(db);
+        const continued = await freshContinuations(source.issueId);
+        expect(continued).toHaveLength(1);
+        expect(continued[0]).toMatchObject({ sourceRunId: source.runId, isolation: "fresh_isolated_workspace" });
+        const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+        expect(task!.status).not.toBe("blocked");
+      });
+    it("keeps waiting for ownership proof before the deadline and wakes at it", async () => {
+      const source = await seedUnprovenOwner(60_000);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(decision!.failureDetail?.replacementDenied).toBeUndefined();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      const wakeAt = await executionControlSchedule(db).replacement();
+      expect(wakeAt).not.toBeNull();
+      expect(Math.abs(wakeAt! - (run!.finishedAt!.getTime() + 5 * 60_000))).toBeLessThan(2_000);
+      await settleUnrecoverableExecutions(db);
+      expect(await freshContinuations(source.issueId)).toHaveLength(0);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId))).toHaveLength(0);
+    });
+    async function denial(runId: string) {
+      const [row] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      return row!.failureDetail?.replacementDenied;
+    }
+    it("requests a pass for a deadline that passed long before anyone asked", async () => {
+      const source = await seedUnprovenOwner(60_000);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      await db.update(heartbeatRuns).set({ finishedAt: sql`now() - interval '15 minutes'` })
+        .where(eq(heartbeatRuns.id, source.runId));
+      const wakeAt = await executionControlSchedule(db).replacement();
+      expect(wakeAt).not.toBeNull();
+      expect(wakeAt!).toBeLessThanOrEqual(Date.now() + 20_000);
+      await reconcileSafeNativeReplacements(db);
+      expect(await denial(source.runId)).toBe("provider_ownership_unverified");
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      await settleUnrecoverableExecutions(db);
+      expect(await freshContinuations(source.issueId)).toMatchObject([{ isolation: "fresh_isolated_workspace" }]);
+    });
+    it("stops waiting for an environment teardown that never finishes", async () => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ finishedAt: sql`now() - interval '1 minute'` }).where(eq(heartbeatRuns.id, source.runId));
+      await db.insert(environmentLeases).values({ companyId: source.companyId, issueId: source.issueId,
+        heartbeatRunId: source.runId, status: "active" });
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await denial(source.runId)).toBeUndefined();
+      expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      await db.update(heartbeatRuns).set({ finishedAt: sql`now() - interval '10 minutes'` }).where(eq(heartbeatRuns.id, source.runId));
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+      expect(await denial(source.runId)).toBe("provider_ownership_unverified");
+      await settleUnrecoverableExecutions(db);
+      expect(await freshContinuations(source.issueId)).toMatchObject([{ sourceRunId: source.runId, isolation: "fresh_isolated_workspace" }]);
+    });
+    it("does not keep waking for an overdue run the pass cannot decide", async () => {
+      const source = await seedUnprovenOwner(60_000);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      await db.update(heartbeatRuns).set({ processPid: null, processHostHash: null, finishedAt: sql`now() - interval '15 minutes'` })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await issueService(db).update(source.issueId, { status: "backlog" });
+      expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      expect(await denial(source.runId)).toBeUndefined();
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+    });
+    it("decides every overdue run across successive passes", async () => {
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index++) sources.push(await seedUnprovenOwner(10 * 60_000));
+      await reconcileSafeNativeReplacements(db);
+      const decided = async () => (await Promise.all(sources.map(source => denial(source.runId)))).filter(Boolean).length;
+      expect(await decided()).toBe(25);
+      expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      await reconcileSafeNativeReplacements(db);
+      expect(await decided()).toBe(26);
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+    }, 120_000);
+    it("still starts the exact replacement when ownership is proven before the deadline", async () => {
+      const source = await seedUnprovenOwner(60_000);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      await db.update(heartbeatRuns).set({ processPid: null, processHostHash: null }).where(eq(heartbeatRuns.id, source.runId));
+      invalidateNativeReplacementDiscovery(db);
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 1 });
+      const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(decision!.failureDetail?.replacementDenied).toBeUndefined();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(1);
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
     });
     it.each(["closed", "reassigned", "new_execution"])("closes stale recovery after %s without changing task state or granting replay", async change => {
       const source = await seed(3);

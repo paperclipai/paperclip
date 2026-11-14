@@ -1,3 +1,5 @@
+import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
+import { isGitMountBoundaryMessage } from "./git-mount-boundary-message.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -13,6 +15,29 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+
+type ManagedRepositoryPreparationFailure = { code: string | number | null; timedOut: boolean };
+const preparationFailures = new WeakMap<Error, ManagedRepositoryPreparationFailure>();
+
+export function readManagedRepositoryPreparationFailure(error: unknown): ManagedRepositoryPreparationFailure | null {
+  const failure = error instanceof Error ? preparationFailures.get(error) : undefined;
+  return failure ? { ...failure } : null;
+}
+
+function managedRepositoryPreparationError(message: string, error: unknown): Error {
+  const wrapped = new Error(message);
+  const retained = readManagedRepositoryPreparationFailure(error);
+  if (retained) preparationFailures.set(wrapped, retained);
+  else if (error instanceof Error) {
+    const details = error as Error & { code?: unknown; killed?: unknown };
+    const code = typeof details.code === "number" && Number.isSafeInteger(details.code) ? details.code
+      : typeof details.code === "string" && /^(?:E[A-Z0-9_]{1,63}|ABORT_ERR)$/.test(details.code) ? details.code : null;
+    const timedOut = code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && (details.killed === true || code === "ETIMEDOUT"
+      || error.name === "AbortError" || error.name === "TimeoutError");
+    if (code !== null || timedOut) preparationFailures.set(wrapped, { code, timedOut });
+  }
+  return wrapped;
+}
 
 async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }) {
   const git = (directory: string, args: string[]) => execFile("git", ["-C", directory, ...args], {
@@ -67,6 +92,9 @@ export async function materializeManagedProjectWorkspace(
     objectCacheCompanyDirectory?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
+  await retainCurrentWorkspaceSource(cwd);
+  if (input.localSource) await retainCurrentWorkspaceSource(input.localSource);
+  if (input.gitObjectSource) await retainCurrentWorkspaceSource(input.gitObjectSource.cwd);
   if (input.localSource && input.gitObjectSource) throw new Error("Conflicting managed checkout sources");
   await fs.mkdir(path.dirname(cwd), { recursive: true });
   const stats = await fs.stat(cwd).catch(() => null);
@@ -198,7 +226,7 @@ export async function materializeManagedProjectWorkspace(
     if (error instanceof RepositoryRefNotFoundError) throw new RepositoryRefNotFoundError(message, error.requestedRef);
     const connectionFailure = readGitConnectionFailure(error);
     if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
-    throw new Error(message);
+    throw managedRepositoryPreparationError(message, error);
   }
 
   try {
@@ -212,8 +240,9 @@ export async function materializeManagedProjectWorkspace(
     }
     const reason =
       renameError instanceof Error ? renameError.message : String(renameError);
-    throw new Error(
+    throw managedRepositoryPreparationError(
       `Failed to move managed checkout into place at "${cwd}": ${reason}`,
+      renameError,
     );
   }
   return { cwd, warning: null };
@@ -233,7 +262,8 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   } catch (error) {
     const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
     if (options.plainTaskDirectory && failure.code === 128 && failure.signal == null &&
-        failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" &&
+        (failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" ||
+          isGitMountBoundaryMessage(failure.stderr)) &&
         !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR) return;
     throw error;
   }

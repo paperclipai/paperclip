@@ -19,6 +19,7 @@ vi.mock("../sentry.js", async () => {
 });
 
 import { reconcileAbandonedExecutionControl } from "./execution-control-reconciliation.js";
+import { EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_CONTROL_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -222,6 +223,70 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     await vi.waitFor(() => {
       expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
     }, { timeout: 5_000 });
+  });
+
+  async function seedResumedNativeRun(coordinator: Partial<typeof nativeRunFinalizations.$inferInsert>) {
+    const f = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: f.runId, companyId: f.companyId, issueId: f.issueId,
+      phase: "observed", controlDeadlineAt: null, ...coordinator });
+    return f;
+  }
+
+  it.each([
+    ["reclaimed after a server restart", { phase: "observed", leaseOwner: "restart-claim", controllerGeneration: 2,
+      recoveryState: "awaiting_runner_reattach", leaseExpiresAt: new Date(Date.now() + 60_000) }],
+    ["waiting for its scheduled same-run resume", { phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null,
+      recoveryState: "resuming_session", nextAttemptAt: new Date(Date.now() + 120_000) }],
+  ] as const)("keeps a native run %s running past the previous attempt's run deadline", async (_shape, coordinator) => {
+    const f = await seedResumedNativeRun(coordinator);
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    const result = await reconcileAbandonedExecutionControl(db);
+
+    expect(result.surfaced).toBe(0);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null, error: null, executionControlDeadlineAt: null });
+    const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(owner).toMatchObject({ phase: coordinator.phase, leaseOwner: coordinator.leaseOwner, failureCode: null });
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task).toMatchObject({ status: "in_progress", executionRunId: f.runId, checkoutRunId: f.runId });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(0);
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
+  });
+
+  it("waits for a live native owner to finish its own failure settlement before surfacing the deadline", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 30_000);
+    const f = await seedResumedNativeRun({ phase: "observed", leaseOwner: "settling-controller", leaseExpiresAt,
+      controlDeadlineAt: new Date(Date.now() - 1_000) });
+
+    expect((await reconcileAbandonedExecutionControl(db)).surfaced).toBe(0);
+    const [waiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(waiting).toMatchObject({ status: "running", errorCode: null });
+    expect(owner.controlDeadlineAt?.getTime()).toBe(leaseExpiresAt.getTime());
+
+    const lapsed = new Date(Date.now() - 1_000);
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: lapsed, controlDeadlineAt: lapsed })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await reconcileAbandonedExecutionControl(db)).surfaced).toBe(1);
+    const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(failed).toMatchObject({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" });
+  });
+
+  it("explains a genuine finalization deadline in plain words without asking a person to repair the run", async () => {
+    const f = await seedAbandonedRunFixture();
+
+    await reconcileAbandonedExecutionControl(db);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(run.status).toBe("failed");
+    for (const text of [run.error, run.nextAction, action?.nextAction]) {
+      expect(text).toBe(EXECUTION_FINALIZATION_DEADLINE_MESSAGE);
+      expect(text).not.toMatch(/inspect|verify|reconcile|provider/i);
+    }
   });
 
   it("reports zero events for a repeated sweep over the same already-failed run", async () => {

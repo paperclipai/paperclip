@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
-import { buildTurnTimelineRows, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
+import { buildTurnTimelineRows, omitProgressRepeatedByResponse, paperclipRunnerFinalResponse, paperclipRunnerTimelineItems, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -1476,6 +1476,17 @@ describe("edit diffs", () => {
     expect(tool).toMatchObject({ kind: "tool", target: "src/price.js", diff: { path: "src/price.js", added: 1, removed: 1 } });
   });
 
+  it("preserves CRLF changes after a no-newline marker in an edit transcript", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "tool.execution.completed", execution("completed", [change("@@ -1 +1 @@\r\n-old\r\n\\ No newline at end of file\r\n+++ new\r\n", 1, 1)])),
+    ]);
+    expect(entries.filter((entry) => entry.kind === "diff" && entry.changeType !== "file_header")).toEqual([
+      expect.objectContaining({ changeType: "hunk", text: "@@ -1 +1 @@" }),
+      expect.objectContaining({ changeType: "remove", text: "old" }),
+      expect.objectContaining({ changeType: "add", text: "++ new" }),
+    ]);
+  });
+
   it("attaches an edit's patch once when later events refine the call", () => {
     const entries = nativeRunEventsToTranscript([
       event(1, "tool.execution.started", execution("running", [change("@@ -1 +1 @@\n-a\n+b\n", 1, 1)])),
@@ -1509,5 +1520,23 @@ describe("edit diffs", () => {
     if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
     expect(card.files[1]).toMatchObject({ path: "huge.js", diff: null, diffTruncated: true });
     expect(items.filter((item) => item.kind === "protocol" && item.surface === "workspace_change")).toHaveLength(1);
+  });
+});
+
+describe("an OpenCode reply settled from an answer and a closing line", () => {
+  it("shows the saved reply once, without the answer repeated as progress", () => {
+    const answer = "Two inbox items need you: [COM-2](/COM/issues/COM-2) and [COM-1](/COM/issues/COM-1).";
+    const coda = "Answered above.";
+    const progress = (text: string) => ({ kind: "agentMessage", channel: "progress", providerPhase: "commentary", text });
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "part-answer", progress(answer)),
+      itemEvent(2, "item.delta", "part-coda", progress(coda)),
+      itemEvent(3, "item.completed", "part-coda", { kind: "agentMessage", channel: "final", providerPhase: "final_answer", text: `${answer}\n\n${coda}` }),
+    ]);
+    const items = transcriptToTaskChatItems(transcript, { runId: RUN_ID, running: false });
+    const response = paperclipRunnerFinalResponse(items, { runId: RUN_ID });
+    expect(response?.text).toBe(`${answer}\n\n${coda}`);
+    const timeline = omitProgressRepeatedByResponse(paperclipRunnerTimelineItems(items), response?.text);
+    expect(JSON.stringify(timeline)).not.toContain("Two inbox items need you");
   });
 });

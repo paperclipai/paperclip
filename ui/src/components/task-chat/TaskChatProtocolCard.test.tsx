@@ -177,10 +177,36 @@ describe("TaskChatProtocolCard", () => {
       workProduct: product,
     });
 
-    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Pending");
+    const chip = container.querySelector(".status-chip");
     expect(chip?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Image · 2.0 KB");
-    expect(container.textContent).toContain("Open gallery");
+    expect(container.querySelector('button[aria-label^="Open gallery:"]')).not.toBeNull();
+  });
+
+  it("opens an image when its original path differs from its preview URL", async () => {
+    const product = workProduct({
+      type: "artifact",
+      title: "screen.png",
+      url: "/images/preview.png",
+      metadata: { contentType: "image/png", originalFilename: "screen.png", openPath: "/images/original.png" },
+    });
+    renderCard(root, {
+      id: "resource:image",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "Image",
+      href: product.url,
+      workProduct: product,
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: screen.png"]')!.click();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe("/images/preview.png");
   });
 
   it.each([

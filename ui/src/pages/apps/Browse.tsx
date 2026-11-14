@@ -12,7 +12,13 @@ import {
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
 import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
+import { TailscaleConnectorCard } from "./TailscaleConnector";
+import { useTailscaleConnections } from "@/hooks/useTailscaleConnections";
+import type { TailscaleConnection } from "@/api/tailscale";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
+import { AiDefaultCrown, AiDefaultError, AiDefaultMenuItem } from "@/components/ai-connections/AiConnectionDefault";
+import { AI_PROVIDERS } from "@/components/ai-connections/model";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -127,6 +133,7 @@ type ConnectorRowModel = {
   applications: ToolApplication[];
   connections: ToolConnection[];
   chatEndpoints: ChatEndpoint[];
+  networkConnections?: TailscaleConnection[];
   aggregatorApp?: AggregatorAppCatalogEntry;
   upstreamApps?: (ComposioAppSnapshot & Partial<Pick<AggregatorAppSnapshot, "provider" | "appSlug" | "appName" | "freshness">>)[];
   upstreamCatalogApp?: AggregatorAppCatalogEntry;
@@ -285,6 +292,7 @@ function rowRank(row: ConnectorRowModel): number {
   if (
     row.chatEndpoints.some((endpoint) => endpoint.status !== "draft") ||
     row.connections.some((connection) => connectionRank(connection) === 1) ||
+    row.networkConnections?.some(connection => connection.status === "connected") ||
     row.upstreamApps?.some((app) => app.status === "connected")
   )
     return 2;
@@ -292,7 +300,7 @@ function rowRank(row: ConnectorRowModel): number {
 }
 
 function isInstalled(row: ConnectorRowModel) {
-  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0));
+  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0)) || Boolean(row.networkConnections?.some(connection => connection.status === "connected"));
 }
 
 function connectorAction(
@@ -387,6 +395,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
   const assistantConnections = useAssistantConnections();
+  const tailscaleConnections = useTailscaleConnections(selectedCompanyId);
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
   const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
@@ -438,6 +447,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const aiDefaults = useAiConnectionDefaults(selectedCompanyId, { userId: viewingUserId, settled: identitySettled },
+    connectionsQuery.data?.connections.some(connection => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection)) ?? false);
+  const aiDefaultsView = useQueryView(aiDefaults.accounts);
   const chatEndpointsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
@@ -628,6 +640,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ]),
     );
     const rowsBySlug = new Map<string, ConnectorRowModel>();
+    if (tailscaleConnections.canManage) rowsBySlug.set("tailscale", { key: "network:tailscale", slug: "tailscale", name: "Tailscale",
+      description: "Connect your tailnet to use its machines in SSH environments.", brandKey: "tailscale", entry: null,
+      applications: [], connections: [], chatEndpoints: [], networkConnections: tailscaleConnections.data ?? [] });
     for (const entry of gallery) {
       const slug = appDefinitionSlug(entry);
       rowsBySlug.set(slug, {
@@ -893,6 +908,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     chatConnectorsEnabled,
     githubEnabled,
     connectionsQuery.data,
+    tailscaleConnections.data,
+    tailscaleConnections.canManage,
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,
@@ -919,6 +936,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     return scoped.filter((row) => {
       const text = normalizeConnectionQuery([row.name, row.slug, row.description,
         ...(row.aggregatorApp?.aliases ?? []), ...row.connections.map((connection) => connection.name),
+        ...(row.networkConnections ?? []).map(connection => connection.name),
         ...(row.upstreamApps ?? []).flatMap(app => app.accounts.map(account => account.alias)),
         ...row.chatEndpoints.map((endpoint) => endpoint.assignedAgentName)].join(" "));
       return terms.every((term) => text.includes(term));
@@ -1013,6 +1031,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : null}
 
       {refreshAggregator.error ? <p role="alert" className="text-sm text-destructive">Couldn’t refresh the gateway. Last known accounts are shown.</p> : null}
+      {aiDefaultsView.kind === "error" && <QueryErrorState size="inline" error={aiDefaultsView.error} action="load AI account defaults"
+        onRetry={aiDefaultsView.retry} retrying={aiDefaultsView.isFetching} />}
+      {aiDefaults.error && aiDefaults.failedProvider && <AiDefaultError provider={AI_PROVIDERS[aiDefaults.failedProvider].name}
+        pending={aiDefaults.pending(aiDefaults.failedProvider)} onRetry={aiDefaults.retry} />}
 
       {loading ? (
         <div className="space-y-3" aria-label="Loading connectors">
@@ -1029,8 +1051,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         <div className="space-y-3" role="list" aria-label="Connector list">
           {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
           {paginatedRows.map((row) => (
-            <ConnectorCard
+            row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <ConnectorCard
               renderAccountDetails={renderAccountDetails}
+              aiDefaults={aiDefaults}
               key={row.key}
               row={row}
               userProfileById={userProfileById}
@@ -1134,6 +1157,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
 export function ConnectorCard({
   renderAccountDetails,
+  aiDefaults,
   row,
   userProfileById,
   chatAgentById,
@@ -1157,6 +1181,7 @@ export function ConnectorCard({
   searchQuery = "",
 }: {
   renderAccountDetails?: (connection: ToolConnection) => ReactNode;
+  aiDefaults?: ReturnType<typeof useAiConnectionDefaults>;
   row: ConnectorRowModel;
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   chatAgentById?: ReadonlyMap<string, AvatarAgent>;
@@ -1286,6 +1311,7 @@ export function ConnectorCard({
               {row.connections.map((connection) => (
                 <ConnectionAccountRow
                   details={renderAccountDetails?.(connection)}
+                  aiDefaults={aiDefaults}
                   key={connection.id}
                   row={row}
                   setupEnabled={setupEnabled}
@@ -1428,6 +1454,7 @@ export function ConnectorCard({
 
 function ConnectionAccountRow({
   details,
+  aiDefaults,
   row,
   connection,
   owner,
@@ -1441,6 +1468,7 @@ function ConnectionAccountRow({
   setupEnabled = true,
 }: {
   details?: ReactNode;
+  aiDefaults?: ReturnType<typeof useAiConnectionDefaults>;
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
@@ -1460,9 +1488,12 @@ function ConnectionAccountRow({
     row.name,
     owner,
   );
+  const account = aiDefaults?.accountForConnection(connection);
 
   return (
-    <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner} details={<>{details}{discovery?.discovery.message || discovery?.sync.status === "error" ? <p className="text-xs text-muted-foreground" role="status">{discovery.discovery.message ?? discovery.sync.error}</p> : null}</>}
+    <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner}
+      afterName={account?.isDefault ? <AiDefaultCrown account={account} /> : undefined}
+      details={<>{details}{account?.isDefault && account.status !== "connected" && <p className="text-xs text-destructive">Default unavailable</p>}{discovery?.discovery.message || discovery?.sync.status === "error" ? <p className="text-xs text-muted-foreground" role="status">{discovery.discovery.message ?? discovery.sync.error}</p> : null}</>}
       openLabel={`Open ${accountName} permissions`} onOpen={() => onNavigate(`/apps/${connection.id}/permissions`)}>
         {setupEnabled && (state.kind === "attention" || state.kind === "draft") ? (
           <Button
@@ -1490,6 +1521,8 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {account?.canSetDefault && aiDefaults && !aiDefaults.accounts.error && <AiDefaultMenuItem account={account}
+              pending={aiDefaults.pending(account.provider)} onSelect={() => aiDefaults.choose(account)} />}
             <DropdownMenuItem
               onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
             >
@@ -1513,8 +1546,9 @@ function ConnectionAccountRow({
 }
 
 /** Shared presentation for native and aggregator-backed accounts. */
-function ConnectionAccountRowLayout({ state, accountName, owner, source, details, openLabel, onOpen, children }: {
+function ConnectionAccountRowLayout({ state, accountName, afterName, owner, source, details, openLabel, onOpen, children }: {
   state: ConnectionState; accountName: string; owner?: ConnectionOwnerProfile | null; source?: ReactNode; details?: ReactNode;
+  afterName?: ReactNode;
   openLabel: string; onOpen: () => void; children: ReactNode;
 }) {
   return (
@@ -1522,14 +1556,14 @@ function ConnectionAccountRowLayout({ state, accountName, owner, source, details
       <div className="flex min-w-0 flex-1 items-start gap-2.5">
         <ConnectionStatusIcon state={state} />
         <div className="min-w-0">
-          <button
+          <div className="flex min-w-0 items-center gap-2"><button
             type="button"
             className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
             aria-label={openLabel}
             onClick={onOpen}
           >
             {accountName}
-          </button>
+          </button>{afterName}</div>
           {details}
           {state.message ? (
             <div

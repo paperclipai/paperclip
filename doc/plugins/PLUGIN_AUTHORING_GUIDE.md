@@ -719,6 +719,17 @@ filesystem — there is no such capability. The browser still goes through the
 worker via `getData` / `performAction`, and the worker only exposes paths it
 chose to expose.
 
+### Reading project snapshots
+
+Workers with `projects.read`, `project.workspaces.read`, and
+`projects.instance-secrets` can call
+`ctx.projects.readSnapshots(projectIds, companyId, entityType)` to read up to
+64 distinct projects in one call. Each snapshot includes workspaces, the
+worker's authorized instance secrets, and its own company-scoped entity of the
+given type keyed by the project ID. A missing, archived, inaccessible, or
+changing project fails the whole request. Older hosts return `null` through
+the SDK. Keep instance secrets inside the trusted worker.
+
 ### When to keep worker-mediated project workspace browsing
 
 When the data lives inside an existing project workspace, keep the browsing

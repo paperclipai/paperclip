@@ -183,6 +183,41 @@ const TARGET_KEYS = [
 
 const TARGET_MAX = 96;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Argument keys that name one Paperclip task by its id. */
+const TASK_REF_KEYS = ["taskId", "task_id", "issueId", "issue_id"] as const;
+
+/** A raw id is an internal handle, never something a person reads. */
+function isOpaqueId(value: unknown): boolean {
+  return typeof value === "string" && UUID_RE.test(value.trim());
+}
+
+/**
+ * The task a tool call is about, when its input names one by UUID. The row
+ * shows that task's identifier (resolved at render time) instead of the id.
+ */
+/** Runners without direct app tools call them through this wrapper, naming the tool in its input. */
+const WRAPPED_APP_TOOL = "paperclip_call_assigned_tool";
+
+/** The app tool a wrapper call runs (its input's `name`), or undefined for any other call. */
+export function wrappedAppToolName(rawName: string | null | undefined, input: unknown): string | undefined {
+  if (!rawName || !(rawName === WRAPPED_APP_TOOL || rawName.endsWith(`_${WRAPPED_APP_TOOL}`) || rawName.endsWith(`.${WRAPPED_APP_TOOL}`))) return undefined;
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const name = (input as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+
+export function toolInputTaskRef(input: unknown): string | undefined {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  for (const key of TASK_REF_KEYS) {
+    const value = record[key];
+    if (isOpaqueId(value)) return (value as string).trim();
+  }
+  return undefined;
+}
+
 function clip(text: string, max: number): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
@@ -196,21 +231,23 @@ function clip(text: string, max: number): string {
 export function summarizeToolInput(input: unknown): string | undefined {
   if (input == null) return undefined;
   if (typeof input === "string")
-    return input.trim() ? clip(input, TARGET_MAX) : undefined;
+    return input.trim() && !isOpaqueId(input) ? clip(input, TARGET_MAX) : undefined;
   if (typeof input !== "object") return clip(String(input), TARGET_MAX);
   const record = input as Record<string, unknown>;
   for (const key of TARGET_KEYS) {
     const value = record[key];
-    if (typeof value === "string" && value.trim())
+    if (typeof value === "string" && value.trim() && !isOpaqueId(value))
       return clip(value, TARGET_MAX);
   }
   // The acpx log parser synthesizes { text, status } onto tool inputs from the
-  // event's summary line — presentation noise, not call parameters.
+  // event's summary line — presentation noise, not call parameters. Raw ids
+  // (task, agent, run UUIDs) are handles for the API, not for people.
   const entries = Object.entries(record).filter(
     ([k, v]) =>
       (typeof v === "string" ||
         typeof v === "number" ||
         typeof v === "boolean") &&
+      !isOpaqueId(v) &&
       k !== "text" &&
       k !== "status",
   );
@@ -882,6 +919,7 @@ export function transcriptToTaskChatItems(
             }
           }
           if (entry.detail) applyToolDetail(existing, entry.detail);
+          existing.appToolName ??= wrappedAppToolName(existing.rawName, entry.input);
           lastToolIndex = existingIndex!;
         } else {
           const tool: TaskChatToolItem = {
@@ -890,6 +928,8 @@ export function transcriptToTaskChatItems(
             name: toolDisplayName(entry.name),
             rawName: entry.name ?? undefined,
             target: summarizeToolInput(entry.input),
+            ...(toolInputTaskRef(entry.input) ? { taskRefId: toolInputTaskRef(entry.input) } : {}),
+            ...(wrappedAppToolName(entry.name, entry.input) ? { appToolName: wrappedAppToolName(entry.name, entry.input) } : {}),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
           };
@@ -1357,11 +1397,48 @@ export function omitProgressRepeatedByResponseAcrossSegments(
       }
     }
   }
-  if (redundantSegmentIndex < 0) return segments;
+  if (redundantSegmentIndex < 0) return omitProgressComposingResponse(segments, normalizedResponse);
   return segments.map((items, segmentIndex) =>
     segmentIndex === redundantSegmentIndex
       ? items.filter((_, index) => index !== redundantIndex)
       : items,
+  );
+}
+
+/**
+ * A runner can save one reply from several messages written after the last
+ * work tool (an answer, then a closing line after the completion call),
+ * joined by a blank line. The closing message is the response's own item, so
+ * its progress is already gone; the earlier messages remain as progress. When
+ * the latest progress messages make up the whole response, or its opening
+ * paragraphs, the response bubble owns them. One backward walk, bounded by the
+ * response length.
+ */
+function omitProgressComposingResponse(
+  segments: readonly (readonly TaskChatItem[])[],
+  normalizedResponse: string,
+): readonly (readonly TaskChatItem[])[] {
+  let composed = "";
+  let matched = 0;
+  let count = 0;
+  const omitted: string[] = [];
+  walk: for (let segmentIndex = segments.length - 1; segmentIndex >= 0; segmentIndex -= 1) {
+    const items = segments[segmentIndex]!;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]!;
+      const text = item.kind === "message" && item.interstitial && item.channel === "progress" ? item.text.trim() : "";
+      if (!text) continue;
+      composed = composed ? `${text}\n\n${composed}` : text;
+      if (composed.length > normalizedResponse.length) break walk;
+      count += 1;
+      omitted.push(`${segmentIndex}:${index}`);
+      if ((count > 1 && composed === normalizedResponse) || normalizedResponse.startsWith(`${composed}\n\n`)) matched = count;
+    }
+  }
+  if (!matched) return segments;
+  const hidden = new Set(omitted.slice(0, matched));
+  return segments.map((items, segmentIndex) =>
+    items.filter((_, index) => !hidden.has(`${segmentIndex}:${index}`)),
   );
 }
 

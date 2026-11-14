@@ -1,8 +1,9 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
-import { assertAgentConnectionInstallAccess, type ConnectionManagementContext } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, assertAgentToolAssignmentInteractions, type ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
@@ -44,6 +45,7 @@ import { managedConnectorProfile } from "./tool-access/oauth/client-settings.js"
 import { createOAuthClientRegistration } from "./tool-access/oauth/client-registration.js";
 import { createOAuthRefreshLeases } from "./tool-access/oauth/refresh-leases.js";
 import { createLegacyOAuthRefresh } from "./tool-access/oauth/connection-refresh.js";
+import { createClientCredentialsService } from "./tool-access/oauth/client-credentials-service.js";
 import { createOAuthGrantRefresh } from "./tool-access/oauth/grant-refresh.js";
 import { createGitHubGrantContinuity } from "./tool-access/github-grant-continuity.js";
 import { createToolRuntimeHealth } from "./tool-access/runtime/health.js";
@@ -66,7 +68,7 @@ import { createOAuthClientProtocol } from "./tool-access/oauth/client.js";
 
 import type { OAuthClientRegistrationSource } from "./tool-access/oauth/types.js";
 export { OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, resolveOAuthClientIdMetadataDocumentUrl, oauthClientIdMetadataDocument } from "./tool-access/oauth/client-metadata.js";
-import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
+import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionHeaders, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
 export {
   normalizeConnectionMethodConfig,
   projectedConnectionHeaders,
@@ -787,8 +789,19 @@ export function toolAccessService(
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
-  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
-  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
+  // Later dependencies are reached through closures: they are only called at request time.
+  const clientCredentials = createClientCredentialsService(db, {
+    now, secrets, store: credentialStore, exchangeOAuthToken, getConnectionRow, fetchRemoteHttpUrl, assertOAuthEndpointUrl,
+    assertRemoteConnectionEndpointsAllowed, ensureDefaultOrganizationGrant, nextAvailableConnectionName,
+    checkConnectionHealth: (connectionId, actor) => checkConnectionHealth(connectionId, actor),
+    refreshCatalog: (connectionId, actor, refreshOptions) => refreshCatalog(connectionId, actor, refreshOptions),
+    probeServerWithToken: (connection, authorization, actor) => catalogDiscovery.remoteTools(
+      connection, { ...projectedConnectionHeaders(connection), Authorization: authorization }, actor, undefined, [], { live: true },
+    ),
+  });
+  const { requestClientCredentialsToken } = clientCredentials;
+  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
+  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
@@ -802,9 +815,9 @@ export function toolAccessService(
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
   const { enableCatalogEntriesByDefault, upsertAskFirstPolicies } = defaultCatalogAccess;
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
-  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
+  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
-  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
   const listAppsNeedingAttention = createToolAppAttention(db, now);
   const aggregatorAccounts = createAggregatorAccounts(db, { options, secrets, audit, credentials: credentialAccess, getConnectionRow, requestRemoteHttpEndpoint, remoteTools: catalogDiscovery.remoteTools });
@@ -1064,8 +1077,10 @@ export function toolAccessService(
       const eligible = grants.filter(
         (grant) =>
           grant.connectionId === connection.id &&
-          (connection.credentialPolicy !== "per_user" ||
-            (grant.kind === "user" && grant.subjectUserId === userId)),
+          (connection.credentialPolicy === "per_agent"
+            ? grant.kind === "agent"
+            : connection.credentialPolicy !== "per_user" ||
+              (grant.kind === "user" && grant.subjectUserId === userId)),
       );
       connection.requiresReauthorization = !eligible.some(
         (grant) => grant.status === "active",
@@ -2219,7 +2234,7 @@ export function toolAccessService(
 
     const credentialValues = input.credentialValues ?? {};
     // A curated method declares its auth kind. A pasted URL declares one only
-    // under Advanced authentication; on the simple path it starts from what the
+    // when the operator picks a sign-in option; on the simple path it starts from what the
     // operator supplied and is upgraded to `oauth` when discovery proves the
     // endpoint needs sign-in (see `remoteTools` and `startOAuth`).
     const genericAuthKind: ToolConnectionAuthKind =
@@ -3295,7 +3310,17 @@ export function toolAccessService(
         .where(and(eq(toolConnectionInstalls.companyId, companyId), eq(toolConnectionInstalls.connectionId, connection.id)));
       const companyTargets = lockedConnection.status !== "active" || !lockedConnection.enabled || (existingProfile && existingProfile.status !== "active")
         ? [{ targetType: "company", targetId: companyId }] : [];
-      await lockToolAssignmentAgents(tx, companyId, [...existingBindings, ...bindingInputs, ...existingInstalls, ...companyTargets]);
+      const sourceAgentId = actor?.managementContext?.actor.type === "agent" ? actor.managementContext.actor.agentId
+        : actor?.actorType === "agent" ? actor.actorId : null;
+      await lockToolAssignmentAgents(tx, companyId, [...existingBindings, ...bindingInputs, ...existingInstalls, ...companyTargets], sourceAgentId);
+      const requestedAgentTargets = new Set(bindingInputs.filter(target => target.targetType === "agent").map(target => target.targetId));
+      const changedAgentTargets: string[] = [];
+      for (const savedTargets of [existingBindings, ...(connection.connectionPurpose === "tool" ? [existingInstalls] : [])]) {
+        const existingAgentTargets = new Set(savedTargets.filter(target => target.targetType === "agent").map(target => target.targetId));
+        changedAgentTargets.push(...[...requestedAgentTargets].filter(id => !existingAgentTargets.has(id)));
+        if (!input.preserveExistingAccess) changedAgentTargets.push(...[...existingAgentTargets].filter(id => !requestedAgentTargets.has(id)));
+      }
+      await assertAgentToolAssignmentInteractions(tx as unknown as Db, sourceAgentId, companyId, changedAgentTargets, false);
       // A renamed connection can leave its old profile name in use. Resolve
       // names against profiles too, including when finalizing an installed draft.
       const otherProfiles = await tx
@@ -3309,6 +3334,8 @@ export function toolAccessService(
         connection.name,
         otherProfiles.map((profile) => profile.name),
       );
+      const priorEntries = existingProfile ? await tx.select().from(toolProfileEntries)
+        .where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.profileId, existingProfile.id))) : [];
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -3326,10 +3353,6 @@ export function toolAccessService(
                 priority: prior.priority,
                 metadata: prior.metadata,
               });
-          const priorEntries = await tx
-            .select()
-            .from(toolProfileEntries)
-            .where(eq(toolProfileEntries.profileId, existingProfile.id));
           for (const prior of priorEntries)
             if (
               !entries.some(
@@ -3348,38 +3371,6 @@ export function toolAccessService(
                 riskLevel: prior.riskLevel,
                 conditions: prior.conditions,
               });
-        }
-        await tx
-          .delete(toolProfileBindings)
-          .where(
-            and(
-              eq(toolProfileBindings.companyId, companyId),
-              eq(toolProfileBindings.profileId, existingProfile.id),
-            ),
-          );
-        await tx
-          .delete(toolProfileEntries)
-          .where(
-            and(
-              eq(toolProfileEntries.companyId, companyId),
-              eq(toolProfileEntries.profileId, existingProfile.id),
-            ),
-          );
-        if (entries.length > 0) {
-          await tx.insert(toolProfileEntries).values(
-            entries.map((entry) => ({
-              companyId,
-              profileId: existingProfile.id,
-              selectorType: entry.selectorType,
-              effect: entry.effect ?? "include",
-              applicationId: entry.applicationId ?? null,
-              connectionId: entry.connectionId ?? null,
-              catalogEntryId: entry.catalogEntryId ?? null,
-              toolName: entry.toolName ?? null,
-              riskLevel: entry.riskLevel ?? null,
-              conditions: entry.conditions ?? null,
-            })),
-          );
         }
         const [updated] = await tx
           .update(toolProfiles)
@@ -3413,24 +3404,34 @@ export function toolAccessService(
             },
           })
           .returning();
-        if (entries.length > 0) {
-          await tx.insert(toolProfileEntries).values(
-            entries.map((entry) => ({
-              companyId,
-              profileId: created.id,
-              selectorType: entry.selectorType,
-              effect: entry.effect ?? "include",
-              applicationId: entry.applicationId ?? null,
-              connectionId: entry.connectionId ?? null,
-              catalogEntryId: entry.catalogEntryId ?? null,
-              toolName: entry.toolName ?? null,
-              riskLevel: entry.riskLevel ?? null,
-              conditions: entry.conditions ?? null,
-            })),
-          );
-        }
         profileId = created.id;
       }
+
+      const entryValues = (entry: CreateToolProfileEntryForProfile) => ({
+        companyId,
+        profileId,
+        selectorType: entry.selectorType,
+        effect: entry.effect ?? "include",
+        applicationId: entry.applicationId ?? null,
+        connectionId: entry.connectionId ?? null,
+        catalogEntryId: entry.catalogEntryId ?? null,
+        toolName: entry.toolName ?? null,
+        riskLevel: entry.riskLevel ?? null,
+        conditions: entry.conditions ?? null,
+      });
+      const priorEntriesByValue = new Map<string, typeof priorEntries>();
+      for (const entry of priorEntries) {
+        const key = stableHash(entryValues(entry));
+        const matches = priorEntriesByValue.get(key) ?? [];
+        matches.push(entry);
+        priorEntriesByValue.set(key, matches);
+      }
+      const addedEntries = entries.map(entryValues).filter((entry) => !priorEntriesByValue.get(stableHash(entry))?.shift());
+      const removedEntries = [...priorEntriesByValue.values()].flat();
+      if (removedEntries.length) await tx.delete(toolProfileEntries).where(and(
+        eq(toolProfileEntries.companyId, companyId), inArray(toolProfileEntries.id, removedEntries.map(entry => entry.id)),
+      ));
+      if (addedEntries.length) await tx.insert(toolProfileEntries).values(addedEntries);
 
       const profileBindings: ToolProfileBinding[] = [];
       // Agent access is also the credential admission boundary. Save its
@@ -3456,24 +3457,37 @@ export function toolAccessService(
           details: { added: added.map(({ targetType, targetId }) => ({ targetType, targetId })), removed: removed.map(({ targetType, targetId }) => ({ targetType, targetId })) },
         });
       }
+      const existingBindingsByTarget = new Map(existingBindings.map(binding => [`${binding.targetType}:${binding.targetId}`, binding]));
+      const retainedBindings = new Map<string, typeof toolProfileBindings.$inferSelect>();
+      const addedBindings: Array<typeof toolProfileBindings.$inferInsert> = [];
       for (const bindingInput of bindingInputs) {
-        const [binding] = await tx
-          .insert(toolProfileBindings)
-          .values({
-            companyId,
-            profileId,
-            targetType: bindingInput.targetType,
-            targetId: bindingInput.targetId,
-            priority: bindingInput.priority ?? 100,
-            metadata: bindingInput.metadata ?? {},
-            createdByAgentId:
-              actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
-            createdByUserId:
-              connectionActorUserId(actor),
-          })
-          .returning();
-        profileBindings.push(toProfileBinding(binding));
+        const key = `${bindingInput.targetType}:${bindingInput.targetId}`;
+        const existing = existingBindingsByTarget.get(key);
+        if (existing && existing.priority === (bindingInput.priority ?? 100)
+          && stableHash(existing.metadata) === stableHash(bindingInput.metadata ?? {})) {
+          retainedBindings.set(key, existing);
+          continue;
+        }
+        addedBindings.push({
+          companyId,
+          profileId,
+          targetType: bindingInput.targetType,
+          targetId: bindingInput.targetId,
+          priority: bindingInput.priority ?? 100,
+          metadata: bindingInput.metadata ?? {},
+          createdByAgentId: actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+          createdByUserId: connectionActorUserId(actor),
+        });
       }
+      const removedBindings = existingBindings.filter(binding => !retainedBindings.has(`${binding.targetType}:${binding.targetId}`));
+      if (removedBindings.length) await tx.delete(toolProfileBindings).where(and(
+        eq(toolProfileBindings.companyId, companyId), inArray(toolProfileBindings.id, removedBindings.map(binding => binding.id)),
+      ));
+      if (addedBindings.length) {
+        const saved = await tx.insert(toolProfileBindings).values(addedBindings).returning();
+        for (const binding of saved) retainedBindings.set(`${binding.targetType}:${binding.targetId}`, binding);
+      }
+      profileBindings.push(...bindingInputs.map(binding => toProfileBinding(retainedBindings.get(`${binding.targetType}:${binding.targetId}`)!)));
 
       const reviewedAt = new Date();
       if (reviewedIds.length > 0) {
@@ -3893,6 +3907,12 @@ export function toolAccessService(
 
     finishGalleryAppConnection,
 
+    createMachineSignIn: clientCredentials.createMachineSignIn,
+    testMachineSignIn: clientCredentials.testMachineSignIn,
+    rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
+    completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
+    getMachineSignIn: clientCredentials.getMachineSignIn,
+
     reconnectGalleryApp,
 
     storeConnectorOAuthSecret: createOrRotateOAuthSecret,
@@ -4277,8 +4297,9 @@ export function toolAccessService(
 
     // Repository discovery uses credential audiences, not connection-management
     // visibility. An administrator cannot browse another user's private repos.
-    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) =>
-      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted),
+    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] }) =>
+      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, options),
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
     githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {
@@ -4322,6 +4343,7 @@ export function toolAccessService(
       companyId: string,
       userId: string | null,
       localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] },
     ) => measureRunPhase("connectors.github.catalog", async () => {
       const [connections, grants, members, memberships] = await Promise.all([
         measureRunPhase("connectors.github.connections", () => db
@@ -4362,6 +4384,7 @@ export function toolAccessService(
       const usableConnections: Array<{ id: string; name: string }> = [];
       let connectionCount = 0;
       let failedConnectionCount = 0;
+      const unavailable: RepositoryCatalogUnavailableError[] = [];
       for (const connection of connections) {
         if (
           connection.status !== "active" ||
@@ -4445,13 +4468,19 @@ export function toolAccessService(
             for (const row of rows) {
               mergeProjectRepository(repositories, row, connection.name, connection.id);
             }
-          } catch {
+          } catch (error) {
+            const catalogFailure = findRepositoryCatalogUnavailableError(error);
+            if (catalogFailure) unavailable.push(catalogFailure);
             // Credential/provider errors may contain secrets. Only expose an
             // aggregate failure; successful connections remain usable.
             failed = true;
           }
         }
         if (failed) failedConnectionCount += 1;
+      }
+      const availableIds = new Set([...repositories.values()].map(repository => repository.id));
+      if (unavailable.length && options?.requiredRepositoryIds.some(id => !availableIds.has(id))) {
+        throw unavailable.reduce((latest, failure) => (failure.retryAt ?? 0) > (latest.retryAt ?? 0) ? failure : latest);
       }
       return {
         repositories: [...repositories.values()].sort((a, b) =>
@@ -4530,6 +4559,13 @@ export function toolAccessService(
       let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
+      // This path writes only tool connections. Channel setup has its own
+      // services. Reject other purposes here, before any row is written, so the
+      // database purpose/transport check never turns them into a 500.
+      if (input.connectionPurpose !== undefined && input.connectionPurpose !== "tool")
+        throw unprocessable("Only tool connections can be created here");
+      if (transport === "chat_sdk" || transport === "voice")
+        throw unprocessable("Chat and voice connections cannot be created here");
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? {},
       );

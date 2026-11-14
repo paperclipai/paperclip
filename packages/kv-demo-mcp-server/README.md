@@ -1,7 +1,7 @@
 # KV Demo MCP Server
 
 A standalone, self-contained MCP server for demos. One process exposes four
-key/value MCP tools **and** a tiny web UI that renders the values those tools
+key/value MCP tools (plus a progress demo tool) **and** a tiny web UI that renders the values those tools
 mutate — so you can call a tool from a Paperclip agent and watch the value
 appear in a browser tab.
 
@@ -24,6 +24,10 @@ recorded walkthrough in [doc/MCP-DEMO-SCRIPT.md](../../doc/MCP-DEMO-SCRIPT.md).
   - `kv_set` (write) — set one key to a string value.
   - `kv_delete` (destructive) — delete a key. Carries `destructiveHint: true`
     so Paperclip's catalog quarantines it on first sight.
+- `slow_with_progress` (read) — waits `steps` × `stepMs` and sends MCP
+  `notifications/progress` after each step (`withTotal: false` leaves the total
+  out). For the task chat's tool progress; see
+  [doc/connections/MCP-PROGRESS.md](../../doc/connections/MCP-PROGRESS.md).
 - A Values UI at `/` — an auto-refreshing HTML table over the same store.
 - A JSON state route at `/api/state` — what the UI polls.
 
@@ -205,3 +209,53 @@ records stay intact unless you also archive the connection.
 
 The KV demo is a fixture, not a piece of infrastructure. Treat each session
 as disposable: start it, run the demo, kill it.
+
+## MCP Tasks demo server
+
+The same package ships a second server, `paperclip-tasks-demo-mcp-server`, for
+trying [MCP Tasks](../../doc/connections/MCP-TASKS.md): long tool calls that
+return a task, which the client polls until it finishes. It speaks the
+stateless MCP revision 2026-07-28 (`server/discover`, no session) and declares
+the `io.modelcontextprotocol/tasks` extension. It needs no credentials and
+calls nothing outside its own process: the "work" is a timer.
+
+| Tool | What it shows |
+| --- | --- |
+| `slow_report` | Returns a task, then a report after `seconds` (default 20). Polling. |
+| `needs_approval` | Asks a form question (approve or reject); finishes after the answer arrives with `tasks/update`. |
+| `will_fail` | Fails after `seconds` (default 5). A failed task. |
+| `cancellable` | Runs for `seconds` (default 600) and stops on `tasks/cancel`. |
+| `expires` | Its TTL (`ttlSeconds`, default 15) passes before it finishes, so the server forgets it. |
+| `quick_echo` | Answers at once, without a task. |
+
+It returns a task only to a request that declares the extension. Without it,
+the long tools answer with an error that says the client does not support
+MCP Tasks.
+
+Start it from the repo root:
+
+```sh
+pnpm --filter @paperclipai/kv-demo-mcp-server build
+node packages/kv-demo-mcp-server/dist/tasks/main.js
+```
+
+It listens on `http://127.0.0.1:8849`:
+
+- **MCP endpoint**: `POST /mcp`
+- **Status page**: `GET /`, which lists every task, how many times each tool was
+  started, and the latest protocol events. It reloads every 2 seconds.
+- **JSON state**: `GET /api/state`, the same data for scripts.
+
+Task state is saved to a file (by default `~/.paperclip-tasks-demo/state.json`),
+so you can stop and start the server mid-task. A task's progress is worked out
+from the clock, so a restart neither resets nor repeats it.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TASKS_DEMO_PORT` (or `PORT`) | `8849` | Port to listen on. |
+| `TASKS_DEMO_HOST` | `127.0.0.1` | Interface to bind. |
+| `TASKS_DEMO_STATE_FILE` | `~/.paperclip-tasks-demo/state.json` | Where task state is saved. Its folder must be yours and not writable by others. `memory` keeps it in memory only. |
+| `TASKS_DEMO_TOKEN` | unset | When set, `/mcp` and `/api/state` require `Authorization: Bearer <token>`. |
+
+See "Try it yourself" in [MCP-TASKS.md](../../doc/connections/MCP-TASKS.md) for
+the full walkthrough with Paperclip.

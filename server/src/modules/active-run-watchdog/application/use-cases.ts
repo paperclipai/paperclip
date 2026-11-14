@@ -31,43 +31,68 @@ export type BuildRunOutputSilenceRunInput = Pick<
   "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
 >;
 
+export function createBuildRunOutputSilences(deps: BuildRunOutputSilenceDeps) {
+  return async function buildRunOutputSilences(
+    runs: readonly BuildRunOutputSilenceRunInput[],
+    now: Date,
+  ): Promise<RunOutputSilenceSummary[]> {
+    const runIdsByCompany = new Map<string, string[]>();
+    for (const run of runs) {
+      const runIds = runIdsByCompany.get(run.companyId) ?? [];
+      runIds.push(run.id);
+      runIdsByCompany.set(run.companyId, runIds);
+    }
+    const stateByCompany = new Map(await Promise.all([...runIdsByCompany].map(async ([companyId, runIds]) => {
+      const [decisions, evaluations] = await Promise.all([
+        deps.reader.findLatestDecisions(companyId, runIds, now),
+        deps.reader.findOpenStaleRunEvaluations(companyId, runIds),
+      ]);
+      return [companyId, { decisions, evaluations }] as const;
+    })));
+    return runs.map((run) => {
+      const state = stateByCompany.get(run.companyId);
+      const { dismissedFalsePositive, quietUntilDecision } = state?.decisions.get(run.id)
+        ?? { dismissedFalsePositive: false, quietUntilDecision: null };
+      const evaluation = state?.evaluations.get(run.id) ?? null;
+      const isRunningRun = run.status === "running";
+      const silenceAgeMsValue = isRunningRun ? silenceAgeMs(run, now) : null;
+      const level = classifySilenceLevel({
+        isRunningRun,
+        silenceAgeMs: silenceAgeMsValue,
+        dismissedFalsePositive,
+        snoozed: Boolean(quietUntilDecision),
+        suspicionThresholdMs: deps.suspicionThresholdMs,
+        criticalThresholdMs: deps.criticalThresholdMs,
+      });
+
+      return {
+        lastOutputAt: run.lastOutputAt ?? null,
+        lastOutputSeq: run.lastOutputSeq ?? 0,
+        lastOutputStream: run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr"
+          ? run.lastOutputStream
+          : null,
+        silenceStartedAt: silenceStartedAt(run),
+        silenceAgeMs: silenceAgeMsValue,
+        level,
+        suspicionThresholdMs: deps.suspicionThresholdMs,
+        criticalThresholdMs: deps.criticalThresholdMs,
+        snoozedUntil: dismissedFalsePositive ? null : quietUntilDecision?.snoozedUntil ?? null,
+        evaluationIssueId: evaluation?.id ?? null,
+        evaluationIssueIdentifier: evaluation?.identifier ?? null,
+        evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
+      };
+    });
+  };
+}
+
 export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
+  const buildRunOutputSilences = createBuildRunOutputSilences(deps);
   return async function buildRunOutputSilence(
     run: BuildRunOutputSilenceRunInput,
     now: Date,
   ): Promise<RunOutputSilenceSummary> {
-    const [decisionState, evaluation] = await Promise.all([
-      deps.reader.findLatestDecision(run.companyId, run.id, now),
-      deps.reader.findOpenStaleRunEvaluation(run.companyId, run.id),
-    ]);
-    const { dismissedFalsePositive, quietUntilDecision } = decisionState;
-    const isRunningRun = run.status === "running";
-    const silenceAgeMsValue = isRunningRun ? silenceAgeMs(run, now) : null;
-    const level = classifySilenceLevel({
-      isRunningRun,
-      silenceAgeMs: silenceAgeMsValue,
-      dismissedFalsePositive,
-      snoozed: Boolean(quietUntilDecision),
-      suspicionThresholdMs: deps.suspicionThresholdMs,
-      criticalThresholdMs: deps.criticalThresholdMs,
-    });
-
-    return {
-      lastOutputAt: run.lastOutputAt ?? null,
-      lastOutputSeq: run.lastOutputSeq ?? 0,
-      lastOutputStream: run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr"
-        ? run.lastOutputStream
-        : null,
-      silenceStartedAt: silenceStartedAt(run),
-      silenceAgeMs: silenceAgeMsValue,
-      level,
-      suspicionThresholdMs: deps.suspicionThresholdMs,
-      criticalThresholdMs: deps.criticalThresholdMs,
-      snoozedUntil: dismissedFalsePositive ? null : quietUntilDecision?.snoozedUntil ?? null,
-      evaluationIssueId: evaluation?.id ?? null,
-      evaluationIssueIdentifier: evaluation?.identifier ?? null,
-      evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
-    };
+    const [summary] = await buildRunOutputSilences([run], now);
+    return summary!;
   };
 }
 

@@ -110,6 +110,20 @@ export interface DaytonaDuplexChannelOptions {
   onWriteError?: (reason: DaytonaDuplexWriteErrorReason) => void;
 }
 
+export const DUPLEX_CHANNEL_CLOSE_KILL_TIMEOUT_MS = 5_000;
+
+async function settleWithin(action: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      action.catch(() => undefined),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // The terminal size for the duplex channel PTY. The channel carries bytes, not a
 // visible UI, so a fixed standard size is enough. A fixed size keeps the launch
 // deterministic.
@@ -279,7 +293,7 @@ export async function openDaytonaDuplexChannelSession(
       // Stop the child and release the socket. `kill` ends the gateway and `wait`
       // resolves with the exit; `disconnect` releases the PTY socket. Both are
       // safe to call more than one time, so close stays idempotent.
-      await handle.kill().catch(() => undefined);
+      await settleWithin(handle.kill(), DUPLEX_CHANNEL_CLOSE_KILL_TIMEOUT_MS);
       await handle.disconnect().catch(() => undefined);
     },
   };

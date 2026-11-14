@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/runner-core"]
+members = ["crates/process-table", "crates/runner-core"]
 resolver = "2"
 
 [profile.dev]

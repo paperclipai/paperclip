@@ -217,11 +217,11 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each(["minimal", "medium", "xhigh"])("keeps unsupported Pi thinking %s explicit", thinking => {
     const input = { adapterType: "pi_local", target, adapterConfig: { model: "custom/model", thinking } };
-    expect(() => resolveNewAgentRunner(input)).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner(input)).toThrow("cannot honor");
     expect(resolveNewAgentRunner({ ...input, runner: "legacy" })).toEqual({ adapterType: input.adapterType, adapterConfig: input.adapterConfig });
   });
   it.each([{ command: "custom-pi" }, { args: ["--extension", "custom.ts"] }, { extraArgs: "--no-tools" }, { stdoutLogMode: "raw" }, { thinking: "low", piThinkingLevel: "high" }])("rejects unsupported Pi configuration %j", extra => {
-    expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model: "custom/model", ...extra } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model: "custom/model", ...extra } })).toThrow("cannot honor");
   });
   it.each([undefined, "", "model", "provider/"])("requires a Pi provider/model outside inactive setup: %s", model => {
     expect(() => resolveNewAgentRunner({ adapterType: "pi_local", target, adapterConfig: { model } })).toThrow("provider/model");
@@ -254,7 +254,7 @@ describe("server-owned Codex runner selection", () => {
     const adapterConfig = { model: "openrouter/anthropic/claude-sonnet-4.6", dangerouslySkipPermissions: true, command: "opencode", env: { OPENROUTER_API_KEY: { type: "secret_ref", secretId: "connection" } }, cwd: "/workspace", instructionsFilePath: "/workspace/AGENTS.md" };
     const selected = resolveNewAgentRunner({ adapterType: "opencode_local", adapterConfig, target });
     expect(agentRunnerAvailability("opencode_local", target).defaultRunner).toBe("paperclip");
-    expect(selected).toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: adapterConfig.model, env: adapterConfig.env, cwd: adapterConfig.cwd, instructionsFilePath: adapterConfig.instructionsFilePath, opencodePermissionMode: "allow", lifecycleMode: "per_turn" } });
+    expect(selected).toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: adapterConfig.model, env: adapterConfig.env, cwd: adapterConfig.cwd, instructionsFilePath: adapterConfig.instructionsFilePath, opencodePermissionMode: "allow" } });
     expect(resolveNewAgentRunner(selected)).toEqual(selected);
     expect(resolveNewAgentRunner({ ...selected, runner: "legacy" })).toMatchObject({ adapterType: "opencode_local", adapterConfig: { model: adapterConfig.model, dangerouslySkipPermissions: true } });
   });
@@ -266,7 +266,7 @@ describe("server-owned Codex runner selection", () => {
   });
   it.each([{ command: "custom-opencode" }, { variant: "high" }, { extraArgs: ["--agent", "plan"] }, { args: ["--attach", "http://localhost"] }, { dangerouslySkipPermissions: false }])("rejects unsupported OpenCode settings instead of discarding them: %j", adapterConfig => {
     const input = { adapterType: "opencode_local", adapterConfig: { model: "custom/model", ...adapterConfig }, target };
-    expect(() => resolveNewAgentRunner(input)).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner(input)).toThrow("cannot honor");
     expect(resolveNewAgentRunner({ ...input, runner: "legacy" })).toEqual({ adapterType: input.adapterType, adapterConfig: input.adapterConfig });
   });
   it.each([undefined, "", "model", "provider/"])("requires an explicit OpenCode provider/model: %s", model => {
@@ -274,7 +274,7 @@ describe("server-owned Codex runner selection", () => {
   });
   it("stores an inactive native OpenCode setup draft before model selection, but cannot hire it", () => {
     const input = { adapterType: "opencode_local", target };
-    expect(resolveNewAgentRunner({ ...input, setupOnly: true })).toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "", opencodePermissionMode: "allow", lifecycleMode: "per_turn" } });
+    expect(resolveNewAgentRunner({ ...input, setupOnly: true })).toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "", opencodePermissionMode: "allow" } });
     expect(() => resolveNewAgentRunner(input)).toThrow("provider/model");
   });
   it("honors native OpenCode permissions and refuses to discard them on return to legacy", () => {
@@ -333,7 +333,7 @@ describe("server-owned Codex runner selection", () => {
     expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target })).toThrow("Codex is disabled");
   });
   it.each(["extraArgs", "agentCommand", "networkScope", "filesystemScope", "search"])("rejects incompatible %s without changing runner", field => {
-    expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } })).toThrow(field);
     try { resolveNewAgentRunner({ adapterType: "codex_local", target, adapterConfig: { [field]: true } }); }
     catch (error) { expect(error).toMatchObject({ status: 422, details: { fields: [field] } }); }
   });
@@ -492,7 +492,7 @@ describe("server-owned Codex runner selection", () => {
   it("rejects explicit Paperclip execution on an unqualified forced Kubernetes target without provisioning", async () => {
     state.settings = { general: { executionMode: "kubernetes" } };
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "codex_local", runner: "paperclip" }))
-      .rejects.toMatchObject({ status: 422, message: expect.stringContaining("Legacy runner"), details: { code: "agent_runner_unavailable" } });
+      .rejects.toMatchObject({ status: 422, message: expect.stringContaining("environment connection probe"), details: { code: "agent_runner_unavailable" } });
     expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();
     expect(state.resolveEnvironment).not.toHaveBeenCalled();
     expect(state.sandboxQualification).not.toHaveBeenCalled();
@@ -801,7 +801,7 @@ describe("Claude runner defaults", () => {
   it.each(qualifiedTargets)("defaults Claude to the qualified $platform $architecture profile", target => {
     expect(agentRunnerAvailability("claude_local", target)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" });
     expect(resolveNewAgentRunner({ adapterType: "claude_local", target })).toEqual({
-      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" },
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", acpxPermissionMode: "approve-all" },
     });
     expect(resolveNewAgentRunner({ adapterType: "claude_local", target, runner: "legacy", adapterConfig: { model: "custom", dangerouslySkipPermissions: true } }))
       .toEqual({ adapterType: "claude_local", adapterConfig: { model: "custom", dangerouslySkipPermissions: true } });
@@ -826,7 +826,7 @@ describe("Claude runner defaults", () => {
   it("saves native Claude with Opus 5.5, preserving credentials and shared settings", () => {
     const config = { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "key" } }, instructionsFilePath: "/workspace/AGENTS.md", timeoutSec: 180, dangerouslySkipPermissions: true };
     const result = resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: config });
-    expect(result).toEqual({ adapterType: "paperclip_runner", adapterConfig: { env: config.env, instructionsFilePath: config.instructionsFilePath, timeoutSec: 180, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } });
+    expect(result).toEqual({ adapterType: "paperclip_runner", adapterConfig: { env: config.env, instructionsFilePath: config.instructionsFilePath, timeoutSec: 180, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", acpxPermissionMode: "approve-all" } });
     expect(resolveNewAgentRunner(result)).toEqual(result);
     expect(config.dangerouslySkipPermissions).toBe(true);
   });
@@ -848,7 +848,7 @@ describe("Claude runner defaults", () => {
   });
   it("does not pin the ordinary model over a plain provider-routing binding", () => {
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac,
-      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } } })).toThrow("Legacy runner");
+      adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: { type: "plain", value: "1" } } } })).toThrow("model");
   });
   it.each(["permissionMode", "acpPermissionMode"])("translates the legacy Claude %s without granting broader permissions", key => {
     for (const mode of ["deny-all", "approve-reads", "approve-all"]) {
@@ -857,7 +857,7 @@ describe("Claude runner defaults", () => {
       expect(native.adapterConfig[key]).toBeUndefined();
     }
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "deny-all", acpxPermissionMode: "approve-all" } })).toThrow("cannot honor");
-    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "unrecognized" } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "unrecognized" } })).toThrow(key);
   });
   it("retains saved native Claude and allows an explicit compatible Legacy switch", () => {
     const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "custom", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } };
@@ -876,7 +876,7 @@ describe("Claude runner defaults", () => {
     }
   });
   it.each(["agentCommand", "networkScope"])("rejects unsupported %s without fallback", key => {
-    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow("Legacy runner");
+    expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow(key);
   });
   it.each(["low", "medium", "high", "xhigh", "max"])("translates Claude effort %s and preserves it on an explicit Legacy switch", effort => {
     const native = resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { effort } });

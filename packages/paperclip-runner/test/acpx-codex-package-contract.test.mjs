@@ -19,7 +19,7 @@ const workspace = await readFile(
   "utf8",
 );
 const acpxPatch = await readFile(
-  new URL("../../../patches/acpx@0.13.1.patch", import.meta.url),
+  new URL("../../../patches/acpx@0.22.0.patch", import.meta.url),
   "utf8",
 );
 const codexPatch = await readFile(
@@ -61,7 +61,7 @@ test("the runner pins every qualified ACPX production dependency", () => {
     "@github/copilot-linux-x64": "1.0.88",
   });
   assert.equal(runnerPackage.dependencies.node, undefined);
-  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
+  assert.equal(runnerPackage.dependencies.acpx, "0.22.0");
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/codex-acp"],
     "1.6.2",
@@ -98,8 +98,8 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
 
 test("old and new pnpm configuration both apply the exact runtime patches", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
+    rootPackage.pnpm.patchedDependencies["acpx@0.22.0"],
+    "patches/acpx@0.22.0.patch",
   );
   assert.equal(
     rootPackage.pnpm.patchedDependencies[
@@ -113,7 +113,7 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
     ],
     "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
   );
-  assert.match(workspace, /acpx@0\.13\.1: patches\/acpx@0\.13\.1\.patch/);
+  assert.match(workspace, /acpx@0\.22\.0: patches\/acpx@0\.22\.0\.patch/);
   assert.match(
     workspace,
     /codex-acp@1\.6\.2["']: patches\/@agentclientprotocol__codex-acp@1\.6\.2\.patch/,
@@ -131,59 +131,17 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   assert.match(codexPatch, /\+    "@openai\/codex": "0\.160\.0"/);
 });
 
-test("the ACPX patch preserves launch-only state and verified spawning", () => {
+test("the ACPX patch preserves verified spawning and leaves the environment to the host", () => {
+  // Runner and adapter-utils set the agent's environment in spawnAgent.
+  const added = acpxPatch.split("\n").filter((line) => line.startsWith("+")).join("\n");
+  assert.doesNotMatch(added, /spawnEnvironment|resolveAgentEnvironment/);
   for (const token of [
-    "spawnEnvironment",
-    "spawnCwd",
     "spawnAgent",
     "SpawnOptionsWithoutStdio",
     "this.options.spawnAgent",
   ]) {
     assert.match(acpxPatch, new RegExp(token));
   }
-});
-
-test("the ACPX patch fails closed on an invalid spawn environment", () => {
-  for (const token of [
-    "isPlainStringEnvironment",
-    "Object.getPrototypeOf(value)",
-    'Object.values(value).every((entry) => typeof entry === "string")',
-    "spawnEnvironment !== void 0",
-    "sourceEnvironment = spawnEnvironment()",
-    "ACPX spawn environment must be a plain record of string values",
-  ]) {
-    assert.match(
-      acpxPatch,
-      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    );
-  }
-  assert.doesNotMatch(acpxPatch, /spawnEnvironment\?\.\(\)/);
-  assert.doesNotMatch(
-    acpxPatch,
-    /spawnEnvironment \? \{ \.\.\.spawnEnvironment \} : \{ \.\.\.process\.env \}/,
-  );
-});
-
-test("authentication rejects invalid isolated environments without host fallback", () => {
-  const addedSource = acpxPatch.split("\n")
-    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .map((line) => line.slice(1)).join("\n");
-  const start = addedSource.indexOf("function isPlainStringEnvironment(value)");
-  const end = addedSource.indexOf("function buildAgentEnvironment(", start);
-  assert.ok(start >= 0 && end > start);
-  const hostEnvironment = { XAI_API_KEY: "host-credential-must-not-leak" };
-  const resolveEnvironment = new Function(
-    "process", `${addedSource.slice(start, end)}; return resolveAgentEnvironment;`,
-  )({ env: hostEnvironment });
-  for (const invalid of [undefined, null, [], "invalid", { XAI_API_KEY: 1 }]) {
-    assert.throws(() => resolveEnvironment(() => invalid), TypeError);
-  }
-  const isolated = {};
-  assert.equal(resolveEnvironment(() => isolated), isolated);
-  assert.equal(resolveEnvironment(() => isolated).XAI_API_KEY, undefined);
-  assert.equal(resolveEnvironment(undefined), hostEnvironment);
-  assert.match(addedSource, /readEnvCredential\(method\.id, resolveAgentEnvironment\(this\.options\.spawnEnvironment\)\)/);
-  assert.match(addedSource, /resolveAgentEnvironment\(this\.options\.spawnEnvironment\)\)\.XAI_API_KEY/);
 });
 
 test("the Codex patch enforces isolated instructions, tools, and skills", () => {

@@ -10,6 +10,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   nativeRunnerCheckpoints,
+  toolInvocations,
 } from "@paperclipai/db";
 import type {
   CompleteControlPlaneRunInput,
@@ -27,7 +28,8 @@ import {
   validatePrpEvent,
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { appendHeartbeatRunEvent, appendHeartbeatRunEventBatch, type AppendHeartbeatRunEventInput,
+  type AppendHeartbeatRunEventResult } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
@@ -35,6 +37,8 @@ import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, t
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -50,6 +54,21 @@ export interface PaperclipControlPlaneBinding {
 
 const IDENTITY_DELTA_RETRY_WINDOW = 1_024;
 const IDENTITY_DELTA_RETRY_BYTES = 4 * 1024 * 1024;
+/** Text deltas that follow the first one after another event wait at most this long for their batch. */
+export const STREAMING_EVENT_BATCH_MS = 250;
+/** A batch that reaches this many deltas commits at once. */
+export const STREAMING_EVENT_BATCH_MAX = 100;
+
+type AppendReceipt = { cursor: number; highestContiguousSourceSeq: number; disposition: "committed" | "duplicate" };
+type PendingStreamingEvent = {
+  event: PrpEvent;
+  input: AppendHeartbeatRunEventInput;
+  options?: { signal: AbortSignal };
+  startedAtMs: number;
+  startedClock: number;
+  resolve: (receipt: AppendReceipt) => void;
+  reject: (error: unknown) => void;
+};
 
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
@@ -100,6 +119,24 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
   readonly #deferredEventObservers = new Map<string, Promise<void>>();
   #deferredObserverFailure: { error: unknown } | null = null;
+  /**
+   * Text deltas commit in batches. A caller may start the next append before
+   * a delta's receipt settles; the receipt settles after its batch commits.
+   */
+  readonly pipelinesStreamingEvents = true;
+  readonly #streamingBatchMs: number;
+  #streamingBatch: PendingStreamingEvent[] = [];
+  #streamingTimer: ReturnType<typeof setTimeout> | null = null;
+  #streamingTail: Promise<void> = Promise.resolve();
+  #streamingFlushQueued = false;
+  /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
+  #streamingEventsPending = 0;
+  /**
+   * False until a delta with text commits after the latest other event. Until
+   * then each delta commits at once, so the first text of an item, and the
+   * time to first token, never wait for the batch timer.
+   */
+  #streamedSinceBoundary = false;
 
   constructor(
     db: Db,
@@ -107,6 +144,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
+      secrets?: readonly string[];
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
       /** Read-only admission may finish an existing startup solely for restart detachment. */
@@ -118,12 +156,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
       taskSessionPublication?: NativeTaskSessionPublicationContext;
       taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
+      /** How long a text delta that is not the first after another event may wait for its batch. */
+      streamingBatchMs?: number;
     } = {},
   ) {
+    this.#streamingBatchMs = options.streamingBatchMs ?? STREAMING_EVENT_BATCH_MS;
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
     this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
-    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secrets, { maskResumedSuffixes: true });
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onEventPersistence = options.onEventPersistence;
@@ -236,6 +277,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     snapshot = redactRunnerApiPayloads(this.#identityRedactor.redact(snapshot));
     const identity = snapshot.identity;
@@ -354,7 +396,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true }) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -376,7 +418,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     )) throw new Error("native_deferred_observer_terminal_required");
     const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
     const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
-    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
+    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && (this.#identityRedactor.values.length > 0 || this.#identityRedactor.secretValues.length > 0)) {
       const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
       const cached = this.#redactedDeltas.get(key);
       const originalSha = nativeSha256(validated.event);
@@ -407,62 +449,37 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     }
     event = redactRunnerApiEvent(event);
     const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
+    const input: AppendHeartbeatRunEventInput = {
+      companyId: this.#binding.companyId,
+      runId: this.#binding.runId,
+      agentId: this.#binding.agentId,
+      eventType: event.eventType,
+      stream: "system",
+      level: event.eventType.includes("failed") ? "error" : "info",
+      payload: { prpEvent: event as unknown as Record<string, unknown> },
+      nativeSource: {
+        sourceInstanceId: event.sourceInstanceId,
+        sourceEventId: event.sourceEventId,
+        sourceSeq: event.sourceSeq,
+        protocolSchemaVersion: event.schemaVersion,
+        canonicalPayload: event as unknown as Record<string, unknown>,
+      },
+      assertWritable: () => this.#assertActive(options),
+    };
+    if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
+      return this.#appendStreamingEvent({ event, input, options, startedAtMs: persistenceStartedAt, startedClock: persistenceClock },
+        options?.streaming === true);
+    }
+    // Every other event commits after each delta appended before it.
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    this.#streamedSinceBoundary = false;
+    this.#assertActive(options);
     const pendingObservation = this.#deferredEventObservers.get(observerKey);
-    const persisted = await this.#db.transaction(async tx => {
-      this.#assertActive(options);
-      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: this.#binding.companyId,
-        runId: this.#binding.runId,
-        agentId: this.#binding.agentId,
-        eventType: event.eventType,
-        stream: "system",
-        level: event.eventType.includes("failed") ? "error" : "info",
-        payload: { prpEvent: event as unknown as Record<string, unknown> },
-        nativeSource: {
-          sourceInstanceId: event.sourceInstanceId,
-          sourceEventId: event.sourceEventId,
-          sourceSeq: event.sourceSeq,
-          protocolSchemaVersion: event.schemaVersion,
-          canonicalPayload: event as unknown as Record<string, unknown>,
-        },
-      });
-      // The nested append has no publication side effects. Revocation rolls
-      // back its event and sequence allocation before the outer commit.
-      this.#assertActive(options);
-      return receipt;
-    });
+    const persisted = await appendHeartbeatRunEvent(this.#db, input);
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
     let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
-    if (!observation) observation = (async () => {
-      try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
-      if (persisted.disposition === "committed") {
-        try {
-          publishLiveEvent({
-            companyId: this.#binding.companyId,
-            type: "heartbeat.run.event",
-            payload: {
-              runId: this.#binding.runId,
-              agentId: this.#binding.agentId,
-              issueId: this.#binding.issueId,
-              seq: persisted.row.seq,
-              eventType: persisted.row.eventType,
-              stream: persisted.row.stream,
-              level: persisted.row.level,
-              payload: persisted.row.payload,
-            },
-          });
-        } catch {
-        }
-        await this.#onCommittedEvent?.(event, persisted.row.seq);
-      } else {
-        // A recovered runner may replay the event whose durable side effects
-        // parked the prior attempt. Do not repeat those effects, but let the
-        // embedding runtime refresh observational state before appendEvent
-        // returns to its synchronous governed-wait boundary.
-        await this.#onDuplicateEvent?.(event, persisted.row.seq);
-      }
-    })();
+    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt);
     if (options?.deferPostCommitObservers) {
       this.#deferredEventObservers.set(observerKey, observation);
       void observation.then(() => {
@@ -481,6 +498,112 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     };
   }
 
+  async #observePersistedEvent(
+    event: PrpEvent,
+    persisted: AppendHeartbeatRunEventResult,
+    persistenceStartedAt: number,
+    persistenceEndedAt: number,
+  ): Promise<void> {
+    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
+    if (persisted.disposition === "committed") {
+      try {
+        publishLiveEvent({
+          companyId: this.#binding.companyId,
+          type: "heartbeat.run.event",
+          payload: {
+            runId: this.#binding.runId,
+            agentId: this.#binding.agentId,
+            issueId: this.#binding.issueId,
+            seq: persisted.row.seq,
+            eventType: persisted.row.eventType,
+            stream: persisted.row.stream,
+            level: persisted.row.level,
+            payload: persisted.row.payload,
+          },
+        });
+      } catch {
+      }
+      await this.#onCommittedEvent?.(event, persisted.row.seq);
+    } else {
+      // A recovered runner may replay the event whose durable side effects
+      // parked the prior attempt. Do not repeat those effects, but let the
+      // embedding runtime refresh observational state before appendEvent
+      // returns to its synchronous governed-wait boundary.
+      await this.#onDuplicateEvent?.(event, persisted.row.seq);
+    }
+  }
+
+  /**
+   * Queues a text delta for the next batch. A caller that waits for each
+   * receipt (no `streaming`) commits at once. Deltas up to the first one with
+   * text after any other event also commit at once.
+   * Later streaming deltas wait at most the batch time, or until the batch is full.
+   */
+  #appendStreamingEvent(pending: Omit<PendingStreamingEvent, "resolve" | "reject">, streaming: boolean): Promise<AppendReceipt> {
+    return new Promise<AppendReceipt>((resolve, reject) => {
+      this.#streamingBatch.push({ ...pending, resolve, reject });
+      this.#streamingEventsPending += 1;
+      if (!streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX) {
+        void this.#flushStreamingEvents();
+      } else {
+        this.#streamingTimer ??= setTimeout(() => { void this.#flushStreamingEvents(); }, this.#streamingBatchMs);
+      }
+    });
+  }
+
+  flushStreamingEvents(): void {
+    void this.#flushStreamingEvents();
+  }
+
+  /** Commits the queued deltas. Resolves after every earlier batch has settled, and never rejects. */
+  #flushStreamingEvents(): Promise<void> {
+    if (this.#streamingTimer !== null) clearTimeout(this.#streamingTimer);
+    this.#streamingTimer = null;
+    if (this.#streamingBatch.length > 0 && !this.#streamingFlushQueued) {
+      this.#streamingFlushQueued = true;
+      this.#streamingTail = this.#streamingTail.then(async () => {
+        this.#streamingFlushQueued = false;
+        const batch = this.#streamingBatch;
+        this.#streamingBatch = [];
+        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
+          this.#streamedSinceBoundary = true;
+        }
+        try { await this.#commitStreamingEvents(batch); }
+        finally { this.#streamingEventsPending -= batch.length; }
+      });
+    }
+    return this.#streamingTail;
+  }
+
+  /**
+   * One transaction for the batch. Each committed row is then observed in
+   * order; an observer failure rejects only that delta's receipt, and the
+   * later rows are still observed.
+   */
+  async #commitStreamingEvents(batch: PendingStreamingEvent[]): Promise<void> {
+    let receipts: AppendHeartbeatRunEventResult[];
+    try {
+      const assertWritable = () => { for (const pending of batch) this.#assertActive(pending.options); };
+      receipts = await appendHeartbeatRunEventBatch(this.#db, batch.map(pending => pending.input), assertWritable);
+      assertWritable();
+    } catch (error) {
+      for (const pending of batch) pending.reject(error);
+      return;
+    }
+    for (const [index, pending] of batch.entries()) {
+      const persisted = receipts[index]!;
+      const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
+      try {
+        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
+      } catch (error) {
+        pending.reject(error);
+        continue;
+      }
+      pending.resolve({ cursor: persisted.row.seq, highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+        disposition: persisted.disposition });
+    }
+  }
+
   async replayEvents(input: ReplayControlPlaneEventsInput) {
     if (
       input.runId !== this.#binding.runId
@@ -488,6 +611,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     ) {
       throw new Error("native_replay_binding_mismatch");
     }
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     const rows = await this.#db
       .select({ payload: heartbeatRunEvents.payload, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents)
@@ -511,8 +635,38 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return { events, highestContiguousSourceSeq: cursor };
   }
 
+  /**
+   * Proves from durable rows, across every runner instance, that this run has
+   * no provider event, source-sequenced runner event, tool invocation, or
+   * accepted result. Any such row, or a read failure, denies the proof.
+   */
+  async provesNoRunProviderWork(options: { signal: AbortSignal }): Promise<boolean> {
+    options.signal.throwIfAborted();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    const { companyId, runId } = this.#binding;
+    const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
+    const result = await this.#db.execute(sql`select
+      exists (select 1 from ${heartbeatRunEvents} event where event.company_id = ${companyId} and event.run_id = ${runId}
+        and (event.source_event_id is not null or event.source_instance_id is not null
+          or event.event_type in (${providerEvents})
+          or event.event_type ~ '^(turn|item|tool|semantic_tool|run[.]result)[.]')) as "providerEvent",
+      exists (select 1 from ${toolInvocations} invocation where invocation.company_id = ${companyId}
+        and invocation.run_id = ${runId}) as "toolInvocation",
+      exists (select 1 from ${nativeRunResults} result where result.company_id = ${companyId}
+        and result.run_id = ${runId}) as "acceptedResult",
+      exists (select 1 from ${nativeRunFinalizations} coordinator where coordinator.run_id = ${runId}
+        and coordinator.result_id is not null) as "finalizedResult"`);
+    options.signal.throwIfAborted();
+    const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    if (!row) return false;
+    return row.providerEvent === false && row.toolInvocation === false
+      && row.acceptedResult === false && row.finalizedResult === false;
+  }
+
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     value = redactRunnerApiPayloads(this.#identityRedactor.redact(value));
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
@@ -632,6 +786,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       this.#assertActive(options);
       return true;
     });
+    if (insertedResult) crashPoint("native.result.after_accept_before_finalize");
     if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }

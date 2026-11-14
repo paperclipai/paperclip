@@ -386,20 +386,35 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123456+00'::timestamptz` }).where(eq(issueComments.id, a.commentId));
     await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123789+00'::timestamptz` }).where(eq(issueComments.id, b.commentId));
     const cookie = await server.humanSession(f.responsibleUserId!);
+    await server.db.insert(issueComments).values([
+      { companyId: f.companyId, issueId: a.conversationId, authorUserId: f.responsibleUserId, authorType: "user", body: "Human message" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, authorType: "system", body: "System message" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Deleted message", deletedAt: new Date() },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Receipt", origin: "fast_response" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Notice", presentation: { kind: "system_notice", tone: "neutral", detailsDefaultOpen: false } },
+    ]);
     const mark = (id: string) => fetch(`${server.apiUrl}/api/issues/${a.conversationId}/read`, { method: "POST", headers: { Cookie: cookie, Origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ throughCommentId: id }) });
-    const unread = async () => (await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: a.conversationId }]))[0].isUnreadForMe;
+    const unread = async () => (await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: a.conversationId }]))[0];
+    expect(await unread()).toMatchObject({ isUnreadForMe: true, unreadMessageCount: 2 });
     const response = await mark(a.commentId);
     expect(response.status, await response.text()).toBe(200);
-    expect(await unread()).toBe(true);
+    expect(await unread()).toMatchObject({ isUnreadForMe: true, unreadMessageCount: 1 });
     expect((await mark(b.commentId)).status).toBe(200);
-    expect(await unread()).toBe(false);
+    expect(await unread()).toMatchObject({ isUnreadForMe: false, unreadMessageCount: 0 });
+    expect(await withConversationReadState(server.db, f.companyId, randomUUID(), [{ id: a.conversationId }, { id: f.issueId }]))
+      .toMatchObject([{ unreadMessageCount: 2, isUnreadForMe: true }, { unreadMessageCount: 0, isUnreadForMe: false }]);
+    expect(await withConversationReadState(server.db, randomUUID(), f.responsibleUserId!, [{ id: a.conversationId }]))
+      .toMatchObject([{ unreadMessageCount: 0, isUnreadForMe: false }]);
     await mark(a.commentId);
-    expect(await unread()).toBe(false);
+    expect(await unread()).toMatchObject({ isUnreadForMe: false, unreadMessageCount: 0 });
     const foreign = await server.fixture({ connectionScenario: "fresh" });
     const foreignMessage = (await send(foreign))!;
     expect((await mark(foreignMessage.commentId)).status).toBe(404);
     const chats = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/chats`, { headers: { Cookie: cookie } });
     expect(chats.status).toBe(200);
-    expect(await chats.json()).toMatchObject([{ id: a.conversationId, isUnreadForMe: false }]);
+    expect(await chats.json()).toMatchObject([{ id: a.conversationId, isUnreadForMe: false, unreadMessageCount: 0 }]);
+    const detail = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/chats/${f.agentId}`, { headers: { Cookie: cookie } });
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ id: a.conversationId, unreadMessageCount: 0 });
   });
 });

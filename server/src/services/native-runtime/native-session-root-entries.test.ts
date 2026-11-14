@@ -69,7 +69,7 @@ describe("native session root entry contract", () => {
     expect(unresolved).toEqual([]);
     // Guard the scan itself: these writers exist today.
     for (const name of ["control-plane", "runner", "runtime-context.json", "authority-epochs", "launch-preparation.json",
-      "provider-pack-authority.json", "cleanup-activation.json", "plugin-runner-state.json", "codex-home", "opencode",
+      "provider-pack-authority.json", "provider-artifacts", "cleanup-activation.json", "plugin-runner-state.json", "codex-home", "opencode",
       "acpx", "cursor-cloud", "diagnostics", "failover-backups", "continuity-breaks"]) {
       expect(written).toContain(name);
     }

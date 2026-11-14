@@ -17,6 +17,7 @@ function managedConfig(features: ManagedInstanceConfig["features"] = {}): Manage
     features,
     plugins: { autoInstall: [] },
     environments: [],
+    pluginEnvironments: [],
   };
 }
 

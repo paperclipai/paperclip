@@ -1,4 +1,6 @@
 export const queryKeys = {
+  linkPreview: (companyId: string, userId: string | null, url: string) =>
+    ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },
@@ -57,6 +59,7 @@ export const queryKeys = {
     activity: (endpointId: string) => ["chat-endpoints", endpointId, "activity"] as const,
   },
   tools: {
+    providerIcons: (companyId: string) => ["tools", companyId, "provider-icons"] as const,
     aggregatorApps: (connectionId: string, userId: string | null) => ["tools", "aggregator-apps", connectionId, userId] as const,
     composioApps: (connectionId: string) => ["tools", "composio-apps", connectionId] as const,
     applications: (companyId: string) =>
@@ -168,6 +171,10 @@ export const queryKeys = {
     runs: (companyId: string) => ["smoke-lab", companyId, "runs"] as const,
     run: (companyId: string, runId: string) =>
       ["smoke-lab", companyId, "runs", runId] as const,
+  },
+  mcpSkills: {
+    list: (companyId: string) => ["mcp-skills", companyId] as const,
+    content: (companyId: string, skillId: string, manifestDigest: string) => ["mcp-skills", companyId, skillId, "content", manifestDigest] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
@@ -307,10 +314,21 @@ export const queryKeys = {
       ["status-cards", "detail", id, "summary-revisions"] as const,
     dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
   },
+  mcpApps: {
+    views: (issueId: string) => ["mcp-app-views", issueId] as const,
+    detail: (issueId: string, viewId: string) => ["mcp-app-views", issueId, "detail", viewId] as const,
+  },
+  toolCallProgress: (issueId: string) => ["tool-call-progress", issueId] as const,
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,
+    allRecoveryActions: (id: string) => ["issues", id, "recovery-actions"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
+    listIndex: (companyId: string) => ["issues", companyId, "list-index"] as const,
+    onboardingFirstTask: (companyId: string) =>
+      ["issues", companyId, "onboarding-first-task"] as const,
+    starPromptDone: (companyId: string) =>
+      ["issues", companyId, "star-prompt-done"] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
     search: (
@@ -512,6 +530,7 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
+    environments: (companyId: string) => ["project-environments", companyId] as const,
     all: (companyId: string) => ["projects", companyId] as const,
     list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
       [

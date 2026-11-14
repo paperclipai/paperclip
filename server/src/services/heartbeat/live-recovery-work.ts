@@ -57,7 +57,10 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                   and ${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending'`,
             )).orderBy(asc(environmentLeases.id)).limit(100);
           rows = candidates.map(row => ({ id: row.id, companyId: row.companyId, runId: row.runId,
-            dueAt: kind === "orphanLease" ? row.updatedAt.getTime() + 5 * 60_000
+            dueAt: kind === "orphanLease"
+              // A run lease is judged by its holder proof, not by age. A run-less
+              // (login/probe) lease keeps its idle backoff until its kind moves.
+              ? row.runId ? row.updatedAt.getTime() : row.updatedAt.getTime() + 5 * 60_000
               : Date.parse(String((row.metadata?.legacyShutdownWorkspaceSettlement as Record<string, unknown>)?.deadlineAt)) || Date.now(),
           }));
         } else {
@@ -99,6 +102,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
       reconstructionIntervalMs: 30_000,
       beforePass: async () => { enabled = await owner.enabled(); },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
+      // `matches` below never matches a scope of another company.
+      scopeKey: { entry: entry => entry.companyId, scope: scope => scope.companyId },
       matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (
         kind === "agent" ? !scope.agentId || entry.id === scope.agentId
           : kind === "orphanLease" || kind === "shutdown" ? (!scope.leaseId || entry.id === scope.leaseId) && (!scope.runId || entry.runId === scope.runId)

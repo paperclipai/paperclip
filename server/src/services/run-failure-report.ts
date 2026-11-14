@@ -1,8 +1,10 @@
+import { currentRunFailureText } from "./native-runtime/native-exact-resume-failure.js";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
 import {
   collectRunFailureDiagnostics,
+  collectRunFailureHostTokenSecrets,
   collectRunFailureSecretValues,
   redactRunFailureSecretValues,
   sanitizeRunFailureDiagnostics,
@@ -17,6 +19,9 @@ import { readRunFailureReportingMode, type RunFailureReportingMode } from "../se
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
+import { readProviderFailure } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -173,6 +178,18 @@ function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: R
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
+function isProjectAccessDenialBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== PROJECT_ACCESS_DENIED ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const denial = asRecord(run.resultJson?.projectAccessDenied);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return typeof denial?.projectId === "string" &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** Only the managed-clone producer can attach this bounded pre-dispatch evidence. */
 function isGitConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const connection = readConnectionFailure(run.resultJson?.connectionFailure);
@@ -243,6 +260,14 @@ function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOpti
     options.phase !== "setup" && run.signal == null;
 }
 
+/** A typed native allowance failure stays on the task and its cooldown path. */
+function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (run.status !== "failed" || run.runtimeMode !== "native" ||
+      run.errorCode !== "native_provider_usage_limit" || options.phase === "setup" || run.signal != null) return false;
+  const category = readProviderFailure(asRecord(run.resultJson)?.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
+}
+
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const result = asRecord(run.resultJson);
   return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
@@ -272,6 +297,16 @@ async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options
     eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, NATIVE_PROVIDER_OVERLOADED_CODE),
   )).limit(1);
   return retry !== undefined;
+}
+
+/**
+ * A reviewed chat attestation exhausted its short lock or delivery wait before
+ * provider dispatch, and the setup path scheduled the bounded retry. The retry
+ * owns recovery; an exhausted or unscheduled wait stays reportable.
+ */
+function isScheduledReviewedChatRetry(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY &&
+    options.reviewedChatRetry === "scheduled";
 }
 
 const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
@@ -327,16 +362,21 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
   if (isPendingNativeRetry(run)) return Promise.resolve();
+  // The setup path reports this run again once it has decided the retry.
+  if (options.reviewedChatRetry === "pending") return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
     isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
+    isNativeProviderUsageLimitFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
+    isScheduledReviewedChatRetry(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
@@ -355,13 +395,17 @@ async function captureTerminalRunFailure(
 ): Promise<void> {
   try {
     const snapshot = redactRunFailureSecretValues({
-      errorMessage: run.error ?? "",
+      // A refused exact resume keeps the interrupted attempt's provider text
+      // in `error` for operators only; Sentry gets the current refusal.
+      errorMessage: currentRunFailureText(run) ?? "",
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env),
+      // The server's own environment: short host settings under unknown
+      // names are private only as whole tokens (see collectHostEnvironmentTokenSecrets).
+      ...collectRunFailureSecretValues(process.env, [], { hostProcess: true }),
       ...(options.secretValues ?? []),
-    ])].sort((a, b) => b.length - a.length));
+    ])].sort((a, b) => b.length - a.length), collectRunFailureHostTokenSecrets(process.env));
     const agent = await db
       .select({ adapterType: agents.adapterType })
       .from(agents)

@@ -1,11 +1,10 @@
 import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ChatExecutionDefaults as Defaults, TaskWorkspaceSelection } from "@paperclipai/shared";
-import { projectsApi } from "@/api/projects";
 import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/select";
-import { queryKeys } from "@/lib/queryKeys";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 function selectionKey(value: TaskWorkspaceSelection | null | undefined): string {
   if (value === undefined) return "inherit";
@@ -26,7 +25,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedFrom, setSavedFrom] = useState<string | null>(null);
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
+  const projects = useQuery({ ...companyProjectsQuery(companyId) });
   const workspaces = useQuery({
     queryKey: ["channel-workspace-choices", companyId],
     queryFn: () => executionWorkspacesApi.listSummaries(companyId, { selectableForTask: true }),

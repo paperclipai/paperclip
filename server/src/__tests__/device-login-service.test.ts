@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { environmentService } from "../services/environments.js";
 import { adapterAuthSessions, companies, createDb, environmentLeases, environments } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
 import { DEVICE_LOGIN_URL } from "@paperclipai/adapter-codex-local/server";
@@ -1768,6 +1769,23 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
     await started.completed;
   });
 
+  it("reads a login computer only from the exact company/environment/provider lease", async () => {
+    const { companyId, environmentId } = await seedCompanyEnvironment();
+    const store = createDbAdapterAuthSessionStore(db);
+    const sessionId = randomUUID();
+    // Providers may reuse resource IDs across allocations. The session tag,
+    // rather than row order, selects the exact login's computer binding.
+    await db.insert(environmentLeases).values([
+      { companyId, environmentId, status: "released", providerLeaseId: "login-operation", metadata: { purpose: "login", agentId: "old-computer", [LOGIN_LEASE_SESSION_TAG_KEY]: randomUUID() } },
+      { companyId, environmentId, status: "active", providerLeaseId: "login-operation", metadata: { purpose: "login", agentId: "computer-a", [LOGIN_LEASE_SESSION_TAG_KEY]: sessionId } },
+    ]);
+    expect(await store.getLoginAgentId!("login-operation", companyId, environmentId, sessionId)).toBe("computer-a");
+    expect(await store.getLoginAgentId!("login-operation", randomUUID(), environmentId, sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("login-operation", companyId, randomUUID(), sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("another-operation", companyId, environmentId, sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("login-operation", companyId, environmentId, randomUUID())).toBeUndefined();
+  });
+
   describe("public session id lookup", () => {
     // Start one session and read its rows. The service returns the public session
     // id, and the store keeps the internal id private.
@@ -1926,7 +1944,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
       // this row's environment.
       const grokSessionId = randomUUID();
       await db.insert(adapterAuthSessions).values({
-        id: randomUUID(),
+        id: grokSessionId,
         companyId,
         environmentId,
         adapterType: "grok_local",
@@ -1953,7 +1971,7 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
       const claudeEnvironmentId = await seedEnvironment(companyId);
       const claudeSessionId = randomUUID();
       await db.insert(adapterAuthSessions).values({
-        id: randomUUID(),
+        id: claudeSessionId,
         companyId,
         environmentId: claudeEnvironmentId,
         adapterType: "claude_local",
@@ -1982,6 +2000,28 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
         .where(eq(adapterAuthSessions.providerLeaseId, "grok-lease-1"));
       const orphaned = await reaperRuntime.listTaggedLeases();
       expect(orphaned.map(lease => lease.providerLeaseId)).toEqual(["grok-lease-1"]);
+    });
+
+    it("releases the exact orphan when historical sessions reuse its provider ID", async () => {
+      const { companyId, environmentId } = await seedCompanyEnvironment();
+      const oldSessionId = randomUUID(), sessionId = randomUUID();
+      const oldLeaseId = randomUUID(), leaseId = randomUUID();
+      const at = new Date();
+      await db.insert(adapterAuthSessions).values([
+        { id: oldSessionId, publicSessionId: randomUUID(), companyId, environmentId, adapterType: ADAPTER_TYPE, startedByUserId: OWNER_A, providerLeaseId: "reused-provider-id", status: "authenticated", finishedAt: at },
+        { id: sessionId, publicSessionId: randomUUID(), companyId, environmentId, adapterType: ADAPTER_TYPE, startedByUserId: OWNER_A, providerLeaseId: null, status: "failed", finishedAt: at },
+      ]);
+      await db.insert(environmentLeases).values([
+        { id: oldLeaseId, companyId, environmentId, providerLeaseId: "reused-provider-id", status: "released", cleanupStatus: "success", lastUsedAt: at, metadata: { driver: "plugin", purpose: "login", [LOGIN_LEASE_SESSION_TAG_KEY]: oldSessionId } },
+        { id: leaseId, companyId, environmentId, providerLeaseId: "reused-provider-id", status: "active", cleanupStatus: "failed", lastUsedAt: new Date(at.getTime() - 1000), metadata: { driver: "plugin", purpose: "login", [LOGIN_LEASE_SESSION_TAG_KEY]: sessionId } },
+      ]);
+      const releaseRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" }));
+      const runtime = createProductionLoginSessionReaperRuntime({ db, environmentRuntime: { getDriver: () => ({ releaseRunLease }) } as never });
+      const reaper = createDeviceLoginReaper({ store: createDbAdapterAuthSessionStore(db), runtime });
+      expect((await reaper.sweep()).orphanLeasesDeleted).toBe(1);
+      expect(releaseRunLease.mock.calls.map(([input]) => input.lease.id)).toEqual([leaseId]);
+      expect((await environmentService(db).getLeaseById(oldLeaseId))?.cleanupStatus).toBe("success");
+      expect(await runtime.listTaggedLeases()).toEqual([]);
     });
 
     it("carries the CODEX_HOME variable name on the codex_local profile", () => {

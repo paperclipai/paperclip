@@ -461,6 +461,46 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
   });
 
+  it("executes the one replacement attempt after the last attempt's first unanswered recovery read, and no further one", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1",
+      binding: { companyId: f.companyId, runId: f.runId, issueId: f.issueId, agentId: f.agentId, executionWorkspaceId: f.runId },
+      provider: { kind: "codex", model: "gpt-5.6-luna" },
+      task: { identifier: issue.identifier!, title: issue.title, description: null, prompt: "Continue retained work.", workMode: "standard" },
+      workspace: { cwd: environment.current.runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: f.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
+        contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
+      interactionResponses: [], credentialBindings: [],
+    };
+    await f.db.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb)
+      || ${JSON.stringify({ nativeExecutionInput: execution })}::jsonb` }).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ attempt: 3, failureDetail: {
+      message: "native_session_recovery_failed: HarnessCapabilityUnavailableError: read is unavailable: Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 412 84s ago)",
+      recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, checkpointExists: true,
+      providerEventsExist: true, recoverable: true, adoptedRunnerUnanswered: true,
+    } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    provider.execute.mockReset().mockRejectedValue(new Error("replacement attempt reached the provider session"));
+    const controller = await currentNativeControllerIdentity();
+    const [claim] = await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: 4, replaceUnansweredRunner: true });
+    if (claim.kind !== "reattach_remote_runner") throw new Error("Expected the replacement claim");
+    await expect(executePaperclipNativeSession({ db: f.db, execution, runnerInstanceId: f.native.runnerInstanceId,
+      leaseOwner: claim.leaseOwner, restartRecovery: claim,
+      backend: { descriptor: async () => { throw new Error("Unexpected descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected session launch"); } },
+    })).rejects.toThrow("replacement attempt reached the provider session");
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ attempt: 4, phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
+  });
+
   it.each((["remote", "plugin"] as const).flatMap(storage => (["released", "retained"] as const).map(lock => [storage, lock] as const)))
   ("does not admit another failed %s retry when the persisted provider budget is already exhausted with a %s task lock", async (storage, lock) => {
     const f = await failedRemoteRun(storage);
@@ -651,7 +691,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
       .toMatchObject([{ ownerType: "board", wakePolicy: null,
         evidence: { automaticAdmissionExhausted: true, executorStopEvidence: "unverified", providerPid: 1386, checkpointPreserved: true },
-        nextAction: expect.stringContaining("original executor stop and state remain unverified") }]);
+        nextAction: "This run stopped before it finished. Your saved work is kept." }]);
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId], now: new Date(now.getTime() + 3_600_000) })).toEqual([]);
   });

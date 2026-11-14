@@ -287,6 +287,7 @@ export async function setupFirstTaskFixtures(input: {
   onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<FirstTaskFixtureValues> {
   const { page, api, execution, nonce } = input;
+  const legacySetup = ["legacy-codex", "legacy-claude"].includes(execution.profile.id);
   await api.patch("/api/instance/settings/experimental", {
     enableClassicTaskInterface: false,
   });
@@ -333,16 +334,27 @@ export async function setupFirstTaskFixtures(input: {
           : /^Claude/,
     })
     .click();
+  if (legacySetup) {
+    const agents = await pollUntil({
+      label: "first-task agent setup configuration",
+      deadlineAt: Date.now() + 30_000,
+      load: () => api.get<Row[]>(`/api/companies/${company.id}/agents`),
+      accept: rows => rows.some(agent => agent.name === fixtures.agent.name
+        && agent.pauseReason === "setup" && agent.metadata?.setupAdapterPending === false),
+    });
+    const agent = agents.find(agent => agent.name === fixtures.agent.name && agent.pauseReason === "setup")!;
+    await api.patch(`/api/agents/${agent.id}`, { runner: "legacy" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("radio", {
+      name: execution.profile.credential === "OPENAI_API_KEY" ? /^OpenAI/ : /^Claude/,
+    }).click();
+  }
+  await expect(page.getByRole("button", { name: "Runner", exact: true })).toHaveCount(0);
   const useKey = page.getByRole("button", {
     name: "Use API key instead",
     exact: true,
   });
   const savedKey = page.getByRole("combobox", { name: "Saved API key" });
-  if (["legacy-codex", "legacy-claude"].includes(execution.profile.id)) {
-    await page.getByText("Advanced", { exact: true }).click();
-    await page.getByRole("button", { name: "Runner", exact: true }).click();
-    await page.getByRole("option", { name: "Legacy runner", exact: true }).click();
-  }
   // Credential mode depends on the selected provider and its asynchronous key lookup.
   await expect(savedKey.or(useKey).first()).toBeVisible();
   if (await useKey.isVisible()) await useKey.click();
@@ -374,7 +386,7 @@ export async function setupFirstTaskFixtures(input: {
     expect(agents[0].adapterConfig?.provider).toBe("codex");
   }
   fixtures.onboardingRuntime = {
-    mode: "production-wizard",
+    mode: legacySetup ? "api-configured-legacy-setup" : "production-wizard",
     originalAdapterType: wizardAdapter,
     testedAdapterType: wizardAdapter,
     originalModel: agents[0].adapterConfig?.model ?? null,
@@ -800,7 +812,8 @@ export async function runFirstTaskFlow(input: {
           allRuns, snapshot, settle, capture: input.capture });
       } else if (scenario.id === "reject-no-execution")
         await turn(scenario.rejection, "rejected");
-      else if (["task-card-accept", "accept-while-running"].includes(scenario.id)) {
+      else if (["task-card-accept", "accept-while-running"].includes(scenario.id) ||
+        (scenario.id === "interview-plan-accept" && execution.suite.id !== "confirmation-replies")) {
         const pending = (
           await api.get<Row[]>(`/api/issues/${issue.id}/interactions`)
         ).find(
@@ -858,7 +871,7 @@ export async function runFirstTaskFlow(input: {
         await turn(
           scenario.acceptance,
           "accepted",
-          scenario.id !== "interview-plan-accept",
+          scenario.id !== "plan-only-accept",
         );
     }
     if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") {

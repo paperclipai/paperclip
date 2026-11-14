@@ -22,6 +22,7 @@ import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -44,7 +45,10 @@ const envelopeSchema = z.object({
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
   producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(), providerTurnId: z.string().optional(),
-    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional(),
+    // The restored Runner failed this turn as lost on restore: its usage can
+    // never be reported, so it does not hold the receipt open.
+    lostOnRestore: z.literal(true).optional() }).optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
@@ -127,14 +131,24 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     const authoritative = envelope.receipt.pricingProvenance
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
-    const changed = envelope.lateDelta !== undefined
+    // A charge settled without its final receipt accepts a complete receipt's
+    // own price, including a rate-card price, as a correction. Reconciliation
+    // can only post a receipt that carries its price; token changes are
+    // detected below as usual.
+    const ownPrice = envelope.receipt.cacheAdjustedCostUsd ?? envelope.receipt.costUsdExact ?? envelope.receipt.costUsd;
+    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true
+      && ownPrice != null && envelope.receipt.costStatus !== "unpriced" && envelope.receipt.usageBasis !== "session_cumulative";
+    const changed = unavailableClosed || envelope.lateDelta !== undefined
       || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"
       || ["provider", "biller", "model", "billingType"].some(key => {
         const value = envelope.receipt[key as keyof typeof envelope.receipt];
         return value !== undefined && value !== null && value !== previous[key];
       }) || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
-      || (!rateCardOnly && incomingMoney !== null && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
+      // A projection alone cannot be posted against a charge settled without
+      // its receipt; only the receipt's own price (above) can correct it.
+      || (!rateCardOnly && incomingMoney !== null && (previous.accountingReceiptUnavailable !== true || ownPrice != null)
+        && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
       || (!rateCardOnly && envelope.receipt.costStatus !== undefined && envelope.receipt.costStatus !== comparison.costStatus)
       || (authoritative
         && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(comparison.pricingProvenance ?? null));
@@ -311,7 +325,8 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
-    && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
+    && late.sourceId === previous.accountingReceiptSourceId && sameTokens
+    && (authoritative || (previous.accountingReceiptUnavailable === true && receipt.pricingProvenance?.source === "rate_card"))
     && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1
     && receipt.model === events[0].event.model && receipt.provider === events[0].event.provider
     && biller === events[0].event.biller && billingType === events[0].event.billingType
@@ -329,7 +344,14 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }
@@ -426,8 +448,11 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   // Late evidence is committed as run-level debt that accounting resolves or
   // surfaces. It never fails the delivering session or an unrelated later run.
+  // The run row lock protects every mutable receipt/accounting read below.
+  // READ COMMITTED sees the current row when the lock is acquired, even if a
+  // run-log append changed it after the transaction checked the company.
   await withOperationAccountingTransaction(db, envelope.companyId,
-    tx => persistUsageReceiptInTransaction(tx, envelope));
+    tx => persistUsageReceiptInTransaction(tx, envelope), { isolationLevel: "read committed" });
 }
 
 export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolPath(), limit = 100) {
@@ -543,6 +568,9 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     state?.accountingReceiptSourceId, state?.accountingReceiptSequence, state?.accountingReceiptId,
   ]);
   const pending = await readPendingRunUsageReceipts(input, directory);
+  // READ COMMITTED under the run-row lock, like persistUsageReceipt: every
+  // mutable read below follows that lock, so a run-log append committed after
+  // the company check cannot make the handoff's snapshot stale.
   const bound = await withOperationAccountingTransaction(db, input.companyId, async tx => {
     const [run] = await tx.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
       usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt }).from(heartbeatRuns)
@@ -562,7 +590,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     return tx.update(heartbeatRuns).set({ usageJson: { ...old, accountingReceiptSourceFences: fences,
       accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false } })
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson });
-  });
+  }, { isolationLevel: "read committed" });
   for (const item of pending) await fs.rm(item.file, { force: true });
   if (bound.length !== 1) throw conflict("Run cannot accept a new usage recorder");
   let sequence = 0;
@@ -605,7 +633,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
         isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`)).returning({ id: heartbeatRuns.id });
       return rows.length === 1;
-    });
+    }, { isolationLevel: "read committed" }); // Run-row lock first, as above.
     if (persisted) { finishFailedCapture?.(); finishFailedCapture = undefined; }
   }
   function enqueue(action: () => Promise<AdapterUsageCheckpoint>) {
@@ -673,7 +701,12 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
     const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
-    try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
+    crashPoint("accounting.usage_receipt.after_spool_before_db");
+    try {
+      await persistUsageReceipt(db, envelope);
+      crashPoint("accounting.usage_receipt.after_db_before_unlink");
+      await fs.rm(file, { force: true });
+    }
     catch (error) {
       // The fsynced receipt is durable even when the DB transaction failed.
       // Wake the owned spool recovery path; never certify that failed write as free.

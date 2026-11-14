@@ -1,5 +1,58 @@
 import { useEffect, useMemo } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+
+const ISSUE_ID_BATCH_SIZE = 100;
+
+/** Append the ids not yet in any batch, as new batches of at most 100 ids. */
+function appendIssueIdBatches(current: string[][] | undefined, ids: readonly string[]) {
+  const existing = new Set(current?.flat() ?? []);
+  const incoming = ids.filter(id => !existing.has(id));
+  if (!incoming.length) return current;
+  const appended: string[][] = [];
+  for (let index = 0; index < incoming.length; index += ISSUE_ID_BATCH_SIZE) {
+    appended.push(incoming.slice(index, index + ISSUE_ID_BATCH_SIZE));
+  }
+  return [...current ?? [], ...appended];
+}
+
+/**
+ * Warm the batches that `useIssueIdBatches` reads for these ids, under the same
+ * keys, so a page that mounts with them renders from cache.
+ */
+export function prefetchIssueIdBatches<T>(
+  client: QueryClient,
+  key: readonly unknown[],
+  ids: readonly string[],
+  fetchBatch: (ids: string[]) => Promise<T[]>,
+  staleTime: number,
+) {
+  if (!ids.length) return Promise.resolve();
+  const batches = client.setQueryData<string[][]>([...key, "batch-ids"], current => appendIssueIdBatches(current, ids)) ?? [];
+  const wanted = new Set(ids);
+  return Promise.all(batches.filter(batch => batch.some(id => wanted.has(id))).map(batch => client.prefetchQuery({
+    queryKey: [...key, "batch", batch], queryFn: () => fetchBatch(batch), staleTime,
+  }))).then(() => undefined);
+}
+
+/**
+ * Store one already-fetched batch under the keys `useIssueIdBatches` reads.
+ * Only when no batch is cached for this key yet, so it never replaces or
+ * splits batches a page has already read.
+ */
+export function seedIssueIdBatch<T>(
+  client: QueryClient,
+  key: readonly unknown[],
+  ids: readonly string[],
+  data: T[],
+  updatedAt: number,
+) {
+  if (!ids.length || ids.length > ISSUE_ID_BATCH_SIZE) return false;
+  if (client.getQueryData<string[][]>([...key, "batch-ids"])?.length) return false;
+  const batch = [...ids];
+  client.setQueryData<string[][]>([...key, "batch-ids"], [batch]);
+  client.setQueryData([...key, "batch", batch], data, { updatedAt });
+  return true;
+}
 
 export function useIssueIdBatches<T>(key: readonly unknown[], ids: string[], fetchBatch: (ids: string[]) => Promise<T[]>, enabled: boolean) {
   const client = useQueryClient();
@@ -13,14 +66,7 @@ export function useIssueIdBatches<T>(key: readonly unknown[], ids: string[], fet
   const missingKey = JSON.stringify(missing);
   useEffect(() => {
     if (!enabled || missingKey === "[]") return;
-    client.setQueryData<string[][]>([...base, "batch-ids"], current => {
-      const existing = new Set(current?.flat() ?? []);
-      const incoming = (JSON.parse(missingKey) as string[]).filter(id => !existing.has(id));
-      if (!incoming.length) return current;
-      const appended: string[][] = [];
-      for (let index = 0; index < incoming.length; index += 100) appended.push(incoming.slice(index, index + 100));
-      return [...current ?? [], ...appended];
-    });
+    client.setQueryData<string[][]>([...base, "batch-ids"], current => appendIssueIdBatches(current, JSON.parse(missingKey) as string[]));
   }, [client, base, missingKey, enabled]);
   const queries = useQueries({ queries: batches.map(batch => ({
     queryKey: [...base, "batch", batch], queryFn: () => fetchBatch(batch), enabled,

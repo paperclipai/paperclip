@@ -4,7 +4,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -140,7 +140,7 @@
               "type": "null"
             }
           ],
-          "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
+          "description": "Request value matching the discovered schema. Required when the operation has a required request body, as most POST, PUT and PATCH operations do; all request fields go here. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
         },
         "contentType": {
           "maxLength": 120,
@@ -271,7 +271,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read bounded comments on the active task.",
+    "description": "Read bounded comments on the active task only. Calling get_task does not change the active task. This is not a status or assignment audit. For progress chronology and handoff actors, use search_api to discover the company timeline or issue activity, then call_api.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -1936,271 +1936,152 @@
     "description": "Transfer a case's primary task to the next agent and phase, reusing the same task ID, or record intent to finish an existing case with to: 'done'. Save findings first. Supply the observed case handoffVersion and task statusVersion when reusing existing work. A new case starts with a harness-created task unless explicitly bound. Supply either workflowId or workflow_document_text for case.create and when starting the first task of a passive case; it becomes the ordinary task document key workflow, title Workflow. When binding an existing task, inline text requires an absent workflow document; workflowId explicitly adopts into its revision history. Omit workflow_document_text on later handoffs of an existing primary task. Omit workflowId to preserve the current workflow and instructions; supply an ID to adopt its latest prompt, including the current ID to refresh, or null to detach while preserving instructions. Selected prompts are captured on acceptance and applied after outgoing execution settles. Intervening task-document edits hold the handoff with a revision conflict. Recommend workflow Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose defining each named transition: trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation. State IDs should match phase names. The diagram is advisory and the server does not parse or enforce transitions. Optional initialDocuments seeds other ordinary task documents only for a newly created task; the workflow key is reserved and the combined seed text limit is 200000 characters. For an agent handoff, after callerMustYield is true, end the turn immediately: the harness starts the recipient after your execution settles. Do not finish the task or create a replacement task for another agent phase. For to: 'done', phase defaults to 'done', both observed versions are required, and no agent, new case, or task binding is accepted. A done receipt does not complete the task or yield execution: call finish_task normally with truthful completion evidence. The case closes only when normal task completion is accepted; review and approval gates still apply.",
     "effect": "write",
     "inputSchema": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "allOf": [
-            {
-              "if": {
-                "properties": {
-                  "case": {
-                    "properties": {
-                      "create": {}
-                    },
-                    "required": [
-                      "create"
-                    ],
-                    "type": "object"
-                  }
-                },
-                "required": [
-                  "case"
-                ]
-              },
-              "then": {
-                "oneOf": [
-                  {
-                    "properties": {
-                      "workflowId": {
-                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "workflowId"
-                    ]
-                  },
-                  {
-                    "properties": {
-                      "workflow_document_text": {}
-                    },
-                    "required": [
-                      "workflow_document_text"
-                    ]
-                  }
-                ]
-              }
-            },
-            {
-              "not": {
-                "properties": {
-                  "workflowId": {},
-                  "workflow_document_text": {}
-                },
-                "required": [
-                  "workflowId",
-                  "workflow_document_text"
-                ]
-              }
-            }
-          ],
-          "properties": {
-            "bindIssueId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": "string"
-            },
-            "case": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": {
-                      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "create": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "caseType": {
-                          "maxLength": 120,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "fields": {
-                          "additionalProperties": true,
-                          "type": "object"
-                        },
-                        "projectId": {
-                          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "summary": {
-                          "maxLength": 8000,
-                          "type": "string"
-                        },
-                        "title": {
-                          "maxLength": 500,
-                          "minLength": 1,
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "caseType",
-                        "title"
-                      ],
-                      "type": "object"
-                    }
-                  },
-                  "required": [
-                    "create"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "expectedHandoffVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "expectedIssueStatusVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "idempotencyKey": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string"
-            },
-            "initialDocuments": {
-              "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
-              "items": {
-                "additionalProperties": false,
-                "properties": {
-                  "body": {
-                    "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
-                    "maxLength": 524288,
-                    "type": "string"
-                  },
-                  "key": {
-                    "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "not": {
-                      "const": "workflow"
-                    },
-                    "pattern": "^[a-z0-9][a-z0-9_-]*$",
-                    "type": "string"
-                  },
-                  "title": {
-                    "maxLength": 200,
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "key",
-                  "title",
-                  "body"
-                ],
-                "type": "object"
-              },
-              "maxItems": 20,
-              "type": "array"
-            },
-            "instructions": {
-              "maxLength": 20000,
-              "minLength": 1,
-              "type": "string"
-            },
-            "phase": {
-              "maxLength": 120,
-              "minLength": 1,
-              "type": "string"
-            },
-            "toAgentId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": "string"
-            },
-            "workflowId": {
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "workflow_document_text": {
-              "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
-              "maxLength": 200000,
-              "minLength": 1,
-              "pattern": "\\S",
-              "type": "string"
-            }
-          },
-          "required": [
-            "idempotencyKey",
-            "case",
-            "toAgentId",
-            "phase",
-            "instructions"
-          ],
-          "type": "object"
+      "additionalProperties": false,
+      "properties": {
+        "bindIssueId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
         },
-        {
+        "case": {
           "additionalProperties": false,
+          "description": "Send exactly one of id (an existing case) or create (a new case). to: \"done\" requires id.",
           "properties": {
-            "case": {
+            "create": {
               "additionalProperties": false,
               "properties": {
-                "id": {
+                "caseType": {
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "fields": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "projectId": {
                   "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "summary": {
+                  "maxLength": 8000,
+                  "type": "string"
+                },
+                "title": {
+                  "maxLength": 500,
+                  "minLength": 1,
                   "type": "string"
                 }
               },
               "required": [
-                "id"
+                "caseType",
+                "title"
               ],
               "type": "object"
             },
-            "expectedHandoffVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "expectedIssueStatusVersion": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "idempotencyKey": {
-              "maxLength": 240,
-              "minLength": 1,
-              "type": "string"
-            },
-            "instructions": {
-              "maxLength": 20000,
-              "minLength": 1,
-              "type": "string"
-            },
-            "phase": {
-              "const": "done",
-              "default": "done",
-              "type": "string"
-            },
-            "to": {
-              "const": "done",
+            "id": {
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
               "type": "string"
             }
           },
-          "required": [
-            "to",
-            "idempotencyKey",
-            "case",
-            "instructions",
-            "expectedHandoffVersion",
-            "expectedIssueStatusVersion"
-          ],
           "type": "object"
+        },
+        "expectedHandoffVersion": {
+          "description": "Observed case handoffVersion. Required with to: \"done\".",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expectedIssueStatusVersion": {
+          "description": "Observed task statusVersion. Required with to: \"done\".",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotencyKey": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "initialDocuments": {
+          "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
+                "maxLength": 524288,
+                "type": "string"
+              },
+              "key": {
+                "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
+                "maxLength": 64,
+                "minLength": 1,
+                "not": {
+                  "const": "workflow"
+                },
+                "pattern": "^[a-z0-9][a-z0-9_-]*$",
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "title",
+              "body"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "instructions": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "phase": {
+          "description": "Required for an agent handoff. With to: \"done\", omit it or send \"done\".",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "Send \"done\" only to record intent to finish an existing case; then expectedHandoffVersion and expectedIssueStatusVersion are required and toAgentId, bindIssueId, workflowId, workflow_document_text and initialDocuments are not accepted. Omit for an agent handoff.",
+          "enum": [
+            "done"
+          ],
+          "type": "string"
+        },
+        "toAgentId": {
+          "description": "Required for an agent handoff. Omit with to: \"done\".",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "workflowId": {
+          "description": "Adopt this workflow's latest prompt, or null to detach. A new case needs workflowId or workflow_document_text, not both.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow_document_text": {
+          "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
+          "maxLength": 200000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
         }
+      },
+      "required": [
+        "idempotencyKey",
+        "case",
+        "instructions"
       ],
       "type": "object"
     },
@@ -2223,24 +2104,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "oneOf": [
-        {
-          "properties": {
-            "workflowId": {}
-          },
-          "required": [
-            "workflowId"
-          ]
-        },
-        {
-          "properties": {
-            "workflow_document_text": {}
-          },
-          "required": [
-            "workflow_document_text"
-          ]
-        }
-      ],
       "properties": {
         "caseType": {
           "maxLength": 120,
@@ -2334,7 +2197,7 @@
           "type": "string"
         },
         "workflowId": {
-          "description": "Adopt this company workflow’s latest prompt.",
+          "description": "Adopt this company workflow’s latest prompt. Send exactly one of workflowId or workflow_document_text.",
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
           "type": "string"
         },
@@ -2373,74 +2236,6 @@
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "offsetBytes": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "offsetBytes"
-            ]
-          },
-          "then": {
-            "properties": {
-              "snapshot": {}
-            },
-            "required": [
-              "snapshot"
-            ]
-          }
-        },
-        {
-          "else": {
-            "properties": {
-              "documentIssueId": false,
-              "documentKey": false
-            }
-          },
-          "if": {
-            "properties": {
-              "section": {
-                "const": "document"
-              }
-            },
-            "required": [
-              "section"
-            ]
-          },
-          "then": {
-            "properties": {
-              "documentKey": {}
-            },
-            "required": [
-              "documentKey"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "documentIssueId": {}
-            },
-            "required": [
-              "documentIssueId"
-            ]
-          },
-          "then": {
-            "properties": {
-              "documentKey": {
-                "maxLength": 64,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
-                "type": "string"
-              }
-            }
-          }
-        }
-      ],
       "properties": {
         "caseId": {
           "description": "Case ID. Omit to use the active task's primary workflow case.",
@@ -2507,32 +2302,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "title": {}
-          },
-          "required": [
-            "title"
-          ]
-        },
-        {
-          "properties": {
-            "summary": {}
-          },
-          "required": [
-            "summary"
-          ]
-        },
-        {
-          "properties": {
-            "fields": {}
-          },
-          "required": [
-            "fields"
-          ]
-        }
-      ],
       "properties": {
         "caseId": {
           "description": "Case ID. Omit to use the active task's primary workflow case.",
@@ -2541,6 +2310,7 @@
         },
         "fields": {
           "additionalProperties": true,
+          "description": "Send at least one of title, summary, or fields.",
           "type": "object"
         },
         "idempotencyKey": {
@@ -2550,6 +2320,7 @@
           "type": "string"
         },
         "summary": {
+          "description": "Send at least one of title, summary, or fields.",
           "maxLength": 8000,
           "type": [
             "string",
@@ -2557,6 +2328,7 @@
           ]
         },
         "title": {
+          "description": "Send at least one of title, summary, or fields.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -2666,37 +2438,6 @@
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "responseText": {
-                "properties": {
-                  "offsetBytes": {
-                    "minimum": 1,
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "offsetBytes"
-                ],
-                "type": "object"
-              }
-            },
-            "required": [
-              "responseText"
-            ]
-          },
-          "then": {
-            "properties": {
-              "snapshot": {}
-            },
-            "required": [
-              "snapshot"
-            ]
-          }
-        }
-      ],
       "properties": {
         "responseText": {
           "additionalProperties": false,
@@ -2748,24 +2489,6 @@
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "properties": {
-            "name": {}
-          },
-          "required": [
-            "name"
-          ]
-        },
-        {
-          "properties": {
-            "prompt": {}
-          },
-          "required": [
-            "prompt"
-          ]
-        }
-      ],
       "properties": {
         "idempotencyKey": {
           "maxLength": 240,
@@ -2773,12 +2496,13 @@
           "type": "string"
         },
         "name": {
+          "description": "Send name, prompt, or both.",
           "maxLength": 200,
           "minLength": 1,
           "type": "string"
         },
         "prompt": {
-          "description": "Reusable Markdown instructions for LLM execution. Phases and routing are advisory instructions, not a state machine.",
+          "description": "Reusable Markdown instructions for LLM execution. Phases and routing are advisory instructions, not a state machine. Send name, prompt, or both.",
           "maxLength": 200000,
           "minLength": 1,
           "pattern": "\\S",
@@ -3342,7 +3066,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
+    "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3374,7 +3098,7 @@
           "uniqueItems": true
         },
         "description": {
-          "description": "Child task description.",
+          "description": "Task description.",
           "maxLength": 20000,
           "type": [
             "string",
@@ -3874,7 +3598,7 @@
               "type": "string"
             },
             "notes": {
-              "description": "What to check on the next run; do not include secrets.",
+              "description": "What to check on the next run. Maximum 500 characters; do not include secrets.",
               "maxLength": 500,
               "minLength": 1,
               "type": "string"

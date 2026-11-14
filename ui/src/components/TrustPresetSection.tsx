@@ -242,7 +242,7 @@ export function TrustPresetSection({
   if (layout === "cards") {
     return (
       <div className="flex flex-col gap-(--agent-detail-module-gap)">
-        <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-3">
+        <div className="agent-trust-cards grid gap-(--agent-detail-module-gap) sm:grid-cols-3">
           <div role="radiogroup" aria-label="Trust preset" className="contents">
             {(["low_trust_review", "standard"] as const).map((value) => {
               const selected = preset === value;

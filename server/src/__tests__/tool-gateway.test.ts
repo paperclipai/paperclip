@@ -1,8 +1,14 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
+import type { LiveEvent } from "@paperclipai/shared";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -47,6 +53,7 @@ import {
 } from "@paperclipai/db";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -665,6 +672,133 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it.each(["managed", "mcp-key"])("returns %s GitHub recovery guidance directly to MCP callers without a pending approval", async method => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const denied = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: {
+        content: [{ type: "text", text: denied }], isError: true,
+      },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: method },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", properties: { name: { type: "string" } }, required: ["name"], additionalProperties: false,
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const named = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "GitHub recovery", profileId: profile.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id,
+        body: { name: "Test", clientLabel: "Test", ownerNote: "" } });
+      const assertGuidance = (message: string) => {
+        expect(message).toContain(denied);
+        expect(message).toMatch(/Do not retry/);
+        if (method === "managed") {
+          expect(message).toMatch(/personal account/i);
+          expect(message).toMatch(/organization argument/i);
+          expect(message).toContain("Refresh access");
+          expect(message).not.toMatch(/replace.*token|Administration|classic token/i);
+        } else {
+          expect(message).toMatch(/token.*permissions/i);
+          expect(message).toMatch(/replace.*token/i);
+          expect(message).not.toMatch(/GitHub App|Refresh access/);
+        }
+      };
+      const unauthorized = await request(createGatewayRouteApp(db, gateway)).post(named.endpointPath)
+        .set("authorization", "Bearer invalid-token")
+        .send({ jsonrpc: "2.0", id: 0, method: "tools/call", params: { name: toolName, arguments: { name: "unauthorized" } } })
+        .expect(401);
+      expect(unauthorized.body.error).toBeDefined();
+      expect(unauthorized.body.result).toBeUndefined();
+      expect(remote.requests).toHaveLength(0);
+      const response = await request(createGatewayRouteApp(db, gateway)).post(named.endpointPath)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: { name: "mcp-example" } } })
+        .expect(200);
+      expect(response.body.result.isError).toBe(true);
+      assertGuidance(response.body.result.content[0].text);
+
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const failure = await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "agent-example" } }).catch(error => error);
+      expect(failure).toMatchObject({ reasonCode: "github_access_denied" });
+      assertGuidance(failure.message);
+
+      await createActiveMember(db, company.id, "test-user");
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: { name: "test-example" } });
+      expect(testCall).toMatchObject({ decision: "allowed", error: { reasonCode: "github_access_denied" } });
+      assertGuidance((testCall as { error: { message: string } }).error.message);
+      expect(remote.requests).toHaveLength(3);
+      expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id))).toEqual([]);
+      expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id)))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ status: "failed", errorCode: "github_access_denied" })]));
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))[0]?.healthStatus).toBe("ok");
+    } finally { await remote.close(); }
+  });
+
+  it("defaults GitHub repository creation to the only installed organization for agents and connection tests", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: {
+      jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "Repository created" }] },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_repository", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object", required: ["name"], additionalProperties: false, properties: {
+          name: { type: "string" },
+          organization: { type: "string", description: "Organization to create the repository in (omit to create in your personal account)" },
+        },
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const github = { userId: "1", login: "octocat", installationCount: 1, repositoryCount: 1,
+        repositorySelection: "all" as const, installationIds: ["9"], installationOwnerLogins: ["acme"],
+        repositories: [{ id: "10", fullName: "acme/site", installationId: "9", ownerType: "organization" as const }] };
+      await db.update(connectionGrants).set({ providerTenant: { github } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const listed = (await gateway.listToolsForSession(session.token)).find((tool) => tool.name === toolName);
+      expect((listed?.parametersSchema as { properties?: Record<string, { description?: string }> } | undefined)
+        ?.properties?.organization?.description).toMatch(/installed only on one organization; then Paperclip uses that organization/);
+
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "agent-site" } });
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName,
+        parameters: { name: "chosen-site", organization: "globex" } });
+      await createActiveMember(db, company.id, "test-user");
+      const testCall = await gateway.executeTestCall({ companyId: company.id, connectionId: connection.id,
+        agentId: agent.id, userId: "test-user", toolName, parameters: { name: "test-site" } });
+      expect(testCall).toMatchObject({ decision: "allowed" });
+      // With the App also on the personal account, GitHub's personal default applies.
+      await db.update(connectionGrants).set({ providerTenant: { github: { ...github, installationOwnerLogins: ["octocat", "acme"] } } })
+        .where(eq(connectionGrants.connectionId, connection.id));
+      await gateway.executeTool({ sessionToken: session.token, tool: toolName, parameters: { name: "personal-site" } });
+
+      expect(remote.requests.filter((entry) => entry.body?.method === "tools/call")
+        .map((entry) => (entry.body?.params as { arguments?: unknown } | undefined)?.arguments)).toEqual([
+        { name: "agent-site", organization: "acme" },
+        { name: "chosen-site", organization: "globex" },
+        { name: "test-site", organization: "acme" },
+        { name: "personal-site" },
+      ]);
+    } finally { await remote.close(); }
+  });
+
   it.each(["config", "transport", "application", "legacy_application"])("records an actionable GitHub access error from %s metadata after one approved call and keeps the connection usable", async source => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -713,7 +847,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         params: { name: "create_repository", arguments: parameters } });
       const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, action!.invocationId));
       expect(invocation).toMatchObject({ status: "failed", errorCode: "github_access_denied",
-        errorMessage: denied });
+        errorMessage: expect.stringContaining(denied) });
       const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, action!.interactionId!));
       expect(card!.result).toMatchObject({ toolAction: { status: "failed", errorCode: "github_access_denied" } });
       expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))[0]?.healthStatus).toBe("ok");
@@ -1388,7 +1522,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         .expect(200);
       expect(initialized.body.result).toMatchObject({
         capabilities: { tools: {}, resources: {}, prompts: {} },
-        _meta: { "paperclip/mcp-app-ui": "unsupported" },
+        _meta: { "paperclip/mcp-app-ui": "host_rendered" },
       });
       const setupLimited = await request(app)
         .post(endpoint)
@@ -1786,6 +1920,164 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       status: "idle",
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
+    });
+  });
+
+  describe("local stdio MCP protocol versions", () => {
+    // Each script records every message it receives, one JSON line per message,
+    // so the tests can see exactly what Paperclip sent to each process.
+    function stdioScript(logPath: string, behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing") {
+      return `
+const fs = require("node:fs");
+const readline = require("node:readline");
+// "upgrading" is a legacy server until the marker file exists, then stateless.
+// "downgrading" is stateless until the marker exists, then a strict handshake server.
+const switched = fs.existsSync(${JSON.stringify(`${logPath}.upgraded`)});
+const behavior = ${JSON.stringify(behavior)} === "upgrading" ? (switched ? "modern" : "legacy-quick")
+  : ${JSON.stringify(behavior)} === "downgrading" ? (switched ? "legacy-strict" : "modern")
+  : ${JSON.stringify(behavior)} === "modern-failing" ? "modern"
+  : ${JSON.stringify(behavior)};
+const failsCalls = ${JSON.stringify(behavior)} === "modern-failing";
+let initialized = false;
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(message) + "\\n");
+  if (message.method === "server/discover") {
+    if (behavior === "modern") send({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
+    if (behavior === "exit-on-probe" || behavior === "broken") process.exit(1);
+    if (behavior === "legacy-quick" || behavior === "legacy-strict") send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } });
+    return;
+  }
+  if (message.method === "initialize") {
+    if (behavior === "broken") process.exit(1);
+    if (behavior === "modern") { send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }); return; }
+    initialized = true;
+    send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "legacy-stdio", version: "1" } } });
+    return;
+  }
+  if (message.method === "tools/call") {
+    if (behavior === "legacy-strict" && !initialized) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32002, message: "Server not initialized" } });
+      return;
+    }
+    if (failsCalls) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error after writing" } });
+      return;
+    }
+    const meta = message.params && message.params._meta;
+    if (behavior === "modern" && !(meta && meta["io.modelcontextprotocol/protocolVersion"] === "2026-07-28")) {
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Required per-request metadata is missing" } });
+      return;
+    }
+    send({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: behavior + ":" + String(message.params.arguments.message) }], resultType: behavior === "modern" ? "complete" : undefined } });
+  }
+});
+`;
+    }
+
+    async function runStdio(behavior: "modern" | "exit-on-probe" | "silent" | "upgrading" | "downgrading" | "broken" | "modern-failing", calls: number, beforeCall?: (index: number, logPath: string) => void) {
+      const dir = mkdtempSync(join(tmpdir(), "paperclip-stdio-protocol-"));
+      const logPath = join(dir, "messages.jsonl");
+      try {
+        const company = await createCompany(db);
+        const agent = await createAgent(db, company.id);
+        const { run } = await createIssueAndRun(db, company.id, agent.id);
+        const applicationKey = `stdio-${behavior}`;
+        const localTool = await createLocalStdioMcpTool(db, company.id, { applicationKey, toolName: "echo", stdioScript: stdioScript(logPath, behavior) });
+        const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+        await db.insert(toolProfileEntries).values({
+          companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: localTool.catalogEntry.id,
+        });
+        const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+        const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+        const tool = expectedConnectedToolName({ applicationKey, connectionId: localTool.connection.id, toolName: "echo" });
+        const results = [];
+        for (let index = 0; index < calls; index += 1) {
+          beforeCall?.(index, logPath);
+          results.push(await gateway.executeTool({ sessionToken: session.token, tool, parameters: { message: `hello-${index}` } })
+            .catch((error: unknown) => ({ result: { error } })));
+        }
+        const messages = existsSync(logPath)
+          ? readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { method?: string; params?: Record<string, any> })
+          : [];
+        return { results, messages, methods: messages.map((message) => message.method) };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("calls a 2026-07-28 stdio server without a handshake and with per-request metadata", async () => {
+      const { results, messages, methods } = await runStdio("modern", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "modern:hello-1"]);
+      // Probed once; the second process is called directly.
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+      const call = messages.find((message) => message.method === "tools/call")!;
+      expect(call.params!._meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/ui"]).toBeTruthy();
+    });
+
+    it("starts a legacy stdio server again for the handshake when it exits on the probe", async () => {
+      const { results, methods } = await runStdio("exit-on-probe", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["exit-on-probe:hello-0", "exit-on-probe:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover",
+        "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered handshake server is replaced by a stateless one", async () => {
+      const { results, methods } = await runStdio("upgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["legacy-quick:hello-0", "modern:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        // Remembered as legacy, refused, probed again, then called statelessly.
+        "initialize", "server/discover", "tools/call",
+      ]);
+    });
+
+    it("probes again when a remembered stateless server is rolled back to a handshake build", async () => {
+      const { results, methods } = await runStdio("downgrading", 2, (index, logPath) => {
+        if (index === 1) writeFileSync(`${logPath}.upgraded`, "");
+      });
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["modern:hello-0", "legacy-strict:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "tools/call",
+        // Remembered as stateless, refused before running, probed again, then the handshake.
+        "tools/call", "server/discover", "initialize", "notifications/initialized", "tools/call",
+      ]);
+    });
+
+    it("never replays a call that a stateless stdio server failed after it may have run", async () => {
+      const { results, methods } = await runStdio("modern-failing", 2);
+      for (const result of results) {
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_protocol_error");
+      }
+      expect(methods).toEqual(["server/discover", "tools/call", "tools/call"]);
+    });
+
+    it("gives up after one restart when a stdio server exits on both the probe and the handshake", async () => {
+      const { results, methods } = await runStdio("broken", 2);
+      for (const result of results) {
+        expect((result.result as { error?: unknown }).error).toBeInstanceOf(ToolGatewayHttpError);
+        expect(((result.result as { error?: ToolGatewayHttpError }).error)!.reasonCode).toBe("local_stdio_process_exited");
+      }
+      // Two processes per call at most: one recovery restart, never a loop.
+      expect(methods).toEqual(["server/discover", "initialize", "server/discover", "initialize"]);
+    });
+
+    it("falls back to the handshake when a legacy stdio server ignores the probe", async () => {
+      const started = Date.now();
+      const { results, methods } = await runStdio("silent", 2);
+      expect(results.map((result) => (result.result as { content?: unknown }).content)).toEqual(["silent:hello-0", "silent:hello-1"]);
+      expect(methods).toEqual([
+        "server/discover", "initialize", "notifications/initialized", "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+      ]);
+      // Only the first process waits out the probe; the answer is remembered.
+      expect(Date.now() - started).toBeLessThan(10_000);
     });
   });
 
@@ -3295,6 +3587,7 @@ rl.on("line", (line) => {
         "kv_get",
         "kv_list",
         "kv_set",
+        "slow_with_progress",
       ]);
 
       await allowAllToolsForAgent(db, company.id, agent.id);
@@ -3325,6 +3618,61 @@ rl.on("line", (line) => {
         expect.objectContaining({ key: "streamable-key", value: "streamable-value" }),
       ]);
     } finally {
+      await kvDemo.close();
+    }
+  });
+
+  it("shows a run's viewers the provider's progress for a long call, saves it on the call, and returns the same result", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const kvDemo: KvDemoHttpServer = createKvDemoHttpServer();
+    const port = await kvDemo.listen(0, "127.0.0.1");
+    const events: LiveEvent[] = [];
+    const otherEvents: LiveEvent[] = [];
+    const stop = subscribeCompanyLiveEvents(company.id, (event) => { events.push(event); });
+    const stopOther = subscribeCompanyLiveEvents(other.id, (event) => { otherEvents.push(event); });
+    try {
+      const access = toolAccessService(db);
+      const connection = await access.createConnection(company.id, {
+        name: "KV demo progress fixture", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none",
+        ownership: "customer", connectionKind: "managed",
+        config: { url: `http://127.0.0.1:${port}/mcp` }, transportConfig: { url: `http://127.0.0.1:${port}/mcp` },
+        credentialSecretRefs: [], enabled: true, status: "active",
+      });
+      await access.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
+      const slowTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.upstreamToolName === "slow_with_progress");
+      expect(slowTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { steps: 6, stepMs: 200 },
+      });
+      expect(result).toMatchObject({ status: "completed", result: { data: { isError: false, transport: "mcp_http" } } });
+
+      const progress = events.filter((event) => event.type === "heartbeat.run.tool_progress");
+      // Throttled: six provider updates over ~1.2s, a handful of events, the last one marks the end.
+      expect(progress.length).toBeGreaterThanOrEqual(3);
+      expect(progress.length).toBeLessThanOrEqual(7);
+      expect(progress.every((event) => event.companyId === company.id && event.payload.runId === run.id
+        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name
+        && event.payload.nativeToolName === nativeAssignedToolName(slowTool!.name))).toBe(true);
+      expect(progress[0]!.payload).toMatchObject({ progress: 1, total: 6, message: "Finished step 1 of 6", done: false });
+      expect(progress.at(-1)!.payload).toMatchObject({ done: true });
+      expect(otherEvents.filter((event) => event.type === "heartbeat.run.tool_progress")).toEqual([]);
+      const [invocation] = await db.select().from(toolInvocations)
+        .where(eq(toolInvocations.id, String(progress[0]!.payload.invocationId)));
+      expect(invocation).toMatchObject({ companyId: company.id, runId: run.id, status: "succeeded" });
+      expect(invocation!.progress).toMatchObject({ total: 6 });
+    } finally {
+      stop();
+      stopOther();
       await kvDemo.close();
     }
   });
@@ -3792,7 +4140,7 @@ rl.on("line", (line) => {
             previewMarkdown: approvalRequest.previewMarkdown,
             argumentsSummaryJson: expect.stringContaining('"value":"original"'),
             argumentsHash: approvalRequest.canonicalArgumentsHash,
-            expiresAt: approvalRequest.expiresAt!.toISOString(),
+            expiresAt: null,
           },
         },
       });
@@ -4277,7 +4625,7 @@ rl.on("line", (line) => {
       expect(freshRequest).toBeTruthy();
       expect(freshRequest!.status).toBe("pending");
       expect(freshRequest!.signedArguments).not.toBeNull();
-      expect(freshRequest!.expiresAt).not.toBeNull();
+      expect(freshRequest!.expiresAt).toBeNull();
 
       // The tool never executed while the approval stayed pending.
       expect(fake.requests).toHaveLength(0);
@@ -4497,6 +4845,154 @@ rl.on("line", (line) => {
       expect(persisted).not.toContain(rotatedCredential);
     } finally {
       await fake.close();
+    }
+  });
+
+  for (const scenario of ["slow success", "default deadline", "explicit deadline", "peer reset", "cyclic peer reset", "primitive peer reset"] as const) {
+    it(`records remote SSE ${scenario} without confusing a call deadline with a broken transport`, async () => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const { connection } = await createRemoteMcpTool(db, company.id);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const reading = Promise.withResolvers<void>();
+      let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+      let requestId!: string;
+      let signal!: AbortSignal;
+      const progress = 'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}\n\n';
+      const cause = Object.assign(new Error("peer failure Authorization: Bearer fixture-private-value"), { code: "ECONNRESET" });
+      const failure = Object.assign(new Error("aborted", { cause }), { code: "ECONNRESET" });
+      if (scenario === "cyclic peer reset") Object.assign(cause, { cause: failure });
+      const gateway = createTestToolGatewayService(db, {
+        remoteHttpRequest: async (_url, init) => {
+          requestId = JSON.parse(String(init.body)).id;
+          signal = init.signal!;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodyController = controller;
+              controller.enqueue(new TextEncoder().encode(progress));
+              init.signal!.addEventListener("abort", () => controller.error(failure), { once: true });
+            },
+            pull() { reading.resolve(); },
+          }, { highWaterMark: 0 });
+          return new Response(body, { headers: { "content-type": "text/event-stream", "x-request-id": "sse-request" } });
+        },
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const call = gateway.executeTool({
+        sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" },
+        ...(scenario === "explicit deadline" ? { timeoutMs: 1500 } : {}),
+      }).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+      try {
+        await reading.promise;
+        if (scenario.includes("peer reset")) bodyController.error(scenario === "primitive peer reset" ? "peer reset" : failure);
+        else await vi.advanceTimersByTimeAsync(scenario === "slow success" ? 12_000 : scenario === "explicit deadline" ? 1500 : 30_000);
+        if (scenario === "slow success") {
+          expect(signal.aborted).toBe(false);
+          bodyController.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: requestId, result: { content: [{ type: "text", text: "completed after twelve seconds" }] } })}\n\n`));
+        }
+        const result = await call;
+        const [event] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, scenario === "slow success" ? "call_completed" : "call_failed"));
+        const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+        if (scenario === "slow success") {
+          expect(result.error).toBeNull();
+          expect(JSON.stringify(result.value)).toContain("completed after twelve seconds");
+          expect(stored.healthStatus).toBe("ok");
+          expect(event.metadata).toMatchObject({ execution: { stream: { eventsReceived: 2, matchedResponse: true, ended: false } } });
+        } else {
+          const timeout = scenario === "default deadline" || scenario === "explicit deadline";
+          expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout" : "mcp_remote_fetch_failed");
+          expect(stored.healthStatus).toBe("ok");
+          expect(event.metadata).toMatchObject({ execution: {
+            failureKind: timeout ? "invocation_timeout" : "transport_failure",
+            deadline: { timeoutMs: scenario === "explicit deadline" ? 1500 : 30_000, aborted: timeout },
+            error: scenario === "primitive peer reset"
+              ? { name: null, message: "peer reset", code: null, cause: null }
+              : { name: "Error", message: "aborted", code: "ECONNRESET", cause: { name: "Error", code: "ECONNRESET" } },
+            response: { httpStatus: 200, contentType: "text/event-stream", upstreamRequestId: "sse-request" },
+            stream: { bytesReceived: Buffer.byteLength(progress), chunksReceived: 1, eventsReceived: 1, matchedResponse: false, ended: false },
+          } });
+          expect(JSON.stringify(event.metadata)).not.toContain("fixture-private-value");
+          if (scenario !== "primitive peer reset") expect(JSON.stringify(event.metadata)).toContain("peer failure");
+          if (scenario === "cyclic peer reset") expect(JSON.stringify(event.metadata)).toContain("[Circular cause]");
+        }
+      } finally {
+        vi.useRealTimers();
+        bodyController.error(new Error("fixture cleanup"));
+        await call;
+      }
+    });
+  }
+
+  async function startRemoteCallWithControlledBody(respond: (body: ReadableStream<Uint8Array>) => Response, waitForRead = true) {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createRemoteMcpTool(db, company.id);
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const reading = Promise.withResolvers<void>();
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    let requestId!: string;
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        requestId = JSON.parse(String(init.body)).id;
+        return respond(new ReadableStream<Uint8Array>({
+          start(controller) { bodyController = controller; },
+          pull() { reading.resolve(); },
+        }, { highWaterMark: 0 }));
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const call = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" }, timeoutMs: 1500 })
+      .then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+    if (waitForRead) await reading.promise;
+    const failedEvent = async () => (await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, "call_failed")))[0];
+    return { call, failedEvent, body: () => bodyController, requestId: () => requestId };
+  }
+
+  it("keeps a tool question when the call deadline passes while the question is recorded", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+    try {
+      await vi.advanceTimersByTimeAsync(1500);
+      const question = { jsonrpc: "2.0", id: "question-1", method: "elicitation/create", params: { message: "Which folder?", requestedSchema: { type: "object" } } };
+      remote.body().enqueue(new TextEncoder().encode(`data: ${JSON.stringify(question)}\n\n`));
+      expectGatewayError((await remote.call).error, 409, "elicitation_required");
+    } finally {
+      vi.useRealTimers();
+      remote.body().error(new Error("fixture cleanup"));
+      await remote.call;
+    }
+  });
+
+  it("records a transport failure kind when the remote hostname does not resolve", async () => {
+    const remote = await startRemoteCallWithControlledBody(() => {
+      throw new ToolGatewayHttpError(502, "Remote MCP connection hostname did not resolve", "remote_http_dns_failed");
+    }, false);
+    try {
+      expectGatewayError((await remote.call).error, 502, "remote_http_dns_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: { failureKind: "transport_failure" } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records the bytes of an error response body that fails partway", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { status: 503, headers: { "content-type": "text/plain" } }));
+    try {
+      const partial = "upstream overloaded, partial";
+      remote.body().enqueue(new TextEncoder().encode(partial));
+      remote.body().error(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+      expectGatewayError((await remote.call).error, 502, "mcp_remote_fetch_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: {
+        failureKind: "transport_failure",
+        response: { httpStatus: 503, bodySizeBytes: Buffer.byteLength(partial) },
+      } });
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -6156,5 +6652,55 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+
+  it("advertises on initialize only the capabilities that the gateway token may list", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `capability-gateway-${randomUUID()}`,
+      name: `Capability gateway ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Capability gateway", profileId: profile!.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const createToken = (allowedActions?: ToolMcpGatewayTokenAction[]) =>
+      gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: {
+          name: `Token ${randomUUID()}`,
+          clientLabel: "Capability client",
+          ownerNote: "Capability fixture token",
+          ...(allowedActions ? { allowedActions } : {}),
+        },
+      });
+    const capabilitiesFor = async (allowedActions?: ToolMcpGatewayTokenAction[]) => {
+      const token = await createToken(allowedActions);
+      const initialized = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
+        .expect(200);
+      return initialized.body.result.capabilities;
+    };
+
+    expect(await capabilitiesFor(["tools/list", "tools/call"])).toEqual({ tools: {} });
+    expect(await capabilitiesFor(["tools/list", "tools/call", "prompts/list"])).toEqual({ tools: {}, prompts: {} });
+    expect(await capabilitiesFor(["tools/list", "resources/list", "resources/read"])).toEqual({ tools: {}, resources: {} });
+    expect(await capabilitiesFor(["tools/call", "resources/read", "prompts/get"])).toEqual({});
+    expect(await capabilitiesFor()).toEqual({ tools: {}, resources: {}, prompts: {} });
+
+    const toolsOnly = await createToken(["tools/list", "tools/call"]);
+    const resources = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${toolsOnly.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "resources/list" })
+      .expect(403);
+    expect(resources.body.error.data.reasonCode).toBe("gateway_token_action_denied");
   });
 });

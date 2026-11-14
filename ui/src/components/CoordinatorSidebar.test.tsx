@@ -3,20 +3,25 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
-import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
+const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("@/lib/issueDetailCache", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/issueDetailCache")>(),
+  prefetchIssueDetailForNavigation: taskPrefetch,
+}));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
@@ -35,7 +40,7 @@ const pending = (id: string) => ({ id, sourceKind: "issue_thread_interaction", s
   createdAt: "2026-10-20T12:00:00Z", activityAt: "2026-10-20T12:00:00Z" }) as AttentionItem;
 function feed(items: AttentionItem[]): AttentionFeed {
   return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: 0,
-    nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
+    viewCounts: { mine: items.length, unassigned: 0, company: 0, archived: 0, all: items.length }, nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
 function summary(items: AttentionItem[]) {
@@ -46,13 +51,23 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
+    fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
+      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
+    }));
+    await renderSidebar();
+    const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(20);
+    expect(region.textContent).not.toContain("Recents");
+    expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
+  });
   it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
@@ -80,6 +95,99 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
+    fixture.chats = [chat];
+    fixture.recentTasks = [{ id: "task", companyId: "company", identifier: "TASK-1", title: "Recent task", status: "todo", recordedAt: 1 }];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["agent-chat:company:cto"]));
+
+    await renderSidebar();
+
+    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img')];
+    const taskIcon = container.querySelector('a[href="/issues/TASK-1"] [data-slot="sidebar-nav-icon"] svg');
+    expect(avatars).toHaveLength(2);
+    expect(taskIcon).not.toBeNull();
+    const width = Number(taskIcon!.getAttribute("width"));
+    const height = Number(taskIcon!.getAttribute("height"));
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    for (const avatar of avatars) {
+      expect(avatar.width).toBe(width);
+      expect(avatar.height).toBe(height);
+    }
+  });
+  it("builds hundreds of agent pins with input reads proportional to list size", () => {
+    const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
+    const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
+    let reads = 0;
+    function bounded<T>(items: T[]) {
+      return new Proxy(items, { get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * agents.length) throw new Error("Pin construction scans growing lists repeatedly");
+        return Reflect.get(target, property, receiver);
+      } });
+    }
+    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), []);
+    expect(items.map(item => item.key)).toEqual(pins);
+    expect(reads).toBeLessThanOrEqual(4 * agents.length);
+    expect(items[0].to).toBe("/chats/agent-499");
+  });
+  it("keeps mixed pins above More in stored order and prevents native link dragging", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(saved));
+    await renderSidebar();
+    const links = [...navigation().querySelectorAll<HTMLAnchorElement>("a")].slice(3);
+    expect(links.map(link => link.textContent)).toEqual(["CTO", "Artifacts", "Dashboard"]);
+    const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
+    expect(links.at(-1)!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:reviewer")!)).toEqual(saved);
+    const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    act(() => links[1].dispatchEvent(nativeDrag));
+    expect(nativeDrag.defaultPrevented).toBe(true);
+  });
+  it("reorders mixed pins with the keyboard while preserving hidden slots and saved order", async () => {
+    const storageKey = "paperclip.coordinator.pinned-nav.v1:reviewer";
+    const saved = ["/artifacts", "agent-chat:another-company:hidden", "/dashboard"];
+    localStorage.setItem(storageKey, JSON.stringify(saved));
+    await renderSidebar();
+    const order = () => [...navigation().querySelectorAll(".group\\/coordinator-pin a")].map(link => link.getAttribute("href"));
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const rows = [...container.querySelectorAll(".group\\/coordinator-pin")];
+      const index = rows.indexOf(this);
+      if (index < 0) return nativeRect.call(this);
+      const top = index * 40;
+      return { x: 0, y: top, top, bottom: top + 40, left: 0, right: 240, width: 240, height: 40, toJSON() {} };
+    });
+    const key = async (target: Element, code: string) => {
+      await act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { code, key: code === "Space" ? " " : code, bubbles: true, cancelable: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+    };
+    try {
+      const handle = navigation().querySelector<HTMLButtonElement>('[aria-label="Reorder pinned Artifacts"]')!;
+      handle.focus();
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Escape");
+      expect(order()).toEqual(["/artifacts", "/dashboard"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(saved);
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Space");
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual([saved[2], saved[1], saved[0]]);
+      await act(async () => root.unmount()); root = createRoot(container);
+      await renderSidebar();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      fixture.collapsed = true;
+      await renderSidebar();
+      expect(navigation().querySelector('[aria-label^="Reorder pinned"]')).toBeNull();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+    } finally { rect.mockRestore(); }
+  });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
     fixture.enableCases = enabled;
     await renderSidebar();
@@ -254,5 +362,10 @@ describe("Coordinator task status glyphs (BUG-07)", () => {
     expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ projectId: "project-1", projection: "rows" }));
     expect(glyph("/issues/ONB-1")?.style.color).toBe("var(--status-task-icon-in_queue)");
     expect(glyph("/issues/ONB-3")?.getAttribute("aria-label")).toBe("Idle");
+    // A press on a project task warms its chat like a task list row does.
+    const link = container.querySelector<HTMLAnchorElement>('a[href="/issues/ONB-3"]');
+    taskPrefetch.mockClear();
+    await act(async () => link!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })));
+    expect(taskPrefetch).toHaveBeenCalledWith(expect.anything(), "ONB-3", expect.objectContaining({ history: true }));
   });
 });

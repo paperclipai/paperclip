@@ -6,7 +6,8 @@
 // in PROGRAMS reads them without emitting. Sandbox providers are outside the
 // workspace, so the root install has none of their dependencies. They install from
 // typecheck-sandbox-providers/pnpm-lock.yaml here, because their SDK types are part
-// of what a test checks.
+// of what a test checks. A provider with its own lockfile (LOCKED_PROVIDERS) installs
+// from that lockfile instead, so each lockfile has one owner and one Dependabot entry.
 //
 // The script then fails if a tracked test file is in no program. tsc decides that,
 // not a glob: `include` silently drops foo.test.tsx when foo.test.ts exists.
@@ -37,6 +38,10 @@ export const SANDBOX_PROVIDERS = [
   "packages/plugins/sandbox-providers/novita",
 ];
 
+// Providers that commit their own pnpm-lock.yaml. The release build and the Daytona
+// end-to-end job install it frozen, so the shared workspace leaves them out.
+export const LOCKED_PROVIDERS = ["packages/plugins/sandbox-providers/daytona"];
+
 export const PROGRAMS = [
   "packages/db/tsconfig.test.json",
   "packages/kv-demo-mcp-server/tsconfig.test.json",
@@ -60,6 +65,12 @@ const PREPARE_STEPS = [
 ];
 // Replacing a provider's standalone node_modules would otherwise ask for confirmation.
 const INSTALL_ARGS = ["install", "--frozen-lockfile", "--ignore-scripts", "--prefer-offline", "--config.confirmModulesPurge=false"];
+const LOCKED_INSTALL_ARGS = ["install", "--ignore-workspace", ...INSTALL_ARGS.slice(1)];
+// Contributors do not commit provider lockfiles: the lockfile refresh workflow regenerates them after
+// merge, as it does the root pnpm-lock.yaml. Until then a changed manifest leaves the lockfile stale,
+// so resolve it in place, like the root install in CI.
+export const RESOLVE_ARGS = ["install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile"];
+const LOCKED_RESOLVE_ARGS = ["install", "--ignore-workspace", ...RESOLVE_ARGS.slice(1)];
 
 export function findUncheckedTests({ trackedFiles, checkedFiles, checkedElsewhere = CHECKED_ELSEWHERE }) {
   const checked = new Set(checkedFiles);
@@ -148,15 +159,11 @@ export function checkCoverage({
   return findUncheckedTests({ trackedFiles: trackedFiles(root), checkedFiles });
 }
 
-export function typecheckTestPrograms({
+export function prepareTestPrograms({
   root,
   env = process.env,
-  programs = PROGRAMS,
-  coverage = true,
   pnpm = runPnpm,
   linkPlugins = linkExcludedPlugins,
-  run = runTsc,
-  checkFiles = checkCoverage,
   log = console.log,
   logError = console.error,
 }) {
@@ -164,16 +171,48 @@ export function typecheckTestPrograms({
     const status = pnpm(args, { cwd: root, env });
     if (status !== 0) return status;
   }
-  const installed = pnpm(INSTALL_ARGS, { cwd: path.join(root, PROVIDER_WORKSPACE), env });
-  if (installed !== 0) {
-    logError(
-      `typecheck:test-programs: if a provider's package.json changed, run ` +
-        `\`pnpm install --ignore-scripts --lockfile-only\` in ${PROVIDER_WORKSPACE} and commit its pnpm-lock.yaml`,
-    );
-    return installed;
+  const install = (directory, frozenArgs, resolveArgs) => {
+    const cwd = path.join(root, directory);
+    let status = pnpm(frozenArgs, { cwd, env });
+    if (status !== 0) {
+      log(
+        `typecheck:test-programs: ${directory}/pnpm-lock.yaml does not match its manifests. ` +
+          `Resolving it in place. Do not commit it: the lockfile refresh workflow updates it after merge.`,
+      );
+      status = pnpm(resolveArgs, { cwd, env });
+      if (status === 0) status = pnpm(frozenArgs, { cwd, env });
+    }
+    if (status !== 0) logError(`typecheck:test-programs: could not install the sandbox providers in ${directory}`);
+    return status;
+  };
+  const installed = install(PROVIDER_WORKSPACE, INSTALL_ARGS, RESOLVE_ARGS);
+  if (installed !== 0) return installed;
+  for (const provider of LOCKED_PROVIDERS) {
+    const status = install(provider, LOCKED_INSTALL_ARGS, LOCKED_RESOLVE_ARGS);
+    if (status !== 0) return status;
   }
-  // The install removes the SDK link from each provider's node_modules.
+  // The installs remove the SDK link from each provider's node_modules.
   linkPlugins();
+  return 0;
+}
+
+export function typecheckTestPrograms({
+  root,
+  env = process.env,
+  programs = PROGRAMS,
+  coverage = true,
+  prepare = true,
+  pnpm = runPnpm,
+  linkPlugins = linkExcludedPlugins,
+  run = runTsc,
+  checkFiles = checkCoverage,
+  log = console.log,
+  logError = console.error,
+}) {
+  if (prepare) {
+    const prepared = prepareTestPrograms({ root, env, pnpm, linkPlugins, log, logError });
+    if (prepared !== 0) return prepared;
+  }
 
   let exitCode = 0;
   for (const config of programs) {
@@ -201,20 +240,28 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const args = process.argv.slice(2);
   const flags = args.filter((arg) => arg.startsWith("--"));
   const programs = args.filter((arg) => !arg.startsWith("--"));
-  const unknownFlags = flags.filter((flag) => flag !== "--low-memory");
+  const unknownFlags = flags.filter((flag) => !["--low-memory", "--prepare-only", "--skip-prepare"].includes(flag));
   const unknown = programs.filter((program) => !PROGRAMS.includes(program));
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const env = flags.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env;
   if (unknownFlags.length > 0) {
     console.error(`Unknown option: ${unknownFlags.join(", ")}`);
+    process.exitCode = 2;
+  } else if (flags.includes("--prepare-only") && (flags.includes("--skip-prepare") || programs.length > 0)) {
+    console.error("--prepare-only takes no programs and cannot be combined with --skip-prepare");
     process.exitCode = 2;
   } else if (unknown.length > 0) {
     console.error(`Unknown program: ${unknown.join(", ")}. Known programs:\n  ${PROGRAMS.join("\n  ")}`);
     process.exitCode = 2;
+  } else if (flags.includes("--prepare-only")) {
+    process.exitCode = prepareTestPrograms({ root, env });
   } else {
     process.exitCode = typecheckTestPrograms({
-      root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-      env: flags.includes("--low-memory") ? { ...process.env, [LOW_MEMORY_VARIABLE]: "1" } : process.env,
+      root,
+      env,
       programs: programs.length > 0 ? programs : PROGRAMS,
       coverage: programs.length === 0,
+      prepare: !flags.includes("--skip-prepare"),
     });
   }
 }
