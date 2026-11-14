@@ -67,6 +67,7 @@ export type {
   PrpTerminalState,
   PrpVerificationReasonCode,
   PrpWireConnection,
+  ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
   RunnerLaunchPreparer,
@@ -93,14 +94,19 @@ export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEO
 export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const providerFailureFromError = runner.providerFailureFromError;
+export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
+export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
+export const admitToolInputSchema = runner.admitToolInputSchema;
+export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
+export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
 export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
@@ -116,9 +122,14 @@ export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
 export const NativeEnvironmentProbeCleanupError = runner.NativeEnvironmentProbeCleanupError;
 export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
+export const dispatchToolCallback = runner.dispatchToolCallback;
+export const recoverToolCallback = runner.recoverToolCallback;
+export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").SemanticInputAdmission;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const toolInputVariantError = runner.toolInputVariantError;
+export const providerToolSchemaShapeIssues = runner.providerToolSchemaShapeIssues;
 export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
@@ -145,8 +156,11 @@ export const createRunnerdCodexTransport: (
   runner.createRunnerdCodexTransport;
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
+export const defaultCapabilityRunnerdBinaryAsync =
+  runner.defaultCapabilityRunnerdBinaryAsync;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
 export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
+export const unreadSteeredMessageIds = runner.unreadSteeredMessageIds;
 export const executeNativeSession = runner.executeNativeSession;
 export const applyNativeSessionGoalControl =
   runner.applyNativeSessionGoalControl;
@@ -170,6 +184,8 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const runnerProviderLaunchRequirements = runner.runnerProviderLaunchRequirements;
+export const createRunnerProviderLaunch = runner.createRunnerProviderLaunch;
 export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
 export const resolveGrokEffort = runner.resolveGrokEffort;
@@ -186,11 +202,18 @@ export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
+export const NativeGovernedWaitSettlementPendingError = runner.NativeGovernedWaitSettlementPendingError;
 export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
+export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
+export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
+export const nativeRestartContinuationInFlight = runner.nativeRestartContinuationInFlight;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
+export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
+export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;
 
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
@@ -203,13 +226,17 @@ export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDisc
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;
+export const bundledRemoteRunnerRelease = runner.bundledRemoteRunnerRelease;
+export const BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH = runner.BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH;
 
 export const externalOperationDigest = runner.externalOperationDigest;
 export const digestPaperclipSemanticContent = runner.digestPaperclipSemanticContent;
 export const CONFIGURED_ENVIRONMENT_KEYS = runner.CONFIGURED_ENVIRONMENT_KEYS;
 export const GENERATED_RUNTIME_ENVIRONMENT_KEYS = runner.GENERATED_RUNTIME_ENVIRONMENT_KEYS;
 export const configuredEnvironmentProjection = runner.configuredEnvironmentProjection;
+export const configuredSecretEnvironment = runner.configuredSecretEnvironment;
 export const configuredEnvironment = runner.configuredEnvironment;
+export const PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS = runner.PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS;
 
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
 

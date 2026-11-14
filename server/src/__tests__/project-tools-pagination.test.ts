@@ -21,6 +21,13 @@ describe("project discovery result bounds", () => {
       .toMatchObject({ properties: { cursor: expect.any(Object), limit: expect.any(Object) } });
   });
 
+  it("adds each project's company-scoped page href when the company prefix is known", async () => {
+    const page = { projects: [{ id: "abcdefab-0000-4000-8000-000000000001", name: "Launch", status: "backlog" }], nextCursor: null };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => page })));
+    expect(await callProjectTool({ ...input, companyPrefix: "COM" })).toEqual({ ...page,
+      projects: [{ ...page.projects[0], href: "/COM/projects/abcdefab-0000-4000-8000-000000000001" }] });
+  });
+
   it.each([{ limit: 0 }, { limit: 51 }, { cursor: "invalid" }])("rejects invalid paging arguments %j before fetching", async (arguments_) => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);

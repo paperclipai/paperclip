@@ -1,12 +1,14 @@
 import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
-import { persistActivity } from "./activity-log.js";
+import { persistActivity, publishActivity } from "./activity-log.js";
+import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { offlineWorkspaceMigrationBlockers } from "./remote-workspace-migration-tree.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 
 type Candidate = typeof workspaceOperations.$inferSelect;
 type Held = { operationId: string; reason: string };
+type ReconciliationInput = { mode: "offline" | "online"; writersStopped: boolean; signal: AbortSignal; companyId?: string };
 const unresolved = () => inArray(workspaceOperations.status, ["running", "pending"]);
 const localMigrationSource = () => and(isNotNull(executionWorkspaces.cwd),
   inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
@@ -25,16 +27,17 @@ function databaseCode(error: unknown): string | undefined {
   return value?.code ?? (value?.cause ? databaseCode(value.cause) : undefined);
 }
 
-async function reconcileAttempt(db: Db, candidate: Candidate, input: { writersStopped: boolean; signal: AbortSignal }) {
+async function reconcileAttempt(db: Db, candidate: Candidate, input: ReconciliationInput) {
   const held = (reason: string): Held => ({ operationId: candidate.id, reason });
   const { heartbeatRunId: runId, issueId, executionWorkspaceId: workspaceId } = candidate;
   if (candidate.phase !== "workspace_finalize" || !runId || !issueId || !workspaceId)
     return held("superseding_finalization_receipt_missing");
+  let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | undefined;
   try {
-    return await db.transaction(async tx => {
+    const outcome = await db.transaction(async tx => {
       const database = tx as unknown as Db;
       input.signal.throwIfAborted();
-      await assertOffline(database, input.writersStopped);
+      if (input.mode === "offline") await assertOffline(database, input.writersStopped);
       if (!await tryLockNativeWorkspaceFinalization(database, { companyId: candidate.companyId, runId }))
         return held("finalization_owner_busy");
       // Follow the finalizer's coordinator-before-run order. NOWAIT keeps an
@@ -48,6 +51,7 @@ async function reconcileAttempt(db: Db, candidate: Candidate, input: { writersSt
       )).for("update", { noWait: true });
       if (!run || run.runtimeMode !== "native" || run.status !== "succeeded"
         || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())
+        || adapterExecutionControls.has(run.id) || run.runnerProfileJson?.remoteWorkspace != null
         || run.runnerProfileJson?.nativeWorkspaceFinalizationOwner != null || !coordinator || coordinator.phase !== "committed"
         || !coordinator.resultId || coordinator.leaseOwner !== null || coordinator.leaseExpiresAt !== null || coordinator.nextAttemptAt !== null)
         return held("committed_finalization_proof_missing");
@@ -73,7 +77,8 @@ async function reconcileAttempt(db: Db, candidate: Candidate, input: { writersSt
       // These fields represent independent obligations. A successful later
       // export does not authorize dropping them or rewriting earlier history.
       if (current.metadata?.uncertain === true || current.metadata?.uncertain === "true"
-        || current.metadata?.saveWork != null || current.metadata?.offlineReconciliation != null)
+        || current.metadata?.saveWork != null || current.metadata?.offlineReconciliation != null
+        || current.metadata?.onlineReconciliation != null)
         return held("independent_operation_obligation");
       const [receipt] = await tx.select().from(workspaceOperations).where(and(
         eq(workspaceOperations.companyId, candidate.companyId), eq(workspaceOperations.executionWorkspaceId, workspaceId),
@@ -86,36 +91,34 @@ async function reconcileAttempt(db: Db, candidate: Candidate, input: { writersSt
       if (!receipt || receipt.metadata?.uncertain === true || receipt.metadata?.uncertain === "true")
         return held("superseding_finalization_receipt_missing");
       input.signal.throwIfAborted();
-      await assertOffline(database, input.writersStopped);
+      if (input.mode === "offline") await assertOffline(database, input.writersStopped);
       const now = new Date();
-      const provenance = { schema: "paperclip.offline-workspace-operation-reconciliation.v1",
+      const provenance = { schema: input.mode === "offline" ? "paperclip.offline-workspace-operation-reconciliation.v1"
+        : "paperclip.online-workspace-operation-reconciliation.v1",
         reason: "superseded_workspace_finalization", reconciledAt: now.toISOString(), previousStatus: current.status,
         supersedingOperationId: receipt.id, runId, resultId: result.id,
         descriptorSha256: reference.descriptorSha256, finalHostSha256: reference.finalHostSha256 };
       await tx.update(workspaceOperations).set({ status: "failed", finishedAt: now, updatedAt: now,
-        metadata: { ...current.metadata, offlineReconciliation: provenance } }).where(and(
+        metadata: { ...current.metadata, [input.mode === "offline" ? "offlineReconciliation" : "onlineReconciliation"]: provenance } }).where(and(
         eq(workspaceOperations.id, current.id), eq(workspaceOperations.companyId, current.companyId), unresolved(),
       ));
-      // No live publication is needed in the stopped maintenance process. The
-      // audit and the failed attempt commit (or roll back) together.
-      await persistActivity(database, { companyId: current.companyId, actorType: "system", actorId: "ephemeral-migration",
+      const activity = await persistActivity(database, { companyId: current.companyId, actorType: "system",
+        actorId: input.mode === "offline" ? "ephemeral-migration" : "legacy-workspace-preservation",
         action: "workspace_operation.reconciled", entityType: "workspace_operation", entityId: current.id,
         runId, issueId, details: provenance });
+      publication = activity.publication;
       return null;
     });
+    if (input.mode === "online" && publication) publishActivity(publication);
+    return outcome;
   } catch (error) {
     if (databaseCode(error) === "55P03") return held("execution_rows_busy");
     throw error;
   }
 }
 
-/** Reconcile receipts only after Cloud has stopped all old application and
- * worker deployments. This never executes workspace work, declares success,
- * clears execution authority, or retires a recovery/source obligation. */
-export async function reconcileOfflineWorkspaceOperations(db: Db, input: {
-  writersStopped: boolean; signal: AbortSignal; companyId?: string;
-}) {
-  await assertOffline(db, input.writersStopped);
+async function reconcileWorkspaceOperations(db: Db, input: ReconciliationInput) {
+  if (input.mode === "offline") await assertOffline(db, input.writersStopped);
   let after: string | undefined, inspected = 0, reconciled = 0;
   const held: Held[] = [];
   for (;;) {
@@ -135,4 +138,20 @@ export async function reconcileOfflineWorkspaceOperations(db: Db, input: {
     }
     after = rows.at(-1)!.operation.id;
   }
+}
+
+/** Reconcile receipts only after Cloud has stopped all old application and
+ * worker deployments. This never executes workspace work, declares success,
+ * clears execution authority, or retires a recovery/source obligation. */
+export async function reconcileOfflineWorkspaceOperations(db: Db, input: {
+  writersStopped: boolean; signal: AbortSignal; companyId?: string;
+}) {
+  return reconcileWorkspaceOperations(db, { ...input, mode: "offline" });
+}
+
+export async function reconcileOnlineWorkspaceOperations(db: Db, input: {
+  companyId: string; signal: AbortSignal;
+}) {
+  if (!input.companyId) throw new Error("online_reconciliation_company_required");
+  return reconcileWorkspaceOperations(db, { ...input, mode: "online", writersStopped: false });
 }

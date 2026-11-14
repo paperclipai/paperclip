@@ -76,7 +76,7 @@ test("two cached tasks keep separate title saves while the browser is offline", 
     await header.locator("textarea").press("Enter");
     await secondLink.focus();
     await secondLink.press("Enter", { timeout: 5_000 });
-    await expect(page).toHaveURL(new RegExp(`${second.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/issues/(?:${second.id}|${second.identifier})$`));
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(header.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
     await header.getByRole("heading", { name: second.title, exact: true }).click();
@@ -119,9 +119,14 @@ test("a cold task waits for the first session and retains a title saved during a
       await sessionReady;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(session) });
     });
+    // The task arrives in the core read or, on a production build, in the
+    // chat bootstrap that the page's HTML starts.
     const coreReady = page.waitForResponse(response => {
       const url = new URL(response.url());
-      return url.pathname === `/api/issues/${issue.identifier}` && url.searchParams.get("view") === "core" && response.ok();
+      return response.ok() && (
+        (url.pathname === `/api/issues/${issue.identifier}` && url.searchParams.get("view") === "core")
+        || url.pathname === `/api/issues/${issue.identifier}/chat-bootstrap`
+      );
     });
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
     await coreReady;

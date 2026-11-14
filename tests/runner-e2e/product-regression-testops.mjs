@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { registeredReliabilityCases, reliabilityDefinitions, reliabilityModel, reliabilityPlanKey, reliabilityPlanName } from './reliability-testops.mjs';
 
 // These are the standing, reviewed TestOps plan-2 identities. A case selects one
 // existing full-stack cell; it does not change the prompt, matcher or runtime.
@@ -25,17 +26,35 @@ export const productRegressionCases = [
   [168, 'agent-chat', 'new-session'],
 ].map(([id, suite, name, profile = 'runner-codex']) => Object.freeze({
   id, suite, name, profile,
-  model: suite === 'task-workspaces' ? 'openrouter/deepseek/deepseek-v4-flash-0731'
-    : suite === 'configured-repository' ? 'gpt-6.1-sol' : 'gpt-5.6-sol',
+  model: suite === 'task-workspaces' ? 'openrouter/deepseek/deepseek-v4-flash-0731' : 'gpt-6.1-sol',
   fullName: `paperclip.Product E2E.${suite}.${name}`,
   executionId: `${suite}.${profile}.local.${name}`,
+  plan: 'product-regression', environment: 'local',
 }));
+
+// Sibling TestOps plans share this trusted selection, projection and upload path.
+// Each keeps its own denominator: a launch selects cases from exactly one plan, and
+// only a complete selection of that plan is a full-plan verdict. Plan 2 stays at
+// its 20 standing cases.
+export const testOpsPlanDetails = Object.freeze({
+  'product-regression': Object.freeze({ label: 'Product regression', name: 'Product regression — core workflows',
+    size: productRegressionCases.length }),
+  [reliabilityPlanKey]: Object.freeze({ label: 'Reliability', name: reliabilityPlanName,
+    size: reliabilityDefinitions.length }),
+});
+
+/** Plan key to its bound cases; an unregistered plan maps to null and cannot be selected. */
+export function testOpsPlans(reliabilityRegistration) {
+  // An omitted registration uses the reviewed identities in reliability-testops.mjs.
+  const reliability = registeredReliabilityCases(reliabilityRegistration, productRegressionCases.map(row => row.id));
+  return Object.freeze({ 'product-regression': productRegressionCases, [reliabilityPlanKey]: reliability });
+}
 
 const fail = code => { throw new Error(`product_regression_testops_${code}`); };
 const sha = value => createHash('sha256').update(value).digest('hex');
-// Closed transmission contracts, checked against all 20 catalog cells. Dynamic
+// Closed transmission contracts, checked against every plan's catalog cells. Dynamic
 // matcher paths stay in the linked source artifact; only their digest leaves it.
-export const productReportingModels = [...new Set(productRegressionCases.map(row => row.model))];
+export const productReportingModels = [...new Set([...productRegressionCases.map(row => row.model), reliabilityModel])];
 export const productReportingMatcherKinds = ['message_exact', 'message_contains', 'message_occurrences', 'message_regex',
   'message_ordered', 'issue_status', 'run_status', 'runtime_mode', 'environment', 'file_exists', 'file_exact',
   'file_contains', 'artifact_exists', 'artifact_exact', 'json_path', 'json_schema'];
@@ -50,38 +69,48 @@ export const workflowUrls = new Set([workflowUrl,
   'https://github.com/paperclipai/paperclip/actions/workflows/343807492',
 ]);
 
-export function selectProductRegression(plan, manual = 'all', fromTestOps = false) {
+export function selectProductRegression(plan, manual = 'all', fromTestOps = false, planKey = 'product-regression', plans = testOpsPlans()) {
   if (fromTestOps && !plan) fail('plan_required');
+  const known = Object.values(plans).flatMap(cases => cases ?? []);
   if (plan) {
-    if (plan.version !== '1.0' || !Array.isArray(plan.tests) || !plan.tests.length || plan.tests.length > productRegressionCases.length) fail('plan_invalid');
+    // A TestOps selection names its own plan through its case identities.
+    if (plan.version !== '1.0' || !Array.isArray(plan.tests) || !plan.tests.length || plan.tests.length > known.length) fail('plan_invalid');
     const selected = plan.tests.map(test => {
-      const row = productRegressionCases.find(value => String(value.id) === String(test.id));
+      const row = known.find(value => String(value.id) === String(test.id));
       if (!row || test.selector !== row.fullName) fail('case_mismatch');
       return row;
     });
+    if (new Set(selected.map(row => row.plan)).size !== 1) fail('plan_mixed');
+    if (selected.length > plans[selected[0].plan].length) fail('plan_invalid');
     if (new Set(selected.map(row => row.id)).size !== selected.length) fail('duplicate_case');
     return selected.sort((a, b) => a.id - b.id);
   }
-  if (manual === 'all') return [...productRegressionCases];
-  const selected = productRegressionCases.find(row => row.name === manual || String(row.id) === manual);
+  if (!Object.hasOwn(plans, planKey)) fail('plan_invalid');
+  const cases = plans[planKey];
+  if (!cases) fail(`${planKey}_unregistered`);
+  if (manual === 'all') return [...cases];
+  const selected = cases.find(row => row.name === manual || String(row.id) === manual);
   if (!selected) fail('manual_selection_invalid');
   return [selected];
 }
 
-export function validateSelection(value, env) {
+export function validateSelection(value, env, plans = testOpsPlans()) {
   if (value?.schema !== 'paperclip.product-regression-testops-selection/v1'
       || value.runId !== env.GITHUB_RUN_ID || value.attempt !== env.GITHUB_RUN_ATTEMPT
       || value.workflowSha !== env.GITHUB_SHA || !/^[a-f0-9]{40}$/.test(value.workflowSha)
       || value.targetSha !== env.SOURCE_SHA || !/^[a-f0-9]{40}$/.test(value.targetSha)
       || !/^[1-9][0-9]{0,15}$/.test(value.jobRunId) || !Array.isArray(value.cases)
-      || !value.cases.length || value.cases.length > productRegressionCases.length) fail('selection_binding');
-  const selected = selectProductRegression({ version: '1.0', tests: value.cases.map(row => ({ id: row.id, selector: row.fullName })) }, 'all', true);
+      || !value.cases.length || value.cases.length > Object.values(plans).flatMap(cases => cases ?? []).length) fail('selection_binding');
+  const selected = selectProductRegression({ version: '1.0', tests: value.cases.map(row => ({ id: row.id, selector: row.fullName })) }, 'all', true, undefined, plans);
   if (JSON.stringify(selected) !== JSON.stringify(value.cases)) fail('selection_binding');
   return value;
 }
 
 export function projectProductResults(campaign, selection, sourceSha) {
   if (!/^[a-f0-9]{40}$/.test(sourceSha)) fail('source_missing');
+  const planKey = selection.cases?.[0]?.plan;
+  if (!Object.hasOwn(testOpsPlanDetails, planKey) || selection.cases.some(row => row.plan !== planKey
+      || !['local', 'daytona'].includes(row.environment))) fail('selection_binding');
   if (campaign && (campaign.schema !== 'paperclip.runner-e2e.campaign/v2'
       || campaign.campaignId !== `gha-${selection.runId}-${selection.attempt}` || campaign.source?.sha !== sourceSha
       || !Array.isArray(campaign.results) || !Array.isArray(campaign.expected)
@@ -109,7 +138,7 @@ export function projectProductResults(campaign, selection, sourceSha) {
       if (result && ((!missingArtifact && result.source?.sha !== sourceSha)
           || (missingArtifact && result.source?.sha != null && result.source.sha !== sourceSha)
           || result.suiteId !== selected.suite || result.caseId !== selected.name
-          || result.profileId !== selected.profile || result.environmentId !== 'local'
+          || result.profileId !== selected.profile || result.environmentId !== selected.environment
           || !Number.isSafeInteger(result.attempt) || result.attempt < (missingArtifact ? 0 : 1) || result.attempt > 10
           || !['passed', 'failed'].includes(result.status) || (!missingArtifact && !Array.isArray(result.matcherResults)))) fail('result_binding');
       const checks = result?.matcherResults ?? [];
@@ -130,7 +159,7 @@ export function projectProductResults(campaign, selection, sourceSha) {
         executionId: selected.executionId, workflowRunId: selection.runId, workflowAttempt: selection.attempt,
         workflowSha: selection.workflowSha, sourceSha, status, originalStatus: result?.status ?? null,
         attempt: result?.attempt ?? null, cleanup: result?.cleanup ?? 'not_started',
-        profile: selected.profile, environment: 'local',
+        profile: selected.profile, environment: selected.environment,
         declaredModel: selected.model, model: configuredModel,
         modelSource: configuredModel == null ? 'not_recorded' : firstTask ? 'first_task_configuration' : 'execution_profile',
         reportedModelSha256: firstTask && typeof result?.model === 'string' ? sha(result.model) : null,
@@ -156,11 +185,12 @@ export function projectProductResults(campaign, selection, sourceSha) {
       const uuid = randomUUID(), attachment = `${randomUUID()}-attachment.json`;
       const value = {
         uuid, name: selected.name, fullName: selected.fullName, testCaseId: sha(selected.fullName),
-        historyId: sha(JSON.stringify([selected.fullName, selected.profile, provenance.model, 'local'])),
+        historyId: sha(JSON.stringify([selected.fullName, selected.profile, provenance.model, selected.environment])),
         status, stage: 'finished', statusDetails: { message: provenance.note },
         labels: [{ name: 'AS_ID', value: String(selected.id) }, { name: 'parentSuite', value: 'Product E2E' },
-          { name: 'suite', value: selected.suite }, { name: 'framework', value: 'Paperclip Evals' }],
-        parameters: [{ name: 'profile', value: selected.profile }, { name: 'environment', value: 'local / GitHub Actions' },
+          { name: 'suite', value: selected.suite }, { name: 'framework', value: 'Paperclip Evals' },
+          ...(selected.signature ? [{ name: 'tag', value: `soak-${selected.signature}` }] : [])],
+        parameters: [{ name: 'profile', value: selected.profile }, { name: 'environment', value: `${selected.environment} / GitHub Actions` },
           { name: 'declaredModel', value: selected.model }, { name: 'configuredModel', value: provenance.model ?? 'Not recorded' },
           { name: 'sourceSha', value: sourceSha }],
         links: [{ name: 'Full-stack execution and retained diagnostics', type: 'custom',
@@ -179,5 +209,5 @@ export function projectProductResults(campaign, selection, sourceSha) {
   }
   return { records, summary: { selected: selection.cases.length, passed: summaries.filter(row => row.status === 'passed').length,
     failed: summaries.filter(row => row.status === 'failed').length, broken: summaries.filter(row => row.status === 'broken').length,
-    fullPlan: selection.cases.length === productRegressionCases.length, cases: summaries } };
+    plan: planKey, fullPlan: selection.cases.length === testOpsPlanDetails[planKey].size, cases: summaries } };
 }

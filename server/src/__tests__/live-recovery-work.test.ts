@@ -1,3 +1,4 @@
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -5,7 +6,7 @@ import { once } from "node:events";
 import { setImmediate as immediate, setTimeout as realDelay } from "node:timers/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb,
+import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb, livenessDb,
   heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions, applyPendingMigrations,
   issueRecoveryActions, issues, activityLog, agentWakeupRequests, reconcileDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -34,6 +35,7 @@ import { nativeRetryCancellationEligible, pendingFailedNativeRetryCancellationCo
 import { requestNativeQuestionRunCancellation } from "../services/native-runtime/native-question-bridge.js";
 import { readNativeLocalProcessStop, releaseSettledNativeRunProcess, settleNativeRunProcess } from "../services/native-local-process-stop.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { renewNativeSessionExecutionLease } from "../services/native-runtime/native-execution-lease.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import * as nativeStopEvidence from "../services/acknowledged-native-stop.js";
@@ -78,7 +80,9 @@ describe("residual recovery production matrix", () => {
     vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
   });
   afterAll(async () => {
-    await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    if (db) {
+      await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    }
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
   });
   async function fixture() {
@@ -100,7 +104,7 @@ describe("residual recovery production matrix", () => {
     const admitted = () => !draining && !standby;
     await heartbeat.registerResidualRecoveryWork(coordinator, admitted).ready;
     await heartbeat.registerActiveRunSilenceWork(coordinator, admitted).ready;
-    await heartbeat.registerIssueStateRecoveryWork(coordinator, admitted).ready;
+    await heartbeat.registerIssueStateRecoveryWork(coordinator, admitted, { backstopMs: 0 }).ready;
     await heartbeat.registerDeferredReceiptWork(coordinator, admitted).ready;
     await heartbeat.registerRunDispatchWork(coordinator, admitted).ready;
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, admitted).ready;
@@ -301,6 +305,69 @@ describe("residual recovery production matrix", () => {
     }, { timeout: 45_000 });
     await competing.stop(); extraStops.pop(); await quiet();
   });
+  it("recovers a fresh run from a prior boot at lease expiry instead of waiting for the stale-age threshold", async () => {
+    // RC-27: a Retry admitted just before a kill records a controller lease but
+    // no process. The prior boot's expired lease is the ownership proof.
+    const f = await fixture(), expiry = new Date(Date.now() + 3_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry,
+      executionStage: "preparing", updatedAt: new Date(), startedAt: new Date() }).returning();
+    await start(true);
+    expect((await getRun(run.id)).status).toBe("running");
+    await vi.waitFor(async () => expect((await getRun(run.id)).status).toBe("failed"), { timeout: 15_000 });
+    expect(Date.now() - expiry.getTime()).toBeLessThan(15_000);
+    expect(await getRun(run.id)).toMatchObject({ errorCode: "process_lost",
+      resultJson: expect.objectContaining({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }) });
+    await vi.waitFor(async () => {
+      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+      expect(retries).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+      expect((await getRun(retries[0].id)).status).toBe("succeeded");
+    }, { timeout: 45_000 });
+    await quiet();
+  });
+  it("keeps the age guard when the prior boot dispatched between the scan and the revocation", async () => {
+    // Stage the race: the scanned row says `preparing`, and the row committed
+    // with the revocation says `dispatching` (the old controller's last renewal).
+    const f = await fixture(), expiry = new Date(Date.now() + 2_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry,
+      executionStage: "preparing", updatedAt: new Date(), startedAt: new Date() }).returning();
+    await db.execute(sql.raw(`create or replace function rc27_dispatch_on_revoke() returns trigger language plpgsql as $$
+      begin if new.id = '${run.id}' and new.controller_boot_id is distinct from old.controller_boot_id
+        then new.execution_stage := 'dispatching'; end if; return new; end $$`));
+    await db.execute(sql`create trigger rc27_dispatch_on_revoke before update on heartbeat_runs
+      for each row execute function rc27_dispatch_on_revoke()`);
+    extraStops.push(async () => {
+      await db.execute(sql`drop trigger if exists rc27_dispatch_on_revoke on heartbeat_runs`);
+      await db.execute(sql`drop function if exists rc27_dispatch_on_revoke()`);
+    });
+    await start(true);
+    await vi.waitFor(async () => expect((await getRun(run.id)).controllerBootId).not.toBe(run.controllerBootId), { timeout: 15_000 });
+    await realDelay(5_000); await Promise.allSettled([...passes]);
+    expect(await getRun(run.id)).toMatchObject({ status: "running", executionStage: "dispatching", errorCode: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
+  });
+  // A recorded process is judged by the shared prover, not by age: a live one
+  // is held (a proven-dead one settles at once, recovery-stale-issue-lock-sweep).
+  it("keeps the stale-age guard for this boot or a dispatched adapter, and holds a live recorded process", async () => {
+    const f = await fixture(), now = Date.now(), expired = new Date(now - 1_000);
+    const [sameBoot] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: expired,
+      executionStage: "preparing", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    const [withProcess] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
+      executionStage: "dispatching", processPid: process.pid, processHostHash: currentProcessSpaceHash(),
+      updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    // A dispatched adapter may hold remote work without a local process.
+    const [dispatched] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
+      executionStage: "dispatching", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    await start(); await advance(4 * 60_000);
+    expect((await getRun(sameBoot.id)).status).toBe("running");
+    expect((await getRun(withProcess.id)).status).toBe("running");
+    expect((await getRun(dispatched.id)).status).toBe("running");
+  });
   it.each(["confirmed", "already_retired", "missing_terminal", "unproven_terminal", "ack_failure", "late_terminal"] as const)(
     "settles an API-only Stop after deferred controller retirement without inventing proof: %s", async mode => {
       const f = await fixture(), runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
@@ -450,7 +517,7 @@ describe("residual recovery production matrix", () => {
     } finally { db.$client.options.debug = prior; }
     expect(await getRun(run.id)).toMatchObject({ processPid: pid, processStartedAt: null });
     await quiet();
-    await persistHeartbeatRunProcessMetadata(db, run.id, { pid, processGroupId: null, startedAt: startedAt.toISOString() });
+    await persistHeartbeatRunProcessMetadata(db, run.id, { pid, processGroupId: null, startedAt: startedAt.toISOString(), targetKind: "local" });
     await advance(1_000);
     await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull());
     expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
@@ -494,7 +561,7 @@ describe("residual recovery production matrix", () => {
       eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toEqual([]);
     await quiet();
   });
-  it("renews only the active recovery owner and re-reads the moved controller deadline", async () => {
+  it("renews without waking recovery and re-reads the moved controller deadline at the old one", async () => {
     const f = await fixture(), old = new Date(Date.now() - 6 * 60_000), expiry = new Date(Date.now() + 20_000);
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
       runtimeMode: "legacy", status: "running", controllerBootId: legacyControllerBootId,
@@ -507,11 +574,68 @@ describe("residual recovery production matrix", () => {
     expect(moved.getTime()).toBeGreaterThan(expiry.getTime());
     await advance(1_000);
     expect(timeline.slice(before).filter(event => Array.isArray(event) && event[0] === "pass")
-      .map(event => (event as unknown[])[1])).toEqual(["active-execution-recovery", "active-execution-recovery"]);
+      .map(event => (event as unknown[])[1])).toEqual([]);
     await advance(expiry.getTime() - Date.now());
     expect((await getRun(run.id)).status).toBe("running");
     expect(deadlines.get("active-execution-recovery")!()).toBe(moved.getTime());
     await heartbeat.cancelRun(run.id, "Operator cancelled the controller renewal fixture");
+    await quiet();
+  });
+  it("renews a native execution lease without scheduling recovery and still finds the run at the end of its last lease", async () => {
+    // Another server owns the run. Its renewals must not make this server's
+    // recovery re-check the healthy run, and when they stop, recovery acts at
+    // the expiry of the last renewed lease, as it would have before.
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    const owner = { bootId: randomUUID(), pid: process.pid + 100_000, processStartedAt: old };
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "native", nativeIssueId: f.issue.id, contextSnapshot: { issueId: f.issue.id },
+      startedAt: old, updatedAt: old }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id,
+      phase: "observed", attempt: 1, leaseOwner: "other-server", controllerBootId: owner.bootId, controllerPid: owner.pid,
+      controllerProcessStartedAt: old, leaseExpiresAt: sql`clock_timestamp() + interval '3 seconds'` });
+    const savedExpiry = async () => (await db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.id)))[0].leaseExpiresAt!.getTime();
+    const expiry = await savedExpiry();
+    await start(true);
+    await vi.waitFor(() => expect(deadlines.get("active-execution-recovery")!()).toBe(expiry));
+    await Promise.allSettled([...passes]);
+    const before = timeline.length;
+    // Renew through this client so a recovery signal, if any, reaches the
+    // registered owners in-process, as it reaches peers through notifications.
+    try {
+      await renewNativeSessionExecutionLease({ db, runId: run.id, companyId: f.companyId, issueId: f.issue.id,
+        leaseOwner: "other-server", attempt: 1, controller: owner, leaseTtlMs: 6_000 });
+    } finally {
+      // Only this test uses the private liveness pool; end it while timers are real.
+      await livenessDb(db).$client.end({ timeout: 1 });
+    }
+    const moved = await savedExpiry();
+    expect(moved).toBeGreaterThan(expiry);
+    await realDelay(1_000);
+    expect(timeline.slice(before).filter(event => Array.isArray(event) && event[0] === "pass")).toEqual([]);
+    // At the old deadline recovery re-reads the row and moves to the new one.
+    await realDelay(Math.max(0, expiry - Date.now() + 500));
+    await Promise.allSettled([...passes]);
+    expect(await getRun(run.id)).toMatchObject({ status: "running", errorCode: null });
+    expect(deadlines.get("active-execution-recovery")!()).toBe(moved);
+    // The owner stopped renewing: recovery acts at the end of the last lease.
+    const acted = async () => {
+      const current = await getRun(run.id);
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      return current.status !== "running" || current.errorCode !== null || coordinator.recoveryState !== null
+        || coordinator.leaseOwner !== "other-server";
+    };
+    expect(await acted()).toBe(false);
+    await vi.waitFor(async () => expect(await acted()).toBe(true), { timeout: 15_000 });
+    expect(Date.now()).toBeGreaterThanOrEqual(moved);
+    expect(Date.now() - moved).toBeLessThan(10_000);
+    await Promise.allSettled([...passes]);
+    await db.transaction(async tx => {
+      await notifyExecutionRunWork(tx, { companyId: f.companyId, runId: run.id, agentId: f.agent.id });
+      await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", recoveryState: "blocked", leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, run.id));
+    });
     await quiet();
   });
   it("recovers orphan active leases after restart, including a deleted heartbeat reference, without starving behind 100 guarded rows", async () => {

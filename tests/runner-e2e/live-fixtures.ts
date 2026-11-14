@@ -1,4 +1,7 @@
+import { CHAT_SETUP_HEALTH_SUITE } from "./chat-setup-health.js";
 import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
+import { neutralFixtureSuffix } from "./fixture-names.js";
+import { isEverydayReliabilityCase } from "./everyday-reliability-cases.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
@@ -74,7 +77,7 @@ export interface LiveFixtureValues {
   setupQualification?: { recorded: boolean; adapterType: string | null; platformResponses: number; adapterResponses: number };
 
   onboardingRuntime?: {
-    mode: "production-wizard" | "post-onboarding-runtime-switch";
+    mode: "production-wizard" | "api-configured-legacy-setup" | "post-onboarding-runtime-switch";
     originalAdapterType: string;
     originalModel: string | null;
     testedAdapterType: string;
@@ -216,12 +219,13 @@ export async function setupLiveFixtures(input: {
     id: "company",
     async setup() {
       const company = await api.post<CompanyRecord>("/api/companies", {
-        name: `Runner E2E ${execution.id} ${input.executionNonce}`,
-        description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
+        name: `Company ${neutralFixtureSuffix(execution.id, input.executionNonce)}`,
+        description: "Operations company",
+        budgetMonthlyCents: [CHAT_FEATURE_SUITE, CHAT_SETUP_HEALTH_SUITE].includes(execution.suite.id) ? CHAT_FEATURE_BUDGET_CENTS
           : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
-          || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
+          || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+            || isEverydayReliabilityCase(execution.task.id))) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
           : ["cursor-cloud", "stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) ? 1_000 : 0,
       });
@@ -241,17 +245,19 @@ export async function setupLiveFixtures(input: {
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
-      for (const credentialName of execution.requiredCredentials) {
+      for (const credentialName of execution.suite.id === "chat-features"
+        ? [...new Set([execution.profile.credential, execution.environment.credential].filter((name): name is CredentialName => !!name))]
+        : execution.requiredCredentials) {
         if (["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(credentialName)) continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
           `/api/companies/${company.id}/secrets`,
           {
-            name: `Runner E2E ${credentialName} ${input.executionNonce}`,
+            name: `${credentialName} ${neutralFixtureSuffix(input.executionNonce)}`,
             key: credentialName,
             value: rawValue,
-            description: `Ephemeral credential for ${execution.id}`,
+            description: "Model provider credential",
           },
         );
         refs[credentialName] = {
@@ -351,7 +357,7 @@ export async function setupLiveFixtures(input: {
           {
             provider,
             method: "api_key",
-            name: `Runner E2E account ${input.executionNonce}`,
+            name: `Account ${neutralFixtureSuffix(input.executionNonce)}`,
             ownership: budgetedGateway ? "shared" : "personal",
             ...(budgetedGateway ? { routing: { kind: "gateway", protocol: provider === "anthropic" ? "messages" : "responses",
               baseUrl: provider === "anthropic" ? gatewayUrl : `${gatewayUrl}/v1`, auth: "bearer", models: [{ id: execution.profile.model }] } } : {}),
@@ -419,7 +425,8 @@ export async function setupLiveFixtures(input: {
         }
       }
       if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id)
-        || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
+        || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+          || isEverydayReliabilityCase(execution.task.id)))) {
         agent.budgetMonthlyCents = 1_000;
       }
       if (receiptSmoke) {
@@ -470,9 +477,9 @@ export async function setupLiveFixtures(input: {
         return api.post<ProjectRecord>(
           `/api/companies/${company.id}/projects`,
           {
-            name: `Runner E2E workspace project ${input.executionNonce}`,
+            name: `Workspace project ${neutralFixtureSuffix(input.executionNonce)}`,
             description:
-              "Ephemeral project anchoring the fixture execution workspace and file copy-back",
+              "Project for the execution workspace and file copy-back",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "shared_workspace",

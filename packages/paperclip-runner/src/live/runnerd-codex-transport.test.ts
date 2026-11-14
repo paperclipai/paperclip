@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -68,6 +68,8 @@ import {
   unwrapRunnerdProviderNotifications,
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
+  controllerAcceptedTurnStartId,
+  committedEventWindowComplete,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -76,6 +78,75 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("committedEventWindowComplete", () => {
+  const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));
+  it("is complete only when every acknowledged event from the first one is retained", () => {
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 3), ackedSourceSeq: 3 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: [], ackedSourceSeq: 0 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 3, 4), ackedSourceSeq: 4 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(2, 3), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 2), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete(undefined)).toBe(false);
+  });
+});
+
+describe("controllerAcceptedTurnStartId", () => {
+  // Shapes copied from the RC-59 durable controller journal.
+  const attach = { commandId: "command_prp_00000001", controllerSeq: 1, type: "run.attach", status: "completed", result: {} };
+  const start = (overrides: Record<string, unknown> = {}) => ({
+    commandId: "command_lab_start", controllerSeq: 4, type: "turn.start", status: "completed",
+    payload: { text: "Continue", turnId: "turn_lab_1" },
+    result: { commandType: "turn.start", controllerSeq: 4, status: "completed", result: { providerTurnId: "turn_lab_1", status: "accepted" } },
+    ...overrides,
+  });
+
+  it("names the turn this run's latest completed turn.start accepted", () => {
+    expect(controllerAcceptedTurnStartId([attach, start()])).toBe("turn_lab_1");
+  });
+
+  it.each([
+    ["no turn.start", [attach]],
+    ["a pending turn.start", [attach, start({ status: "pending", result: undefined })]],
+    ["a failed turn.start", [attach, start({ status: "failed" })]],
+    ["a result that did not accept the turn", [attach, start({ result: { result: { providerTurnId: "turn_lab_1", status: "rejected" } } })]],
+    ["a result for a different turn than requested", [attach, start({ result: { result: { providerTurnId: "turn_lab_2", status: "accepted" } } })]],
+    ["a later run attachment", [start({ controllerSeq: 1 }), { ...attach, controllerSeq: 2 }]],
+    ["a later pending turn.start", [attach, start(), start({ controllerSeq: 5, status: "pending", payload: { turnId: "turn_lab_2" }, result: undefined })]],
+  ])("returns null for %s", (_label, commands) => {
+    expect(controllerAcceptedTurnStartId(commands)).toBeNull();
+  });
+
+  // Codex assigns its own provider turn id; only ACPX echoes the requested one.
+  it("accepts a Codex result whose provider turn id differs from the requested id while that turn is the runner's live turn", () => {
+    const codex = start({ result: { result: { providerTurnId: "019a-provider-turn", status: "accepted" } } });
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+    // A turn the restored runner reports lost (no live turn) is left to the restart continuation.
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: null })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "another" })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: true })).toBeNull();
+  });
+
+  // A restart landed right after turn.start: the runner journaled it, died, and
+  // settled it as execution_indeterminate; its restored session reconciled the
+  // ambiguous start to the provider's live replacement turn (t77).
+  const indeterminate = start({ status: "failed", result: { commandType: "turn.start", controllerSeq: 4, status: "failed",
+    result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } });
+
+  it("names the runner's reconciled active turn for an indeterminate turn.start", () => {
+    expect(controllerAcceptedTurnStartId([attach, indeterminate], {
+      requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+  });
+
+  it.each([
+    ["no reconciled active turn", [attach, indeterminate], null, false],
+    ["an ordinary failed turn.start", [attach, start({ status: "failed", result: { result: { code: "provider_turn_failed" } } })], "019a-provider-turn", false],
+    ["a later run attachment", [{ ...indeterminate, controllerSeq: 1 }, { ...attach, controllerSeq: 2 }], "019a-provider-turn", false],
+    ["an ACPX turn other than the requested one", [attach, indeterminate], "turn_lab_other", true],
+  ] as const)("fails closed on an indeterminate start with %s", (_label, commands, active, requireRequestedIdentity) => {
+    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, runnerActiveTurnId: active })).toBeNull();
+  });
+});
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
@@ -91,6 +162,38 @@ it("attributes opened candidate sessions to the harness biller instead of the mo
   expect(provider("claude_managed", "codex", "claude-sonnet-5")).toBe("anthropic");
   expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
 });
+
+it("uses one durable attachment command and an event for a settled download", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-attachment-event-"));
+  let core!: DurablePrpControlPlane;
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    controlPlaneRegistration: async authority => {
+      core = authority;
+      await authority.start();
+      return { release: () => undefined };
+    },
+  });
+  try {
+    await transport.request("thread/start", { cwd: directory });
+    await expect(transport.downloadAttachment!(() => ({
+      url: "https://127.0.0.1:0/attachment", token: "a".repeat(43),
+      byteSize: 1, sha256: "0".repeat(64), contentType: "image/png",
+    }))).rejects.toThrow("runner_attachment_download_invalid_path");
+    const commands = core.store.state.commands.filter(command => command.type === "runner.attachment.download");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.status).toBe("completed");
+    const events = core.store.state.committedEvents.filter(event => event.eventType === "runner.attachment.settled");
+    expect(events).toHaveLength(1);
+    expect(events[0]?.envelope.payload).toMatchObject({ payload: { status: "failed" } });
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
@@ -283,7 +386,7 @@ it.each(["resolved", "rejected"] as const)(
       expect(error).toMatchObject({ message: expect.stringContaining("runner_process_termination_unconfirmed") });
       if (outcome === "rejected") expect(error).toHaveProperty("cause", probeError);
       expect(children).toHaveLength(1);
-      expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+      expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(children[0]!.pid!, 0)).not.toThrow();
     } finally {
       const providerPid = bundle.evidence().codexPid;
@@ -300,6 +403,51 @@ it.each(["resolved", "rejected"] as const)(
   },
   15_000,
 );
+
+it("gives the process owner live evidence of the runner's own authenticated connection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-connection-evidence-"));
+  const specs: durableControlPlane.RunnerProcessLaunchSpec[] = [];
+  let child: ReturnType<typeof spawn> | undefined;
+  let exited: Promise<void> | undefined;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 60_000,
+    runnerProcessLauncher: spec => {
+      specs.push(spec);
+      const ownedChild = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+      child = ownedChild;
+      exited = new Promise(resolveExit => ownedChild.once("exit", () => resolveExit()));
+      return {
+        child: ownedChild,
+        completion: new Promise<durableControlPlane.RunnerProcessResult>(() => {}),
+        isExitConfirmed: () => false,
+      };
+    },
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.isRunnerConnected?.()).toBe(true);
+    child!.kill("SIGKILL");
+    await exited;
+    await vi.waitFor(() => expect(specs[0]!.isRunnerConnected?.()).toBe(false), { timeout: 5_000 });
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) {
+      try { process.kill(providerPid, "SIGKILL"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await bundle.transport.detachControllerForRestart!();
+    child?.kill("SIGKILL");
+    await exited;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15_000);
 
 it.each([
   "transport_reconnect_grace_exceeded",
@@ -358,7 +506,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     if (child) return {
       child: { pid: 42, exitCode: null, kill: () => false },
       completion: Promise.reject(probeError),
-      isExitConfirmed: () => false,
+      isExitConfirmed: (): boolean => false,
     };
     child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
     const ownedChild = child;
@@ -390,7 +538,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     });
     expect(error).toHaveProperty("message", expect.stringContaining("probe_timeout"));
     expect(launch).toHaveBeenCalledTimes(2);
-    expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+    expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
   } finally {
     const providerPid = bundle.evidence().codexPid;
     if (providerPid) {
@@ -415,7 +563,7 @@ it("retries a replacement whose staging failed before any process launched", asy
     if (launch.mock.calls.length === 2) return {
       child: { pid: undefined, exitCode: null, kill: () => false },
       completion: Promise.reject(stagingError),
-      isExitConfirmed: () => true,
+      isExitConfirmed: (): boolean => true,
     };
     const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
     children.push(child);
@@ -466,6 +614,67 @@ it("retries a replacement whose staging failed before any process launched", asy
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);
+
+it("fails instead of relaunching a runner that keeps exiting right after it is restored", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-restore-crash-loop-"));
+  const crash = "paperclip-runnerd: redacted display activity exceeds its schema bounds";
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: crash }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
+  });
+  const restored = () => bundle.evidence().diagnostics
+    .filter(line => line === "runner process restored its durable PRP session").length;
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    children[0]!.kill("SIGKILL");
+    for (let restore = 1; restore <= 3; restore += 1) {
+      await vi.waitFor(() => expect(restored()).toBe(restore), { timeout: 4_000 });
+      children[restore]!.kill("SIGKILL");
+    }
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain(
+        `native_runner_process_exited: runnerd exited 3 times within 60000ms of being restored: ${crash}`,
+      ),
+      { timeout: 4_000 },
+    );
+    await new Promise(resolveWait => setTimeout(resolveWait, 500));
+    expect(launch).toHaveBeenCalledTimes(4);
+    expect(restored()).toBe(3);
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("counts only runner exits that follow a restore within the stable window", () => {
+  const count = runnerdRecoveryInternals.unstableRunnerRestoreCount;
+  expect(count(0, null, 1_000)).toBe(0);
+  expect(count(0, 1_000, 1_000)).toBe(1);
+  expect(count(2, 1_000, 60_999)).toBe(3);
+  expect(count(2, 1_000, 61_000)).toBe(0);
+  expect(count(5, null, 1_000)).toBe(0);
+});
 
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
@@ -948,6 +1157,32 @@ it("replays the durable run attachment outcome and latest provider identity", ()
   });
 });
 
+it("re-issues only this run's own cut-off attachment before any provider work", () => {
+  const unknown = { status: "failed", result: { result: { code: "execution_indeterminate" } } };
+  const attach = { type: "run.attach", controllerSeq: 1, payload: { provider: { kind: "codex" } }, ...unknown };
+  const state = (overrides: Record<string, unknown> = {}, later: Record<string, unknown>[] = [], events: string[] = []) => ({
+    commands: [{ ...attach, ...overrides }, ...later.map((command, index) => ({ controllerSeq: index + 2, payload: {}, status: "completed", ...command }))],
+    committedEvents: events.map(eventType => ({ eventType })),
+  }) as never;
+  const reissue = runnerdRecoveryInternals.cutOffRunAttachmentPayload;
+  expect(reissue(state())).toEqual(attach.payload);
+  expect(reissue(state({ status: "indeterminate", result: null }))).toEqual(attach.payload);
+  expect(reissue(state({}, [{ type: "runner.drain", status: "failed" }, { type: "runner.suspend" }, { type: "session.goal.get" },
+    { type: "turn.stop" }, { type: "session.snapshot" }], ["runner.reconciled", "session.resumed"]))).toEqual(attach.payload);
+  // A definite answer, a pending command, or a warm or staged attachment keeps its own path.
+  expect(reissue(state({ status: "completed", result: { status: "completed" } }))).toBeNull();
+  expect(reissue(state({ status: "failed", result: { result: { code: "command_execution_failed" } } }))).toBeNull();
+  expect(reissue(state({ status: "pending", result: null }))).toBeNull();
+  expect(reissue(state({ payload: { paperclipNextAuthority: {} } }))).toBeNull();
+  expect(reissue({ ...(state() as object), warmTransition: {} } as never)).toBeNull();
+  expect(reissue({ ...(state() as object), stagedRunAttachment: {} } as never)).toBeNull();
+  // Any provider work after it means the run moved on.
+  for (const type of ["turn.start", "turn.steer", "request.resolve", "semantic_tool.result", "session.goal.set", "run.attach"]) {
+    expect(reissue(state({}, [{ type }]))).toBeNull();
+  }
+  expect(reissue(state({}, [], ["turn.started"]))).toBeNull();
+});
+
 it("identifies an active provider turn that must stop before suspension", () => {
   expect(
     runnerdRecoveryInternals.providerDrainStateFromSnapshot({
@@ -1173,7 +1408,7 @@ it("installs required accounting acceptance before the Runner acknowledgement ca
   }
 });
 
-it("uses the same API result envelope for live dispatch and recovered receipts", async () => {
+it.each([false, true])("uses the same API result envelope and fences handler publication (owner changed: %s)", async changedOwner => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-recovered-api-"));
   const OriginalCore = durableControlPlane.DurablePrpControlPlane;
   let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
@@ -1185,17 +1420,32 @@ it("uses the same API result envelope for live dispatch and recovered receipts",
   let outcome: { result: unknown; isError?: boolean } | null = {
     result: { ok: true, apiOperationId: "POST /api/example", data: { saved: true } }, isError: false,
   };
+  let owner: string | undefined;
   const bundle = createCapabilityRunnerdCodexTransport({
+    get authorityRunId() { return owner; },
     runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
     recoverSemanticToolInput: async () => outcome,
   });
-  bundle.transport.setServerRequestHandler(async () => ({ success: !outcome?.isError,
-    contentItems: [{ type: "inputText", text: JSON.stringify(outcome?.result) }] }));
+  const handler = vi.fn(async () => ({ success: !outcome?.isError,
+    contentItems: [{ type: "inputText" as const, text: JSON.stringify(outcome?.result) }] }));
+  if (!changedOwner) bundle.transport.setServerRequestHandler(handler);
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
-      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity,
+      admission: "earlier_controller" as const };
+    if (changedOwner) {
+      owner = core.store.state.identity.runId;
+      const pending = callbacks.onSemanticToolInput!(call);
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      owner = "replacement-owner";
+      bundle.transport.setServerRequestHandler(handler);
+      await expect(pending).rejects.toBeInstanceOf(durableControlPlane.SemanticToolNotDispatchedError);
+      expect(handler).not.toHaveBeenCalled();
+      expect(await callbacks.recoverSemanticToolInput!(call)).toBeNull();
+      return;
+    }
     const live = await callbacks.onSemanticToolInput!(call);
     expect(live).toMatchObject({ isError: false, result: { ok: true, operationId: "call_api", callId: call.callId, result: outcome!.result } });
     expect(await callbacks.recoverSemanticToolInput!(call)).toMatchObject({ result: live.result, isError: live.isError });
@@ -1210,6 +1460,207 @@ it("uses the same API result envelope for live dispatch and recovered receipts",
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 20_000);
+
+it.each([false, true])("refuses a terminal call decided before earlier results were seen (seen: %s)", async seen => {
+  // Restart chaos t03: Codex called write_document, the controller was held,
+  // and Codex re-sampled the model until it called paperclip_block. After the
+  // reattach the Runner delivered the backlog in order: write_document ran and
+  // returned, then the stale block arrived before Codex had seen that result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stale-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9000;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `stale-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `stale-terminal-${seq}`;
+    };
+    const write = { executionId: "exec-write", transport: "dynamic", name: "write_document" };
+    commit("tool.execution.started", { ...write, status: "running" });
+    // Paperclip's result, recorded as the controller records it for the Runner.
+    core.queueCommand("semantic_tool.result", { callId: "exec-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: true }, isError: false }, "command_tool_stale_terminal_write", true);
+    if (seen) commit("tool.execution.completed", { ...write, status: "completed" });
+    // The terminal call's own event bounds the history (in production its
+    // semantic_tool.input event; any later event works the same way).
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    const blockInput = { summary: "Paperclip has not returned the save" };
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "block-call", operationId: "paperclip_block",
+      input: blockInput, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    if (seen) {
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(outcome.isError).not.toBe(true);
+    } else {
+      expect(handler).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+      expect(JSON.stringify(outcome.result)).toContain("write_document");
+    }
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("refuses a terminal call that arrives before a held call's result (restart chaos t05)", async () => {
+  // Restart chaos t05: Codex called write_document during a K4 hold, then
+  // re-sampled until it called paperclip_block. After the reattach the
+  // controller recovered the held write while the Runner delivered the block,
+  // and the block arrived a few milliseconds before the write's result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9100;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `held-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `held-terminal-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-held-write", transport: "dynamic", name: "write_document", status: "running" });
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-held-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    // The recovered write returns just after the block reaches the transport.
+    setTimeout(() => core.queueCommand("semantic_tool.result", { callId: "exec-held-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: false }, isError: false }, "command_tool_held_terminal_write", true), 100);
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "held-block-call", operationId: "paperclip_block",
+      input: { summary: "Paperclip has not confirmed the save" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    expect(handler).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+    expect(JSON.stringify(outcome.result)).toContain("Those calls have now returned");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("refuses a finish once for a returned call that never reaches the agent, then accepts the next finish", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-unseen-once-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"done\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9200;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `unseen-once-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `unseen-once-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-search", transport: "dynamic", name: "paperclip_search_assigned_tools", status: "running" });
+    core.queueCommand("semantic_tool.result", { callId: "exec-search", operationId: "paperclip_search_assigned_tools",
+      inputDigest: "sha256:search", result: { tools: [] }, isError: false }, "command_tool_unseen_once_search", true);
+    const finish = (n: number) => {
+      const sourceEventId = commit("tool.execution.started", { executionId: `exec-finish-${n}`, transport: "dynamic", name: "paperclip_finish", status: "running" });
+      return callbacks.onSemanticToolInput!({ callId: `exec-finish-${n}`, operationId: "paperclip_finish",
+        input: { summary: "Done" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    };
+    expect(await finish(1)).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results" } } });
+    expect(handler).not.toHaveBeenCalled();
+    commit("tool.execution.completed", { executionId: "exec-finish-1", transport: "dynamic", name: "paperclip_finish", status: "failed" });
+    expect((await finish(2)).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("answers a held call before starting the next turn (restart chaos t101)", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-before-turn-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    return core = new OriginalCore(options);
+  });
+  const order: string[] = [];
+  const recovered = vi.fn(async (call: { callId: string }) => {
+    order.push(`recover:${call.callId}`);
+    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 300));
+    return { result: { success: true, contentItems: [{ type: "inputText", text: "brief body" }] } };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory, recoverSemanticToolInput: recovered,
+  });
+  bundle.transport.setServerRequestHandler(vi.fn(async () => ({ success: true, contentItems: [] })));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+    const identity = core.store.state.identity;
+    const correlation = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+      turnId: identity.turnId, itemId: identity.itemId };
+    core.store.state.committedEvents.unshift({ sourceSeq: 0, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+      priority: 1, deliveryCount: 1, logicalEffectCount: 1, envelope: { payload: { runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+        itemId: identity.itemId, payload: { semantic_tool: { callId: "exec-held-read", operationId: "read_document",
+          input: { key: "brief" }, correlation } } } } });
+    expect(core.semanticToolResultsSettled()).toBe(false);
+    const queueCommand = core.queueCommand.bind(core);
+    vi.spyOn(core, "queueCommand").mockImplementation((type, ...rest) => {
+      order.push(type);
+      return queueCommand(type, ...rest);
+    });
+    const startupPass = core.recoverPendingSemanticInputs();
+    await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
+    const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
+    void turnStarted.catch(() => undefined);
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
+    await turnStarted;
+    await startupPass;
+    expect(recovered).toHaveBeenCalledOnce();
+    expect(order.slice(0, 2)).toEqual(["recover:exec-held-read", "semantic_tool.result"]);
+    expect(order.indexOf("semantic_tool.result")).toBeLessThan(order.indexOf("turn.start"));
+    const result = core.store.state.commands.find(command => command.type === "semantic_tool.result");
+    expect(result).toMatchObject({ payload: { callId: "exec-held-read", operationId: "read_document" } });
+    expect(result!.status).not.toBe("pending");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
@@ -1471,6 +1922,67 @@ it("defers turn starts until their command result and rejects stale identities",
   ).toBe("accept");
 });
 
+it("does not hold a pending turn start behind another turn's restore-lost terminal", () => {
+  const { runnerdTerminalProviderTurnId: terminalTurn, terminalMayBelongToPendingTurnStart: mayBelong } =
+    runnerdRecoveryInternals;
+  // The restored runner reports the previous, unbound turn as lost after the
+  // new turn.start result named the new provider turn.
+  const lostTurn = terminalTurn("turn.failed", {
+    providerTurnId: "provider-turn-previous", status: "failed",
+    error: { code: "provider_turn_lost_on_restore", recoverable: true },
+  });
+  expect(lostTurn).toBe("provider-turn-previous");
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: lostTurn })).toBe(false);
+  // Its own terminal, an unnamed terminal, or any terminal before the command
+  // result stays held until turn.accepted is exposed.
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: "provider-turn-new" })).toBe(true);
+  expect(mayBelong({ expectedProviderTurnId: "provider-turn-new", terminalProviderTurnId: null })).toBe(true);
+  expect(mayBelong({ expectedProviderTurnId: null, terminalProviderTurnId: lostTurn })).toBe(true);
+  expect(terminalTurn("provider.event", { events: [{ method: "turn/completed",
+    params: { turn: { id: "provider-turn-raw", status: "failed" } } }] })).toBe("provider-turn-raw");
+});
+
+it("settles a restored turn from the runner's reconciled result terminal", () => {
+  const { runnerdRecoveredTurnTerminal: recovered } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { payload: { payload } } });
+  const reconciled = event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: null });
+  const runTerminal = event("run.terminal", { turnTerminalState: "completed", runTerminalState: "succeeded" });
+  // The runner recovered turn-1's accepted result: no provider turn terminal,
+  // only the reconciliation and the run terminal.
+  expect(recovered([event("turn.started", { providerTurnId: "turn-1" }), reconciled, runTerminal], "turn-1"))
+    .toEqual({ status: "completed", error: null });
+  // An explicit provider terminal keeps its cause.
+  const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+  expect(recovered([reconciled, event("turn.failed", { providerTurnId: "turn-1", error: lost }), runTerminal], "turn-1"))
+    .toEqual({ status: "failed", error: lost });
+  // A run terminal settles only the turn the runner reconciled as ended.
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-0", activeProviderTurnId: null }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: "turn-1" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([reconciled, event("turn.started", { providerTurnId: "turn-2" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([runTerminal], "turn-1")).toBeNull();
+});
+
+it("carries the provider-turn wait marker on a recovered turn terminal only when the PRP turn.completed has it", () => {
+  const { runnerdRecoveredTurnTerminal: recovered, runnerdPriorTurnTerminals: prior } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { runId: "run-1", payload: { payload } } });
+  const awaited = event("turn.completed", { providerTurnId: "turn-1", awaitingProviderTurn: true });
+  const plain = event("turn.completed", { providerTurnId: "turn-1" });
+  const failed = event("turn.failed", { providerTurnId: "turn-1", awaitingProviderTurn: true });
+  const forged = event("turn.completed", { providerTurnId: "turn-1", awaitingProviderTurn: "true" });
+  expect(recovered([awaited], "turn-1")).toEqual({ status: "completed", error: null, awaitingProviderTurn: true });
+  expect(recovered([plain], "turn-1")).toStrictEqual({ status: "completed", error: null });
+  expect(recovered([failed], "turn-1")).toStrictEqual({ status: "failed", error: null });
+  expect(recovered([forged], "turn-1")).toStrictEqual({ status: "completed", error: null });
+  expect([...prior([awaited], "run-1", "turn-2").values()])
+    .toEqual([{ id: "turn-1", status: "completed", error: null, awaitingProviderTurn: true }]);
+  for (const unmarked of [plain, failed, forged]) {
+    expect([...prior([unmarked], "run-1", "turn-2").values()])
+      .toStrictEqual([{ id: "turn-1", status: unmarked.eventType.slice("turn.".length), error: null }]);
+  }
+  expect(prior([awaited], "run-1", "turn-1").size).toBe(0);
+  expect(prior([awaited], "run-other", "turn-2").size).toBe(0);
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({
@@ -1555,12 +2067,11 @@ it.each(["before", "after"] as const)(
         JSON.stringify(controlPlaneState),
       );
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).rejects.toThrow(`crashed ${crashPoint} remote archive`);
       await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
@@ -1568,12 +2079,11 @@ it.each(["before", "after"] as const)(
       });
 
       await expect(
-        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
           root,
           controlPlaneState,
           desiredIdentity,
-          readRunnerState,
-          archiveRunnerState,
+          { read: readRunnerState, archive: archiveRunnerState },
         ),
       ).resolves.toEqual(controlPlaneState);
       expect(readCount).toBe(1);
@@ -1587,6 +2097,261 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+describe("authority rotation after the prior controller state is restored", () => {
+  const priorIdentity = {
+    runnerInstanceId: "runner-restored-rotation",
+    environmentLeaseId: "lease-restored-rotation",
+    runId: "run-restored-rotation-prior",
+    normalizedSessionId: "session-restored-rotation",
+    turnId: "turn-restored-rotation-prior",
+    itemId: "item-restored-rotation-prior",
+  };
+  const desiredIdentity = {
+    ...priorIdentity,
+    runId: "run-restored-rotation-next",
+    turnId: "turn-restored-rotation-next",
+    itemId: "item-restored-rotation-next",
+  };
+  // The live controller state carries fields that a server checkpoint
+  // restore does not reproduce, so a restored copy can differ in bytes.
+  const controlPlaneState = {
+    schema: "paperclip.runner.durable.control-plane-state.v1",
+    identity: priorIdentity,
+    ackedSourceSeq: 7,
+  };
+  const suspendedRunnerState = {
+    schema: "paperclip.runner.durable.state.v1",
+    ...priorIdentity,
+    lifecycle: "suspended",
+  };
+  const restoredCopies = {
+    "byte-identical": JSON.stringify(controlPlaneState),
+    "re-serialized": JSON.stringify(
+      { schema: controlPlaneState.schema, identity: priorIdentity },
+      null,
+      2,
+    ),
+    "other-authority": JSON.stringify({
+      ...controlPlaneState,
+      identity: { ...priorIdentity, turnId: "turn-restored-rotation-other" },
+    }),
+  } as const;
+  type RestoredCopy = keyof typeof restoredCopies;
+  const cases = Object.keys(restoredCopies) as RestoredCopy[];
+
+  async function restoreControlPlane(root: string, copy: RestoredCopy) {
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(
+      join(root, "control-plane", "control-plane-state.json"),
+      restoredCopies[copy],
+    );
+  }
+
+  it.each(cases)("external rotation: %s restored copy", async (copy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-restore-"));
+    let activeRunnerState: Record<string, unknown> | null = suspendedRunnerState;
+    let archivedRunnerState: Record<string, unknown> | null = null;
+    let readCount = 0;
+    const readRunnerState = async () => {
+      readCount += 1;
+      if (activeRunnerState === null) throw new Error("runner state moved");
+      return activeRunnerState;
+    };
+    // The remote archive is idempotent: a retry returns the saved snapshot.
+    const archiveRunnerState = async () => {
+      if (activeRunnerState !== null) {
+        archivedRunnerState = activeRunnerState;
+        activeRunnerState = null;
+      }
+      if (archivedRunnerState === null) {
+        throw new Error("archived runner state unavailable");
+      }
+      return archivedRunnerState;
+    };
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        { read: readRunnerState, archive: archiveRunnerState },
+      );
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      // The first attempt completes both archives, then fails before the
+      // new Runner starts.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      // Retry preparation restores the prior run's controller checkpoint.
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow(
+          "native_runner_authority_archive_conflict",
+        );
+        // Contradictory state stays in place for operator recovery.
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
+        return;
+      }
+      // The retry resumes from the archived snapshot, not the restored copy.
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(readCount).toBe(1);
+      expect(archivedRunnerState).toEqual(suspendedRunnerState);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(cases)("local rotation: %s restored copy", async (copy) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-restore-"));
+    const rotate = () =>
+      runnerdRecoveryInternals.rotateAuthorityEpoch(
+        root,
+        controlPlaneState,
+        desiredIdentity,
+        runnerdRecoveryInternals.localRunnerStateArchive(root),
+      );
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      await writeFile(
+        join(root, "runner", "runner-state.json"),
+        JSON.stringify(suspendedRunnerState),
+      );
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(
+        stat(join(root, "runner", "runner-state.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      await restoreControlPlane(root, copy);
+      if (copy === "other-authority") {
+        await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+        await expect(
+          stat(join(root, "control-plane", "control-plane-state.json")),
+        ).resolves.toBeDefined();
+        return;
+      }
+      await expect(rotate()).resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["identical", "different"] as const)(
+    "local rotation: %s duplicate runner state",
+    async (duplicate) => {
+      const root = await mkdtemp(join(tmpdir(), "runner-local-rotation-runner-state-"));
+      const runnerStatePath = join(root, "runner", "runner-state.json");
+      const rotate = () =>
+        runnerdRecoveryInternals.rotateAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          runnerdRecoveryInternals.localRunnerStateArchive(root),
+        );
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await mkdir(join(root, "runner"), { recursive: true });
+        await writeFile(
+          join(root, "control-plane", "control-plane-state.json"),
+          JSON.stringify(controlPlaneState),
+        );
+        await writeFile(runnerStatePath, JSON.stringify(suspendedRunnerState));
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+
+        // A settled Runner state reappears beside its archived snapshot.
+        await writeFile(
+          runnerStatePath,
+          duplicate === "identical"
+            ? JSON.stringify(suspendedRunnerState)
+            : JSON.stringify({ ...suspendedRunnerState, outbox: [] }),
+        );
+        if (duplicate === "different") {
+          await expect(rotate()).rejects.toThrow("native_runner_authority_archive_conflict");
+          await expect(stat(runnerStatePath)).resolves.toBeDefined();
+          return;
+        }
+        await expect(rotate()).resolves.toEqual(controlPlaneState);
+        await expect(stat(runnerStatePath)).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // Drives the transport's real start path. The missing runnerd binary stops
+  // it right after the rotation, so its ENOENT proves the retry passed every
+  // earlier check without reading the retired live Runner state.
+  it.each([
+    ["a completed warm handoff", { completedWarmTransition: { receipt: { commandId: "warm-command" } } }, "resumes"],
+    ["a source attachment hook", {}, "resumes"],
+    ["an unfinished warm transition", { warmTransition: { receipt: { commandId: "warm-command" } } }, "conflicts"],
+    ["a pending attachment", { commands: [{ commandId: "attach", type: "run.attach", status: "pending", payload: {} }] }, "conflicts"],
+  ] as const)("transport retry after a committed rotation with %s", async (_name, restoredFields, outcome) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-committed-rotation-transport-"));
+    const archiveKey = createHash("sha256").update(JSON.stringify(priorIdentity)).digest("hex").slice(0, 24);
+    const archivedControlPlane = join(root, "authority-epochs", `epoch-${archiveKey}`, "control-plane");
+    const restoredState = { ...controlPlaneState, ...restoredFields };
+    const steps: string[] = [];
+    const { transport } = createCapabilityRunnerdCodexTransport({
+      provider: "codex",
+      stateDirectory: root,
+      runnerBinary: join(root, "missing-paperclip-runnerd"),
+      prpIdentity: desiredIdentity,
+      ...(_name === "a source attachment hook" ? { onRecoveryAccountingEvent: () => undefined } : {}),
+      // The previous attempt already moved the live Runner state.
+      prepareExternalRunnerState: async () => { steps.push("prepared"); },
+      readRunnerState: async () => { steps.push("read"); throw new Error("live runner state was archived"); },
+      archiveExternalRunnerState: async (input) => {
+        steps.push(`archived:${input.archiveKey}`);
+        return suspendedRunnerState;
+      },
+    } as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]);
+    try {
+      await mkdir(archivedControlPlane, { recursive: true });
+      await writeFile(join(archivedControlPlane, "control-plane-state.json"), JSON.stringify(controlPlaneState));
+      // Retry preparation restored the prior run's controller checkpoint.
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(restoredState));
+      const started = transport.request("thread/read", {});
+      if (outcome === "conflicts") {
+        await expect(started).rejects.toThrow("native_runner_authority_archive_conflict");
+        expect(steps).toEqual([]);
+        await expect(stat(join(root, "control-plane", "control-plane-state.json"))).resolves.toBeDefined();
+        return;
+      }
+      await expect(started).rejects.toThrow(/ENOENT|missing-paperclip-runnerd/);
+      expect(steps).toEqual([`archived:${archiveKey}`]);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await transport.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
@@ -1706,6 +2471,186 @@ it("waits for the exact durable suspension command behind prior close work", asy
   expect(pumpCount).toBeGreaterThanOrEqual(2);
 });
 
+it("gives a suspend that completes near the close deadline its whole proof window from the completion", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const closeDeadline = startedAt + 300;
+  let completedAt = 0;
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (Date.now() - startedAt >= 250 && commands[0]?.status === "pending") {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: closeDeadline,
+    proofWindowMs: 400,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(true);
+  expect(completedAt).toBeGreaterThan(0);
+  expect(Date.now()).toBeGreaterThan(closeDeadline);
+  expect(Date.now()).toBeLessThanOrEqual(completedAt + 400 + 50);
+});
+
+async function suspendProofAfterCompletion(input: { lifecycleAt: (sinceCompletionMs: number) => string; runId?: string;
+  deadlineMs: number; proofWindowMs: number; proofSettleMs: number }) {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  let completedAt: number | null = null;
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      const lifecycle = input.lifecycleAt(completedAt === null ? 0 : Date.now() - completedAt);
+      const refutation = input.runId ? "identity" : lifecycle === "suspended" ? null : "lifecycle";
+      if (refutation) throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError(refutation);
+      return { lifecycle };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: startedAt + input.deadlineMs,
+    proofWindowMs: input.proofWindowMs,
+    proofSettleMs: input.proofSettleMs,
+    pollIntervalMs: 20,
+  });
+  return { proven, elapsedMs: Date.now() - startedAt };
+}
+
+it("proves a suspension whose suspended state appears 1.5 s after the command completed", async () => {
+  const { proven } = await suspendProofAfterCompletion({ lifecycleAt: since => since >= 1_500 ? "suspended" : "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(true);
+});
+
+it("fails a suspension whose state stays ready after the settle window, not after the whole proof window", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 1_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeGreaterThanOrEqual(900);
+  expect(elapsedMs).toBeLessThan(3_000);
+});
+
+it("ignores a not-suspended read that started before the suspend completed, even when it answers after the proof window opened", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let completedAt: number | null = null;
+  let reads = 0;
+  const refutations: Array<string | null> = [];
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      reads += 1;
+      if (reads === 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError("lifecycle");
+      }
+      if (Date.now() - completedAt! < 1_500) throw new Error("remote runner state read failed");
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null && reads >= 1) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: Date.now() + 100,
+    proofWindowMs: 30_000,
+    proofSettleMs: 500,
+    onProofRefutation: refutation => refutations.push(refutation),
+    pollIntervalMs: 20,
+  });
+  expect(proven).toBe(true);
+  expect(refutations).not.toContain("lifecycle");
+});
+
+it("fails at the close deadline when the durable state belongs to another run", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "suspended", runId: "another-run",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+});
+
+it("bounds the proof window from the observed completion, so a proof read that never answers still ends", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: () => new Promise(() => undefined),
+    runnerHasExited: async () => true,
+    pump: () => { if (commands[0]) commands[0].status = "completed"; },
+    deadline: startedAt + 100,
+    proofWindowMs: 200,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(false);
+  expect(Date.now() - startedAt).toBeLessThan(100 + 200 + 150);
+});
+
+it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
+  // An ACPX sidecar can reject session.suspend while the just-completed turn
+  // is still settling. One rejected command must not leave a successful run's
+  // own session closed without a proven suspension.
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let lifecycle = "ready";
+  const queueSuspend = vi.fn((commandId: string) => {
+    commands.push({ commandId, type: "runner.suspend", status: "pending" });
+  });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend,
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => false,
+      pump: () => {
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        if (commands.length === 1) pending.status = "failed";
+        else { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(queueSuspend).toHaveBeenCalledTimes(2);
+  expect(new Set(commands.map(command => command.commandId)).size).toBe(2);
+});
+
+it("stops retrying a rejected suspension at its attempt bound or when the runner exits", async () => {
+  for (const exited of [false, true]) {
+    const commands: Array<{ commandId: string; type: string; status: string }> = [];
+    const queueSuspend = vi.fn((commandId: string) => {
+      commands.push({ commandId, type: "runner.suspend", status: "failed" });
+    });
+    await expect(
+      runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+        commands: () => commands,
+        queueSuspend,
+        readRunnerState: async () => ({ lifecycle: "ready" }),
+        runnerHasExited: async () => exited,
+        pump: () => undefined,
+        deadline: Date.now() + 5_000,
+        pollIntervalMs: 0,
+      }),
+    ).resolves.toBe(false);
+    expect(queueSuspend).toHaveBeenCalledTimes(exited ? 1 : 3);
+  }
+});
+
 it("does not accept process exit without durable suspension", async () => {
   const commands: Array<{
     commandId: string;
@@ -1730,6 +2675,71 @@ it("does not accept process exit without durable suspension", async () => {
       pollIntervalMs: 0,
     }),
   ).resolves.toBe(false);
+});
+
+it("commits the Runner's exit only once its suspend command completes", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const order: string[] = [];
+  let lifecycle = "ready";
+  let pumps = 0;
+  const exitCommitted = vi.fn(() => { order.push(`exit committed after ${commands.length} attempts`); });
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+      readRunnerState: async () => {
+        order.push(`state ${lifecycle}`);
+        return { lifecycle };
+      },
+      runnerHasExited: async () => false,
+      pump: () => {
+        pumps += 1;
+        const pending = commands.find(command => command.status === "pending");
+        if (!pending) return;
+        // The first attempt is rejected; the retry stays pending for one
+        // round before the Runner reports it completed.
+        if (commands.length === 1) pending.status = "failed";
+        else if (pumps >= 4) { pending.status = "completed"; lifecycle = "suspended"; }
+      },
+      onExitCommitted: exitCommitted,
+      deadline: Date.now() + 2_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(exitCommitted).toHaveBeenCalledOnce();
+  expect(order.indexOf("exit committed after 2 attempts")).toBeGreaterThan(order.indexOf("state ready"));
+  expect(order.at(-1)).toBe("state suspended");
+
+  // A reused completed receipt commits the exit only once the durable state
+  // proves the Runner is still suspended.
+  for (const [state, committed] of [["suspended", true], ["ready", false]] as const) {
+    const reusedCommitted = vi.fn();
+    await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => [{ commandId: "command_prior_suspend", type: "runner.suspend", status: "completed" }],
+      queueSuspend: () => undefined,
+      readRunnerState: async () => ({ lifecycle: state }),
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      onExitCommitted: reusedCommitted,
+      deadline: Date.now() + 20,
+      pollIntervalMs: 0,
+    });
+    expect(reusedCommitted).toHaveBeenCalledTimes(committed ? 1 : 0);
+  }
+
+  // A rejected or unanswered suspend never commits the exit.
+  const neverCommitted = vi.fn();
+  await expect(runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands.slice(0, 0),
+    queueSuspend: () => undefined,
+    readRunnerState: async () => ({ lifecycle: "ready" }),
+    runnerHasExited: async () => false,
+    pump: () => undefined,
+    onExitCommitted: neverCommitted,
+    deadline: Date.now() + 20,
+    pollIntervalMs: 0,
+  })).resolves.toBe(false);
+  expect(neverCommitted).not.toHaveBeenCalled();
 });
 
 it("reserves a bounded suspension window after close preparation", () => {
@@ -2049,17 +3059,22 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
-    for (const agent of ["pi", "antigravity"] as const) {
+    for (const agent of ["cursor", "copilot", "pi", "kimi", "antigravity"] as const) {
       expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
         join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
       )).toEqual({ root: server, manifest: join(server, "package.json") });
+    }
+    for (const agent of ["claude", "codex", "grok"] as const) {
+      expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, agent,
+      )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
     }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
 
-it.each((["copilot", "pi", "antigravity"] as const).flatMap(agent =>
+it.each((["cursor", "copilot", "pi", "kimi", "antigravity"] as const).flatMap(agent =>
   ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
   "admits the controller-selected $agent package authority in a $layout layout",
   async ({ agent, layout }) => {
@@ -2640,7 +3655,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
   resolved.skills[0]!.bundle.rootPath = "/guest/.agents/skills/assigned";
   const materialize = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockRejectedValue(new Error("unexpected Core materialization"));
   const discover = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => { throw new Error("unexpected Core discovery"); });
-  let configuration: Record<string, unknown> | undefined;
+  let configuration: Record<string, unknown> | null | undefined;
   let recovered = false;
   let requestedRun = "";
   let requestedInstructions = "";
@@ -2722,7 +3737,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     await expect(stat(join(root, "runtime-context.json"))).rejects.toHaveProperty("code", "ENOENT");
     await transport.close();
     if (mode === "removed-context") {
-      const rotated = create(5_000, "run-prepared-removed");
+      const rotated = create(undefined, "run-prepared-removed");
       try {
         await expect(rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id }))
           .rejects.toThrow("cannot change the durable Codex provider profile");
@@ -2739,7 +3754,11 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     }
     if (mode === "rotated-recovery" || mode === "omitted-context") {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const rotated = create(5_000, "run-prepared-rotated");
+        // Close settlement is bounded by the close grace and must prove the
+        // provider drain. A recovered successor needs several drain receipts,
+        // each a runner round trip, so keep the production close budget here.
+        // A shortened budget fails closed on a loaded CI runner.
+        const rotated = create(undefined, "run-prepared-rotated");
         try {
           await rotated.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
           expect(requestedRun).toBe("run-prepared-rotated");
@@ -2750,7 +3769,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
       }
       return;
     }
-    const resumed = create(mode === "timeout-attachment" ? 500 : 5_000);
+    const resumed = create(mode === "timeout-attachment" ? 500 : undefined);
     try {
       await resumed.transport.request("thread/read", { threadId: (opened.thread as { id: string }).id });
       expect(recovered).toBe(true);
@@ -2807,7 +3826,9 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
     materialize.mockRestore(); discover.mockRestore();
     await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+  // Up to three closes run under the 10s production close budget. Keep a close
+  // regression visible as its settlement error, not as a bare test timeout.
+}, 60_000);
 
 it("rejects an environment-prepared policy change before registration or process launch", async () => {
   const root = await mkdtemp(join(tmpdir(), "runner-environment-policy-"));
@@ -3081,6 +4102,29 @@ it("rehydrates normalized usage with the opened driver binding", () => {
       runDelta: { inputTokens: 3 },
     },
   });
+});
+
+it("keeps reported context-window occupancy on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  const params = rehydrateRunnerdUsageNotification(
+    { ...base, context: { usedTokens: 26672, windowTokens: 258400 } },
+    "opened-thread-1",
+    "active-turn-1",
+  );
+  expect(params.tokenUsage).toMatchObject({ context: { usedTokens: 26672, windowTokens: 258400 } });
+  for (const context of [undefined, { usedTokens: -1, windowTokens: 10 }, { usedTokens: 1, windowTokens: 0 }]) {
+    const rehydrated = rehydrateRunnerdUsageNotification({ ...base, context }, "opened-thread-1", "active-turn-1");
+    expect(rehydrated.tokenUsage).not.toHaveProperty("context");
+  }
+});
+
+it("keeps the serving host and generation id on rehydrated usage", () => {
+  const base = { cumulative: { inputTokens: 10 }, runDelta: { inputTokens: 3 }, runDeltaAvailable: true };
+  expect(rehydrateRunnerdUsageNotification({ ...base, upstreamProvider: "Novita", providerRequestId: "gen-1" }, "opened-thread-1", "active-turn-1").tokenUsage)
+    .toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1" });
+  const unnamed = rehydrateRunnerdUsageNotification({ ...base, providerRequestId: null }, "opened-thread-1", "active-turn-1").tokenUsage;
+  expect(unnamed).not.toHaveProperty("upstreamProvider");
+  expect(unnamed).not.toHaveProperty("providerRequestId");
 });
 
 it("rehydrates durable cumulative usage for a cold thread read", () => {
@@ -3535,7 +4579,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
     let template: Record<string, unknown> | null = null;
     let registrationStarted!: () => void;
     const started = new Promise<void>(resolve => { registrationStarted = resolve; });
-    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: string; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
+    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: "0.0.0.0"; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
     const registration = new Promise<Parameters<typeof returnRegistration>[0]>(resolve => { returnRegistration = resolve; });
     let finishRelease!: () => void;
     const releasing = new Promise<void>(resolve => { finishRelease = resolve; });
@@ -3546,7 +4590,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
       if (releaseFails) throw releaseError;
     });
     const registered = {
-      connection: { mode: "listen" as const, listenAddress: "127.0.0.1", listenPort: 43127, listenPath: "/setup-probe" },
+      connection: { mode: "listen" as const, listenAddress: "0.0.0.0" as const, listenPort: 43127, listenPath: "/setup-probe" },
       release,
     };
     let registrationSignal: AbortSignal | undefined;
@@ -3784,7 +4828,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   }
 }, 15_000);
 
-it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "preconfigured", "remote-preconfigured", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
   const runtimeDirectory = join(root, "native-state");
   await mkdir(runtimeDirectory, { mode: 0o700 });
@@ -3793,6 +4837,8 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   await mkdir(sourceHome, { mode: 0o700 });
   await writeFile(join(sourceHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: mode === "api-key" ? "unrelated-login" : "selected-account" }), { mode: 0o600 });
   if (mode === "api-key") await writeFile(join(sourceHome, "config.toml"), 'model = "ambient-model"\n[mcp_servers.ambient]\ncommand = "untrusted-ambient-command"\n', { mode: 0o600 });
+  const preconfigured = mode.endsWith("preconfigured");
+  if (preconfigured) await writeFile(join(sourceHome, "config.toml"), 'model = "native-model"\n', { mode: 0o600 });
   const remote = mode.startsWith("remote-") || mode.startsWith("late-remote-");
   const remoteRoot = join(root, "assigned-remote-filesystem");
   const remoteFilesystem = join(remoteRoot, "filesystem");
@@ -3804,18 +4850,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
-      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
+      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: preconfigured ? root : "/unrelated/home", ...(preconfigured ? { CODEX_HOME: sourceHome } : {}) },
       timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
       ...(remote ? { workingDirectory: remoteWorkspace } : {}),
       transportOptions: {
+        ...(preconfigured ? { homeMode: "preconfigured" as const } : {}),
         ...(remote ? {
           runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
           readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
           controlPlaneRegistration: async authority => {
             await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
+            if (!preconfigured) {
             const remoteHome = join(remoteFilesystem, "codex-home");
             await mkdir(remoteHome, { mode: 0o700 });
             for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
+            }
             if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
             await authority.start();
             return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
@@ -3829,7 +4878,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
           ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
         sourceCodexHome: sourceHome,
       },
-      onCodexCredentialRefresh: async filename => {
+      onCodexCredentialRefresh: preconfigured ? undefined : async filename => {
         expect(filename).toBe(join(remote ? remoteFilesystem : runtimeDirectory, "codex-home", "auth.json"));
         expect(JSON.parse(await readFile(filename, "utf8"))).toEqual({ OPENAI_API_KEY: "selected-account" });
         if (mode === "api-key") {
@@ -3841,16 +4890,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         if (mode === "model-refresh-error") throw new Error("credential refresh failed after the native model error");
       },
       onCleanupConfirmed: async () => {
+        if (preconfigured) {
+          await expect(stat(join(runtimeDirectory, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+          if (remote) await expect(stat(join(remoteFilesystem, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+        }
         cleanupConfirmed = true;
-        expect(refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
+        expect(preconfigured || refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
         if (mode === "model-cleanup-error") throw new Error("owned temporary state cleanup failed");
         await rm(runtimeDirectory, { recursive: true, force: true });
       },
     });
-    if (mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+    if (preconfigured || mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
       const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
       await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
-      expect(refreshed).toBe(true);
+      expect(refreshed).toBe(!preconfigured);
+      if (preconfigured) expect(await readFile(join(sourceHome, "config.toml"), "utf8")).toBe('model = "native-model"\n');
       if (remote) expect(registrationReleased).toBe(true);
       expect(cleanupConfirmed).toBe(true);
       await expect(stat(runtimeDirectory)).rejects.toThrow();
@@ -3861,7 +4915,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     } else {
       await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
       if (mode === "late-remote-release-error") {
-        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        await vi.waitFor(() => expect(registrationReleased).toBe(true)); expect(cleanupConfirmed).toBe(false);
         expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
       }
       if (mode === "model-refresh-error") {
@@ -3998,7 +5052,7 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     }
     expect(methods).toContain("turn/completed");
     expect(terminalParams).toMatchObject({
-      threadId: opened.thread.id,
+      threadId: (opened.thread as { id: string }).id,
       turnId: "provider-turn-1",
     });
     expect(bundle.evidence().diagnostics).toContain(
@@ -4042,7 +5096,7 @@ it("controls a Codex session goal end to end through durable PRP v2", async () =
         },
       ],
     });
-    const threadId = opened.thread.id;
+    const threadId = (opened.thread as { id: string }).id;
 
     await expect(
       bundle.transport.request("thread/goal/set", {
@@ -4197,7 +5251,7 @@ it.each([false, true])("binds goal turns through the full Codex harness (autonom
     });
     expect(observed.some((event) => event.eventType === "session.failed")).toBe(false);
   } finally {
-    await session?.close();
+    await session?.close({ reason: "test complete" });
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
@@ -4843,7 +5897,7 @@ it("binds an immediately failed durable turn before exposing its terminal", asyn
       ],
     });
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
     await rm(stateDirectory, {
       recursive: true,
       force: true,
@@ -5050,9 +6104,10 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
       if (event.eventType === "turn.completed") break;
     }
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
   }
   const snapshot = await session.snapshot();
+  if (snapshot.lastSourceSequence === undefined) throw new Error("Expected a source sequence in the session snapshot");
   for (
     let sourceSeq = 1;
     sourceSeq <= snapshot.lastSourceSequence;
@@ -5418,13 +6473,34 @@ it("surfaces a runner exit while provider-ingress readiness is still pending", a
   }
 });
 
-it("rejects the notification stream promptly when runnerd exits after accepting a turn", async () => {
+function processAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // An exited child of this test process stays a zombie until reaped.
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+it.each([
+  { journal: true },
+  // A runnerd that never journalled (an older build) proves nothing: the
+  // cleanup stays fail-closed, as before the journal existed.
+  { journal: false },
+])("stops a lost runnerd's provider and escaped tool job from its lineage journal (journal=$journal)", async ({ journal }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
+  const jobPidFile = join(stateDirectory, "escaped-tool-job.pid");
   const diagnostics: string[] = [];
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
+    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start", "--spawn-escaped-tool-job", jobPidFile),
     stateDirectory,
     closeGraceMs: 400,
     onDiagnostic: (message) => diagnostics.push(message),
@@ -5433,6 +6509,8 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
     success: true,
     contentItems: [],
   }));
+  let jobPid: number | null = null;
+  let providerPid: number | null = null;
   try {
     await bundle.transport.request("initialize", {});
     await bundle.transport.request("thread/start", {
@@ -5456,8 +6534,23 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
       .notifications()
       [Symbol.asyncIterator]();
     await expectTurnStarted(notifications);
+    await vi.waitFor(async () => {
+      jobPid = Number((await readFile(jobPidFile, "utf8")).trim());
+      expect(processAlive(jobPid)).toBe(true);
+    }, { timeout: 10_000, interval: 20 });
+    // The tool job left the provider's session; give the lineage sampler
+    // (50ms) several reads to record it, as a real tool runs far longer.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
     const runnerPid = bundle.evidence().runnerPid;
     expect(runnerPid).not.toBeNull();
+    const lineage = join(stateDirectory, "runner", "process-lineage");
+    const journals = (await readdir(lineage)).filter((name) => name.startsWith("lineage-"));
+    expect(journals).toHaveLength(1);
+    const recorded = JSON.parse(await readFile(join(lineage, journals[0]!), "utf8"));
+    providerPid = recorded.root[0];
+    expect(processAlive(providerPid)).toBe(true);
+    expect(recorded.members.map((member: [number, number]) => member[0])).toContain(jobPid);
+    if (!journal) await rm(lineage, { recursive: true, force: true });
     process.kill(runnerPid!, "SIGKILL");
     await expect(
       Promise.race([
@@ -5470,39 +6563,61 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       ]),
     ).rejects.toThrow("native_runner_process_exited");
-  } finally {
-    try {
+    // The fake provider exits when runnerd's stdin pipe closes; the tool job
+    // that left its session is re-parented and keeps running.
+    expect(processAlive(jobPid)).toBe(true);
+    const runnerState = () => readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")
+      .then((text) => JSON.parse(text));
+    if (journal) {
+      await bundle.transport.close();
+      expect(processAlive(providerPid)).toBe(false);
+      expect(processAlive(jobPid)).toBe(false);
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: true, journals: 1, remaining: [],
+      });
+      // The crash stop keeps the durable record for recovery to read, and
+      // queues no suspend that the next runnerd on this root would receive.
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const control = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(control.commands.filter((command: { type: string; status: string }) =>
+        command.type === "runner.suspend" && command.status === "pending")).toEqual([]);
+    } else {
       await expect(bundle.transport.close()).rejects.toThrow(
         "runner did not durably suspend before checkpoint",
       );
-      const runnerState = JSON.parse(
-        await readFile(
-          join(stateDirectory, "runner", "runner-state.json"),
-          "utf8",
-        ),
-      );
-      expect(runnerState.lifecycle).not.toBe("suspended");
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: false, reason: "journal_unavailable",
+      });
       const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
-      expect(settlement).toBeDefined();
       expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
         runnerSuspended: false,
-        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+        suspensionState: { commandStatus: null },
       });
-    } finally {
-      await rm(stateDirectory, { recursive: true, force: true });
+      // Nothing was signalled without proof.
+      expect(processAlive(jobPid)).toBe(true);
     }
+  } finally {
+    for (const pid of [jobPid, providerPid]) {
+      if (pid && processAlive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    }
+    await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
 
-it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+it.each([
+  ["acpx", "claude"], ["acpx", "codex"], ["acpx", "pi"], ["acpx", "cursor"], ["acpx", "copilot"], ["acpx", "kimi"], ["opencode", undefined],
+] as const)("drops a previous-release gateway binding from the %s %s runner environment", (provider, agent) => {
   const gateway = {
     PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",
+    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateways/previous-release",
     PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-scoped-gateway-token-1234567890",
   };
   const environment = createCapabilityRunnerdProviderEnvironment({
-    provider: "acpx",
-    options: { provider: "acpx", acpxAgent: agent, environment: {
+    provider,
+    options: { provider, ...(agent ? { acpxAgent: agent } : {}), environment: {
       PATH: "/bin", ...gateway, PAPERCLIP_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross",
     } },
     identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
@@ -5510,7 +6625,9 @@ it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in 
     codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: true,
     acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
   });
-  expect(environment).toMatchObject(gateway);
+  for (const name of Object.keys(gateway)) expect(environment).not.toHaveProperty(name);
+  expect(JSON.stringify(environment)).not.toContain("fixture-scoped-gateway-token");
+  expect(JSON.stringify(environment)).not.toContain("previous-release");
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(environment.DATABASE_URL).toBeUndefined();
 });
@@ -5752,7 +6869,7 @@ it.each([
       expect(outcomes[1].result).toMatchObject({ content: [{ text: expect.stringContaining(feedback) }] });
       if (adoptAfterTurn) {
         const snapshot = await session.snapshot();
-        const runnerStartedAt = bundle.transport.processInfo().startedAt;
+        const runnerStartedAt = bundle.transport.processInfo!().startedAt;
         survivingPid = bundle.evidence().runnerPid;
         expect(survivingPid).toEqual(expect.any(Number));
         const artifact = readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary());
@@ -5794,7 +6911,7 @@ it.each([
         expect(recovery.session).toBeDefined();
         session = recovery.session!;
         expect(adopted.evidence().runnerPid).toBe(survivingPid);
-        expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+        expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
         expect((await session.snapshot()).providerSessionId).toBe(snapshot.providerSessionId);
         expect(duplicateLauncher).not.toHaveBeenCalled();
       }
@@ -5804,7 +6921,7 @@ it.each([
       expect(allRequests.map(request => request.variant)).toEqual(supportsReasoning
         ? ["paperclip-no-reasoning", "paperclip-default"] : [undefined, undefined]);
     },
-    closeSession: async () => { await session?.close(); },
+    closeSession: async () => { await session?.close({ reason: "test complete" }); },
     closeTransport: async () => {
       try { await adopted?.transport.close(); }
       finally {
@@ -5837,16 +6954,33 @@ it("rejects Pi thinking settings on a different transport provider", () => {
   expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
 });
 
+describe("runnerd compaction turn payload", () => {
+  it("asks Codex for its own compaction and Claude for its /compact command", async () => {
+    const { runnerdCompactionTurnPayload } = await import("./runnerd-codex-transport.js");
+    expect(runnerdCompactionTurnPayload("codex")).toEqual({ compact: true });
+    expect(runnerdCompactionTurnPayload("acpx")).toEqual({ text: "/compact" });
+    expect(() => runnerdCompactionTurnPayload("opencode")).toThrow("not supported");
+  });
+});
+
 describe("cold process admission budget", () => {
   it("bounds Pi cold startup and recovery at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
   });
+  it("bounds a cold ACPX Claude session.open at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "claude", true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs("acpx", "claude", false)).toBe(30_000);
+  });
+  it("bounds a cold OpenCode restore at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
+  });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
-    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+    expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
+    for (const agent of ["codex", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
-    for (const provider of ["codex", "opencode", undefined]) {
+    for (const provider of ["codex", "cursor_cloud", undefined]) {
       expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
     }
   });
@@ -5930,6 +7064,129 @@ it("shares Pi's absolute cold deadline across recovery barriers and rejects a la
   } finally { vi.useRealTimers(); }
 });
 
+// Chaos w-20261111T011704-s9107/t01: the control plane was stopped (SIGSTOP, as in
+// a host sleep) 1 s into the resume barrier, together with the Runner it waits on.
+// On thaw, the wall clock had passed the 30 s deadline before either process could
+// act, so recovery reported "runner.drain timed out" and spent a recovery attempt.
+describe("admission waits do not count time this process was stopped", () => {
+  const pending = (clock: RunnerStallLedger | undefined, deadline: number, status: () => string, type = "runner.drain") =>
+    waitForRunnerCommand({
+      type, deadline, clock, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status: status() }),
+      runnerHasExited: async () => false, failureCode: () => "runner_local_connect_failed",
+    });
+
+  it("completes a resume barrier that the Runner answers after a 44 s freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Stopped for 44 s: the wall clock moves, but no timer of this process runs.
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("keeps the wall-clock timeout for a wait outside an admission", async () => {
+    vi.useFakeTimers();
+    try {
+      const drain = pending(undefined, Date.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("still times out a barrier that the Runner never answers after a freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const drain = pending(clock, clock.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      // Running time reaches the deadline: 1 s before, then the rest of the
+      // 30 s budget plus the 5 s post-stop grace.
+      await vi.advanceTimersByTimeAsync(40_000);
+      await rejection;
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("leaves the Runner time to answer after a freeze in a wait's last half second", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(29_500);
+      vi.setSystemTime(Date.now() + 60_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits a freeze outside any poll loop to the next barrier on the same deadline", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const deadline = clock.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+      let status = "pending";
+      const prepared = pending(clock, clock.now() + 30_000, () => status, "run.prepare");
+      await vi.advanceTimersByTimeAsync(5_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await prepared;
+      // Stopped for 70 s between barriers (a checkpoint flush, a spawn): only the ticker observes it.
+      vi.setSystemTime(Date.now() + 70_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      status = "pending";
+      const opened = pending(clock, deadline, () => status, "session.open");
+      await vi.advanceTimersByTimeAsync(20_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(opened).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits only stalls, so a slow but running process still reaches its deadline", () => {
+    let wall = 0;
+    const clock = new RunnerStallLedger(() => wall);
+    const deadline = clock.now() + 30_000;
+    // Every observation is 4.9 s apart on a loaded host: that is running time.
+    while (clock.now() < deadline) wall += 4_900;
+    expect(wall).toBeGreaterThanOrEqual(30_000);
+    expect(wall).toBeLessThan(35_000);
+    expect(clock.creditedMs).toBe(0);
+    // A 6 s gap is a stop: credited in full plus the post-stop grace, and only once.
+    wall += 6_000;
+    clock.now();
+    clock.now();
+    expect(clock.creditedMs).toBe(6_000 + RUNNER_POST_STOP_GRACE_MS);
+    // Total credit is capped, so a process that never runs normally still times out.
+    wall += 2 * RUNNER_MAX_STOPPED_CREDIT_MS;
+    clock.now();
+    expect(clock.creditedMs).toBe(RUNNER_MAX_STOPPED_CREDIT_MS);
+    // A wall-clock grace taken now moves onto the clock without the earlier
+    // credit, so it keeps exactly its own running-time budget.
+    const wallGrace = wall + 5_000;
+    const onClock = wallGrace - clock.creditedMs;
+    expect(onClock - clock.now()).toBe(5_000);
+  });
+});
+
 it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {
   vi.useFakeTimers();
   try {
@@ -5981,3 +7238,45 @@ it("launches and closes native Codex without materializing or editing the precon
     await rm(root, { force: true, recursive: true });
   }
 }, 30_000);
+
+// Staging: after a server replacement the new controller's session.snapshot
+// got no answer and the failure said only "timed out". The timeout now names
+// what the command waited behind, so the next occurrence explains the stall.
+describe("a Runner command that gets no answer", () => {
+  const now = Date.parse("2026-11-12T07:13:28.000Z");
+  const command = (seq: number, type: string, status: string, issuedAt: string) =>
+    ({ commandId: `command-${seq}`, controllerSeq: seq, type, status, issuedAt });
+
+  it("says what it waited behind in the timeout", async () => {
+    let failure: unknown;
+    try {
+      await waitForRunnerCommand({ type: "session.snapshot", deadline: Date.now() + 20, abortOnClose: false,
+        isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "pending" }),
+        runnerHasExited: async () => false, failureCode: () => "provider_transport_failed",
+        describeStall: () => describeRunnerCommandStall({ now, connectedRunners: 1, disconnectedForMs: null,
+          commandId: "command-9",
+          commands: [command(7, "semantic_tool.result", "pending", "2026-11-12T07:10:20.000Z"),
+            command(8, "turn.steer", "completed", "2026-11-12T07:10:21.000Z"),
+            command(9, "session.snapshot", "pending", "2026-11-12T07:12:58.000Z")],
+          committedEvents: [{ sourceSeq: 152, envelope: { runId: "run-1", payload: { eventType: "item.completed", emittedAt: "2026-11-12T07:10:27.000Z" } } }] }) });
+    } catch (error) { failure = error; }
+    expect((failure as Error).message).toBe("provider_transport_failed: PRP command session.snapshot timed out "
+      + "(runner connected; pending ahead 1 [semantic_tool.result] oldest 188s; last runner event seq 152 181s ago)");
+  });
+
+  it("keeps the plain timeout when there is nothing to describe or the description fails", async () => {
+    for (const describeStall of [undefined, () => null, () => { throw new Error("state unavailable"); }]) {
+      const failure = await waitForRunnerCommand({ type: "session.snapshot", deadline: Date.now() + 10, abortOnClose: false,
+        isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "pending" }),
+        runnerHasExited: async () => false, failureCode: () => "provider_transport_failed", describeStall })
+        .catch((error: unknown) => error);
+      expect((failure as Error).message).toBe("provider_transport_failed: PRP command session.snapshot timed out");
+    }
+  });
+
+  it("reports a disconnected Runner and no events", () => {
+    expect(describeRunnerCommandStall({ now, connectedRunners: 0, disconnectedForMs: 125_400, commandId: "command-1",
+      commands: [command(1, "session.snapshot", "pending", "2026-11-12T07:13:00.000Z")], committedEvents: [] }))
+      .toBe("runner disconnected 125s; pending ahead 0; last runner event none");
+  });
+});

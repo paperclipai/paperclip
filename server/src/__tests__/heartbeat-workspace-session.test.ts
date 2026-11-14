@@ -1982,6 +1982,22 @@ describe("effective run execution workspace config freshness", () => {
     expect(serialized).not.toContain("0.0.0.0");
   });
 
+  it("reports actual reuse when freshness policy requested replacement", () => {
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: {},
+      nextMetadata: buildWorkspaceConfigMetadata(),
+    });
+    const operation = buildWorkspaceConfigFreshnessOperation({
+      decision, hasExistingWorkspace: true, reuseRequested: true,
+      workspaceReused: true, configSnapshotRefreshed: true,
+      previousWorkspaceId: "same", activeWorkspaceId: "same",
+    });
+    expect(operation?.metadata.action).toBe("replace");
+    expect(operation?.system).toContain("reused execution workspace");
+    expect(operation?.system).not.toContain("replaced execution workspace");
+  });
+
   it("does not record a freshness operation when an unchanged workspace is simply reused", () => {
     const metadata = buildWorkspaceConfigMetadata();
     const decision = resolveExecutionWorkspaceConfigFreshness({
@@ -3385,6 +3401,23 @@ describe("isWorkspaceSyncConflictFailure", () => {
     expect(isWorkspaceSyncConflictFailure("no Codex credentials provisioned for managed home")).toBe(false);
     expect(isWorkspaceSyncConflictFailure(null)).toBe(false);
     expect(isWorkspaceSyncConflictFailure("")).toBe(false);
+  });
+});
+
+describe("native lifecycle default and saved task sessions", () => {
+  const native = (lifecycle: Record<string, unknown>) => buildSessionConfigMetadata({
+    adapterType: "paperclip_runner",
+    effectiveAdapterConfig: { provider: "codex", model: "gpt-6.1-sol", codexPermissionMode: "never", ...lifecycle },
+  });
+
+  it("keeps a session saved before migration 0443 cleared the stored per_turn default", async () => {
+    // Before the migration the agent stored per_turn; afterwards it stores nothing.
+    expect((await native({})).fingerprint).toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
+  });
+
+  it("still starts a new session for an explicit change to warm", async () => {
+    expect((await native({ lifecycleMode: "warm", idleTimeoutMs: 300_000 })).fingerprint)
+      .not.toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
   });
 });
 

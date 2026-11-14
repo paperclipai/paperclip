@@ -17,6 +17,7 @@ import {
   routineDetailHref,
 } from "./RoutineContextualSidebar";
 import { useRoutineDetail } from "./routine-sections/context";
+import { RoutineResponsibleUser } from "./RoutineResponsibleUser";
 
 export type RoutineScheduleSummary = {
   label: string;
@@ -186,20 +187,23 @@ export function RoutineOverview() {
         />
       </div>
 
-      <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
-        <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
-        {currentAssignee ? (
-          <Link
-            to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
-            className="flex w-fit items-center gap-2 rounded-md text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <UserRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            {currentAssignee.name}
-          </Link>
-        ) : (
-          <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
-        )}
-      </section>
+      <div className="grid gap-6 sm:grid-cols-2">
+        <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
+          <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
+          {currentAssignee ? (
+            <Link
+              to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
+              className="flex w-fit items-center gap-2 rounded-md text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <UserRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              {currentAssignee.name}
+            </Link>
+          ) : (
+            <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
+          )}
+        </section>
+        <RoutineResponsibleUser key={routine.id} routine={routine} />
+      </div>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-description-heading">
         <h2 id="routine-description-heading" className="text-sm font-semibold">Description</h2>

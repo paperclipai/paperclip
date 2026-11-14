@@ -1355,6 +1355,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             {
               ...(defaults.projectId !== undefined ? { projectId: defaults.projectId } : {}),
               ...placement,
+              // Boundary placement is a trust decision; the agent depth limit must not move it.
+              parentDepthPolicy: "allow_nested",
               ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
               description: `Email conversation for ${current.botExternalId}`,
@@ -1585,6 +1587,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           {
             title: input.subject!,
             parentId: input.parentIssueId,
+            // Channel tasks stay inside their source/boundary subtree.
+            parentDepthPolicy: "allow_nested",
             projectId: sourceTask.projectId,
             executionWorkspaceSettings: sourceTask.executionWorkspaceSettings,
             description: `Email conversation from ${endpoint.botExternalId}`,

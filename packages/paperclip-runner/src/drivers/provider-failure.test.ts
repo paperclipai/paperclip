@@ -56,6 +56,46 @@ describe("provider failure boundary", () => {
     expect(acpxProviderFailure(new Error(""), "claude", "startup", {}, true)).toBeNull();
   });
 
+  it("keeps a typed ACP session limit's provider title and classifies an exhausted allowance", () => {
+    const generic = "ACP agent reported a terminal limit failure.";
+    const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
+    const terminal = (title: string, category = "limit") =>
+      acpxTerminalResult(failed, "claude", { ANTHROPIC_API_KEY: "fixture-secret" }, { category, title, details: "private stack fixture-secret" });
+    expect(terminal("You've hit your session limit · resets 2am (UTC)")).toMatchObject({ status: "failed", error: { providerFailure: {
+      provider: "anthropic", phase: "turn", category: "quota_exhausted", retryability: "requires_action",
+      message: `${generic}\nYou've hit your session limit · resets 2am (UTC)` } } });
+    expect(terminal("The Claude account has no available quota.")).toMatchObject({ error: { providerFailure: { category: "quota_exhausted" } } });
+    expect(terminal("Claude is temporarily rate limited.")).toMatchObject({ error: { providerFailure: { category: "rate_limit" } } });
+    // Context, turn and configured budget limits are not an account allowance.
+    for (const title of ["This Claude turn reached its configured limit.", "This Claude session reached its configured budget.", "Context window limit exceeded"]) {
+      expect(terminal(title)).toMatchObject({ error: { providerFailure: { category: "unknown", message: `${generic}\n${title}` } } });
+    }
+    expect(terminal("You've hit your session limit", "request")).toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    expect(JSON.stringify(terminal("You've hit your session limit"))).not.toMatch(/fixture-secret|private stack/);
+    // Without the typed callback the generic terminal stays unclassified.
+    expect(acpxTerminalResult(failed, "claude")).toMatchObject({ error: { providerFailure: { category: "unknown", message: generic } } });
+    // The thrown form of the same terminal is classified the same way.
+    expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false, { category: "limit", title: "Claude is temporarily rate limited." }))
+      .toMatchObject({ category: "rate_limit", message: `${generic}\nClaude is temporarily rate limited.` });
+  });
+
+  it("classifies Claude's rejection of the selected model as an unavailable model", () => {
+    const generic = "ACP agent reported a terminal request failure.";
+    const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
+    // The AIR sessionFailure claude-agent-acp 0.73.0 returns for an unknown model (live probe, 2026-11-10).
+    const title = "There's an issue with the selected model (chaos-missing-model-abc12345). It may not exist or you may not have access to it. Run --model to pick a different model.";
+    expect(acpxTerminalResult(failed, "claude", {}, { category: "request", title })).toMatchObject({ status: "failed", error: { providerFailure: {
+      provider: "anthropic", phase: "turn", category: "model_unavailable", retryability: "requires_action", message: `${generic}\n${title}` } } });
+    // The thrown form of the same terminal is classified the same way.
+    expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false, { category: "request", title }))
+      .toMatchObject({ category: "model_unavailable", retryability: "requires_action" });
+    // Another category, another agent, or another request failure stays unknown.
+    for (const [agent, category, text] of [["claude", "service", title], ["codex", "request", title],
+      ["claude", "request", "Claude could not process this request."]] as const) {
+      expect(acpxTerminalResult(failed, agent, {}, { category, title: text })).toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    }
+  });
+
   it("keeps the ACPX terminal cause when the raw result exceeds its payload limit", () => {
     const terminal = acpxTerminalResult({ status: "failed", error: { ...acp,
       data: { ...acp.data, responseBody: "private-body".repeat(7000) } } }, "claude");
@@ -70,6 +110,14 @@ describe("provider failure boundary", () => {
       httpStatus: 429, message: "Your current allowance is exhausted.", requestId: "req_fixture", retryability: "requires_action" });
     expect(codexProviderFailure({ message: "Rate limited.", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } }, "turn"))
       .toMatchObject({ category: "rate_limit", retryability: "unknown" });
+  });
+
+  it("classifies OpenRouter's invalid model ID as an unavailable model unless OpenCode allows a retry", () => {
+    const data = { message: "openrouter/unavailable-model is not a valid model ID", statusCode: 400 };
+    expect(openCodeProviderFailure({ name: "APIError", data: { ...data, isRetryable: false } }, "openrouter"))
+      .toMatchObject({ category: "model_unavailable", retryability: "requires_action", httpStatus: 400 });
+    expect(openCodeProviderFailure({ name: "APIError", data: { ...data, isRetryable: true } }, "openrouter")?.category)
+      .not.toBe("model_unavailable");
   });
 
   it("extracts OpenCode API error fields without copying response bodies or headers", () => {

@@ -16,6 +16,7 @@ import {
 } from "../../packages/paperclip-runner/scripts/build-inputs.mjs";
 import {
   FORCE_REBUILD_VARIABLE,
+  REQUIRE_CURRENT_VARIABLE,
   RUNNER_VENDOR_BUILD_COMMAND,
   TIMING_SCHEMA,
   decideRunnerVendorAction,
@@ -49,7 +50,7 @@ function makeRepo() {
     "pnpm-lock.yaml": "lockfileVersion: 9\n",
     "pnpm-workspace.yaml": "packages:\n  - packages/*\n  - server\n",
     "tsconfig.base.json": "{}\n",
-    "patches/acpx@0.13.1.patch": "--- a\n+++ b\n",
+    "patches/acpx@0.22.0.patch": "--- a\n+++ b\n",
     "server/package.json": '{"name":"@paperclipai/server"}\n',
     "packages/paperclip-runner/package.json": '{"name":"@paperclipai/paperclip-runner"}\n',
     "packages/paperclip-runner/src/index.ts": "export const one = 1;\n",
@@ -101,6 +102,29 @@ describe("decideRunnerVendorAction", () => {
     expect(decideRunnerVendorAction({ env: { [FORCE_REBUILD_VARIABLE]: "0" }, assessment: current }).action).toBe(
       "reuse",
     );
+  });
+});
+
+describe("decideRunnerVendorAction when the build must be current", () => {
+  const current = { current: true, code: "inputs_unchanged", detail: "unchanged" };
+  const stale = { current: false, code: "inputs_changed", detail: "changed" };
+  const required = { [REQUIRE_CURRENT_VARIABLE]: "1" };
+
+  it("reuses a current build and fails on a stale one instead of rebuilding", () => {
+    expect(decideRunnerVendorAction({ env: required, assessment: current }).action).toBe("reuse");
+    expect(decideRunnerVendorAction({ env: required, assessment: stale })).toEqual({
+      action: "fail",
+      code: "inputs_changed",
+      detail: "changed",
+    });
+    expect(decideRunnerVendorAction({ env: { [REQUIRE_CURRENT_VARIABLE]: "0" }, assessment: stale }).action).toBe("rebuild");
+  });
+
+  it("fails when a rebuild is forced as well: the two cannot both hold", () => {
+    expect(decideRunnerVendorAction({ env: { ...required, [FORCE_REBUILD_VARIABLE]: "1" }, assessment: current })).toMatchObject({
+      action: "fail",
+      code: "conflict",
+    });
   });
 });
 
@@ -254,6 +278,82 @@ describe("prepareRunnerVendor", () => {
     expect(lines[1]).toMatch(/,action:rebuild,reason:forced,/);
   });
 
+  it("with PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1, reuses a current build and never starts a rebuild", () => {
+    const { repoRoot, packageRoot } = makeRepo();
+    recordCurrentBuild({ repoRoot, packageRoot });
+    const stampPath = buildInputsStampPath(packageRoot);
+    const env = { [REQUIRE_CURRENT_VARIABLE]: "1" };
+    let runs = 0;
+    const prepare = (lines) =>
+      prepareRunnerVendor({
+        repoRoot,
+        env,
+        run: () => {
+          runs += 1;
+          return 0;
+        },
+        log: (line) => lines.push(line),
+      });
+
+    const reused = [];
+    expect(prepare(reused)).toBe(0);
+    expect(reused[1]).toMatch(/,action:reuse,reason:inputs_unchanged,/);
+
+    writeFileSync(path.join(packageRoot, "src", "index.ts"), "export const one = 2;\n");
+    const failed = [];
+    expect(prepare(failed)).toBe(1);
+    expect(runs).toBe(0);
+    expect(failed[0]).toMatch(
+      new RegExp(`^prepare:runner-vendor: ${REQUIRE_CURRENT_VARIABLE}=1 forbids the Runner rebuild this step needs \\(inputs changed`),
+    );
+    expect(failed[1]).toMatch(
+      new RegExp(`^${TIMING_SCHEMA},action:fail,reason:inputs_changed,check_ms:\\d+,build_ms:0,status:1$`),
+    );
+    // The stamp still describes the build it was written for; only a rebuild removes it.
+    expect(readBuildInputsStamp(stampPath)).not.toBeNull();
+  });
+
+  it("with PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1, accepts a Runner built elsewhere for the committed lockfile and refuses it once the lockfile is refreshed for another package", () => {
+    const committed = [
+      "lockfileVersion: '9.0'",
+      "importers:",
+      "  packages/paperclip-runner:",
+      "    dependencies:",
+      "      ajv: { specifier: ^8.20.0, version: 8.20.0 }",
+      "  ui:",
+      "    dependencies:",
+      "      react: { specifier: ^19.2.7, version: 19.2.8 }",
+      "",
+    ].join("\n");
+    const built = makeRepo();
+    writeFileSync(path.join(built.repoRoot, "pnpm-lock.yaml"), committed);
+    recordCurrentBuild(built);
+
+    const { repoRoot, packageRoot } = makeRepo();
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed);
+    writeTree(repoRoot, {
+      "packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json": readFileSync(buildInputsStampPath(built.packageRoot), "utf8"),
+    });
+    const env = { [REQUIRE_CURRENT_VARIABLE]: "1" };
+    let runs = 0;
+    const prepare = (lines) => prepareRunnerVendor({ repoRoot, env, run: () => { runs += 1; return 0; }, log: (line) => lines.push(line) });
+
+    const reused = [];
+    expect(prepare(reused)).toBe(0);
+    expect(reused[1]).toMatch(/,action:reuse,reason:inputs_unchanged,/);
+
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed.replace("specifier: ^19.2.7", "specifier: ^19.2.8"));
+    const refused = [];
+    expect(prepare(refused)).toBe(1);
+    expect(refused[0]).toContain("pnpm-lock.yaml included");
+    expect(refused[1]).toMatch(/,action:fail,reason:inputs_changed,/);
+
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed);
+    expect(prepare([])).toBe(0);
+    expect(runs).toBe(0);
+    expect(readBuildInputsStamp(buildInputsStampPath(packageRoot))).not.toBeNull();
+  });
+
   it.skipIf(process.platform === "win32")(
     "end to end: the first server build rebuilds the Runner, the second reuses it, a change or a lost output rebuilds again",
     async () => {
@@ -278,6 +378,7 @@ describe("prepareRunnerVendor", () => {
       chmodSync(pnpm, 0o755);
       const env = { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` };
       delete env[FORCE_REBUILD_VARIABLE];
+      delete env[REQUIRE_CURRENT_VARIABLE];
       // The suite itself may run under pnpm; the script must then take the
       // PATH fallback so the stand-in, not the real pnpm, receives the build.
       delete env.npm_execpath;
@@ -307,6 +408,15 @@ describe("prepareRunnerVendor", () => {
       const fifth = await run();
       expect(calls()).toHaveLength(3);
       expect(fifth.stdout).toMatch(/action:reuse,reason:inputs_unchanged,/);
+
+      // Required to be current: a stale build fails the step and pnpm is not called.
+      writeFileSync(path.join(packageRoot, "src", "index.ts"), "export const one = 3;\n");
+      const required = { ...env, [REQUIRE_CURRENT_VARIABLE]: "1" };
+      await expect(execFileAsync(process.execPath, [prepareScript, "--repo-root", repoRoot], { env: required })).rejects.toMatchObject({
+        code: 1,
+        stdout: expect.stringMatching(/action:fail,reason:inputs_changed,/),
+      });
+      expect(calls()).toHaveLength(3);
     },
   );
 });

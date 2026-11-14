@@ -8,10 +8,11 @@ export type LegacyWorkspaceRecoverySource = {
   runId: string; issueId: string; reference: NativeWorkspaceSyncReference | null;
   recoveryAllocations?: { leaseId: string; providerLeaseId: string; remoteCwd: string }[] | null;
   unresolvedFinalization?: { phase: string; leaseOwner: string | null; leaseExpiresAt: string | null };
+  onlineProof?: { schema: "paperclip.online-legacy-workspace-preservation.v1"; fingerprint: string };
 };
 export const LEGACY_WORKSPACE_RECOVERY_MIGRATION = "paperclip.legacy-workspace-recovery-migration.v1";
 
-/** Offline migration preserves an unresolved coordinator, but it cannot replay
+/** Migration preserves an unresolved coordinator, but it cannot replay
  * an old execution against a local copyback destination that is no longer its
  * authority. File recovery and explicit task continuation remain available. */
 export function legacyWorkspaceRecoveryNotMigrated() {

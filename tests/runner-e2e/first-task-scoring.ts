@@ -399,11 +399,31 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       approval ? [approval.id] : [],
       notReached,
     );
-    if (e.caseId === "interview-plan-accept") {
+    if (["interview-plan-accept", "plan-only-accept"].includes(e.caseId)) {
       add(
         "accepted-plan-retained",
         last.documents.some((d) => isPlanDocument(d) && String(d.body).trim()),
         "The accepted plan remains available as a durable document",
+        [last.id],
+        notReached,
+      );
+    }
+    if (e.caseId === "plan-only-accept") {
+      add(
+        "plan-only-no-execution",
+        e.checkpoints.every((checkpoint) =>
+          extras(checkpoint).length === 0 &&
+          checkpoint.agents.every((agent) => e.checkpoints[0].agents.some((initial) => initial.id === agent.id)) &&
+          checkpoint.documents.every(isPlanningDocument) &&
+          (checkpoint.attachments ?? []).every(isPlanningAttachment)),
+        "Explicit plan-only approval does not authorize hires, execution tasks, or finished output",
+        e.checkpoints.map((checkpoint) => checkpoint.id),
+        notReached,
+      );
+      add(
+        "plan-only-complete",
+        last.tasks.find((task) => task.id === e.onboardingIssueId)?.status === "done",
+        "Retaining the accepted plan completes the explicitly plan-only request",
         [last.id],
         notReached,
       );

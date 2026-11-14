@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { IssueSummary } from "@paperclipai/shared";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { AGENT_STATUSES, ISSUE_PRIORITIES, ISSUE_STATUSES } from "@paperclipai/shared";
 import type {
@@ -14,10 +16,94 @@ import { IssueRow } from "@/components/IssueRow";
 import { MetricCard } from "@/components/MetricCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { QuotaBar } from "@/components/QuotaBar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { IssueStatusBadge, StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import { resolveTaskChatLiveWork, TaskChatLiveWorkLinks } from "@/components/task-chat/TaskChatBlockerLinks";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { queryKeys } from "@/lib/queryKeys";
+import { taskStatusIconProps, type TaskStatusPresentationInput } from "@/lib/task-status-presentation";
 import { createIssue } from "../../fixtures/paperclipData";
+
+const sameStateAcrossViews: Array<{ label: string; state: TaskStatusPresentationInput }> = [
+  {
+    label: "Blocked, covered by an active sub-task (in queue)",
+    state: {
+      status: "blocked",
+      blockerAttention: {
+        state: "covered", reason: "active_child", unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+        attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: "ONB-3", sampleStalledBlockerIdentifier: null,
+      },
+    },
+  },
+  { label: "In review, conversation waiting (idle)", state: { status: "in_review", externalConversationState: "waiting" } },
+  { label: "In progress, monitoring", state: { status: "in_progress", displayStatus: "monitoring" } },
+];
+
+const conversationCovered: IssueBlockerAttention = {
+  state: "covered", reason: "active_child", unresolvedBlockerCount: 4, coveredBlockerCount: 4,
+  attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null,
+};
+
+const conversationBlockers: IssueRelationIssueSummary[] = [
+  { id: "pap-902", identifier: "PAP-902", title: "Creative brief + meme trend research", status: "in_progress", priority: "medium", assigneeAgentId: "agent-1", assigneeUserId: null },
+  { id: "pap-903", identifier: "PAP-903", title: "15-20 tee design concepts", status: "todo", priority: "medium", assigneeAgentId: "agent-2", assigneeUserId: null },
+  { id: "pap-905", identifier: "PAP-905", title: "Launch listing copy", status: "blocked", priority: "medium", assigneeAgentId: "agent-1", assigneeUserId: null },
+];
+
+const conversationSummaries: IssueSummary[] = conversationBlockers.map((blocker) => ({
+  id: blocker.id,
+  companyId: "company-storybook",
+  identifier: blocker.identifier,
+  title: blocker.title,
+  status: blocker.status,
+  updatedAt: new Date("2026-11-06T00:00:00Z"),
+  externalConversationState: null,
+  ...(blocker.status === "blocked" ? { blockerAttention: conversationCovered } : {}),
+}));
+
+/** Inline task mentions and the live-work strip use the same glyphs as the task list (BUG-07). */
+function ConversationStatusSurfaces() {
+  const [queryClient] = useState(() => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } } });
+    client.setQueryData(queryKeys.auth.session, { session: { id: "session-storybook", userId: "user-storybook" }, user: { id: "user-storybook" } });
+    client.setQueryData(queryKeys.issues.detail("PAP-901"), {
+      id: "pap-901", identifier: "PAP-901", title: "Paperclip onboarding", status: "blocked", blockerAttention: conversationCovered,
+    });
+    client.setQueryData(queryKeys.issues.detail("PAP-905"), { ...conversationSummaries[2] });
+    client.setQueryData(
+      queryKeys.issues.summaryBatch("company-storybook", "user-storybook", conversationBlockers.map((b) => b.id).sort()),
+      conversationSummaries,
+    );
+    return client;
+  });
+  const liveWork = resolveTaskChatLiveWork(conversationBlockers, new Set(["pap-902"]));
+  return (
+    <QueryClientProvider client={queryClient}>
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+          <div className="text-sm font-medium">Task list row</div>
+          {conversationSummaries.map((summary) => (
+            <div key={summary.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+              <StatusIcon {...taskStatusIconProps(summary)} /> {summary.identifier}
+            </div>
+          ))}
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <StatusIcon status="blocked" blockerAttention={conversationCovered} /> PAP-901
+          </div>
+        </div>
+        <div className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+          <div className="text-sm font-medium">Inline task mentions in a message</div>
+          <MarkdownBody>{"PAP-901 stays open until all four are done. PAP-905 waits on the designs."}</MarkdownBody>
+        </div>
+        <div className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+          <div className="text-sm font-medium">Waiting on live work strip</div>
+          {liveWork ? <TaskChatLiveWorkLinks liveWork={liveWork} placement="bottom" companyId="company-storybook" /> : null}
+        </div>
+      </div>
+    </QueryClientProvider>
+  );
+}
 
 function Section({
   eyebrow,
@@ -413,6 +499,29 @@ function StatusLanguage() {
               </CardContent>
             </Card>
           </div>
+        </Section>
+
+        <Section eyebrow="One mapping" title="Same state, every view">
+          <div className="grid gap-3 md:grid-cols-3">
+            {sameStateAcrossViews.map((item) => (
+              <div key={item.label} className="space-y-3 rounded-lg border border-border bg-background/70 p-4">
+                <div className="text-sm font-medium">{item.label}</div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <StatusIcon {...item.state} /> Sidebar / list row
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <IssueStatusBadge {...item.state} /> Chat card chip
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <StatusIcon {...item.state} showLabel onChange={() => {}} /> Status menu (open to compare the current row)
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+
+        <Section eyebrow="One mapping" title="Same state in conversations">
+          <ConversationStatusSurfaces />
         </Section>
 
         <Section eyebrow="Covered blocked" title="Blocked attention state matrix">

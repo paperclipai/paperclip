@@ -72,6 +72,32 @@ describeDatabase("Git workspace activity bindings", () => {
     expect(await gitWorkspaceLastActivityAt(db, f.workspace)).toEqual(recent);
   });
 
+  it.each(["issueId", "executionWorkspaceId"])("keeps a legacy %s binding on a run bound to another issue", async key => {
+    const f = await fixture();
+    const [unrelated] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated", updatedAt: old }).returning();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, scopeKind: "issue", issueId: unrelated.id,
+      nativeIssueId: unrelated.id, status: "running", createdAt: recent,
+      contextSnapshot: { [key]: key === "issueId" ? f.child.id : f.workspace.id } });
+    expect(await f.eligible()).toBe(false);
+    expect(await workspaceMoveEligible(db, f.workspace)).toBe(false);
+    expect(await gitWorkspaceLastActivityAt(db, f.workspace)).toEqual(recent);
+  });
+
+  it("reaches every run binding through an index", async () => {
+    const f = await fixture();
+    // With sequential scans disabled, a binding expression that no index
+    // matches still forces a sequential scan of heartbeat_runs.
+    const plan = await db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+      return tx.execute<{ "QUERY PLAN": string }>(sql`EXPLAIN ${expirationScope(f.workspace)} SELECT id FROM relevant_runs`);
+    });
+    const text = plan.map(row => row["QUERY PLAN"]).join("\n");
+    expect(text).not.toMatch(/Seq Scan on heartbeat_runs/);
+    expect(text).toMatch(/heartbeat_runs_company_ctx_execution_workspace_idx/);
+    expect(text).toMatch(/heartbeat_runs_company_ctx_issue_created_idx/);
+    expect(text).toMatch(/heartbeat_runs_company_ctx_task_created_idx/);
+  });
+
   it("includes a multiply bound run exactly once", async () => {
     const f = await fixture(), runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, scopeKind: "issue", issueId: f.issueId,

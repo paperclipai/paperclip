@@ -9,7 +9,6 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +28,7 @@ import {
   latestTokenActivity,
 } from "./gateway-helpers";
 import { describeError } from "@/api/errors";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 export function GatewaysList() {
   const navigate = useNavigate();
@@ -73,8 +73,7 @@ export function GatewaysList() {
     enabled: !!selectedCompanyId,
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId ?? "__none__"),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId ?? "__none__"),
     enabled: !!selectedCompanyId,
   });
   const gatewaysView = useQueryView(gatewaysQuery);
@@ -159,7 +158,7 @@ export function GatewaysList() {
         <EmptyGateways onCreate={() => setCreating(true)} />
       ) : (
         <div className="space-y-4 pt-1">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div data-canonical-toolbar="gateways" role="toolbar" aria-label="Gateway controls" className="flex flex-wrap items-center justify-between gap-3">
             <div className="relative w-full max-w-sm">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -170,7 +169,7 @@ export function GatewaysList() {
                 aria-label="Search gateways"
               />
             </div>
-            <Button onClick={() => setCreating(true)}>
+            <Button data-toolbar-primary className="ml-auto" onClick={() => setCreating(true)}>
               <Plus className="mr-1.5 h-4 w-4" />
               New gateway
             </Button>

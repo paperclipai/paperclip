@@ -337,6 +337,8 @@ export function createHeartbeatScheduling(
           status: "todo",
           priority: "high",
           parentId: input.claimed.id,
+          // Recovery work is structural system machinery tied to the stranded task.
+          parentDepthPolicy: "allow_nested",
           projectId: input.claimed.projectId,
           goalId: input.claimed.goalId,
           assigneeAgentId: input.claimed.assigneeAgentId,

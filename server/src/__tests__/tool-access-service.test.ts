@@ -68,6 +68,7 @@ import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
+  createToolConnectionSchema,
   type CreateToolConnection,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -90,6 +91,7 @@ import { createOAuthClientRegistration } from "../services/tool-access/oauth/cli
 import { createPersonalConnectionIdentity } from "../services/tool-access/connections/personal-identity.js";
 import { createConnectionSetupPolicy } from "../services/tool-access/connections/setup-policy.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import { secretService } from "../services/secrets.js";
 import {
   canonicalToolArguments,
@@ -954,14 +956,14 @@ describeEmbeddedPostgres("tool access service", () => {
     if (externalDatabaseUrl) {
       await applyPendingMigrations(externalDatabaseUrl);
       db = createDb(externalDatabaseUrl, { maxConnections: 4 });
-      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString, { maxConnections: 4 });
-    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -2154,6 +2156,15 @@ describeEmbeddedPostgres("tool access service", () => {
       let replacementFinished: Promise<unknown> | undefined;
       try {
         await waitForFirstReplacementLock(cleanupPid);
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+
+        // Start the empty replacement only once cleanup owns the membership
+        // row. Had it queued behind the first replacement too, both waiters
+        // would wake on that commit and race for the row; a replacement that
+        // wins it legitimately widens before cleanup, which made the
+        // fail-closed outcome below depend on scheduling.
         let replacementSettled = false;
         const replacement = replacementService
           .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2165,12 +2176,10 @@ describeEmbeddedPostgres("tool access service", () => {
             replacementSettled = true;
           });
         replacementFinished = replacement;
-        await waitForFirstReplacementLock(replacementPid);
-        expect(replacementSettled).toBe(false);
-
-        releaseFirstReplacement();
-        await firstReplacement;
-        await membershipIsLocked;
+        await vi.waitFor(async () => {
+          const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${replacementPid}) as blockers`);
+          expect(waiting!.blockers).toContain(cleanupPid);
+        }, { timeout: 5000 });
         expect(replacementSettled).toBe(false);
         releaseCleanup();
         await cleanup;
@@ -3353,6 +3362,42 @@ describeEmbeddedPostgres("tool access service", () => {
       .where(eq(toolConnections.companyId, company.id))).toEqual([]);
     expect(await db.select().from(companySecrets)
       .where(eq(companySecrets.companyId, company.id))).toEqual([]);
+  });
+
+  it.each([
+    { name: "channel purpose", input: { connectionPurpose: "channel" as const, transport: "local_stdio" as const } },
+    { name: "chat transport", input: { transport: "chat_sdk" as const } },
+    { name: "voice transport", input: { transport: "voice" as const } },
+  ])("rejects a $name before it writes any row", async ({ input }) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    await expect(service.createConnection(company.id, connectionInput({
+      name: "Not a tool",
+      config: { templateId: "paperclip.echo-calculator-time" },
+      ...input,
+    }))).rejects.toMatchObject({ status: 422 });
+
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(toolApplications)
+      .where(eq(toolApplications.companyId, company.id))).toEqual([]);
+  });
+
+  it("stores config as transportConfig when the request leaves transportConfig out", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const body = createToolConnectionSchema.parse({
+      name: "Local echo config only",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+    });
+
+    const connection = await service.createConnection(company.id, body);
+
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(stored?.config).toMatchObject({ templateId: "paperclip.echo-calculator-time" });
+    expect(stored?.transportConfig).toEqual(stored?.config);
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
@@ -6544,7 +6589,9 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
-    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    // One version probe, then the plain listing that reveals the session need.
+    expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
+    expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
     expect(
       requests.filter(({ method }) => method === "initialize").length,
     ).toBeGreaterThanOrEqual(1);
@@ -11020,8 +11067,8 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(versionCountBeforeAccessRevocation);
   });
 
-  it.each(["page", "task"] as const)(
-    "activates and discovers actions for a fresh personal OAuth callback from %s without widening task access",
+  it.each(["page", "task", "task-all-agents"] as const)(
+    "activates personal OAuth from %s with the selected audience only after finalization",
     async (host) => {
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
@@ -11035,7 +11082,7 @@ describeEmbeddedPostgres("tool access service", () => {
       const otherAgent = await createAgent(db, company.id);
       const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
       const interaction =
-        host === "task"
+        host !== "page"
           ? (
               await db
                 .insert(issueThreadInteractions)
@@ -11172,12 +11219,12 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       for (const entry of [searchMessagesEntry, sendMessageEntry]) {
         await expect(decide(entry)).resolves.toMatchObject(
-          host === "task"
+          host !== "page"
             ? { decision: "deny" }
             : { decision: "allow", reasonCode: "allow_profile" },
         );
       }
-      if (host === "task") {
+      if (host !== "page") {
         await expect(
           db
             .select()
@@ -11215,14 +11262,26 @@ describeEmbeddedPostgres("tool access service", () => {
         personalGrant.credentialSecretRefs.map((ref) => ref.configPath).sort(),
       ).toEqual(["oauth.access_token", "oauth.refresh_token"]);
 
-      const finished = await service.finalizeOAuthAccess(
+      if (host === "task-all-agents") {
+        const intents = connectionIntentService(db);
+        await intents.updatePhase(interaction!.id, "authorizing", userId, {
+          setupAccess: { connectionId: connected.connectionId, access: "all_agents" },
+          canManageOrganizationGrant: true,
+        });
+        await expect(intents.complete(interaction!.id, connected.connectionId, userId, { canManageOrganizationGrant: true, oauthCompletion: true }))
+          .resolves.toMatchObject({ status: "accepted" });
+      }
+      const finished = host === "task-all-agents" ? {
+        profileEntries: await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, callbackProfile!.id)),
+        profileBindings: await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, callbackProfile!.id)),
+      } : await service.finalizeOAuthAccess(
         company.id,
         connected.connectionId,
         {
           grantKind: "user",
         },
         { actorType: "user", actorId: userId },
-        host === "task" ? agent.id : undefined,
+        host !== "page" ? agent.id : undefined,
       );
       expect(finished.profileEntries).toHaveLength(2);
       expect(finished.profileBindings).toEqual([
@@ -11243,6 +11302,11 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toHaveLength(host === "task" ? 0 : 1);
+      if (host === "task-all-agents") {
+        await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "allow" });
+        expect((await service.getEffectiveToolAssignmentsForAgent(company.id, otherAgent.id)).installedConnections)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ id: connected.connectionId })]));
+      }
       if (host === "task") {
         await expect(decide(searchMessagesEntry)).resolves.toMatchObject({
           decision: "allow",
@@ -11338,7 +11402,7 @@ describeEmbeddedPostgres("tool access service", () => {
         {
           redirectUri: "https://paperclip.example/api/tools/oauth/callback",
           actor: { actorType: "user", actorId: userId },
-          interactionId: interaction?.id,
+          interactionId: host === "task-all-agents" ? undefined : interaction?.id,
         },
       );
       await expect(
@@ -12662,7 +12726,8 @@ describeEmbeddedPostgres("tool access service", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-      application_type: "web",
+      // A localhost callback is a native client under OIDC registration rules.
+      application_type: "native",
     });
     expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
     expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
@@ -12975,7 +13040,8 @@ describeEmbeddedPostgres("tool access service", () => {
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Token exchange, the one-time MCP version probe, and the catalog listing.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(callbackRes.body.connection).toMatchObject({
         id: connectRes.body.connectionId,
         status: "active",
@@ -13024,7 +13090,8 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectCallbackRes.headers.location).toBe(
         `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
       );
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      // Each of the two connections is probed once for its MCP version.
+      expect(fetchMock).toHaveBeenCalledTimes(8);
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
@@ -15252,7 +15319,8 @@ describeEmbeddedPostgres("tool access service", () => {
       actorId: "health-check",
     });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Token request, the one-time MCP version probe, and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db
       .select()
       .from(toolConnections)
@@ -16770,6 +16838,76 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it("asks for a key when a pasted link answers 401 without a challenge header", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp",
+        name: "Key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
+  it("keeps the raw rejection when a pasted link's own URL token is refused", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?token=expired-url-token",
+        name: "URL token app",
+      });
+
+    expect(res.body?.details?.code).not.toBe("oauth_challenge");
+    expect(res.status).not.toBe(422);
+  });
+
+  it("still asks for a key when a pasted link carries only plain settings", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?region=us",
+        name: "Regional key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
   it.each(["catalog", "catalog/refresh", "health-check"])(
     "explains disabled Slack MCP access on %s without reporting a server error",
     async (path) => {
@@ -17562,7 +17700,8 @@ describeEmbeddedPostgres("tool access service", () => {
       "mcp-key",
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The one-time MCP version probe and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledWith(
       PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({

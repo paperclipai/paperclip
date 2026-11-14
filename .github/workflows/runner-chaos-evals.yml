@@ -50,6 +50,9 @@ jobs:
           pnpm --filter @paperclipai/paperclip-eval-kernel build
           pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 
+      - name: Build native Runner test binaries
+        run: pnpm --filter @paperclipai/paperclip-runner build:rust
+
       - name: Run Runner fault and replay suites
         run: |
           pnpm --filter @paperclipai/paperclip-runner exec vitest run \

@@ -673,6 +673,94 @@ describe("plugin tool and bridge authz", () => {
     );
   });
 
+  it("allows tool execution for a run with no project and skips the project lookup", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      // Only the agent and run lookups. A project lookup would get no row and fail.
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+    );
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { projectId: null }],
+  ])("passes an empty projectId to the plugin when runContext.projectId is %s", async (_label, project) => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, ...project },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+    );
+  });
+
+  it("rejects tool execution when runContext.projectId is not a string", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      toolDeps: {
+        toolDispatcher: { listToolsForAgent: vi.fn(), getTool: vi.fn(), executeTool },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: 42 },
+      });
+
+    expect(res.status).toBe(400);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["legacy data", "post", `/api/plugins/${pluginId}/bridge/data`, { key: "health" }],
     ["legacy action", "post", `/api/plugins/${pluginId}/bridge/action`, { key: "sync" }],

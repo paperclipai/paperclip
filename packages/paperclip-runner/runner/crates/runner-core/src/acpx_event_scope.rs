@@ -38,10 +38,6 @@ impl AcpxEventScope {
         self.active_turn_id.as_deref()
     }
 
-    pub(crate) fn has_settled_turns(&self) -> bool {
-        !self.settled_turn_ids.is_empty()
-    }
-
     pub fn bind_turn(&mut self, turn_id: impl Into<String>) -> Result<(), LocalRunnerError> {
         let turn_id = turn_id.into();
         validate_scope_id(&turn_id, "turn", DURABLE_STABLE_ID_CHARS)?;
@@ -121,6 +117,19 @@ impl AcpxEventScope {
         }
         self.active_turn_id = None;
         Ok(())
+    }
+
+    /// Whether a well-formed event for this run names a turn this scope has
+    /// already settled. Such an event is history from an earlier turn: the
+    /// provider state records it and it never fails the current turn
+    /// (durable-ownership plan, section G). An unknown turn is not history and
+    /// still fails closed in `validate_event`.
+    pub fn names_settled_turn(&self, event: &AcpxSidecarEvent) -> bool {
+        event.run_id.as_deref() == Some(self.run_id.as_str())
+            && event.turn_id.as_deref().is_some_and(|turn_id| {
+                self.active_turn_id.as_deref() != Some(turn_id)
+                    && self.settled_turn_ids.contains(turn_id)
+            })
     }
 
     pub fn validate_event(&self, event: &AcpxSidecarEvent) -> Result<(), LocalRunnerError> {

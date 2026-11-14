@@ -323,6 +323,91 @@ checks it out only after authorization. Target-controlled code cannot replace
 the report sanitizer or the AWS history publisher. Fork refs and
 target-controlled workflow definitions do not enter this path.
 
+## Agent view of the eval harness
+
+The agent under test must not read the eval. A local cell runs the product from
+the checkout that also holds `tests/`, as the same OS user as the harness, so
+file modes cannot separate them. OpenCode's `external_directory` policy guards
+its own read and grep tools, but not arbitrary shell commands.
+
+`agent-filesystem-sandbox.ts` closes that gap for local native cells on Linux.
+The launcher selects the hidden paths: `tests/`, the checkout's Git store (which
+holds the committed scenarios and graders; for a linked worktree, its gitdir
+and the shared common directory), the trusted
+`.manual-private-trusted/` copy, the private evidence directory, `RUNNER_TEMP`,
+and the attempt root's `artifacts-private/`, `control/`,
+`selected-private-inputs/` and `playwright-transform-cache/` children.
+Playwright compiles the harness and graders (with source maps) into
+`PWTEST_CACHE_DIR`, which the launcher points at that hidden child. The
+launcher also removes Playwright's default cache in the shared temporary
+directory.
+
+Landlock hides a path by leaving its ancestors ungranted, and an ungranted
+directory accepts no new entries. Agents must keep creating files in `/tmp`, so
+a sandboxed attempt creates its root in `/var/tmp` instead of `/tmp`. The
+agent's workspace, home and Paperclip home stay readable inside that root. If
+harness material would stay under the shared temporary directory or contain the
+agent's state, the launcher fails the attempt in CI and warns elsewhere. The E2E server entry starts each `paperclip-runnerd` (through `spawn`,
+`spawnSync`, `execFile` or `execFileSync`, by absolute path or PATH; a shell
+launch is refused) through
+`agent-filesystem-sandbox.py`, which applies a Landlock domain and then execs
+runnerd with its original PID, argv, cwd and environment. Runnerd, the provider,
+its tools and every shell command inherit the domain. The domain also sets
+`no_new_privs`, so `sudo` cannot widen it. The product server itself stays
+unrestricted because it loads its E2E entry from the harness.
+
+Before the product starts an agent, a probe runs a sandboxed shell. The probe
+must be denied the harness, every hidden path and Playwright's default cache, and it must read the product
+package and write a temporary file. The server log records the probe result and
+each wrapped runnerd launch. In CI a missing or ineffective sandbox stops the
+attempt. Landlock does not hide that a path exists (`stat` still works); it
+denies reading and listing.
+
+Each runnerd launch is also scoped to its own run, so an eval agent learns
+nothing about the case from another run's saved session, run log or provider
+trace, or from the attempt instance's database files and secrets. The launcher passes the instance root to the server entry, and each
+runnerd launch additionally hides the instance's `durable-sessions/`,
+`runner/`, `control-plane/` and `opencode/` directories under
+`runtime/paperclip-runner/`, and `data/run-logs/`, `data/provider-traces/`,
+`data/backups/`, `db/` and `secrets/`. It then exposes only the launch's own
+entries, found from its `--state-dir`, `--session-id` and provider trace path:
+its durable session directory (or Codex runner state directory), its OpenCode
+session directory and its trace file. Landlock does not check path traversal,
+so a rule on an exposed path grants it although the directory above it has
+none; listing that directory stays denied, and entries created there later
+(another run's new session) stay unreadable. The server creates the exposed
+entries, and the shared directories the product creates beside them on first
+use, before the launch, because their hidden or ungranted parents accept no new
+entries from inside the sandbox. The helper fails the launch unless every
+hidden path is denied and every exposed path is readable. The setup probe
+repeats this on a fixture instance (another run's session, OpenCode database,
+run log, trace, `pg_wal`, secrets and control-plane state denied; the run's own
+session, OpenCode directory and trace writable) and stops the attempt in CI on
+any failure. A run still sees its own session's control-plane state.
+
+Landlock cannot hide `/proc/<pid>/cmdline`. Same-user `hidepid` does not help
+either: it hides only other users' processes. Landlock does deny reading a
+process's environment, memory and file descriptors outside the sandbox, so CI
+passes the selected cell in `PAPERCLIP_RUNNER_E2E_SELECTED_ID` instead of
+`--id`; the launcher reads and removes it. The workflow keeps `--id` for target
+branches that predate this.
+
+Limits: Codex cells keep Codex's own bubblewrap sandbox, which cannot mount
+inside Landlock. Legacy adapters, installed-release launches and macOS run
+without this sandbox. A process that can reach the Docker daemon can still
+mount the checkout into a container, and `ps` shows every harness process's
+command line (paths, but no longer the selected cell in CI). Other agents' homes
+and task workspaces in the same instance stay readable. Case fixtures that create their own private directories directly in the
+shared temporary directory stay readable. The boundary is filesystem only: the
+scenarios and graders are public on GitHub, and agents have network access for
+their model provider. Daytona cells run the agent in a remote sandbox that holds only the
+staged runnerd and provider pack, not the checkout.
+
+Fixture names that an agent can read (company, agent, environment, secret,
+connection and project) use a neutral word and a digest suffix. They do not
+contain case ids, suite names, "E2E" or "test". The digest is salted per
+process, so public catalog ids cannot be hashed back to a case.
+
 ## AWS OIDC and S3
 
 The AWS role trust policy should accept only GitHub's OIDC audience and the
@@ -383,6 +468,11 @@ different digest at an existing campaign key. Only the compact history and
 latest pointers are mutable, and S3 versioning makes those updates recoverable.
 
 ## Public evidence boundary
+
+Ordinary `chat-features` catalog captures remain private Actions evidence, including
+the required genuine final-state PNG. They receive no public screenshot marker;
+canonical agent slugs and legitimate result navigation do not expand the public
+route allowlist. Pre-chat boundary and other suite capture guards remain unchanged.
 
 CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
 usage, costs, normalized results, and trusted runner PNG screenshots are
@@ -502,6 +592,16 @@ birth checks remain required. Other descriptor aliases, missing descriptors and
 foreign inodes fail before any signal. Native Linux calibration exercises both
 descriptor launches with synthetic owned processes and no provider credentials;
 it does not qualify paid Pi behavior or change previous failed grades.
+
+These fixtures run without `paperclip-runnerd --trusted-launch-root`, so the
+Runner still hands providers a sealed memfd Node and the memfd assertions above
+are unchanged. Under a trusted launch root (the agent computer's read-only Runner
+ROM) the Runner instead holds the ROM's own Node file. Kimi admission then takes
+its existing linked-descriptor branch: one link, the same inode as the parent's
+`/proc/<pid>/exe`, and the complete bytes hashed against `nodeSha256`. It never
+accepts that file as a memfd. Pi admission binds to the native distribution
+snapshot's Node, which the ACPX closure copies whether or not a trusted root is
+set.
 
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
 
@@ -652,7 +752,6 @@ existing private attempt evidence and registered-artifact verification pipeline.
 A failed attempt remains retained. These development checks are not staging or
 Slack qualification, and they do not publish trusted archives or credentials.
 
-
 Report identities preserve legacy chat tasks and exact `area.case` chat catalog
 tasks. Additional task segments, path separators and dotted nonchat tasks remain
 invalid. This parsing does not qualify a result or grant a new execution.
@@ -665,3 +764,68 @@ Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
 
 The personal inbox journey requires a separately authenticated, registered QA human author. Its target provider exposes one controlled comment operation on the exact campaign-owned task. The public oracle independently reads the saved comment and verifies its distinct human author, exact content, company, task, and absence of an agent run. The private provider closes the isolated author context during evidence-first cleanup. No provider or native run is allowed for this browser-only journey; agent cross-task execution guards remain intact.
 The `routine-scheduled-run` journey uses one campaign-owned routine, project, and scheduled task. It enables a minute schedule only for the bounded observation. Cleanup must pause the routine, disable its triggers, and reconcile scheduler-created tasks before stopping agent work. Private recovery repeats these checks after a lost response. Retain task and routine history; never leave a recurring trigger enabled after an attempt.
+
+## Authenticated prerequisite people
+
+Twenty explicitly selected OpenCode/local chat journeys use ordinary public
+signup and instance-admin company-access management to prepare a fresh second
+person. The setup verifies the administrator's real session, assigns only the
+requested company and its existing operator/viewer role grants, and independently
+reads the saved membership and grant attribution. The person's own session must
+prove company access and denial of instance administration. Setup consumes the
+original observation clock and neither dispatches native work nor performs the
+human action under evaluation. Private-resource and other-person boundaries
+remain part of each journey's independent oracle.
+
+Actual invitation journeys retain the invitation/acceptance path and its logger
+qualification prerequisite. This alternative does not qualify that path, create
+an instance administrator, bypass route authorization, or change retained failed
+outcomes. Passwords and cookies remain in the existing private session registry;
+the setup receipt contains only public identity, role, grant keys and statuses.
+
+A screenshot route marker is provisional. Any original secret finding, persisted
+state secret finding, privacy-driven reporter redaction/omission, or packaged
+evidence secret finding withholds all screenshots for that attempt. The launcher
+retains a closed withholding reason and removes public markers while preserving
+original private PNG bytes and hashes. Later cleanup labels and empty sanitized
+export scans cannot clear this decision; the publisher and gallery enforce it.
+
+
+### SDK canary compiled fingerprint admission
+
+The source-local `plugins.use-plugin-tool` canary verifies the existing startup
+build and private retention before any live fixture can create an agent or run
+its hello. The gate binds the authenticated 500 Git inputs and restored lock,
+compiler/helper identities, both target certificates and complete 1611-file
+compiled manifests. It preserves every privacy scan and raw observation.
+
+The normal case fingerprint is deferred until those genuine compiled bytes are
+available in that same real scenario startup. A complete non-null fingerprint
+and source closure must be retained privately before fixtures. The later normal
+definition must match it. Missing or changed proof fails before fixture/model
+work. A failed framework start still consumes that attempt; this gate adds no
+retry, diagnostic operation, allowance or grading exception. The other five SDK
+cases remain subject to their separate admission holds. Local declaration-only
+metadata carries null compiled digests and makes no runtime qualification claim.
+
+Preview-tool fixture discovery uses the installed manifest key for the board
+registry filter and verifies the returned database UUID and exact namespaced
+`preview` name. Enabled setup must expose exactly one tool. Disable verification
+requires the same selected record to be disabled and its actual key-filtered
+inventory to be empty; an enabled positive precedes that removal check. Agent
+discovery remains under its existing UUID-filtered authorized catalog. This
+identity correction does not release or rerun the exhausted SDK canary, change
+SDK/compiler/scanner behavior, or authorize the other five cases.
+
+The isolated `onboarding.new-company` native1017 candidate keeps its original
+source-company chat and ordinary human company creation. Only its credential
+setup runs in the existing standalone private child. It uses the real saved
+company's public `agents/new` route, same first-agent setup ID, personal
+OpenRouter account grant, exact local environment, native hello and public hire.
+No draft/localStorage write, legacy CLI fallback or source-company account
+substitution is allowed. Partial created connection IDs are retained privately
+for public cleanup before the new company is removed. Native probe usage stays
+unknown outside heartbeat accounting, never zero. This candidate includes only
+the focused local native-probe prerequisite from core PR18103; all candidate
+outcomes are separate from frozen39e qualification. Source acceptance is not
+permission to run the unused initial.

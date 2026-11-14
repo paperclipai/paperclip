@@ -1,9 +1,14 @@
+import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
-import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
-import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
+import { createHash } from "node:crypto";
+import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
+import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, primeDatabaseWorkTransactionId, type Db } from "@paperclipai/db";
+import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
+import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -71,9 +76,12 @@ export async function lockNativeRunnerCheckpointOwner(
   // wall time. Sampling in the locking SELECT can precede its lock wait.
   // Keep both steps in one statement without another database round trip.
   const locked = nativeRunnerCheckpointOwnerLock(tx, owner);
-  const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
-    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()` }).from(locked);
-  if (!owned) throw new Error("native_runner_checkpoint_owner_lost");
+  const [row] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
+    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()`,
+    xid: sql<string>`pg_current_xact_id()::text` }).from(locked);
+  if (!row) throw new Error("native_runner_checkpoint_owner_lost");
+  const { xid, ...owned } = row;
+  primeDatabaseWorkTransactionId(tx, xid);
   return owned;
 }
 
@@ -85,6 +93,7 @@ export async function validateNativeRunnerCheckpointOwner(
   const activeOwner = owner.leaseOwner !== null && current.leaseOwner === owner.leaseOwner
     && current.leaseExpiresAt !== null && current.leaseExpiresAt > new Date(owned.now);
   if (!activeOwner) {
+    await assertNativeSourceCheckpointConsumer(tx, owner);
     const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
       .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId)));
     const [successor] = task?.executionRunId && task.executionRunId !== owner.runId
@@ -101,7 +110,14 @@ export async function validateNativeRunnerCheckpointOwner(
           gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
           notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
-    if (!current.resultId || newWork || !task || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor)) {
+    const [waitingSuccessor] = !successor && !preparingSuccessor && task?.executionRunId && task.executionRunId !== owner.runId
+      ? await tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, task.executionRunId), eq(heartbeatRuns.companyId, owner.companyId),
+          eq(heartbeatRuns.issueId, owner.issueId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+          notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
+    if (!current.resultId || newWork || !task
+      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor)) {
       throw new Error("native_runner_checkpoint_owner_lost");
     }
   }
@@ -112,14 +128,51 @@ export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransactio
   await validateNativeRunnerCheckpointOwner(tx, owner, locked, newWork);
 }
 
+const ROUTINE_CHECKPOINT_SAVE_SQL = `
+  with locked_owner as (
+    select lease_expires_at from native_run_finalizations
+    where company_id = $1::uuid and issue_id = $2::uuid and run_id = $3::uuid and controller_boot_id = $4::text
+      and controller_generation = $5::integer and lease_owner = $6::text
+    for update
+  ), owner as (
+    select 1 from locked_owner where lease_expires_at > clock_timestamp()
+  ), written as (
+    insert into "native_runner_checkpoints" (company_id, issue_id, run_id, part, material)
+    select $1::uuid, $2::uuid, $7::uuid, part.value ->> 'part', part.value -> 'material'
+    from owner cross join jsonb_array_elements($8::jsonb) as part(value)
+    on conflict (run_id, part) do update set material = excluded.material, updated_at = now()
+    returning 1
+  )
+  select (select count(*)::int from owner) as owned, (select count(*)::int from written) as written`;
+
 export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpointOwner) {
   const persistenceDb = checkpointDb(db);
   let previousWork = new Set<string>();
   return async (checkpoint: DurablePrpCheckpoint): Promise<void> => {
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
     const changed = encryptParts(owner, checkpoint.changedRecords);
+    if (changed.length > 0 && !checkpoint.reset && checkpoint.removedRecords.length === 0 && !checkpoint.changedRecords.has("header")
+      && !checkpoint.predecessor && owner.runId === owner.authorityRunId) {
+      const [saved] = await persistenceDb.$client.unsafe<{ owned: number; written: number }[]>(ROUTINE_CHECKPOINT_SAVE_SQL, [
+        owner.companyId, owner.issueId, owner.authorityRunId, owner.bootId, String(owner.generation), owner.leaseOwner, owner.runId,
+        JSON.stringify(changed.map(part => ({ part: part.part, material: part.material })))]);
+      if (saved?.owned === 1 && saved.written === changed.length) {
+        previousWork = new Set(checkpoint.workCommandIds);
+        return;
+      }
+    }
     await persistenceDb.transaction(async tx => {
+      if (owner.runId !== owner.authorityRunId) {
+        await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);
+        await assertNativeSourceCheckpointConsumer(tx, owner, checkpoint);
+      }
       await assertNativeRunnerCheckpointOwner(tx, owner, checkpoint.workCommandIds.some(id => !previousWork.has(id)));
+      if (checkpoint.reset || checkpoint.changedRecords.has("header") || checkpoint.removedRecords.includes("header")) {
+        const [header] = await tx.select({ material: nativeRunnerCheckpoints.material }).from(nativeRunnerCheckpoints).where(and(
+          eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, owner.runId),
+          eq(nativeRunnerCheckpoints.part, "header"))).for("share").limit(1);
+        if (header && readNativeCheckpointRetirement(header.material, owner)) throw new Error("native_runner_checkpoint_retired");
+      }
       if (checkpoint.predecessor) {
         const [prior] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, checkpoint.predecessor.runId), eq(heartbeatRuns.companyId, owner.companyId),
@@ -141,7 +194,7 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
   };
 }
 
-const authorities = new WeakMap<DurablePrpControlPlane, Map<string, ReturnType<typeof nativeRunnerCheckpointWriter>>>();
+const authorities = new WeakMap<DurablePrpControlPlane, Map<string, { fence: string; write: ReturnType<typeof nativeRunnerCheckpointWriter> }>>();
 
 export function nativeRunnerCheckpointPersistence(db: Db, bootId: string, authorityRunId: string | (() => string),
   detach: (runIds: readonly string[], leaseOwner?: string) => Promise<unknown>) {
@@ -184,21 +237,22 @@ export async function registerNativeRunnerCheckpoint(input: {
     input.authority.setCheckpointPersistence(async snapshot => {
       const writer = boundWriters.get(snapshot.runId);
       if (!writer) throw new Error("native_runner_checkpoint_owner_lost");
-      await writer(snapshot);
+      await writer.write(snapshot);
     });
     authorities.set(input.authority, writers);
   }
-  if (!writers.has(input.binding.runId)) {
+  const fence = JSON.stringify([authorityRunId, input.bootId, owner.controllerGeneration, owner.leaseOwner]);
+  if (writers.get(input.binding.runId)?.fence !== fence) {
     const write = nativeRunnerCheckpointWriter(input.db, {
       ...input.binding, authorityRunId, bootId: input.bootId, generation: owner.controllerGeneration, leaseOwner: owner.leaseOwner,
     });
-    writers.set(input.binding.runId, async checkpoint => {
+    writers.set(input.binding.runId, { fence, write: async checkpoint => {
       try { await write(checkpoint); }
       catch (error) {
         void input.onFailure?.(authorityRunId, owner.leaseOwner!).catch(() => undefined);
         throw error;
       }
-    });
+    } });
   }
   await input.authority.flushCheckpoint();
 }
@@ -209,6 +263,7 @@ export async function loadNativeRunnerCheckpointHeader(db: Pick<Db, "select">, b
     eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
     eq(nativeRunnerCheckpoints.runId, binding.runId), eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
   if (!row) return null;
+  if (readNativeCheckpointRetirement(row.material, binding)) throw new Error("native_runner_checkpoint_retired");
   try { return decryptPart(createLocalEncryptedCipher("read"), binding, "header", row.material); }
   catch { return null; }
 }
@@ -218,6 +273,8 @@ export async function loadNativeRunnerCheckpoint(db: Pick<Db, "select">, binding
     eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
     eq(nativeRunnerCheckpoints.runId, binding.runId)));
   if (!rows.length) return null;
+  const header = rows.find(row => row.part === "header");
+  if (header && readNativeCheckpointRetirement(header.material, binding)) throw new Error("native_runner_checkpoint_retired");
   const cipher = createLocalEncryptedCipher("read");
   const parts = new Map(rows.map(row =>
     [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
@@ -242,6 +299,97 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+export async function nativeRunnerNeverAuthenticated(
+  db: Pick<Db, "select">, binding: Binding,
+  identity: Pick<DurableRecoveryIdentity, "runId" | "normalizedSessionId" | "runnerInstanceId">,
+): Promise<boolean> {
+  try {
+    if (binding.runId !== identity.runId) return false;
+    const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 3);
+    if (rows.length < 4 || rows.length > MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + 2
+      || rows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row.material)), 0)
+        > 2 * NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES) return false;
+    const cipher = createLocalEncryptedCipher("read");
+    const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
+    return inspectUnauthenticatedBootstrapCheckpoint(records, identity);
+  } catch { return false; }
+}
+
+const BOOTSTRAP_CHECKPOINT_PARTS = new Set(["header", "cursor"]);
+const MAX_BOOTSTRAP_CHECKPOINT_COMMANDS = 8;
+/** Session-open events are few; a longer journal is never a bootstrap. */
+const MAX_BOOTSTRAP_CHECKPOINT_EVENTS = 16;
+
+export type NativeRemoteBootstrapProof = "bootstrap_incomplete" | "session_opened_without_turn";
+
+/**
+ * A remote runner's controller state lives only in this checkpoint, and every
+ * command is written here before the controller sends it. Once the previous
+ * controller's lease has expired, the checkpoint is therefore a complete record
+ * of what reached the sandbox runner. Returns which proof holds:
+ * `bootstrap_incomplete` when it holds only run.prepare and an unfinished
+ * session.open with no committed or acknowledged event, or
+ * `session_opened_without_turn` when session.open completed and every committed
+ * event is a session-open event. Either way no provider turn can exist. The
+ * sandbox runner journal is not on this host; the proof uses the controller
+ * record alone, as for a local root whose runner never journaled.
+ */
+export async function nativeRunnerCheckpointRemoteBootstrapProof(
+  db: Pick<Db, "select">, binding: Binding, expected: { runnerInstanceId: string; normalizedSessionId: string },
+): Promise<NativeRemoteBootstrapProof | null> {
+  const evidence = await nativeRunnerCheckpointRemoteBootstrapEvidence(db, binding, expected.normalizedSessionId);
+  return evidence?.runnerInstanceId === expected.runnerInstanceId ? evidence.proof : null;
+}
+
+/**
+ * The same proof, with the runner instance the checkpoint names. A caller that
+ * must hold the proof across a new controller's registration reads it first.
+ */
+export async function nativeRunnerCheckpointRemoteBootstrapEvidence(
+  db: Pick<Db, "select">, binding: Binding, normalizedSessionId: string,
+): Promise<{ proof: NativeRemoteBootstrapProof; runnerInstanceId: string } | null> {
+  try {
+    const limit = BOOTSTRAP_CHECKPOINT_PARTS.size + MAX_BOOTSTRAP_CHECKPOINT_COMMANDS + MAX_BOOTSTRAP_CHECKPOINT_EVENTS;
+    const parts = await db.select({ part: nativeRunnerCheckpoints.part }).from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(limit + 1);
+    const eventParts = parts.map(row => row.part).filter(part => /^event:\d+$/.test(part));
+    const commandParts = parts.map(row => row.part).filter(part => /^command:\d+$/.test(part));
+    if (!parts.length || parts.length > limit || eventParts.length > MAX_BOOTSTRAP_CHECKPOINT_EVENTS
+      || commandParts.length > MAX_BOOTSTRAP_CHECKPOINT_COMMANDS
+      || parts.some(row => !BOOTSTRAP_CHECKPOINT_PARTS.has(row.part) && !/^(?:event|command):\d+$/.test(row.part))) return null;
+    const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
+    if (!checkpoint || checkpoint.predecessor !== null
+      || checkpoint.recoveryEvidence.normalizedSessionId !== normalizedSessionId) return null;
+    const runnerInstanceId = checkpoint.recoveryEvidence.runnerInstanceId;
+    // The decoder above validated these canonical v2 records. Rebuild the
+    // controller state in memory without writing files under recovery locks.
+    const read = (part: string) => {
+      const value = checkpoint.records.get(part);
+      return value === undefined ? undefined : JSON.parse(value) as Record<string, unknown>;
+    };
+    const header = read("header");
+    const cursor = read("cursor");
+    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor
+      || cursor.commandCount !== commandParts.length) return null;
+    const state: Record<string, unknown> = {
+      ...(header.state as Record<string, unknown>),
+      ackedSourceSeq: cursor.ackedSourceSeq,
+      commands: commandParts.map(part => Number(part.slice("command:".length))).sort((a, b) => a - b)
+        .map(seq => read(`command:${seq}`)),
+      committedEvents: eventParts.map(part => Number(part.slice("event:".length))).sort((a, b) => a - b)
+        .map(seq => read(`event:${seq}`)),
+    };
+    if ((state.identity as { runId?: unknown } | undefined)?.runId !== binding.runId) return null;
+    if (runnerdStateIsIncompleteBootstrap(state)) return { proof: "bootstrap_incomplete", runnerInstanceId };
+    return runnerdStateHasNoProviderTurn(state) ? { proof: "session_opened_without_turn", runnerInstanceId } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function restoreNativeRunnerCheckpoint(db: Db, binding: Binding, root: string, normalizedSessionId?: string) {
   const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
   if (!checkpoint) return null;
@@ -259,6 +407,10 @@ export async function hasNativeRunnerCheckpoint(db: Pick<Db, "select">, binding:
   return row !== undefined;
 }
 
+/** Recovery history dispositions of a restart claim that took a run over. */
+const NATIVE_RESTART_CLAIM_DISPOSITIONS = ["reattach_existing_runner", "reattach_remote_runner",
+  "resume_dead_runner", "bootstrap_incomplete"] as const;
+
 export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runIds: string[]): Promise<string[]> {
   if (!runIds.length) return [];
   // The caller supplies the finite expired active-run inventory. Return all of
@@ -269,17 +421,161 @@ export async function listExpiredNativeRunnerAuthorities(db: Db, now: Date, runI
       eq(heartbeatRuns.status, "running"), eq(nativeRunFinalizations.phase, "observed"),
       isNull(nativeRunFinalizations.resultId),
       or(isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
-      exists(db.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
+      or(exists(db.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.runId, nativeRunFinalizations.runId),
         eq(nativeRunnerCheckpoints.issueId, nativeRunFinalizations.issueId),
-        eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId))))));
+        eq(nativeRunnerCheckpoints.companyId, nativeRunFinalizations.companyId)))),
+        and(sql`${heartbeatRuns.runnerProfileJson}->'nativePreparationFencingVersion' = ${JSON.stringify(NATIVE_PREPARATION_FENCING_VERSION)}::jsonb`,
+          isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt)),
+        // A graceful shutdown handed this run to the next controller. That
+        // handoff exists before any checkpoint (for example, a run stopped
+        // just after its claim), and a follow-up may carry its predecessor's
+        // Runner identity. Without it nothing but a later server boot would
+        // look at the run again. The restart claim still proves the takeover.
+        // It stays eligible through ownership waits (the departing server may
+        // still be alive at the first look) until a claim follows the handoff.
+        and(inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "awaiting_evidence"]),
+          sql`exists (select 1 from jsonb_array_elements(coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb))
+            with ordinality as handoff(item, ordinal)
+            where handoff.item ->> 'disposition' = 'restart_suspended'
+              and not exists (select 1 from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory})
+                with ordinality as later(item, ordinal)
+                where later.ordinal > handoff.ordinal and later.item ->> 'disposition' in (${sql.join(
+                  NATIVE_RESTART_CLAIM_DISPOSITIONS.map(disposition => sql`${disposition}`), sql`, `)})))`))));
   return rows.map(row => row.runId);
+}
+
+/** Only a header that decrypted has a repeatable answer: a key or material failure may not recur. */
+function inspectUpgradeHeaderMaterial(binding: Binding, material: Record<string, unknown>) {
+  let contents: string;
+  try { contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material); }
+  catch { return { decrypted: false as const, identity: null }; }
+  return { decrypted: true as const, identity: inspectDurablePrpCheckpointHeader(contents) };
 }
 
 /** Inspect only the bounded encrypted header. Protocol interpretation stays in Runner. */
 export function inspectNativeRunnerUpgradeHeader(binding: Binding, material: Record<string, unknown>) {
+  return inspectUpgradeHeaderMaterial(binding, material).identity;
+}
+
+/** The only header fields that rollout evidence compares, and that a memo keeps. */
+export type NativeRunnerUpgradeHeaderIdentity = Pick<DurableRecoveryIdentity,
+  "runId" | "runnerInstanceId" | "normalizedSessionId" | "environmentLeaseId">;
+const upgradeHeaderIdentity = (identity: DurableRecoveryIdentity | null): NativeRunnerUpgradeHeaderIdentity | null => identity && {
+  runId: identity.runId, runnerInstanceId: identity.runnerInstanceId,
+  normalizedSessionId: identity.normalizedSessionId, environmentLeaseId: identity.environmentLeaseId };
+
+/** One read of header evidence. `known` is a JSON object from binding to the row
+ * revision this read answers without the material. Call `finish` after a completed read. */
+export type NativeRunnerUpgradeHeaderRead = {
+  readonly known: string;
+  inspect(binding: Binding, revision: string, material: Record<string, unknown> | null): NativeRunnerUpgradeHeaderIdentity | null;
+  finish(): void;
+};
+
+/** PostgreSQL writes a new row version, with a new xmin or ctid, for every change to
+ * a row, so an unchanged revision means unchanged material. The write time and stored
+ * size are included so that no single field carries that guarantee. */
+export function nativeRunnerCheckpointRevisionSql(checkpoint: SQL) {
+  return sql`${checkpoint}.xmin::text || ':' || ${checkpoint}.ctid::text
+    || ':' || (extract(epoch from ${checkpoint}.updated_at) * 1000000)::bigint::text
+    || ':' || pg_column_size(${checkpoint}.material)::text`;
+}
+
+/** `material` must already be null for a row the reader will not inspect. The statement
+ * that reads a run sends its header's material only for a revision the read does not know. */
+export function nativeRunnerUpgradeHeaderSql(read: Pick<NativeRunnerUpgradeHeaderRead, "known">,
+  row: { companyId: SQL; issueId: SQL; runId: SQL; revision: SQL; material: SQL }) {
+  return {
+    join: sql`left join jsonb_each_text(${read.known}::jsonb) as known_header(binding, revision)
+      on known_header.binding = ${row.companyId}::text || '/' || ${row.issueId}::text || '/' || ${row.runId}::text`,
+    revision: sql`case when ${row.material} is not null then ${row.revision} end`,
+    material: sql`case when ${row.revision} is distinct from known_header.revision then ${row.material} end`,
+  };
+}
+
+/** A read that remembers nothing: every inspected header is sent and decrypted. */
+export function directNativeRunnerUpgradeHeaderRead(): NativeRunnerUpgradeHeaderRead {
+  return { known: "{}", finish() {},
+    inspect: (binding, _revision, material) => material ? upgradeHeaderIdentity(inspectNativeRunnerUpgradeHeader(binding, material)) : null };
+}
+
+/** A digest of a value derived from the secrets key for this purpose alone. It opens nothing. */
+function upgradeHeaderKeyIdentity(): string | null {
   try {
-    const contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material);
-    return inspectDurablePrpCheckpointHeader(contents);
+    return createHash("sha256").update(deriveLocalEncryptedInstanceSecret("native-runner-upgrade-header-memo",
+      process.env, { allowCreate: false })).digest("hex");
   } catch { return null; }
+}
+
+/** Remembers the answer for a header that decrypted, so an unchanged header is not
+ * sent or decrypted again. An answer is reused only for the same binding, row revision
+ * and secrets key; a header that did not decrypt is read and tried on every read.
+ * An entry holds four identifiers, entries are bounded in number and bytes, and a
+ * read forgets every header it did not inspect, such as that of a run that ended. */
+export function createNativeRunnerUpgradeHeaderMemo(limits: { maxEntries?: number; maxBytes?: number } = {}) {
+  const maxEntries = limits.maxEntries ?? 1_200, maxBytes = limits.maxBytes ?? 1024 * 1024;
+  type Answer = { revision: string; identity: NativeRunnerUpgradeHeaderIdentity | null };
+  const entries = new Map<string, Answer & { keyIdentity: string; bytes: number }>();
+  let bytes = 0;
+  const forget = (key: string) => {
+    const entry = entries.get(key);
+    if (entry && entries.delete(key)) bytes -= entry.bytes;
+  };
+  return {
+    get size() { return entries.size; },
+    get bytes() { return bytes; },
+    read(): NativeRunnerUpgradeHeaderRead {
+      let keyIdentity = entries.size ? upgradeHeaderKeyIdentity() : undefined;
+      const usable = new Map([...entries].filter(([, entry]) => entry.keyIdentity === keyIdentity));
+      const reused = new Set<string>(), decrypted = new Map<string, Answer>();
+      let keyChanged = false;
+      // A direct read loads the key for each header, after the query. An answer from memory
+      // is as conservative only if the key is loaded and unchanged when the answer is used.
+      const sameKey = () => {
+        const now = upgradeHeaderKeyIdentity();
+        if (keyIdentity === undefined) keyIdentity = now;
+        const same = now !== null && now === keyIdentity;
+        if (!same) keyChanged = true;
+        return same;
+      };
+      return {
+        known: JSON.stringify(Object.fromEntries([...usable].map(([key, entry]) => [key, entry.revision]))),
+        inspect(binding, revision, material) {
+          const key = `${binding.companyId}/${binding.issueId}/${binding.runId}`;
+          if (!material) {
+            // The query withholds material only for a revision this read offered.
+            const entry = usable.get(key);
+            if (entry?.revision !== revision || !sameKey()) return null;
+            reused.add(key);
+            return entry.identity;
+          }
+          const before = sameKey();
+          const result = inspectUpgradeHeaderMaterial(binding, material);
+          const identity = upgradeHeaderIdentity(result.identity);
+          if (result.decrypted && before && sameKey()) decrypted.set(key, { revision, identity });
+          else decrypted.delete(key);
+          return identity;
+        },
+        finish() {
+          // A read that saw the key missing or changed keeps and remembers nothing.
+          const current = keyChanged || !keyIdentity ? null : keyIdentity;
+          for (const [key, entry] of entries) {
+            if (!reused.has(key) || entry.keyIdentity !== current) forget(key);
+          }
+          for (const [key, answer] of current ? decrypted : []) {
+            const size = 2 * (key.length + answer.revision.length + current!.length
+              + Object.values(answer.identity ?? {}).reduce((sum, value) => sum + value.length, 0));
+            forget(key);
+            entries.set(key, { ...answer, keyIdentity: current!, bytes: size });
+            bytes += size;
+          }
+          for (const key of entries.keys()) {
+            if (entries.size <= maxEntries && bytes <= maxBytes) break;
+            forget(key);
+          }
+        },
+      };
+    },
+  };
 }

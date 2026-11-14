@@ -1,8 +1,24 @@
 import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
+import { appendPrivateAttemptDiagnostic, readPrivateAttemptObservation, type PrivateAttemptDiagnosticInput } from "./private-attempt-diagnostic.js";
+import { withholdPrivateScreenshots } from "./screenshot-privacy.js";
+import { copyHealthHelloDetail } from "./chat-readiness-detail.js";
+import { copyRetainedSourceSdk } from "./source-sdk-evidence.js";
+import { prepareChatRemoteHost } from "./chat-remote-host.js";
+import { POSTGRES_ARTIFACT_ENV, POSTGRES_IMAGE_ID_ENV } from "./docker-postgres.js";
+import { prepareOwnedPublicOrigin, PublicOriginCleanupError, PUBLIC_ORIGIN_CONTROL_ENV, PUBLIC_ORIGIN_RECEIPT_ENV } from "./chat-public-origin.js";
+import { DATABASE_LANE_ENV, DOCKER_DATABASE_ENV, dockerDatabaseLaunchState, publicDockerDatabaseIdentity, selectedDatabaseLane, startOwnedDockerDatabase } from "./docker-postgres.js";
+import { abnormalFinalizationResult } from "./abnormal-finalization.js";
+import { CHAT_ORACLE_KEY_ENV } from "./chat-private-oracle.js";
+import { stagePublishedChatInstall, ChatInstalledCleanupError } from "./chat-installed-lane.js";
+import { stageChatPrivateInputs, chatLaunchCredentialNames, CHAT_PRIVATE_INPUTS_ENV } from "./chat-private-inputs.js";
+import { createPrivateDiagnosticStream, PRIVATE_DIAGNOSTICS_ENV, readPrivateDiagnosticSecrets, readProductDeliveredSecrets, stagePrivateDiagnostics } from "./private-diagnostics.js";
+import { sanitizePrivateReporterArtifacts } from "./private-reporter-artifacts.js";
+import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
 import { readRecoveredFeedback } from "./feedback-recovery.js";
+import { PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments } from "./private-framework-report.js";
 import { readInterruptedAttemptTrace } from "./trace-recovery.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
 import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
@@ -10,10 +26,14 @@ import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightInvocation, runner
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
-import { createRunnerE2ETemporaryRoot } from "./server-config.js";
+import { createRunnerE2ETemporaryRoot, keepInstance } from "./server-config.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+import {
+  AGENT_FILESYSTEM_SANDBOX_ENV, agentFilesystemSandboxApplies, agentFilesystemSandboxConfig, agentTemporaryParent,
+  defaultPlaywrightCacheDirectory, playwrightCacheDirectory,
+} from "./agent-filesystem-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -21,7 +41,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   access,
-  chmod,
   cp,
   lstat,
   mkdir,
@@ -38,8 +57,9 @@ import { packageEvidence, publishRunnerE2EAttemptEvidence } from "./evidence.js"
 import { prepareRunnerE2ECampaignDirectory, resolveRunnerE2EResultsRoot } from "./results-root.js";
 import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
-import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
+import { requiresPrivateManualEvidence, manualCellKind } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
+import { dropDuplicatePlaywrightOutput } from "./private-report-copies.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
@@ -51,10 +71,10 @@ import {
   resolvePaperclipRemoteRunnerBinaryForHarness,
   resolvePaperclipRunnerBinaryForHarness,
 } from "./harness-env.js";
-import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
+import { assertRunnerDatabaseIsolation } from "./instance-isolation.js";
 import {
   assertSecretFree,
-  findSecretLeakInDirectory,
+  findSecretLeakInPersistedState,
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresScanFile,
   normalizedSecrets,
@@ -65,6 +85,7 @@ import {
   buildMatrixJobs,
   parseRunnerSelectors,
   RunnerSelectorError,
+  selectorArgumentsWithEnvironment,
   selectRunnerExecutions,
 } from "./selectors.js";
 import { resolveRunnerE2ESource } from "./source.js";
@@ -98,6 +119,7 @@ const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
 let resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
 const manualEvidenceSecrets = new Set<string>();
 let manualPrivateHandoff: ManualPrivateHandoff | undefined;
+let manualDiagnostic: PrivateAttemptDiagnosticInput | undefined;
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
 const activeProcessTerminators = new Map<number, () => void>();
@@ -280,6 +302,7 @@ async function runProcess(
   logPath: string,
   completionPaths: readonly string[],
   interactive: boolean,
+  secrets: () => readonly string[],
 ) {
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
   const child = spawn(invocation.command, invocation.args, {
@@ -292,19 +315,17 @@ async function runProcess(
   activeProcessGroups.add(child.pid);
   const processOwner = createProcessTreeOwner(child);
   let outputTail = "";
-  const recordOutput = (chunk: Buffer, destination: NodeJS.WriteStream) => {
-    destination.write(chunk);
-    log.write(chunk);
-    outputTail += chunk.toString("utf8");
+  const recordOutput = (safe: string, destination: NodeJS.WriteStream) => {
+    destination.write(safe);
+    log.write(safe);
+    outputTail += safe;
     if (outputTail.length > 1024 * 1024)
       outputTail = outputTail.slice(-1024 * 1024);
   };
-  child.stdout?.on("data", (chunk: Buffer) =>
-    recordOutput(chunk, process.stdout),
-  );
-  child.stderr?.on("data", (chunk: Buffer) =>
-    recordOutput(chunk, process.stderr),
-  );
+  const stdout = createPrivateDiagnosticStream(secrets, safe => recordOutput(safe, process.stdout));
+  const stderr = createPrivateDiagnosticStream(secrets, safe => recordOutput(safe, process.stderr));
+  child.stdout?.on("data", (chunk: Buffer) => stdout.write(chunk));
+  child.stderr?.on("data", (chunk: Buffer) => stderr.write(chunk));
   let childSettled = false;
   let postResultStallError: string | null = null;
   let boundedCleanup: Promise<string | null> | undefined;
@@ -332,12 +353,7 @@ async function runProcess(
       const diagnostic = await processTreeDiagnostic(child.pid!);
       if (childSettled) return;
       postResultStallError = `Playwright remained alive for ${completedResultExitGraceMs}ms after every result was written`;
-      recordOutput(
-        Buffer.from(
-          `\n${postResultStallError}; forcing bounded cleanup. ${diagnostic.summary}\n`,
-        ),
-        process.stderr,
-      );
+      stderr.write(Buffer.from(`\n${postResultStallError}; forcing bounded cleanup. ${diagnostic.summary}\n`));
       stopChildTree(diagnostic);
     },
   });
@@ -347,10 +363,7 @@ async function runProcess(
           if (childSettled || postResultStallError) return;
           postResultStallError =
             "Completed-result exit guard failed during bounded inspection";
-          recordOutput(
-            Buffer.from(`\n${postResultStallError}; forcing cleanup.\n`),
-            process.stderr,
-          );
+          stderr.write(Buffer.from(`\n${postResultStallError}; forcing cleanup.\n`));
           stopChildTree();
         });
       }, 500)
@@ -397,6 +410,7 @@ async function runProcess(
     activeProcessCleanup.delete(child.pid);
     activeProcessTerminators.delete(child.pid);
   }
+  stdout.end(); stderr.end();
   await new Promise<void>((resolve) => log.end(resolve));
   return {
     exitCode,
@@ -405,6 +419,8 @@ async function runProcess(
     processCleanupError,
     spawnError,
     outputTail,
+    privateDiagnosticFailure: stdout.failed() || stderr.failed(),
+    privateDiagnosticLeak: stdout.redactedSecret() || stderr.redactedSecret(),
   };
 }
 
@@ -487,18 +503,26 @@ async function runAttempt(input: {
     }
   }
   assertInstalledCliSelection(process.env, executions);
-  const installedCli = await verifyInstalledCli(process.env, executions);
+  let installedCli = await verifyInstalledCli(process.env, executions);
+  const selectedDescriptor = execution.suite.id === "chat-features" ? findChatCatalogCase(execution.task.id) : undefined;
+  let sourceEnvironment = { ...process.env };
+  delete sourceEnvironment[CHAT_ORACLE_KEY_ENV];
+  const databaseLane = selectedDatabaseLane(sourceEnvironment);
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
   const startedAtMs = Date.now();
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
-  const temporaryParent = await realpath(os.tmpdir());
+  const sandboxedAgents = agentFilesystemSandboxApplies({ platform: process.platform, executions, installedRelease: Boolean(installedCli) });
+  const temporaryParent = agentTemporaryParent(sandboxedAgents);
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
+  const selectedPrivateInputsDirectory = path.join(temporaryRoot, "selected-private-inputs");
   const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
   const publishedResultPaths = new Map<string, string>();
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let dockerDatabase: Awaited<ReturnType<typeof startOwnedDockerDatabase>> | undefined;
+  let ownedPublicOrigin: Awaited<ReturnType<typeof prepareOwnedPublicOrigin>>;
   let externalDatabase: Awaited<ReturnType<typeof createExternalControllerDatabase>> | undefined;
   let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
@@ -519,10 +543,16 @@ async function runAttempt(input: {
       });
     }
     await Promise.all([
-      mkdir(paperclipHome, { recursive: true }),
+      mkdir(paperclipHome, { recursive: true, mode: 0o700 }),
       mkdir(workspace, { recursive: true }),
       mkdir(privateDir, { recursive: true }),
     ]);
+    if (selectedDescriptor?.installedSource === "published-global-npm") {
+      if (executions.length !== 1) throw new Error("Published chat source requires one explicit operation");
+      try { sourceEnvironment = { ...sourceEnvironment, ...await stagePublishedChatInstall({ execution, root: temporaryRoot, env: sourceEnvironment }) }; }
+      catch (error) { if (error instanceof ChatInstalledCleanupError) processCleanupFailed = true; throw error; }
+      installedCli = await verifyInstalledCli(sourceEnvironment, executions);
+    }
     const providerPath = await prepareProviderPath(
       temporaryRoot,
       process.env.PATH,
@@ -546,6 +576,14 @@ async function runAttempt(input: {
     };
     const credentials = normalizedSecrets(Object.values(credentialSources));
     attemptSecrets = credentials;
+    const needsPrivateInputs = selectedDescriptor && ((selectedDescriptor.requiredCredentials?.length ?? 0) > 0 || selectedDescriptor.externalInput);
+    if (needsPrivateInputs && executions.length !== 1) throw new Error("Private case inputs require one explicitly selected execution");
+    await mkdir(selectedPrivateInputsDirectory, { mode: 0o700 });
+    const privateInputs = needsPrivateInputs ? stageChatPrivateInputs({ execution, descriptor: selectedDescriptor, privateDir: selectedPrivateInputsDirectory, env: process.env, secrets: credentials }) : undefined;
+    ownedPublicOrigin = await prepareOwnedPublicOrigin({ controlDirectory: process.env[PUBLIC_ORIGIN_CONTROL_ENV], executionId: execution.id, scenarioId: selectedDescriptor?.scenarioId ?? "", attemptId: accountingAttemptId, backendOrigin: `http://127.0.0.1:${port}`, temporaryRoot, privateSecrets: credentials });
+    delete sourceEnvironment[PUBLIC_ORIGIN_CONTROL_ENV]; delete sourceEnvironment[PUBLIC_ORIGIN_RECEIPT_ENV];
+    if (databaseLane === "owned-docker-postgres") dockerDatabase = await startOwnedDockerDatabase({ temporaryRoot, privateSecrets: credentials });
+    const diagnosticRegistry = stagePrivateDiagnostics(temporaryRoot, executions.map(row => row.id), credentials);
     if (manualPrivateHandoff) for (const credential of credentials) manualEvidenceSecrets.add(credential);
     if (installedCli) await writeFile(path.join(privateDir, "installed-cli-admission.json"), `${JSON.stringify(installedCli, null, 2)}\n`, { mode: 0o600 });
     if (installedPlugin) await writeFile(path.join(privateDir, "installed-daytona-plugin-admission.json"), `${JSON.stringify(installedPlugin, null, 2)}\n`, { mode: 0o600 });
@@ -553,8 +591,20 @@ async function runAttempt(input: {
       executions,
       repositoryRoot,
     );
+    const agentFilesystemSandbox = agentFilesystemSandboxConfig({
+      platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
+      evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+      instanceRoot: path.join(paperclipHome, "instances", instanceId),
+    });
+    // Playwright's default cache holds compiled graders in the shared /tmp.
+    if (sandboxedAgents) await rm(defaultPlaywrightCacheDirectory(), { recursive: true, force: true });
     const childEnv: NodeJS.ProcessEnv = {
-      ...buildRunnerE2EProcessEnvironment(process.env, executions),
+      ...buildRunnerE2EProcessEnvironment(sourceEnvironment, executions),
+      [CHAT_PRIVATE_INPUTS_ENV]: privateInputs?.filename,
+      [PUBLIC_ORIGIN_RECEIPT_ENV]: ownedPublicOrigin?.filename,
+      [DATABASE_LANE_ENV]: dockerDatabase ? "owned-docker-postgres" : undefined,
+      [DOCKER_DATABASE_ENV]: dockerDatabase?.filename,
+      [PRIVATE_DIAGNOSTICS_ENV]: diagnosticRegistry,
       PATH: providerPath,
       PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify(
         executions.map((candidate) => candidate.id),
@@ -563,12 +613,14 @@ async function runAttempt(input: {
       PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: accountingCampaignId,
       PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID: accountingAttemptId,
       PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY: options.installedStartupOnly ? "1" : undefined,
-      PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp") ? "1" : "0",
+      PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp" || candidate.suite.id === "chat-features" && findChatCatalogCase(candidate.task.id)?.authentication === "human-session") ? "1" : "0",
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
+      [AGENT_FILESYSTEM_SANDBOX_ENV]: agentFilesystemSandbox ? JSON.stringify(agentFilesystemSandbox) : undefined,
+      PWTEST_CACHE_DIR: playwrightCacheDirectory(temporaryRoot),
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
-      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
+      PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(temporaryRoot, "artifacts-private", "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
       PAPERCLIP_RUNNER_REMOTE_BINARY_PATH:
         installedCli ? undefined : resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
@@ -624,7 +676,13 @@ async function runAttempt(input: {
         path.join(privateDir, "cases", candidate.task.id, "result.json"),
       ),
       options.ui || options.debug,
+      () => readPrivateDiagnosticSecrets(diagnosticRegistry, temporaryRoot),
     );
+    credentials.splice(0, credentials.length, ...readPrivateDiagnosticSecrets(diagnosticRegistry, temporaryRoot));
+    // A case may register a credential the product itself delivers to the
+    // person (an invitation join link). It stays redacted everywhere; only the
+    // embedded database may hold it in the persisted-state scan below.
+    const productDeliveredCredentials = readProductDeliveredSecrets(diagnosticRegistry, temporaryRoot);
     processCleanupFailed = processResult.processCleanupError !== null;
     if (options.installedStartupOnly) {
       const proofDir = path.join(resultsRoot, campaignId, "installed-startup-only");
@@ -633,7 +691,7 @@ async function runAttempt(input: {
       await cp(privateDir, path.join(proofDir, "private"), { recursive: true });
       const probe = JSON.parse(await readFile(path.join(privateDir, "installed-startup-only.json"), "utf8"));
       if (processResult.exitCode !== 0 || processResult.timedOut || processResult.spawnError || processCleanupFailed || probe.status !== "health_ui_zero_company_passed" || probe.providerCalls !== 0 || probe.qualified !== false) throw new Error("Installed startup-only actual launch chain failed");
-      await assertEmbeddedDatabaseIsolation(configPath, temporaryRoot);
+      await assertRunnerDatabaseIsolation(configPath, temporaryRoot, dockerDatabase?.filename);
       startupReceiptPath = path.join(proofDir, "receipt.json");
       await writeFile(startupReceiptPath, `${JSON.stringify({ status: "installed_launch_chain_pending_scratch_cleanup", qualified: false, providerCalls: 0, credentialsLoaded: false, installedCli, processResult, probe }, null, 2)}\n`, { mode: 0o600 });
       return [];
@@ -669,6 +727,7 @@ async function runAttempt(input: {
           processFailureClass,
         );
         const result = await readResult(resultPath, fallback);
+        if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
         if (!result.workerTiming) result.workerTiming = await recoverWorkerTiming(path.join(path.dirname(resultPath), "snapshots", "worker-timing.json"),
           { executionId: candidate.id, attempt, startedAt: result.startedAt, finishedAt: result.finishedAt });
         if (result === fallback) {
@@ -681,12 +740,14 @@ async function runAttempt(input: {
         }
         // Keep cleanup authority before evidence copying/publication can fail.
         rawCleanupResults.push({ cleanup: result.cleanup, synthetic: result === fallback, status: result.status });
-        return enforceResultProcessIntegrity(result, processResult);
+        const checked = enforceResultProcessIntegrity(result, processResult);
+        return processResult.privateDiagnosticFailure ? { ...checked, status: "failed" as const, failureClass: checked.status === "passed" ? "secret_leak" as const : checked.failureClass,
+          error: `${checked.error ? `${checked.error}; ` : ""}Private diagnostic redaction was unavailable; raw output was withheld.` } : checked;
       }),
     );
     let isolationError: unknown;
     try {
-      await assertEmbeddedDatabaseIsolation(configPath, temporaryRoot);
+      await assertRunnerDatabaseIsolation(configPath, temporaryRoot, dockerDatabase?.filename);
     } catch (error) {
       isolationError = error;
     }
@@ -707,10 +768,13 @@ async function runAttempt(input: {
           while (true) {
             // The managed Codex home may legitimately contain upstream source-code
             // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
-            const leak = await findSecretLeakInDirectory(directory, credentials, {
+            const leak = await findSecretLeakInPersistedState(directory, credentials, productDeliveredCredentials, {
               includeShapes: false,
+              ...(label === "Paperclip home" ? { productStateRoot: paperclipHome } : {}),
               sources: credentialSources,
-              ...(label === "Paperclip home" ? { privateCodexRuntimeIdentityRoot: paperclipHome } : {}),
+              ...(label === "Paperclip home" ? { privateCodexRuntimeIdentityRoot: paperclipHome,
+                ...(dockerDatabase ? { privateDockerDatabaseConfig: { temporaryRoot, configPath, receiptPath: dockerDatabase.filename } } : {}),
+              } : {}),
               ignoreFile: (file) => expectedEphemeralCredentials.has(file),
               allowDisappearedFile: (file) =>
                 label === "Paperclip home" &&
@@ -738,6 +802,13 @@ async function runAttempt(input: {
         persistedStateError = error;
       }
     }
+    const ownedServerLog = path.join(temporaryRoot, "artifacts-private", "server.log");
+    if (manualPrivateHandoff && await access(ownedServerLog).then(() => true, () => false)) {
+      await cp(ownedServerLog, path.join(privateDir, "server.log"), { errorOnExist: true, force: false });
+    }
+    const reporterPrivacy = await sanitizePrivateReporterArtifacts(privateDir, credentials, manualPrivateHandoff
+      ? { owner: await privateCellEvidenceOwner(manualPrivateHandoff, execution.id) } : undefined);
+    if (processResult.privateDiagnosticLeak) reporterPrivacy.push({ file: "playwright process stdout/stderr", disposition: "redacted", reason: "credential detected before diagnostic emission" });
     for (const [index, candidate] of executions.entries()) {
       let result: RunnerE2EResult = {
         ...results[index],
@@ -807,7 +878,14 @@ async function runAttempt(input: {
         `attempt-${attempt}`,
       );
       await mkdir(casePrivateDir, { recursive: true });
-      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials);
+      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials, manualPrivateHandoff ? { executionId: candidate.id, context: manualPrivateHandoff } : undefined);
+      if (reporterPrivacy.length) {
+        const original = { status: result.status, failureClass: result.failureClass, error: result.error };
+        const snapshots = path.join(casePrivateDir, "snapshots"); await mkdir(snapshots, { recursive: true });
+        await writeFile(path.join(snapshots, "diagnostic-privacy.json"), `${JSON.stringify(sanitizeJson({ schemaVersion: 1, originalResult: original, issues: reporterPrivacy }, credentials), null, 2)}\n`, { mode: 0o600 });
+        result = { ...result, status: "failed", failureClass: result.status === "passed" ? "secret_leak" : result.failureClass,
+          error: `${result.error ? `${result.error}; ` : ""}Reporter privacy violation: ${reporterPrivacy.map(issue => `${issue.disposition} ${issue.file}`).join(", ")}` };
+      }
       if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
         const snapshots = path.join(casePrivateDir, "snapshots");
         await mkdir(snapshots, { recursive: true });
@@ -818,14 +896,23 @@ async function runAttempt(input: {
           originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
         }, credentials), null, 2)}\n`, { mode: 0o600 });
       }
+      result = withholdPrivateScreenshots(result, {
+        persistedStateSecretFinding: !!persistedStateFinding && persistenceCheckedExecutions.includes(candidate),
+        reporterEvidenceWithheld: reporterPrivacy.length > 0,
+      });
       const resultPath = path.join(casePrivateDir, "result.json");
       if (manualPrivateHandoff) {
+        manualDiagnostic = { stage: "package-original", result, observation: await readPrivateAttemptObservation(casePrivateDir) };
         await preserveOriginalFrameworkResult(casePrivateDir);
         await writeFile(
           resultPath,
           `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
           "utf8",
         );
+        // html-report/data already holds identical bytes of each failure trace
+        // and video; drop the playwright-output copies so failures fit the
+        // private evidence allowance with their HTML report still viewable.
+        await dropDuplicatePlaywrightOutput(casePrivateDir);
         let evidence = await packageEvidence({
           privateDir: casePrivateDir,
           uploadDir,
@@ -834,7 +921,9 @@ async function runAttempt(input: {
           privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
         });
         const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
+        manualDiagnostic!.evidence = originalEvidence;
         if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
+          result = withholdPrivateScreenshots(result, { packagedEvidenceSecretFinding: evidence.leaks.length > 0 });
           result = {
             ...result,
             status: "failed",
@@ -860,8 +949,12 @@ async function runAttempt(input: {
             privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const },
           });
         }
+        manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
           executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
+        manualDiagnostic!.stage = "attach-original";
+        if (evidence.files.includes(PRIVATE_FRAMEWORK_REPORT)) await referenceSealedFrameworkAttachments(uploadDir,
+          path.join(manualPrivateHandoff.root, "originals", manualCellKind(candidate.id)), candidate.id);
       } else {
         result = await publishRunnerE2EAttemptEvidence({
           result,
@@ -870,7 +963,17 @@ async function runAttempt(input: {
           uploadDir,
           secrets: credentials,
         });
+        if (result.failureClass === "secret_leak") {
+          result = withholdPrivateScreenshots(result, { packagedEvidenceSecretFinding: true });
+          const safeResult = `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`;
+          await writeFile(resultPath, safeResult, "utf8");
+          await writeFile(path.join(uploadDir, "result.json"), safeResult, "utf8");
+        }
       }
+      if (manualDiagnostic) manualDiagnostic.stage = "attach-health-detail";
+      await copyHealthHelloDetail(temporaryRoot, candidate.id, uploadDir, credentials);
+      if (manualDiagnostic) manualDiagnostic.stage = "attach-source-sdk";
+      await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, credentials, repositoryRoot);
       console.log(
         `${result.status === "passed" ? "PASS" : "FAIL"} ${candidate.id} attempt ${attempt} -> ${uploadDir}`,
       );
@@ -881,11 +984,54 @@ async function runAttempt(input: {
       );
     }
     return [...publishedResults];
+  } catch (error) {
+    if (manualDiagnostic) manualDiagnostic.error = error;
+    if (error instanceof PublicOriginCleanupError) processCleanupFailed = true;
+    // Packaging/diagnostic failures must not erase an actually launched attempt
+    // or its primary startup failure. Retain only closed sanitized metadata;
+    // raw reports stay private when their normal packaging path failed.
+    for (const candidate of executions) {
+      if (publishedResultPaths.has(candidate.id)) continue;
+      const casePrivateDir = path.join(privateDir, "cases", candidate.task.id);
+      const fallback = syntheticResult(candidate, attempt, startedAtMs, "Attempt terminated before a worker result was retained");
+      const original = await readResult(path.join(casePrivateDir, "result.json"), fallback);
+      if (manualPrivateHandoff) {
+        manualDiagnostic ??= { stage: "execution", result: original, observation: await readPrivateAttemptObservation(casePrivateDir) };
+        manualDiagnostic.error ??= error;
+      }
+      const result = abnormalFinalizationResult(original, error);
+      if (databaseLane === "owned-docker-postgres") result.databaseIdentity = dockerDatabase ? publicDockerDatabaseIdentity(dockerDatabase.receipt) : (await dockerDatabaseLaunchState(databaseLane, temporaryRoot)).identity;
+      const uploadDir = path.join(resultsRoot, campaignId, candidate.suite.id, candidate.profile.id, candidate.environment.id, candidate.task.id, `attempt-${attempt}`);
+      await mkdir(uploadDir, { recursive: true });
+      const resultPath = path.join(uploadDir, "result.json");
+      const safe = `${JSON.stringify(sanitizeJson(result, attemptSecrets), null, 2)}\n`;
+      assertSecretFree(safe, attemptSecrets, resultPath);
+      await writeFile(resultPath, safe, "utf8");
+      await writeFile(path.join(uploadDir, "abnormal-finalization.json"), `${JSON.stringify(sanitizeJson({
+        schemaVersion: 1, executionId: candidate.id, originalResult: original,
+        packaging: "failed; raw diagnostics retained privately", error: error instanceof Error ? error.message : String(error),
+      }, attemptSecrets), null, 2)}\n`, { mode: 0o600 });
+      await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, attemptSecrets, repositoryRoot).catch(() => {});
+      if (rawCleanupResults.length < executions.length) rawCleanupResults.push({ cleanup: original.cleanup, synthetic: original === fallback, status: original.status });
+      publishedResults.push(result); publishedResultPaths.set(candidate.id, resultPath);
+    }
+    return [...publishedResults];
   } finally {
+    // runProcess has completed its owned Playwright/server process shutdown.
+    let publicOriginCleanupError: unknown;
+    try { await ownedPublicOrigin?.close(); } catch (error) { publicOriginCleanupError = error; processCleanupFailed = true; }
+    let dockerCleanupError: unknown;
+    try { await dockerDatabase?.close(); } catch (error) { dockerCleanupError = error; processCleanupFailed = true; }
+    const databaseFinalization = await dockerDatabaseLaunchState(databaseLane, temporaryRoot);
+    if (databaseFinalization.cleanupUnconfirmed) processCleanupFailed = true;
+    if (databaseFinalization.identity) for (const result of publishedResults) result.databaseIdentity = databaseFinalization.identity;
     let gatewayCleanupError: unknown;
     try { await gateway?.close(); } catch (error) { gatewayCleanupError = error; }
-    if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
+    if (!processCleanupFailed && databaseFinalization.allowDarwinReap) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
+    // Raw selected keys are never diagnostic/archive artifacts, even when recovery state is retained.
+    try { await rm(selectedPrivateInputsDirectory, { recursive: true, force: true }); }
+    catch { cleanupError = new Error("Selected private credential cleanup failed; contents withheld"); }
     const resourceAdmissionStarted = await access(path.join(privateDir, "resource-admission-started"))
       .then(() => true).catch((error: NodeJS.ErrnoException) => error.code !== "ENOENT");
     const preserveRecovery = mustPreserveRecoveryState({ processCleanupFailed, resourceAdmissionStarted, results: rawCleanupResults });
@@ -895,7 +1041,7 @@ async function runAttempt(input: {
     if (preserveRecovery || cleanupError) {
       // Remote allocation cleanup is journaled in this instance's database.
       // Deleting it after the controller exits would strand uncertain creates.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "recovery_state" });
       cleanupError = new Error(`Preserving private recovery state after unconfirmed cleanup: ${temporaryRoot}`);
     } else if (shouldKeepFailedDiagnostics({
       enabled: process.env.PAPERCLIP_RUNNER_E2E_KEEP_FAILED_PRIVATE === "1",
@@ -904,7 +1050,7 @@ async function runAttempt(input: {
     })) {
       // Explicit diagnosis only. Confirmed resource cleanup stays confirmed;
       // keep private traces for investigation without publishing provider data.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "keep" });
       console.warn(`Retained private failed-case diagnostics: ${temporaryRoot}`);
     } else if (
       temporaryRoot.startsWith(`${temporaryParent}${path.sep}paperclip-runner-e2e-`)
@@ -929,7 +1075,7 @@ async function runAttempt(input: {
         `Refusing to remove unexpected temporary path ${temporaryRoot}`,
       );
     }
-    if (gatewayCleanupError) cleanupError = new AggregateError([cleanupError, gatewayCleanupError].filter(Boolean), "Eval gateway cleanup failed");
+    if (gatewayCleanupError || dockerCleanupError || publicOriginCleanupError) cleanupError = new AggregateError([cleanupError, gatewayCleanupError, dockerCleanupError, publicOriginCleanupError].filter(Boolean), "Eval owned gateway/transport cleanup failed");
     if (startupReceiptPath) {
       const receipt = JSON.parse(await readFile(startupReceiptPath, "utf8"));
       receipt.status = cleanupError ? "installed_launch_chain_cleanup_failed" : "installed_launch_chain_passed";
@@ -961,6 +1107,11 @@ async function runAttempt(input: {
       // the same campaign. The result above carries the terminal failure.
       console.error(message);
       if (options.installedStartupOnly) throw new Error(message);
+    }
+    if (databaseLane === "owned-docker-postgres") for (const result of publishedResults) {
+      const filename = publishedResultPaths.get(result.executionId); if (!filename) continue;
+      const safe = `${JSON.stringify(sanitizeJson(result, attemptSecrets), null, 2)}\n`;
+      assertSecretFree(safe, attemptSecrets, filename); await writeFile(filename, safe, "utf8");
     }
     for (const result of publishedResults) {
       const resultPath = publishedResultPaths.get(result.executionId);
@@ -1051,14 +1202,14 @@ async function runWithConcurrency<T, R>(
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args = selectorArgumentsWithEnvironment(process.argv.slice(2));
   if (args.includes("--target-config") || args.includes("product-journeys")) {
     const { launchProductJourneys } = await import("./product-journeys/launch.js");
     return launchProductJourneys(args, repositoryRoot);
   }
   let options: ReturnType<typeof parseRunnerSelectors>;
   try {
-    options = parseRunnerSelectors(process.argv.slice(2));
+    options = parseRunnerSelectors(args);
   } catch (error) {
     if (error instanceof RunnerSelectorError)
       throw new Error(`${error.message}\nUse --list to inspect valid cells.`);
@@ -1066,6 +1217,7 @@ async function main() {
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
   manualPrivateHandoff = await readManualPrivateHandoff(process.env, executions.map(execution => execution.id));
+  if (manualPrivateHandoff) await appendPrivateAttemptDiagnostic({ stage: "execution" });
   resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   if (options.installedStartupOnly) {
     assertInstalledStartupOnly(process.env, executions, options);
@@ -1126,6 +1278,14 @@ async function main() {
   await loadLocalEnvironment(process.env);
   resultsRoot = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "results") : resolveRunnerE2EResultsRoot(repositoryRoot);
   const summaryDir = await prepareRunnerE2ECampaignDirectory(resultsRoot, campaignId);
+  const remoteChat = await prepareChatRemoteHost({ executions, env: process.env, repositoryRoot, outputDirectory: summaryDir });
+  if (remoteChat) {
+    process.env[DATABASE_LANE_ENV] = remoteChat.databaseLane;
+    delete process.env[POSTGRES_ARTIFACT_ENV];
+    delete process.env[POSTGRES_IMAGE_ID_ENV];
+    options.maxAutomaticRetries = remoteChat.maxAutomaticRetries;
+    options.maxParallel = Math.min(options.maxParallel, remoteChat.maxParallel);
+  }
   if (executions.some(execution => execution.suite.id === "native-completion")) {
     process.env[NATIVE_COMPLETION_PREFLIGHT_ENV] = prepareNativeCompletionPreflight(summaryDir);
   }
@@ -1139,7 +1299,7 @@ async function main() {
   assertRemoteNativeEvidencePrerequisites(executions, process.env);
   const missingCredentials = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST ? [] : [
     ...new Set(
-      executions.flatMap((execution) => execution.requiredCredentials),
+      executions.flatMap((execution) => chatLaunchCredentialNames(execution, execution.suite.id === "chat-features" ? findChatCatalogCase(execution.task.id) : undefined)),
     ),
   ].filter((name) => !process.env[name]?.trim());
   if (missingCredentials.length > 0) {
@@ -1254,7 +1414,13 @@ async function main() {
 
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
+  if (manualPrivateHandoff) manualDiagnostic ??= { stage: "execution", error };
   process.exitCode = 1;
 }).finally(async () => {
   if (manualPrivateHandoff) await sealManualResultEvidence(manualPrivateHandoff, [...manualEvidenceSecrets]);
-}).catch(() => { process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1; });
+}).catch((error) => {
+  if (manualDiagnostic && !manualDiagnostic.error) manualDiagnostic.error = error;
+  process.stderr.write("Private evidence finalization failed; no public fallback\n"); process.exitCode = 1;
+}).finally(async () => {
+  if (manualPrivateHandoff && manualDiagnostic) await appendPrivateAttemptDiagnostic(manualDiagnostic).catch(() => {});
+});

@@ -123,7 +123,7 @@ describe("eval-session request contract", () => {
     const value = request({ provider: "acpx", acpxAgent: agent, model: "explicit-provider-model" });
     expect(() => parseEvalSessionRequest(value)).toThrow("--candidate-profile");
     expect(parseEvalSessionRequest(value, { candidateProfile: agent })).toMatchObject({ acpxAgent: agent, model: "explicit-provider-model" });
-    expect(() => parseEvalSessionRequest(value, { candidateProfile: agent === "pi" ? "cursor" : "pi" })).toThrow("must match");
+    expect(() => parseEvalSessionRequest(value, { candidateProfile: "pi" })).toThrow("must match");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, model: "" }), { candidateProfile: agent })).toThrow("request.model");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: "codex", session: { acpxAgent: agent } }))).toThrow("session.acpxAgent must match");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, candidateProfile: agent }))).toThrow("--candidate-profile");
@@ -525,10 +525,10 @@ describe("eval-session usage", () => {
       providerReported: { nanodollars: null, recordedAttempts: 0 },
       estimated: { nanodollars: 6_200_000, recordedAttempts: 1 },
     });
-    expect(snapshot.usageLedger[0]?.costNanodollars).toBe(legacyCost);
+    expect(snapshot.usageLedger![0]?.costNanodollars).toBe(legacyCost);
     const limitedRequest = parseEvalSessionRequest(request());
     limitedRequest.limits.maxEstimatedCostNanodollars = 10_000_000;
-    const costlySnapshot = { ...snapshot, usageLedger: [{ ...snapshot.usageLedger[0]!, costNanodollars: 10_000_001 }] };
+    const costlySnapshot = { ...snapshot, usageLedger: [{ ...snapshot.usageLedger![0]!, costNanodollars: 10_000_001 }] };
     expect(() => boundedEvalSessionUsage(limitedRequest, {
       turnId: "codex-turn", status: "completed", assistantText: "Completed", snapshot: costlySnapshot,
     })).toThrow("legacy ledger cost limit exceeded");
@@ -609,7 +609,7 @@ describe("eval-session budget settlement", () => {
       });
       const input = request({ provider: "acpx", acpxAgent: agent, model,
         runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
-        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
+        session: { workingDirectory: workspace }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
       });
       const requestPath = join(workspace, "request.json");
       const outputPath = join(workspace, "output.json");

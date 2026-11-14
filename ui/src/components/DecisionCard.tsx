@@ -27,8 +27,11 @@ import { MarkdownBody } from "./MarkdownBody";
  * Presentational card for a single Decisions-v1 decision (PAP-14966 / PAP-14939
  * §4), modeled on {@link IssueThreadInteractionCard}. It renders every state —
  * pending / stale-target / destructive cancel-tree / decided / partial / failed
- * / expired / cancelled / dismissed — and delegates the actual decide / dismiss
- * mutations to the parent (the feed's `DecisionResolver`, or the history view).
+ * / expired / cancelled / dismissed — and delegates the decide mutation to the
+ * parent (the feed's `DecisionResolver`, or the history view). There is no
+ * "Dismiss — no effects" verb: it recorded a final `decided` value and could
+ * wake the agent, so the card's Close… menu offers Withdraw request or Archive
+ * for me instead (PAP-749 plan §2, Rule 8). Legacy dismissed records still render.
  * It never fetches: issue labels + the cancel-tree preview arrive via resolvers
  * so the same component drives the live feed and the screenshot harness.
  */
@@ -57,7 +60,6 @@ export interface DecisionCardProps {
   busy?: boolean;
   errorMessage?: string | null;
   onDecide?: (optionId: string, inputValues: Record<string, string>) => void;
-  onDismiss?: (reason?: string) => void;
   className?: string;
 }
 
@@ -236,7 +238,6 @@ export function DecisionCard({
   busy = false,
   errorMessage,
   onDecide,
-  onDismiss,
   className,
 }: DecisionCardProps) {
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
@@ -558,15 +559,6 @@ export function DecisionCard({
             );
           })}
 
-          {/* Always-present zero-effect Dismiss (telemetered "no", distinct from expiry) */}
-          {!decision.options.some((option) => option.effects.length === 0) && (
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-xs text-muted-foreground">Not now?</span>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
-                Dismiss — no effects
-              </Button>
-            </div>
-          )}
           {errorMessage && <p className="text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>}
         </div>
       )}

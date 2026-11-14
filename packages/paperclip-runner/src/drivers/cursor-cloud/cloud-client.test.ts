@@ -139,7 +139,7 @@ describe("Cursor Cloud v1 HTTP client", () => {
       if (request.url?.includes("/artifacts/download?")) return json(response, { url: `https://${host}/proof?private-signature`, expiresAt: TIME });
       response.end(bytes);
     });
-    const externalHeaders: HeadersInit[] = [];
+    const externalHeaders: Array<NonNullable<RequestInit["headers"]>> = [];
     let unexpectedTargets = 0;
     const transport: typeof fetch = (input, init) => {
       const url = String(input);

@@ -5,7 +5,7 @@ import { defineConfig } from "@playwright/test";
 import base from "./playwright.config";
 
 const providerHome = fs.mkdtempSync(path.join(os.tmpdir(), "transcript-provider-"));
-const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
+const server = base.webServer as Exclude<typeof base.webServer, unknown[] | undefined>;
 export default defineConfig({
   ...base,
   testMatch: "transcript-delivery.journey.ts",

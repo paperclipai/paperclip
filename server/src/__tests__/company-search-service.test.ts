@@ -10,6 +10,7 @@ import {
   issueComments,
   issueDocuments,
   issueAccessGrants,
+  issueRelations,
   issueLabels,
   issueWorkProducts,
   issues,
@@ -174,6 +175,29 @@ describeEmbeddedPostgres("companySearchService", () => {
     });
     return id;
   }
+
+  it("returns glyph-only blocker state for blocked results without blocker details (BUG-07)", async () => {
+    const companyId = await createCompany();
+    const parent = await createIssue(companyId, { title: "Launch parent", status: "blocked" });
+    const blocker = await createIssue(companyId, { title: "Hidden blocker detail", status: "todo", identifier: "SRCH-2" });
+    const open = await createIssue(companyId, { title: "Launch open", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blocker, relatedIssueId: parent, type: "blocks" });
+    try {
+      const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "launch", scope: "issues" }));
+      const blocked = result.results.find((row) => row.id === parent)?.issue;
+      expect(blocked?.blockerAttention).toMatchObject({ state: "needs_attention", unresolvedBlockerCount: 1 });
+      expect(Object.keys(blocked!.blockerAttention!).sort()).toEqual([
+        "attentionBlockerCount", "coveredBlockerCount", "reason", "sampleBlockerIdentifier",
+        "sampleStalledBlockerIdentifier", "stalledBlockerCount", "state", "unresolvedBlockerCount",
+      ]);
+      expect(blocked?.blockerAttention?.sampleBlockerIdentifier).toBeNull();
+      expect(JSON.stringify(result)).not.toContain("Hidden blocker detail");
+      expect(JSON.stringify(result)).not.toContain(blocker);
+      expect(result.results.find((row) => row.id === open)?.issue).not.toHaveProperty("blockerAttention");
+    } finally {
+      await db.delete(issueRelations);
+    }
+  });
 
   it("paginates issue-result-only searches before unrelated entity competition", async () => {
     const companyId = await createCompany();
@@ -368,6 +392,37 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.results[0]?.snippets[0]).toMatchObject({ field: "document", label: "Hermes Parser Plan" });
     expect(result.results[0]?.snippets[0]?.highlights.length).toBeGreaterThan(0);
     expect(result.countsByType.document).toBe(1);
+  });
+
+  it("keeps private task artifacts out of an unrelated member's search", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const agentId = await createAgent(companyId, { name: "Private Writer" });
+      const ownerId = `owner-${randomUUID()}`, outsiderId = `outsider-${randomUUID()}`;
+      const privateId = randomUUID();
+      await createIssue(companyId, { id: privateId, title: "Confidential work", visibility: "private",
+        privacyRootIssueId: privateId, responsibleUserId: ownerId });
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, title: "Confidential draft",
+        latestBody: "Launch code nightjar-secret for internal review.", format: "markdown", createdByAgentId: agentId });
+      await db.insert(issueDocuments).values({ companyId, issueId: privateId, documentId, key: "announcement" });
+      const conditionFor = async (userId: string) => ({
+        issueReadCondition: await issueReadSqlCondition(db, { type: "board", userId, source: "session" }),
+      });
+      const query = companySearchQuerySchema.parse({ q: "nightjar-secret" });
+
+      const outsider = await svc.search(companyId, query, await conditionFor(outsiderId));
+      expect(outsider.results.filter(row => row.type === "artifact")).toEqual([]);
+      expect(outsider.countsByType.artifact).toBe(0);
+      const owner = await svc.search(companyId, query, await conditionFor(ownerId));
+      expect(owner.results.filter(row => row.type === "artifact")).toHaveLength(1);
+      expect(owner.countsByType.artifact).toBe(1);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
   });
 
   it("searches artifact projections through the artifacts scope", async () => {

@@ -295,6 +295,17 @@ export function sanitizeAcpxPlanEntries(value: unknown): Array<{
   });
 }
 
+/**
+ * Sanitized plan snapshot from an ACPX runtime event, or null when the event
+ * does not replace the plan. ACPX reports plans as `status` events tagged
+ * `plan`; an `entries` array (including [] to clear) is a full snapshot.
+ */
+export function acpxPlanSnapshot(event: unknown): ReturnType<typeof sanitizeAcpxPlanEntries> | null {
+  const candidate = record(event);
+  if (candidate.type !== "status" || candidate.tag !== "plan" || !Array.isArray(candidate.entries)) return null;
+  return sanitizeAcpxPlanEntries(candidate.entries);
+}
+
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)

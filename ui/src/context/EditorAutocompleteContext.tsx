@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
@@ -43,27 +43,38 @@ export type SlashCommandOption = SkillCommandOption | RoutineCommandOption | Act
 
 interface EditorAutocompleteContextValue {
   slashCommands: SlashCommandOption[];
+  /** Starts the skills and routines reads. Editors call it when they mount. */
+  requestSlashCommands: () => void;
 }
 
 const EditorAutocompleteContext = createContext<EditorAutocompleteContextValue>({
   slashCommands: [],
+  requestSlashCommands: () => {},
 });
 
+/**
+ * Slash-command options for Markdown editors. The company skills and routines
+ * lists are large, and most pages have no editor, so the provider reads them
+ * only after the first editor mounts. Once read they stay current through the
+ * live-update invalidations for skills and routines.
+ */
 export function EditorAutocompleteProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
+  const [requested, setRequested] = useState(false);
+  const requestSlashCommands = useCallback(() => setRequested(true), []);
   const { data: companySkills = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.companySkills.list(selectedCompanyId)
       : ["company-skills", "__none__"],
     queryFn: () => companySkillsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    enabled: requested && Boolean(selectedCompanyId),
   });
   const { data: routines = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.routines.list(selectedCompanyId)
       : ["routines", "__none__", "__all-projects__"],
     queryFn: () => routinesApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    enabled: requested && Boolean(selectedCompanyId),
   });
 
   const value = useMemo<EditorAutocompleteContextValue>(() => ({
@@ -92,7 +103,8 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
           aliases: [`routine:${routine.title}`, routine.title, routine.id],
         })),
     ],
-  }), [companySkills, routines]);
+    requestSlashCommands,
+  }), [companySkills, requestSlashCommands, routines]);
 
   return (
     <EditorAutocompleteContext.Provider value={value}>
@@ -101,6 +113,12 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
   );
 }
 
+/** Returns the slash commands and starts their reads on first use. */
 export function useEditorAutocomplete() {
-  return useContext(EditorAutocompleteContext);
+  const value = useContext(EditorAutocompleteContext);
+  const { requestSlashCommands } = value;
+  useEffect(() => {
+    requestSlashCommands();
+  }, [requestSlashCommands]);
+  return value;
 }

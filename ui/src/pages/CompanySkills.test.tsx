@@ -23,6 +23,7 @@ import { CompanySkills as ProductionCompanySkills } from "./CompanySkills.produc
 import { queryKeys } from "../lib/queryKeys";
 
 const readVersion = vi.hoisted(() => vi.fn());
+const editorRoute = vi.hoisted(() => ({ path: undefined as string | undefined, search: "" }));
 const mockCompanySkillsApi = vi.hoisted(() => ({
   version: readVersion,
   list: vi.fn(),
@@ -34,6 +35,7 @@ const mockCompanySkillsApi = vi.hoisted(() => ({
   catalogDetail: vi.fn(),
   catalogFile: vi.fn(),
   browseProject: vi.fn(),
+  updateFile: vi.fn(),
 }));
 const mockFoldersApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
@@ -63,8 +65,8 @@ vi.mock("@/lib/router", () => ({
     <a href={to} {...props}>{children}</a>
   ),
   useNavigate: () => vi.fn(),
-  useParams: () => ({}),
-  useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  useParams: () => ({ "*": editorRoute.path }),
+  useSearchParams: () => [new URLSearchParams(editorRoute.search), vi.fn()],
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -134,7 +136,7 @@ vi.mock("../components/MarkdownBody", () => ({
 }));
 
 vi.mock("../components/MarkdownEditor", () => ({
-  MarkdownEditor: ({ value }: { value: string }) => <textarea readOnly value={value} />,
+  MarkdownEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <textarea aria-label="Skill markdown" value={value} onInput={event => onChange(event.currentTarget.value)} onChange={() => {}} />,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,6 +153,8 @@ async function act(callback: () => void | Promise<void>) {
 }
 
 afterEach(() => {
+  editorRoute.path = undefined;
+  editorRoute.search = "";
   root?.unmount();
   root = null;
   queryClient?.clear();
@@ -1278,6 +1282,62 @@ describe("CompanySkills page read resilience", () => {
     vi.unstubAllGlobals();
   });
 
+  describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s file editor baseline", (_name, Page) => {
+    it("opens frontmatter markdown clean without an editor change, preserves edits and resets selection", async () => {
+      const frontmatter = "---\nname: demo-skill\ndescription: Keep this metadata.\ncustom: stable\n---\n\n";
+      const body = "# Demo Skill\n\nOriginal body.\n";
+      const content = frontmatter + body;
+      const detail = makeDetail(makeVersion(1, content));
+      detail.fileInventory.push({ path: "references/notes.md", kind: "reference" });
+      editorRoute.path = "demo-skill";
+      editorRoute.search = "tab=files";
+      const files: Record<string, string> = { "SKILL.md": content, "references/notes.md": "Reference body.\n" };
+      const readFile = (path: string) => ({ path, content: files[path], markdown: true, editable: true, encoding: "utf-8" });
+      mockCompanySkillsApi.detail.mockResolvedValue(detail);
+      mockCompanySkillsApi.file.mockImplementation(async (_company, _skill, path) => readFile(path));
+      mockCompanySkillsApi.versions.mockResolvedValue([]);
+      mockCompanySkillsApi.updateStatus.mockResolvedValue({ supported: false });
+      mockCompanySkillsApi.updateFile.mockReset().mockImplementation(async (_company, _skill, path, next) => {
+        files[path] = next;
+        return readFile(path);
+      });
+      const node = await renderPage(Page);
+      await vi.waitFor(() => expect(buttonsNamed(node, "Edit")).toHaveLength(1));
+      await click(buttonsNamed(node, "Edit")[0]!);
+      expect(node.textContent).not.toContain("Unsaved changes");
+      expect((buttonsNamed(node, "Save")[0] as HTMLButtonElement).disabled).toBe(true);
+      const editor = () => node.querySelector<HTMLTextAreaElement>('[aria-label="Skill markdown"]')!;
+      expect(editor().value).toBe(body);
+      expect(mockCompanySkillsApi.updateFile).not.toHaveBeenCalled();
+      const change = async (value: string) => act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await change(body + "A real edit.\n");
+      expect(node.textContent).toContain("Unsaved changes");
+      expect((buttonsNamed(node, "Save")[0] as HTMLButtonElement).disabled).toBe(false);
+      await click(buttonsNamed(node, "Discard")[0]!);
+      await click(buttonsNamed(node, "Edit")[0]!);
+      expect(editor().value).toBe(body);
+      expect(node.textContent).not.toContain("Unsaved changes");
+      await change(body + "Saved edit.\n");
+      await click(buttonsNamed(node, "Save")[0]!);
+      await vi.waitFor(() => expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledWith("company-1", "skill-1", "SKILL.md", frontmatter + body + "Saved edit.\n"));
+      expect(detail.description).toBe("A demo skill.");
+      await settle();
+      await click(buttonsNamed(node, "Edit")[0]!);
+      await change(body + "Unsaved prior-file edit.\n");
+      editorRoute.path = "demo-skill/files/references/notes.md";
+      await act(() => root?.render(<QueryClientProvider client={queryClient}><Page /></QueryClientProvider>));
+      await settle();
+      await click(buttonsNamed(node, "Edit")[0]!);
+      expect(editor().value).toBe("Reference body.\n");
+      expect(node.textContent).not.toContain("Unsaved changes");
+      expect((buttonsNamed(node, "Save")[0] as HTMLButtonElement).disabled).toBe(true);
+      expect(mockCompanySkillsApi.updateFile).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s discovery errors", (_name, Page) => {
     it.each([["skills", 403], ["skills", 429], ["catalog", 403], ["catalog", 429]] as const)(
       "shows a %s %s failure while the other read pauses and keeps its own Retry usable",
@@ -1358,4 +1418,15 @@ describe("CompanySkills page read resilience", () => {
     expect(node.textContent).toContain("Demo Skill");
     expect(node.querySelector('[data-query-view="error"]')).toBeNull();
   });
+});
+
+it.each(["overview", "files"] as const)("exposes the real named Edit control only in the %s tab", async activeTab => {
+  const version = makeVersion(1, "# Demo skill\n\nSaved body");
+  const setEditMode = vi.fn();
+  const node = await renderSkillDetail([version], { activeTab, setEditMode,
+    file: { skillId: "skill-1", path: "SKILL.md", kind: "skill", content: "# Demo skill\n\nSaved body", language: "markdown", markdown: true, editable: true, encoding: "utf8" } });
+  expect(buttonsNamed(node, "Files")).toHaveLength(1);
+  const edit = buttonsNamed(node, "Edit");
+  expect(edit).toHaveLength(activeTab === "files" ? 1 : 0);
+  if (activeTab === "files") { await click(edit[0]!); expect(setEditMode).toHaveBeenCalledExactlyOnceWith(true); }
 });

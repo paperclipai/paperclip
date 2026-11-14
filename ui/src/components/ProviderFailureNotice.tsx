@@ -12,7 +12,7 @@ const labels: Record<ProviderFailure["category"], string> = {
 export function ProviderFailureNotice({ failure, actions, children, className }: {
   failure: ProviderFailure; actions?: ReactNode; children?: ReactNode; className?: string;
 }) {
-  const provider = ({ anthropic: "Claude", openai: "OpenAI" } as Record<string, string>)[failure.provider] ?? failure.provider;
+  const provider = ({ anthropic: "Claude", openai: "OpenAI", sandbox: "Sandbox provider" } as Record<string, string>)[failure.provider] ?? failure.provider;
   return (
     <InlineBanner tone="danger" title={`${provider}: ${labels[failure.category]}`} actions={actions} className={className}>
       <div className="flex flex-col gap-2">

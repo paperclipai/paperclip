@@ -215,6 +215,78 @@ const failed = (e: FirstTaskEvidence) =>
   gradeFirstTask(e)
     .filter((c) => !c.passed)
     .map((c) => c.id);
+
+function approvedPlanRecording(caseId: "interview-plan-accept" | "plan-only-accept"): FirstTaskEvidence {
+  const e = recording(caseId);
+  for (const checkpoint of e.checkpoints.slice(1)) {
+    checkpoint.documents.push({ id: "plan", issueId: "onboarding", key: "plan", body: "Plan to write the welcome note." });
+    if (caseId === "interview-plan-accept") {
+      checkpoint.interactions.push({
+        id: "interview", kind: "ask_user_questions", status: "answered",
+        payload: { questionSet: { questions: ["Goal", "Constraints", "Done"].map((prompt) => ({ id: prompt, prompt, answerMode: "text" })) } },
+      });
+    }
+    if (["accepted", "finished"].includes(checkpoint.phase)) {
+      checkpoint.comments = checkpoint.comments.filter((comment) => comment.id !== "yes");
+      checkpoint.interactions.push({
+        id: "plan-approval", kind: "request_checkbox_confirmation", status: "accepted",
+        payload: { target: { type: "issue_document", key: "plan", revisionId: "plan-revision" }, options: [{ id: "scope", label: "Approved scope" }] },
+        result: { outcome: "accepted", selectedOptionIds: ["scope"] },
+      });
+    }
+    if (caseId === "plan-only-accept") {
+      checkpoint.tasks = checkpoint.tasks.filter((task) => task.id === e.onboardingIssueId);
+      checkpoint.documents = checkpoint.documents.filter((document) => document.key === "plan");
+      checkpoint.runs = checkpoint.runs.filter((run) => run.id !== "child-run");
+    }
+  }
+  e.checkpoints.at(-1)!.tasks[0].status = "done";
+  return e;
+}
+
+describe("accepted onboarding plan outcomes", () => {
+  it("requires the interview's approved child and output even when approval arrived only through a checkbox card", () => {
+    const e = approvedPlanRecording("interview-plan-accept");
+    expect(failed(e)).toEqual([]);
+    const last = e.checkpoints.at(-1)!;
+    last.tasks = [last.tasks[0]];
+    last.documents = last.documents.filter((document) => document.key === "plan");
+    expect(failed(e)).toEqual(["one-scoped-subtask", "durable-completion"]);
+  });
+
+  it("rejects an interview handoff without the requested completed output", () => {
+    const e = approvedPlanRecording("interview-plan-accept");
+    e.checkpoints.at(-1)!.tasks[1].status = "todo";
+    expect(failed(e)).toContain("durable-completion");
+  });
+
+  it("accepts an explicitly plan-only outcome without creating execution work", () => {
+    expect(failed(approvedPlanRecording("plan-only-accept"))).toEqual([]);
+  });
+
+  it.each(["hire", "task", "document", "attachment"])("rejects %s work after plan-only approval", (kind) => {
+    const e = approvedPlanRecording("plan-only-accept");
+    const last = e.checkpoints.at(-1)!;
+    if (kind === "hire") last.agents.push({ id: "new-agent" });
+    if (kind === "task") last.tasks.push({ id: "child", parentId: "onboarding", status: "done" });
+    if (kind === "document") last.documents.push({ id: "note", key: "welcome", body: "Finished welcome note" });
+    if (kind === "attachment") last.attachments = [{ id: "note", originalFilename: "welcome.txt", body: "Finished welcome note", contentVerified: true, contentSha256: digestText("Finished welcome note") }];
+    expect(failed(e)).toContain("plan-only-no-execution");
+  });
+
+  it("checks earlier checkpoints for execution even when the final plan-only state hides it", () => {
+    const e = approvedPlanRecording("plan-only-accept");
+    e.checkpoints[2].tasks.push({ id: "removed-child", status: "todo" });
+    expect(failed(e)).toContain("plan-only-no-execution");
+  });
+
+  it("requires the plan-only request to complete after approval", () => {
+    const e = approvedPlanRecording("plan-only-accept");
+    e.checkpoints.at(-1)!.tasks[0].status = "in_review";
+    expect(failed(e)).toContain("plan-only-complete");
+  });
+});
+
 const scores = () =>
   QUALITY_DIMENSIONS.map((dimension) => ({
     dimension,
@@ -997,10 +1069,10 @@ Accept the card above and I write it. This task stays in review until then.`;
     },
   );
 
-  it("selects exactly 52 local cells with one worker by default", () => {
+  it("selects exactly 56 local cells with one worker by default", () => {
     const options = parseRunnerSelectors(["--suite", "first-task"]);
     const cells = selectRunnerExecutions(options);
-    expect(cells).toHaveLength(52);
+    expect(cells).toHaveLength(56);
     expect(options.maxParallel).toBe(1);
     expect(new Set(cells.map((c) => c.profile.id))).toEqual(
       new Set([
@@ -1032,7 +1104,7 @@ Accept the card above and I write it. This task stays in review until then.`;
     ).toHaveLength(1);
   });
   it("keeps fixed facts and stable case identities for separate campaigns", () => {
-    expect(FIRST_TASK_CASES).toHaveLength(13);
+    expect(FIRST_TASK_CASES).toHaveLength(14);
     expect(
       FIRST_TASK_CASES.map((c) => firstTaskScenario(c[0], "same")),
     ).toEqual(FIRST_TASK_CASES.map((c) => firstTaskScenario(c[0], "same")));
@@ -1198,7 +1270,7 @@ describe("first-task informational judging and reporting", () => {
     const all = selectRunnerExecutions(parseRunnerSelectors(["--all"]));
     expect(
       all.filter((execution) => execution.suite.id === "first-task"),
-    ).toHaveLength(52);
+    ).toHaveLength(56);
     const core = all.find(
       (execution) => execution.suite.id === "core-compatibility",
     )!;

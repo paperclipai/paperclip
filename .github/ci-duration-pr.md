@@ -4,7 +4,7 @@
 > - Contributors need predictable CI feedback.
 > - Test shards use historical per-file costs to distribute their work.
 > - New and changed tests make those costs stale.
-> - This automated PR refreshes the costs from successful protected-master runs.
+> - This automated PR refreshes the costs from successful protected-master runs and, for the e2e and Runner lanes that only run on PRs, from merged PRs' final-head runs.
 > - The refresh changes placement, while preserving test inventory and runner authorization.
 
 ## Linked Issues or Issue Description
@@ -19,15 +19,16 @@ Parallel test jobs should have similar workloads. Timing metadata must never aut
 
 **Steps to reproduce**
 
-Run `node scripts/ci/refresh-test-durations.mjs` with GitHub Actions read access and a full master checkout.
+Run `node scripts/ci/refresh-test-durations.mjs` with GitHub Actions read access and a full master checkout. Add `--dry-run` to print the changes without writing manifests.
 
 ## What Changed
 
 - Refresh general-server and serialized timing weights from recent successful master verification runs.
+- Refresh e2e spec and Runner package-lane weights from successful PR-workflow runs of recently merged PRs, each pinned to the PR's final head SHA. A lane with fewer than two valid runs keeps its current weights.
 
 ## Verification
 
-- The collector validates repository, workflow, branch, event, attempt, successful jobs, commit ancestry and measurement coverage.
+- The collector validates repository, workflow, branch, event, attempt, successful jobs, commit ancestry and measurement coverage. Merged-PR sources must be `pull_request` runs of `.github/workflows/pr.yml` whose head SHA equals the merged PR's final head and whose merge commit is in this checkout.
 - Timing validation and full shard coverage tests pass before this branch is pushed.
 - Review the source run links and coverage recorded in both manifests.
 - Required PR checks and review must pass before merge. GitHub may require approval to start checks for a PR created with `GITHUB_TOKEN`.
@@ -36,10 +37,11 @@ Run `node scripts/ci/refresh-test-durations.mjs` with GitHub Actions read access
 
 - Runner load can distort measurements. Medians reduce this noise. Missing measurements retain previous weights.
 - The changes affect balance, not which tests execute. There is no automatic merge or AWS authorization change.
+<!-- oversized-test-files -->
 
 ## Model Used
 
-- No model ran this refresh. The generator was authored with OpenAI Codex (GPT-6); exact deployment ID and context window were not exposed. It uses code execution and repository inspection.
+- No model ran this refresh. The generator was authored with OpenAI Codex (GPT-6); exact deployment ID and context window were not exposed. The merged-PR lanes and oversized-file report were added with Anthropic Claude Opus 5.5 (`claude-opus-5-5`). Both use code execution and repository inspection.
 
 ## Checklist
 

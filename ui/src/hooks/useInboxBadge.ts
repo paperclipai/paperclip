@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
+import type { InboxDismissal } from "@paperclipai/shared";
+import { isTransientError } from "../api/errors";
 import { inboxDismissalsApi } from "../api/inboxDismissals";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -40,24 +42,42 @@ export function useDismissedInboxAlerts() {
   return { dismissed, dismiss };
 }
 
-export function useInboxDismissals(companyId: string | null | undefined) {
+const NO_DISMISSALS: InboxDismissal[] = [];
+
+/**
+ * `fallback` is a saved list for this company (see
+ * `lib/inbox-mine-reveal-sources.ts`). It stands in until the server answers,
+ * and after a transient failure. While it does, `isLoading` is false and
+ * `hasServerData` is false.
+ */
+export function useInboxDismissals(
+  companyId: string | null | undefined,
+  options: { fallback?: InboxDismissal[] | null } = {},
+) {
   const queryClient = useQueryClient();
   const queryKey = companyId
     ? queryKeys.inboxDismissals(companyId)
     : ["inbox-dismissals", "__disabled__"] as const;
 
-  const { data: dismissals = [], isLoading, error } = useQuery({
+  const { data, isLoading: isQueryLoading, error } = useQuery({
     queryKey,
     queryFn: () => inboxDismissalsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const usesFallback = data === undefined && !!options.fallback && (!error || isTransientError(error));
+  const dismissals = data ?? (usesFallback ? options.fallback! : NO_DISMISSALS);
+  const isLoading = isQueryLoading && !usesFallback;
 
   const dismissMutation = useMutation({
-    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.dismiss(companyId!, itemKey),
-    onMutate: async ({ itemKey }) => {
+    mutationFn: ({ itemKey, fingerprint }: { itemKey: string; fingerprint?: string }) =>
+      inboxDismissalsApi.dismiss(companyId!, itemKey, fingerprint),
+    onMutate: async ({ itemKey, fingerprint }) => {
       if (!companyId) return { previous: [] as typeof dismissals };
       await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<typeof dismissals>(queryKey) ?? [];
+      // Start from what the page shows: saved dismissals stand in until the
+      // first read answers, and must not be dropped by this write or its rollback.
+      const previous = queryClient.getQueryData<typeof dismissals>(queryKey)
+        ?? (usesFallback ? options.fallback! : NO_DISMISSALS);
       const now = new Date();
       queryClient.setQueryData(queryKey, [
         {
@@ -66,6 +86,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
           userId: "me",
           itemKey,
           dismissedAt: now,
+          fingerprint: fingerprint ?? null,
           createdAt: now,
           updatedAt: now,
         },
@@ -93,8 +114,8 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   }
 
   const snoozeMutation = useMutation({
-    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
-      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    mutationFn: ({ itemKey, snoozedUntil, fingerprint }: { itemKey: string; snoozedUntil: string; fingerprint?: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil, fingerprint),
     onSettled: invalidateDismissalConsumers,
   });
 
@@ -113,9 +134,13 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   const dismissMutate = dismissMutation.mutate;
   const snoozeMutate = snoozeMutation.mutate;
   const restoreMutate = restoreMutation.mutate;
-  const dismiss = useCallback((itemKey: string) => dismissMutate({ itemKey }), [dismissMutate]);
+  const dismiss = useCallback(
+    (itemKey: string, fingerprint?: string) => dismissMutate({ itemKey, fingerprint }),
+    [dismissMutate],
+  );
   const snooze = useCallback(
-    (itemKey: string, snoozedUntil: string) => snoozeMutate({ itemKey, snoozedUntil }),
+    (itemKey: string, snoozedUntil: string, fingerprint?: string) =>
+      snoozeMutate({ itemKey, snoozedUntil, fingerprint }),
     [snoozeMutate],
   );
   const restore = useCallback((itemKey: string) => restoreMutate({ itemKey }), [restoreMutate]);
@@ -123,6 +148,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   return {
     dismissals,
     isLoading,
+    hasServerData: data !== undefined,
     error,
     dismissedAtByKey,
     dismiss,

@@ -117,7 +117,8 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("sidebar says Connectors and links to /apps", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/dashboard`);
+    await page.goto(`/${seed.prefix}/issues`);
+    await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
     const connectorsLink = page.getByRole("link", { name: "Connectors", exact: true });
     await expect(connectorsLink).toBeVisible({ timeout: 30_000 });
     await expect(connectorsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));
@@ -161,6 +162,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await expect(page.locator('a[href$="/apps/advanced/gateways"]', { hasText: "Gateways" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/profiles"]', { hasText: "Profiles" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toHaveCount(0);
+    await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
     await expect(page.locator('a[href$="/activity"]', { hasText: "Audit" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.

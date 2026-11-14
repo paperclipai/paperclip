@@ -1,7 +1,7 @@
 import type { Issue } from "@paperclipai/shared";
 
 export const taskListViews = [
-  { value: "inbox", label: "Inbox" },
+  { value: "inbox", label: "Mine" },
   { value: "unread", label: "Unread" },
   { value: "blocked", label: "Needs attention" },
   { value: "all", label: "All tasks" },

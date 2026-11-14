@@ -50,7 +50,7 @@ export function ArtifactFront({
     case "media-fallback":
       return (
         <div data-artifact-front className="shrink-0" style={style}>
-          <IconSheet subject={subject} play />
+          <IconSheet subject={subject} play={subject.kind !== "image"} />
         </div>
       );
     default:

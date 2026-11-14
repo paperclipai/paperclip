@@ -101,7 +101,7 @@ it("settles a create rejected during real-facade Stop before cold recovery and t
     PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT: String(Date.now() + 60_000) };
   const options = { provider: "cursor_cloud" as const, cursorCloud, stateDirectory, runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand,
     cursorCloudProxyPath: proxyPath, cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
-    lifecyclePolicy: { mode: "per_turn" as const }, environment };
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null }, environment };
   const first = createRunnerdCodexTransport({ ...options, prpIdentity: identity }), bundles = [first];
   let stop: Promise<unknown> | undefined;
   try {
@@ -169,7 +169,7 @@ it("opens and closes the real Cloud facade without a provider prompt", async () 
     runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand,
     cursorCloudProxyPath: proxyPath,
     cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
-    lifecyclePolicy: { mode: "per_turn" },
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     prpIdentity: { runnerInstanceId: "runner-cloud-launch", environmentLeaseId: "lease-cloud-launch",
       runId: "00000000-0000-4000-8000-000000000761", normalizedSessionId, turnId: "turn-cloud-launch", itemId: "item-cloud-launch" },
     environment: {
@@ -249,7 +249,7 @@ it("preserves native Cloud tool identity and redacted output through the real Ru
     provider: "cursor_cloud", cursorCloud, stateDirectory: join(root, "runner-session"),
     runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand, cursorCloudProxyPath: proxyPath,
     cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
-    lifecyclePolicy: { mode: "per_turn" },
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     prpIdentity: { runnerInstanceId: "runner-cloud-tool", environmentLeaseId: "lease-cloud-tool",
       runId: "00000000-0000-4000-8000-000000000762", normalizedSessionId, turnId: "turn-cloud-tool", itemId: "item-cloud-tool" },
     environment: {
@@ -343,7 +343,7 @@ async function cloudQuestionHandoff(terminalDelayMs: number, governed: boolean, 
     provider: "cursor_cloud", cursorCloud, stateDirectory: join(root, "runner-session"),
     runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand, cursorCloudProxyPath: proxyPath,
     cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
-    lifecyclePolicy: { mode: "per_turn" },
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     prpIdentity: { runnerInstanceId: "runner-cloud-question", environmentLeaseId: "lease-cloud-question",
       runId: "00000000-0000-4000-8000-000000000763", normalizedSessionId, turnId: "turn-cloud-question", itemId: "item-cloud-question" },
     environment: {
@@ -405,7 +405,7 @@ async function cloudQuestionHandoff(terminalDelayMs: number, governed: boolean, 
       const execution = executeNativeSession({ input, backend, runnerInstanceId: "runner-cloud-question", controlPlaneInstanceId: "control-cloud-question", timeoutMs: 120_000,
         controlPlane: {
           async openRun() {}, async checkpointSession() {}, completeRun,
-          async appendEvent(event) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+          async appendEvent(event: PrpEvent) { history.push(event); return { cursor: history.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
           async replayEvents(replay) { return { events: history.filter(event => event.sourceInstanceId === replay.sourceInstanceId && event.sourceSeq > replay.afterSourceSeq), highestContiguousSourceSeq: 0 }; },
         },
         resolveGovernedWait: ({ event }) => event.eventType === "item.completed" && event.payload.kind === "dynamicToolCall" ? yielded : null,
@@ -520,7 +520,7 @@ async function cloudColdAuthorityRotation(instructions: string, validShutdown = 
     PAPERCLIP_CURSOR_CLOUD_RELAY_URL: `https://relay.example.test/mcp/native-runs/${runId}`, PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT: String(Date.now() + 60_000) });
   const options = { provider: "cursor_cloud" as const, cursorCloud, stateDirectory, runnerBinary: defaultCapabilityRunnerdBinary(), providerNodeCommand,
     cursorCloudProxyPath: proxyPath, cursorCloudProxySha256: `sha256:${createHash("sha256").update(await readFile(proxyPath)).digest("hex")}`,
-    lifecyclePolicy: { mode: "per_turn" as const } };
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null } };
   const mcp = async (token: string, body: Record<string, unknown>, sessionId?: string, priorScopeHeader?: string): Promise<{ status: number; sessionId?: string; value: any }> => {
     const scopeHeader = priorScopeHeader ?? await currentCloudScopeHeader(runtime, normalizedSessionId);
     return new Promise((accept, reject) => {

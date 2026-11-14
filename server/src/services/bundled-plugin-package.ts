@@ -102,7 +102,9 @@ export function createBundledPluginPackageResolver(installs: readonly ResolvedBu
       const install = input.pluginKey ? byKey.get(input.pluginKey) : installs.find((candidate) => candidate.localPath === input.packageRoot);
       if (!install || path.resolve(input.packageRoot) !== install.localPath) throw new Error("Bundled plugin is absent or not selected in this deployment");
       read(install);
-      if (input.manifest) assertManifest(install, input.manifest, input.previousManifest);
+      if (!input.manifest) return;
+      assertManifest(install, input.manifest, input.previousManifest);
+      return install.distribution;
     },
   };
 }

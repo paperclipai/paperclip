@@ -8,6 +8,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
   companySecretVersions,
@@ -33,7 +34,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { envConfigSchema, type Routine } from "@paperclipai/shared";
+import { createRoutineSchema, envConfigSchema, type Routine } from "@paperclipai/shared";
 import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
@@ -104,6 +105,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -236,6 +238,38 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
+
+  it("checks the author of an agent-edited routine revision when dispatching later work", async () => {
+    const f = await seedFixture();
+    const editorId = randomUUID();
+    await db.insert(agents).values({ id: editorId, companyId: f.companyId, name: "Editor", status: "active", adapterType: "process" });
+    await f.svc.update(f.routine.id, { description: "Agent-authored instructions" }, { agentId: editorId });
+    await db.update(agents).set({ permissions: { interactions: { canAssignTasksToAgents: false } } }).where(eq(agents.id, editorId));
+    await expect(f.svc.runRoutine(f.routine.id, { source: "api" }, {})).rejects.toMatchObject({ status: 403,
+      details: expect.objectContaining({ permission: "canAssignTasksToAgents", actorAgentId: editorId }) });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, f.routine.id))).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
+  it("lets only a person choose an unauthenticated public webhook trigger", async () => {
+    const f = await seedFixture();
+    const webhook = { kind: "webhook", enabled: true, replayWindowSec: 300 } as const;
+    const agent = { agentId: f.agentId };
+    await expect(f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, agent))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("Agents can only create authenticated webhook triggers") });
+    const signed = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "bearer" }, agent);
+    expect(signed.trigger.signingMode).toBe("bearer");
+    await expect(f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, agent)).rejects.toMatchObject({ status: 403 });
+    const open = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, { userId: "board-user" });
+    expect(open.trigger.signingMode).toBe("none");
+    await expect(f.svc.updateTrigger(open.trigger.id, { label: "Inbound", signingMode: "none" }, agent))
+      .resolves.toMatchObject({ trigger: { label: "Inbound", signingMode: "none" } });
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, { userId: "board-user" });
+    const unsafeRevision = (await f.svc.listRevisions(f.routine.id))[0]!.id;
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "bearer" }, { userId: "board-user" });
+    await expect(f.svc.restoreRevision(f.routine.id, unsafeRevision, agent)).rejects.toMatchObject({ status: 403 });
+    expect((await f.svc.getTrigger(signed.trigger.id))!.signingMode).toBe("bearer");
+  });
 
   it("preserves creation ancestry through regular webhooks, child tasks, and standalone follow-ups", async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
@@ -1164,6 +1198,104 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain("runtimeConfig");
   });
 
+  it("returns only the same agent's earlier api receipt when it retries its key as a manual run", async () => {
+    const { companyId, routine, svc, agentId } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const boardApi = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "shared-key" }, { userId: "operator" });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "operator", action: "routine.run_triggered", entityType: "routine_run", entityId: boardApi.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, boardApi.linkedIssueId!));
+    const agentRun = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "shared-key" }, { agentId });
+    expect(agentRun.id).not.toBe(boardApi.id);
+    const earlier = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "agent-retry" }, { agentId });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, agentId, action: "routine.run_triggered", entityType: "routine_run", entityId: earlier.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, earlier.linkedIssueId!));
+    const retry = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { agentId });
+    expect(retry.id).toBe(earlier.id);
+    const board = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { userId: "operator" });
+    expect(board.id).not.toBe(earlier.id);
+  });
+
+  it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const userId = "new-responsible-person";
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    const before = await svc.runRoutine(routine.id, { source: "api" }, {});
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, before.linkedIssueId!));
+    const updated = await svc.update(routine.id, {
+      responsibleUserId: userId,
+      baseRevisionId: routine.latestRevisionId,
+    }, { userId: "operator" });
+    expect(updated?.responsibleUserId).toBe(userId);
+    expect(updated?.latestRevisionNumber).toBe(2);
+    const revisions = await svc.listRevisions(routine.id);
+    expect(revisions[0]?.snapshot.routine.responsibleUserId).toBe(userId);
+    expect(revisions[1]?.snapshot.routine.responsibleUserId).toBe(routine.responsibleUserId);
+    const after = await svc.runRoutine(routine.id, { source: "api" }, {});
+    const [oldTask] = await db.select().from(issues).where(eq(issues.id, before.linkedIssueId!));
+    const [newTask] = await db.select().from(issues).where(eq(issues.id, after.linkedIssueId!));
+    expect(oldTask?.responsibleUserId).toBe(routine.responsibleUserId);
+    expect(newTask?.responsibleUserId).toBe(userId);
+    const noOp = await svc.update(routine.id, { responsibleUserId: userId }, {});
+    expect(noOp?.latestRevisionId).toBe(updated?.latestRevisionId);
+    await expect(svc.update(routine.id, {
+      responsibleUserId: userId, baseRevisionId: routine.latestRevisionId,
+    }, {})).rejects.toThrow("Routine was updated by someone else");
+    const restored = await svc.restoreRevision(routine.id, routine.latestRevisionId!, {});
+    expect(restored.routine.responsibleUserId).toBe(userId);
+    expect(restored.revision.snapshot.routine.responsibleUserId).toBe(userId);
+  });
+
+  it("returns the actual predecessor for concurrent transfers without a base revision", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const people = ["next-person", "last-person"];
+    await db.insert(companyMemberships).values(people.map((principalId) => ({
+      companyId, principalType: "user" as const, principalId, status: "active" as const,
+    })));
+    const acquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    const transfers = Promise.all(people.map((responsibleUserId) => svc.update(routine.id, { responsibleUserId }, {})));
+    let results;
+    try {
+      await vi.waitFor(async () => {
+        const waiters = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+          and query like 'select id from "routines"%for update'`);
+        expect(waiters.length).toBe(2);
+      }, { timeout: 5_000, interval: 20 });
+    } finally {
+      release.resolve();
+      await blocker;
+      results = await transfers;
+    }
+    const [first, second] = results.sort((a, b) => a!.latestRevisionNumber! - b!.latestRevisionNumber!);
+    expect(first?.previousResponsibleUserId).toBe(routine.responsibleUserId);
+    expect(second?.previousResponsibleUserId).toBe(first?.responsibleUserId);
+    expect((await svc.get(routine.id))?.responsibleUserId).toBe(second?.responsibleUserId);
+  });
+
+  it.each(["missing", "suspended", "archived", "other-company"])("rejects a %s responsible person", async (state) => {
+    const { companyId, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    if (state !== "missing") {
+      const memberCompanyId = state === "other-company" ? randomUUID() : companyId;
+      if (state === "other-company") await db.insert(companies).values({ id: memberCompanyId, name: "Other company", issuePrefix: "OTHER" });
+      await db.insert(companyMemberships).values({
+        companyId: memberCompanyId, principalType: "user", principalId: userId,
+        status: state === "other-company" ? "active" : state,
+      });
+    }
+    await expect(svc.update(routine.id, { responsibleUserId: userId }, {}))
+      .rejects.toThrow("Responsible user must be an active company member");
+    expect((await svc.get(routine.id))?.responsibleUserId).toBe(routine.responsibleUserId);
+    expect(await svc.listRevisions(routine.id)).toHaveLength(1);
+  });
+
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
     const { routine, svc } = await seedFixture();
 
@@ -1601,6 +1733,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       },
     ]);
   });
+
+  it.each(["parent", "company", "missing", "board"] as const)(
+    "preserves routine creation responsibility fallback: %s", async source => {
+      const { companyId, agentId, routine, svc } = await seedFixture();
+      const parentUserId = randomUUID();
+      const boardUserId = randomUUID();
+      const [parent] = await db.insert(issues).values({ companyId, title: "Parent context", status: "backlog",
+        responsibleUserId: parentUserId }).returning();
+      if (source === "missing") await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+      const creation = svc.create(companyId, createRoutineSchema.parse({
+        title: "Responsibility fallback", assigneeAgentId: agentId, status: "paused",
+        ...(source === "parent" ? { parentIssueId: parent.id } : {}),
+      }), source === "board" ? { userId: boardUserId, actorResponsibleUserId: "other-user" } : { agentId });
+      if (source === "missing") {
+        await expect(creation).rejects.toMatchObject({ status: 422 });
+      } else {
+        expect(await creation).toMatchObject({
+          responsibleUserId: source === "board" ? boardUserId : source === "parent" ? parentUserId : routine.responsibleUserId,
+          createdByAgentId: source === "board" ? null : agentId,
+          createdByUserId: source === "board" ? boardUserId : null,
+        });
+      }
+    },
+  );
 
   it("retains manual runner attribution without adding fresh routine issues to Mine", async () => {
     const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();

@@ -44,7 +44,9 @@ const boundedArchive = (limit = MAX_NATIVE_HARNESS_OBJECT_BYTES) => {
   } });
 };
 
-export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal, maxArchiveBytes = MAX_NATIVE_HARNESS_OBJECT_BYTES) {
+export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal, maxArchiveBytes = MAX_NATIVE_HARNESS_OBJECT_BYTES,
+  excludeRootEntries: readonly string[] = []) {
+  if (excludeRootEntries.some(entry => entry !== "provider-artifacts")) throw fail();
   if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes <= 0 || maxArchiveBytes > MAX_NATIVE_HARNESS_OBJECT_BYTES) throw fail();
   if (!(await readNativeHarnessBackupSourceInput(() => lstat(root))).isDirectory()) throw fail();
   const archive = tar.pack();
@@ -55,6 +57,7 @@ export async function captureNativeHarnessArchive(root: string, target: string, 
   const links = new Map<string, string>();
   const visit = async (relative: string): Promise<void> => {
     for (const name of (await readNativeHarnessBackupSourceInput(() => readdir(join(root, relative)))).sort()) {
+      if (!relative && excludeRootEntries.includes(name)) continue;
       signal?.throwIfAborted();
       const entry = relative ? `${relative}/${name}` : name;
       if (!safeName(entry) || ++count > MAX_NATIVE_HARNESS_ENTRIES) throw fail();

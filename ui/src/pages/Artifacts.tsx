@@ -10,6 +10,7 @@ import {
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { ArtifactEmptyGraphic } from "@/components/artifacts/v1/ArtifactEmptyGraphic";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
@@ -242,7 +243,7 @@ export function Artifacts() {
       : viewingSelectedStack
         ? "No artifacts in this stack match the current filters."
         : kind === "all"
-          ? "No artifacts yet. Outputs attached to issues will appear here."
+          ? "No artifacts yet. Outputs attached to tasks will appear here."
           : "No artifacts of this type yet.";
 
   return (
@@ -288,7 +289,8 @@ export function Artifacts() {
           retrying={artifactsView.isFetching}
         />
       ) : items.length === 0 ? (
-        <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage} />
+        <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage}
+          graphic={<ArtifactEmptyGraphic stack={showGroupCards} kind={kind === "all" ? "file" : kind === "text" ? "code" : kind} />} />
       ) : v1 ? (
         <>
           {/* Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): a task with several artifacts is a stack

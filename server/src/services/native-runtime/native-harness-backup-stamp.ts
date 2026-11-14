@@ -211,10 +211,14 @@ export function verifyNativeHarnessBackupStamp(value: unknown, expectedProviderL
   return false;
 }
 
-export async function verifyNativeHarnessBackupStampAsync(value: unknown, expectedProviderLeaseId: string, signal: AbortSignal): Promise<boolean> {
+export async function verifyNativeHarnessBackupStampAsync(value: unknown, expectedProviderLeaseId: string, signal: AbortSignal,
+  exactRoot?: string): Promise<boolean> {
   const stamp = readNativeHarnessBackupStamp(value, expectedProviderLeaseId);
   if (!stamp) return false;
   for (const candidate of backupCandidates(stamp)) {
+    // A preservation publisher must authenticate the tree it actually copied;
+    // an intact previous backup cannot authorize a changed current payload.
+    if (exactRoot !== undefined && resolve(candidate) !== resolve(exactRoot)) continue;
     signal.throwIfAborted();
     try {
       const directories = matchingBackupDirectories(candidate, stamp);
@@ -238,6 +242,7 @@ export async function verifyNativeHarnessBackupStampAsync(value: unknown, expect
               try {
                 const before = await handle.stat();
                 if (!before.isFile() || stats.ino !== before.ino || stats.dev !== before.dev || stats.size !== before.size) throw new Error("native_harness_backup_source_changed");
+                signal.throwIfAborted();
                 for await (const chunk of handle.createReadStream({ signal, autoClose: false })) {
                   bytes += chunk.length; if (bytes > directory.bytes) throw new Error("native_harness_backup_size_mismatch"); hash.update(chunk);
                 }

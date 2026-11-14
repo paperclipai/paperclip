@@ -9,6 +9,8 @@ pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
 pub mod acpx_sidecar_transport;
+mod acpx_turn_dispatch;
+mod attachment_download;
 pub mod aws_agentcore_provider;
 pub mod claude_managed_provider;
 pub mod codex_provider;
@@ -23,6 +25,7 @@ pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;
+mod governance_events;
 #[cfg(unix)]
 pub mod host_control;
 pub mod local_runner;
@@ -30,17 +33,21 @@ pub mod managed_provider;
 pub mod managed_provider_backend;
 pub mod native_provider_backend;
 pub mod oom_score;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod process_lineage;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;
 pub mod provider_events;
 pub mod provider_failure;
+pub mod provider_rate_limits;
 pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;
 mod stable_identity;
 pub mod stdio_mcp;
 pub mod task_memory;
+pub mod tool_file_changes;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

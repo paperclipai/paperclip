@@ -73,6 +73,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
@@ -236,6 +237,8 @@ export interface RoutineTriggerSecretMaterial {
 }
 
 export interface RoutineDetail extends Routine {
+  /** Actor-specific affordance. The update route remains authoritative. */
+  canChangeResponsibleUser?: boolean;
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;

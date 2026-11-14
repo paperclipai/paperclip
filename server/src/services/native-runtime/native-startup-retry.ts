@@ -4,6 +4,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
+import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 
 /** Categories that report an exhausted account or request allowance. */
 const PROVIDER_LIMIT_CATEGORIES = ["rate_limit", "quota_exhausted"];
@@ -13,26 +14,46 @@ const PROVIDER_LIMIT_ERROR_CODES = ["native_provider_usage_limit", "provider_quo
 const NATIVE_PROVIDER_LIMIT_WINDOW_MS = 24 * 60 * 60_000;
 const LIMIT_EVIDENCE_ROWS = 20;
 
-function limitCooldownAt(failure: ProviderFailure | null, observedAt: Date): number | null {
+type ProviderLimitEvidence = { resetAt: number; resetReported: boolean; category: string; sourceRunId: string | null };
+
+function limitEvidence(failure: ProviderFailure | null, observedAt: Date, sourceRunId: string | null): ProviderLimitEvidence | null {
   if (!failure || !PROVIDER_LIMIT_CATEGORIES.includes(failure.category)) return null;
   const retryAt = failure.retryAt ? Date.parse(failure.retryAt) : Number.NaN;
-  return Number.isFinite(retryAt) ? retryAt : observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
+  if (Number.isFinite(retryAt)) return { resetAt: retryAt, resetReported: true, category: failure.category, sourceRunId };
+  // ACP harnesses report the reset only in the provider's own wording.
+  const clockReset = parseProviderQuotaClockReset(failure.message, observedAt);
+  return clockReset
+    ? { resetAt: clockReset.getTime(), resetReported: true, category: failure.category, sourceRunId }
+    : { resetAt: observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: failure.category, sourceRunId };
 }
+
+export type AgentProviderLimitCooldown = {
+  /** When the agent's provider allowance is expected to return. */
+  resetAt: Date;
+  /** False when no reset was reported and the default cooldown applies. */
+  resetReported: boolean;
+  category: string;
+  /** The run whose failure recorded the latest reset. */
+  sourceRunId: string | null;
+};
 
 /**
  * The latest known provider limit for this agent, from the current failure or
  * from the agent's recent runs. A later successful run clears older evidence.
  */
-async function nativeProviderCooldownAt(input: {
-  db: Db;
-  binding: { companyId: string; agentId: string; runId: string };
-  failure: ProviderFailure | null;
+export async function agentProviderLimitCooldown(db: Db, input: {
+  companyId: string;
+  agentId: string;
+  /** Excluded from the evidence; the caller supplies its own failure. */
+  runId?: string;
+  failure?: ProviderFailure | null;
   now: Date;
-}): Promise<Date | null> {
+}): Promise<AgentProviderLimitCooldown | null> {
   const now = input.now.getTime();
-  let cooldownAt = limitCooldownAt(input.failure, input.now) ?? 0;
-  const rows = await input.db
+  let latest = limitEvidence(input.failure ?? null, input.now, input.runId ?? null);
+  const rows = await db
     .select({
+      id: heartbeatRuns.id,
       status: heartbeatRuns.status,
       errorCode: heartbeatRuns.errorCode,
       observedAt: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`.mapWith(heartbeatRuns.updatedAt),
@@ -41,10 +62,10 @@ async function nativeProviderCooldownAt(input: {
     })
     .from(heartbeatRuns)
     .where(and(
-      eq(heartbeatRuns.companyId, input.binding.companyId),
-      eq(heartbeatRuns.agentId, input.binding.agentId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
       gte(heartbeatRuns.startedAt, new Date(now - NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
-      ne(heartbeatRuns.id, input.binding.runId),
+      ...(input.runId ? [ne(heartbeatRuns.id, input.runId)] : []),
       or(
         eq(heartbeatRuns.status, "succeeded"),
         inArray(heartbeatRuns.errorCode, PROVIDER_LIMIT_ERROR_CODES),
@@ -56,15 +77,22 @@ async function nativeProviderCooldownAt(input: {
   for (const row of rows) {
     // The provider accepted work after this point, so its allowance was restored.
     if (row.status === "succeeded") break;
-    const failure = readProviderFailure(row.providerFailure);
-    let recorded = limitCooldownAt(failure, row.observedAt);
+    let recorded = limitEvidence(readProviderFailure(row.providerFailure), row.observedAt, row.id);
     if (recorded === null && PROVIDER_LIMIT_ERROR_CODES.includes(row.errorCode ?? "")) {
       const reset = row.retryNotBefore ? Date.parse(row.retryNotBefore) : Number.NaN;
-      recorded = Number.isFinite(reset) ? reset : row.observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
+      recorded = Number.isFinite(reset)
+        ? { resetAt: reset, resetReported: true, category: "quota_exhausted", sourceRunId: row.id }
+        : { resetAt: row.observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS, resetReported: false, category: "quota_exhausted", sourceRunId: row.id };
     }
-    if (recorded !== null) cooldownAt = Math.max(cooldownAt, recorded);
+    if (recorded && (!latest || recorded.resetAt > latest.resetAt)) latest = recorded;
   }
-  return cooldownAt > now ? new Date(Math.min(cooldownAt, now + NATIVE_PROVIDER_LIMIT_WINDOW_MS)) : null;
+  if (!latest || latest.resetAt <= now) return null;
+  return {
+    resetAt: new Date(Math.min(latest.resetAt, now + NATIVE_PROVIDER_LIMIT_WINDOW_MS)),
+    resetReported: latest.resetReported,
+    category: latest.category,
+    sourceRunId: latest.sourceRunId,
+  };
 }
 
 /**
@@ -82,7 +110,13 @@ export async function planNativeStartupRetry(input: {
 }): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
-  const providerCooldownAt = await nativeProviderCooldownAt(input).catch((error: unknown) => {
+  const providerCooldownAt = await agentProviderLimitCooldown(input.db, {
+    companyId: input.binding.companyId,
+    agentId: input.binding.agentId,
+    runId: input.binding.runId,
+    failure: input.failure,
+    now: input.now,
+  }).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
     logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");
     return null;
   });

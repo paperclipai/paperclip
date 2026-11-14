@@ -237,6 +237,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   leaseMetadata: Record<string, unknown> | null;
   lease?: EnvironmentLease | null;
   environmentRuntime?: EnvironmentRuntimeService | null;
+  signal?: AbortSignal;
   // The startup tracer for the provider-exec span. Defaults to the endpoint-
   // gated server tracer, which is a no-op when tracing is off. Tests inject a
   // recording tracer.
@@ -277,7 +278,9 @@ export async function resolveEnvironmentExecutionTarget(input: {
       runnerTask: async (operation, context) => {
         const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
           operation: environmentTaskOperationSchema.parse(operation),
-          ...(context?.executionContext ? { executionContext: context.executionContext } : {}) });
+          ...(context?.executionContext ? { executionContext: context.executionContext } : {}),
+          ...(input.signal ? { ownershipSignal: input.signal } : {}),
+          ...(context?.expectedTaskId !== undefined ? { expectedTaskId: context.expectedTaskId } : {}) });
         if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
           acquisition.outcome = "replacement";
           acquisition.providerLeaseId = result.taskId;
@@ -415,6 +418,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
           : parsed.config.runnerLifecycleMode === "per_turn"
             ? { mode: "per_turn", idleTimeoutMs: null }
             : null,
+      ...(typeof parsed.config.runnerIdleTimeoutMs === "number" ? { runnerIdleTimeoutMs: parsed.config.runnerIdleTimeoutMs } : {}),
       reusableLeaseConfigured: parsed.config.reuseLease === true,
       sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
         input.lease?.metadata?.sandboxLeaseAcquisition,
@@ -630,17 +634,19 @@ export async function resolveEnvironmentExecutionTarget(input: {
               lease: input.lease,
             })
               ? {
-                  syncIn: (operations) =>
+                  syncIn: (operations, options) =>
                     input.environmentRuntime!.syncIn({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
-                  syncOut: (operations) =>
+                  syncOut: (operations, options) =>
                     input.environmentRuntime!.syncOut({
                       environment: input.environment as Environment,
                       lease: input.lease!,
                       operations,
+                      ...(options?.minimumTimeoutMs === undefined ? {} : { minimumTimeoutMs: options.minimumTimeoutMs }),
                     }),
                 }
               : {}),
@@ -693,6 +699,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     leaseId: input.leaseId ?? null,
     remoteCwd,
     spec: {
+      useHostAuth: parsed.config.useHostAuth !== false,
       host: parsed.config.host,
       port: parsed.config.port,
       username: parsed.config.username,
@@ -700,6 +707,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       privateKey: parsed.config.privateKey,
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+      ...(parsed.config.tailscaleSocket ? { tailscaleSocket: parsed.config.tailscaleSocket, tailscaleIdentity: parsed.config.tailscaleIdentity } : {}),
       remoteCwd,
     },
   };
