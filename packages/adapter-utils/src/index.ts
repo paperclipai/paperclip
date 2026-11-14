@@ -10,6 +10,7 @@ export type {
   AdapterInvocationMeta,
   AdapterRuntimeEvent,
   AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpToolPolicy,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
   AdapterRuntimeToolAccess,

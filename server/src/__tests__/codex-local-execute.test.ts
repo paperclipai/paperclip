@@ -65,6 +65,14 @@ type LogEntry = {
 };
 
 const fakeCodexAuthJson = JSON.stringify({ OPENAI_API_KEY: "sk-test-codex-local" });
+const fakeCodexSubscriptionAuthJson = JSON.stringify({
+  auth_mode: "chatgpt",
+  tokens: {
+    account_id: "subscription-account",
+    access_token: "subscription-access-token",
+    refresh_token: "subscription-refresh-token",
+  },
+});
 
 const codexHomeOverrides: Array<string | undefined> = [];
 
@@ -231,14 +239,27 @@ describe("codex execute", () => {
     const managedCodexHome = path.join(
       paperclipHome,
       "instances",
-      "default",
+      "managed-mcp-test",
       "companies",
       "company-1",
       "codex-home",
     );
     await fs.mkdir(workspace, { recursive: true });
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexSubscriptionAuthJson}\n`, "utf8");
+    await fs.mkdir(managedCodexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(managedCodexHome, "auth.json"),
+      `${JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          account_id: "isolated-subscription-account",
+          access_token: "isolated-access-token",
+          refresh_token: "isolated-refresh-token",
+        },
+      })}\n`,
+      "utf8",
+    );
     await fs.writeFile(
       path.join(sharedCodexHome, "config.toml"),
       [
@@ -256,11 +277,13 @@ describe("codex execute", () => {
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
     const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
     const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_API_URL = "http://paperclip.local:3100";
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://paperclip.local:3100";
+    process.env.PAPERCLIP_INSTANCE_ID = "managed-mcp-test";
     process.env.CODEX_HOME = sharedCodexHome;
 
     try {
@@ -296,6 +319,10 @@ describe("codex execute", () => {
               url: "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp",
               token: "pcgw_secret-managed-token",
               connectionId: "connection-github",
+              tools: [
+                { name: "pull_request_read", approvalMode: "unattended" },
+                { name: "create_issue", approvalMode: "prompt" },
+              ],
             },
           ],
         },
@@ -314,6 +341,10 @@ describe("codex execute", () => {
       expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
       expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
+      expect(configText).toContain('enabled_tools = ["create_issue", "pull_request_read"]');
+      expect(configText).toContain('[mcp_servers."paperclip-github".tools."pull_request_read"]');
+      expect(configText).toContain('approval_mode = "approve"');
+      expect(configText).toContain('[mcp_servers."paperclip-github".tools."create_issue"]');
       expect(logs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -332,6 +363,8 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
       if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
       else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });

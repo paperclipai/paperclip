@@ -26,15 +26,15 @@ describe("mergeManagedCodexMcpGateways", () => {
   it("keeps runtime gateways and appends non-overlapping context gateways", () => {
     expect(
       mergeManagedCodexMcpGateways(
-        [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }],
+        [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token", tools: [] }],
         [
-          { name: "runtime", endpointPath: "/stale", bearerToken: "stale-token" },
-          { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+          { name: "runtime", endpointPath: "/stale", bearerToken: "stale-token", tools: [] },
+          { name: "manual", endpointPath: "/manual", bearerToken: "manual-token", tools: [] },
         ],
       ),
     ).toEqual([
-      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
-      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token", tools: [] },
+      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token", tools: [] },
     ]);
   });
 });
@@ -1009,6 +1009,10 @@ describe("evaluateCodexCredentialReadiness", () => {
           name: "alpha",
           endpointPath: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
           bearerToken: "alpha-token",
+          tools: [
+            { name: "pull_request_read", approvalMode: "unattended" },
+            { name: "create_or_update_draft", approvalMode: "prompt" },
+          ],
         }],
       });
       await writeManagedCodexMcpConfig({
@@ -1018,6 +1022,7 @@ describe("evaluateCodexCredentialReadiness", () => {
           name: "stale",
           endpointPath: "/api/tool-gateway/gateways/stale/mcp",
           bearerToken: "stale-token",
+          tools: [{ name: "stale_read", approvalMode: "unattended" }],
         }],
       });
       await writeManagedCodexMcpConfig({
@@ -1030,9 +1035,30 @@ describe("evaluateCodexCredentialReadiness", () => {
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
       expect(alpha).toContain('http_headers = { Authorization = "Bearer alpha-token" }');
+      expect(alpha).toContain('enabled_tools = ["create_or_update_draft", "pull_request_read"]');
+      expect(alpha).toContain('default_tools_approval_mode = "prompt"');
+      expect(alpha).toContain('[mcp_servers."alpha".tools."pull_request_read"]\napproval_mode = "approve"');
+      expect(alpha).toContain('[mcp_servers."alpha".tools."create_or_update_draft"]\napproval_mode = "prompt"');
       expect(alpha).not.toMatch(/^headers\s*=/m);
+      expect(JSON.stringify(await writeManagedCodexMcpConfig({
+        codexHome: alphaHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "alpha",
+          endpointPath: "/api/tool-gateway/gateways/alpha/mcp",
+          bearerToken: "rotated-token",
+          tools: [{ name: "get_commit", approvalMode: "unattended" }],
+        }],
+      }))).not.toContain("rotated-token");
+      const restartedAlpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
+      expect(restartedAlpha).toContain('enabled_tools = ["get_commit"]');
+      expect(restartedAlpha).toContain('[mcp_servers."alpha".tools."get_commit"]\napproval_mode = "approve"');
+      expect(restartedAlpha).not.toContain("pull_request_read");
+      expect(restartedAlpha).not.toContain("create_or_update_draft");
+      expect(restartedAlpha).not.toContain("alpha-token");
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
+      expect(zero).not.toContain("stale_read");
       expect(alphaHome).not.toBe(zeroHome);
     } finally {
       await fs.rm(root, { recursive: true, force: true });

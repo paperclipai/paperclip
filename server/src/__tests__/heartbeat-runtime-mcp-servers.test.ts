@@ -497,6 +497,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
 
     const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
     expect(servers).toHaveLength(1);
+    expect(servers[0]!.tools).toHaveLength(251);
+    expect(servers[0]!.tools?.every((tool) => tool.approvalMode === "unattended")).toBe(true);
     const [gateway] = await db.select().from(toolMcpGateways);
     const generatedEntries = await db.select().from(toolProfileEntries)
       .where(eq(toolProfileEntries.profileId, gateway!.profileId!));
