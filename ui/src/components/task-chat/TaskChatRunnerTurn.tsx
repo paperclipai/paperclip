@@ -2,6 +2,7 @@ import { groupImageResources } from "./image-resources";
 import { AgentQueueWait } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf } from "@/lib/agent-queue-wait";
 import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressRunProvider } from "./tool-call-progress";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -258,7 +259,7 @@ export function TaskChatRunnerTurn({
   ));
 
   return (
-    <TaskChatShimmerScope items={items}><div
+    <TaskChatShimmerScope items={items}><ToolCallProgressRunProvider runId={runId}><div
       className="flex min-w-0 flex-col"
       data-testid="task-chat-runner-turn"
       data-phase={status === "queued" ? "startup" : undefined}
@@ -329,6 +330,6 @@ export function TaskChatRunnerTurn({
         </div>
       ) : null}
       {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
-    </div></TaskChatShimmerScope>
+    </div></ToolCallProgressRunProvider></TaskChatShimmerScope>
   );
 }
