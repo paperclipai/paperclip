@@ -681,6 +681,16 @@ describe("issue activity event routes", () => {
         },
       ],
     })!;
+    const agentReadDb = {
+      select: vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn(async () =>
+            getTableName(table as Parameters<typeof getTableName>[0]) === "agents"
+              ? [{ id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" }]
+              : []),
+        })),
+      })),
+    };
     const issue = {
       ...makeIssue(),
       executionPolicy: existingPolicy,
@@ -693,7 +703,7 @@ describe("issue activity event routes", () => {
       updatedAt: new Date(),
     }));
 
-    const res = await request(await createApp())
+    const res = await request(await createApp(agentReadDb))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ executionPolicy: nextPolicy });
 

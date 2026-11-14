@@ -4280,6 +4280,45 @@ export function issueRoutes(
     return resolution?.kind === "low_trust_review";
   }
 
+  async function assertExecutionPolicyAgentsExist(
+    companyId: string,
+    policy: NormalizedExecutionPolicy | null,
+    existingPolicy: NormalizedExecutionPolicy | null = null,
+  ) {
+    if (!policy) return;
+    const existingAgentIds = new Set<string>();
+    for (const stage of existingPolicy?.stages ?? []) {
+      for (const participant of stage.participants) {
+        if (participant.type === "agent" && participant.agentId) existingAgentIds.add(participant.agentId.toLowerCase());
+      }
+    }
+    const requestedAgentIds = new Set<string>();
+    for (const stage of policy.stages) {
+      for (const participant of stage.participants) {
+        if (participant.type !== "agent" || !participant.agentId) continue;
+        if (existingAgentIds.has(participant.agentId.toLowerCase())) continue;
+        requestedAgentIds.add(participant.agentId);
+      }
+    }
+    if (requestedAgentIds.size === 0) return;
+    const agentIds = [...requestedAgentIds];
+    const batchSize = 500;
+    const foundAgentIds = new Set<string>();
+    for (let index = 0; index < agentIds.length; index += batchSize) {
+      const rows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds.slice(index, index + batchSize))));
+      for (const row of rows) foundAgentIds.add(row.id.toLowerCase());
+    }
+    const unknownAgentIds = agentIds.filter((agentId) => !foundAgentIds.has(agentId.toLowerCase()));
+    if (unknownAgentIds.length > 0) {
+      throw unprocessable("Execution policy references agents that do not exist in this company", {
+        agentIds: unknownAgentIds,
+      });
+    }
+  }
+
   async function resolveCreatedIssueExecutionPolicy(
     req: Request,
     companyId: string,
@@ -4287,6 +4326,7 @@ export function issueRoutes(
     requestedPolicy: unknown,
   ) {
     const policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    await assertExecutionPolicyAgentsExist(companyId, policy);
     if (req.actor.type !== "agent") return policy;
     const trust = await resolveAgentTrustForIssue(
       { agentId: req.actor.agentId, runId: req.actor.runId },
@@ -14205,6 +14245,7 @@ export function issueRoutes(
           normalizeIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
+        await assertExecutionPolicyAgentsExist(sourceIssue.companyId, executionPolicy);
         await assertCanManageIssueMonitor(
           access,
           req,
@@ -15009,6 +15050,13 @@ export function issueRoutes(
               await decideIssueAccess(req, existing, commentOnlyUpdate ? "issue:comment" : "issue:mutate"),
             )
           : issueWriteAuthorizationReason(req, true);
+      if (req.body.executionPolicy !== undefined) {
+        await assertExecutionPolicyAgentsExist(
+          existing.companyId,
+          normalizeIssueExecutionPolicy(req.body.executionPolicy),
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+        );
+      }
 
       const actor = getActorInfo(req);
       const isClosed = isClosedIssueStatus(existing.status);

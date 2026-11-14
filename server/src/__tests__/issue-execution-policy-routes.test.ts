@@ -34,6 +34,8 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
+const mockMissingAgentIds = vi.hoisted(() => new Set<string>());
+const mockAgentQueryParams = vi.hoisted((): unknown[][] => []);
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -214,6 +216,8 @@ describe("issue execution policy routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMissingAgentIds.clear();
+    mockAgentQueryParams.length = 0;
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -228,11 +232,13 @@ describe("issue execution policy routes", () => {
       const name = getTableName(table as Parameters<typeof getTableName>[0]);
       if (name !== "issues" && name !== "agents") return { where: mockDbSelectWhere };
       return { where: (condition: SQL) => {
-        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+        const params = new PgDialect().sqlToQuery(condition).params;
+        if (name === "agents") mockAgentQueryParams.push(params);
+        const ids = [...new Set(params
           .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
         const rows = async () => name === "issues"
           ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
-          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+          : ids.filter(id => !mockMissingAgentIds.has(id)).map(id => ({ id: id.toLowerCase(), companyId: "company-1", permissions: null }));
         const query = {
           orderBy: () => query,
           for: () => query,
@@ -1175,6 +1181,146 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  describe("review participant validation", () => {
+    const unknownAgentId = "99999999-9999-4999-8999-999999999999";
+    const reviewPolicy = (agentId: string) => ({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId }],
+        },
+      ],
+    });
+    const issueWithPolicy = (executionPolicy: unknown) => ({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      createdByUserId: "local-board",
+      identifier: "PAP-1500",
+      title: "Participant validation",
+      executionPolicy,
+      executionState: null,
+    });
+
+    it("rejects a PATCH that names an agent that does not exist", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: reviewPolicy(unknownAgentId) });
+
+      expect(res.status).toBe(422);
+      expect(res.body).toMatchObject({
+        error: expect.stringContaining("do not exist in this company"),
+        details: { agentIds: [unknownAgentId] },
+      });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("looks up participant agents only inside the issue company", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: reviewPolicy(unknownAgentId) });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ agentIds: [unknownAgentId] });
+      expect(mockAgentQueryParams.some((params) =>
+        params.includes("company-1") && params.includes(unknownAgentId))).toBe(true);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects the policy before a board interrupt stops the active run", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      mockIssueService.getById.mockResolvedValue({
+        ...issueWithPolicy(null),
+        status: "in_progress",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        executionRunId: "55555555-5555-4555-8555-555555555555",
+      });
+      mockHeartbeatService.getRun.mockResolvedValue({
+        id: "55555555-5555-4555-8555-555555555555",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        status: "running",
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      } as never);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({
+          comment: "Stop and wait for the new reviewer",
+          interrupt: true,
+          executionPolicy: reviewPolicy(unknownAgentId),
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ agentIds: [unknownAgentId] });
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("accepts a PATCH that keeps an agent already stored in the policy", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      const storedPolicy = normalizeIssueExecutionPolicy(reviewPolicy(unknownAgentId))!;
+      const issue = issueWithPolicy(storedPolicy);
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: storedPolicy });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+
+    it("accepts an agent id written in uppercase", async () => {
+      const issue = issueWithPolicy(null);
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ executionPolicy: reviewPolicy("44444444-4444-4444-8444-44444444ABCD") });
+
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    });
+
+    it("rejects a child issue created with an agent that does not exist", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
+
+      const res = await request(await createApp())
+        .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+        .send({
+          title: "Child with unknown reviewer",
+          assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+          executionPolicy: reviewPolicy(unknownAgentId),
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ agentIds: [unknownAgentId] });
+      expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    });
   });
 
   it.each(["in_progress", "blocked"])("triggers a scheduled monitor on an %s task from the dedicated route", async (status) => {
