@@ -388,7 +388,7 @@ describe("gemini_local ACP lane", () => {
   });
 
   it("executes Gemini through the shared ACP runtime", async () => {
-    const root = await makeTempRoot("paperclip-gemini-acp-run-");
+    const root = await fs.realpath(await makeTempRoot("paperclip-gemini-acp-run-"));
     process.env.HOME = path.join(root, "home");
     const runtime = new FakeRuntime({});
     const metas: AdapterInvocationMeta[] = [];

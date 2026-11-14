@@ -6,16 +6,18 @@ navigation: {"section":"Contributor surfaces","sectionOrder":80,"order":10}
 
 Contributors can inspect design examples, interaction labs, and performance fixtures. These are development surfaces and do not count as production feature verification.
 
+Feature ID: `developer-labs`.
+
 Implementation: [route registration](../../ui/src/App.tsx), [design guide](../../ui/src/pages/DesignGuide.tsx), [long-thread fixture](../../ui/src/pages/IssueChatLongThreadPerf.tsx).
 
 Agent access: [companion](../agent-access-map/developer-labs.md).
 
 ## Sub-features
 
-- `design`: inspect shared components and layout examples in the design guide or Storybook.
-- `interaction-labs`: exercise synthetic bootstrap, task-chat, denial, and collaboration states.
-- `performance`: measure the provided long-thread fixture with known data and environment.
-- `route-gates`: distinguish dev-only, experimental, historical, and fallback surfaces.
+- `design`: `developer-labs/design` — inspect shared components and layout examples in the design guide or Storybook.
+- `interaction-labs`: `developer-labs/interaction-labs` — exercise synthetic bootstrap, task-chat, denial, and collaboration states.
+- `performance`: `developer-labs/performance` — measure the provided long-thread fixture with known data and environment.
+- `route-gates`: `developer-labs/route-gates` — distinguish dev-only, experimental, historical, and fallback surfaces.
 
 ## How to get to it (user POV)
 
@@ -57,12 +59,16 @@ real-task behavior before extrapolating fixture measurements.
 
 #### `performance`
 
+Capability ID: `developer-labs/performance`.
+
 Scope: browser
 Storybook: A screenshot/story is optional context, not the required performance evidence.
 Production: Use existing browser performance harnesses. Record build/browser/data size, timing/trace and scrolling. Long-thread fixture has a disabled composer; task-chat HTML harness uses a plain textarea and simulated updates.
 Sources: Source: [IssueChatLongThreadPerf.tsx](../../ui/src/pages/IssueChatLongThreadPerf.tsx), [README.md](../../tests/perf/task-chat/README.md), [README.md](../../tests/perf/issue-detail/README.md). Tests: [scrollback.spec.ts](../../tests/perf/task-chat/scrollback.spec.ts), [issue-detail.perf.spec.ts](../../tests/perf/issue-detail/issue-detail.perf.spec.ts)
 
 #### `route-gates`
+
+Capability ID: `developer-labs/route-gates`.
 
 Scope: browser
 Storybook: No isolated story required to prove actual route registration, redirects or gates; isolated gated-control examples remain useful.

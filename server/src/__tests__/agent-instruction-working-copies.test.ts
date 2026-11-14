@@ -1,3 +1,10 @@
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { notifyInstructionCommit } from "../services/instruction-commit-notifications.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,15 +15,17 @@ const execFile = promisify(execFileCallback);
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, agentInstructionWorkingCopies, createDb } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { activityLog, agents, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns, agentInstructionWorkingCopies, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_INSTRUCTION_COPY_TEST_DATABASE_URL");
 
 describe("registered run instruction copies", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -38,13 +47,14 @@ describe("registered run instruction copies", () => {
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-working-copies-")));
     process.env.PAPERCLIP_HOME = home;
-    database = await startEmbeddedPostgresTestDatabase("instruction-copies-db-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("instruction-copies-db-");
+    db = createDb(external ?? database.connectionString);
     copies = agentInstructionWorkingCopyService(db);
     revisions = agentInstructionRevisionService(db);
   }, 90_000);
   afterAll(async () => {
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (home) {
       const writable = async (dir: string) => {
@@ -68,6 +78,544 @@ describe("registered run instruction copies", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agentId] } });
     await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true });
     await fs.writeFile(path.join(root, entryFile), initial);
+  });
+
+  describe("stopped instruction collection worker", () => {
+    afterEach(async () => {
+      vi.useRealTimers(); vi.restoreAllMocks();
+      await db.update(agentInstructionWorkingCopies).set({ state: "saved", nextAttemptAt: null })
+        .where(eq(agentInstructionWorkingCopies.companyId, companyId));
+    });
+    const clock = () => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const coordinator = (canRun = () => true, canReconcile = () => true) =>
+      createDeliveryWorkCoordinator({ owner: db, canRun, canReconcile, onError: () => {} });
+    async function prepared(stopped = true) {
+      const copy = await run();
+      await fs.writeFile(path.join(copy.localRoot, entryFile), "collected after stop");
+      await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, copy.runId));
+      if (stopped) await db.update(agentInstructionWorkingCopies).set({ processStoppedAt: new Date() })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      return copy;
+    }
+    async function terminal(runId: string, owner = db) {
+      const [run] = await owner.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(await terminalizeLegacyExecution({ db: owner, run, status: "failed", patch: { finishedAt: new Date() } }))
+        .toMatchObject({ id: runId, status: "failed" });
+    }
+    async function saved(runId: string) {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await copies.get(companyId, runId))?.state).toBe("saved");
+      }, { timeout: 5000 });
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("collected after stop");
+    }
+    it("leaves active copies and completed or exhausted history quiet", async () => {
+      const active = await prepared(false), finished = await prepared(), exhausted = await prepared();
+      await terminal(finished.runId); await terminal(exhausted.runId);
+      await db.update(agentInstructionWorkingCopies).set({ state: "saved" }).where(eq(agentInstructionWorkingCopies.runId, finished.runId));
+      await db.update(agentInstructionWorkingCopies).set({ attempts: 3 }).where(eq(agentInstructionWorkingCopies.runId, exhausted.runId));
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(worker.nextWakeAt()).toBeNull();
+        expect((await copies.get(companyId, active.runId))?.state).toBe("prepared");
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      } finally { await worker.stop(); }
+    });
+    it("reactivates when the real terminalization producer changes only the run", async () => {
+      const copy = await prepared(); clock(); const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        expect(worker.nextWakeAt()).toBeNull();
+        await terminal(copy.runId); await saved(copy.runId);
+        await vi.advanceTimersByTimeAsync(1000); await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    });
+    it.each(["restart", "drain", "standby"] as const)("retains terminal collection work across %s", async mode => {
+      const copy = await prepared(); if (mode === "restart") await terminal(copy.runId);
+      let admitted = mode === "restart";
+      clock(); const worker = coordinator(() => admitted, () => mode !== "standby");
+      try {
+        await agentInstructionWorkingCopyService(db).registerStoppedCollectionWork(worker, () => admitted, async () => true).ready;
+        if (mode !== "restart") {
+          await terminal(copy.runId); await vi.advanceTimersByTimeAsync(1000);
+          if (mode === "drain") await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+          const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(60_000);
+          expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+          admitted = true; await vi.advanceTimersByTimeAsync(30_000);
+        }
+        await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("keeps terminalization inside the outer transaction until commit", async () => {
+      const copy = await prepared(); clock(); const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        await expect(db.transaction(async tx => {
+          await terminal(copy.runId, tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+          throw new Error("rollback terminal run");
+        })).rejects.toThrow("rollback terminal run");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("prepared");
+        await db.transaction(async tx => {
+          await terminal(copy.runId, tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        });
+        await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("keeps the saved future deadline instead of collecting on notification", async () => {
+      const copy = await prepared(); clock(); const due = new Date(Date.now() + 90_000);
+      await db.update(agentInstructionWorkingCopies).set({ nextAttemptAt: due }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        await terminal(copy.runId); await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBe(due.getTime());
+        const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(60_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        await vi.advanceTimersByTimeAsync(30_000); await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("never substitutes terminal status for stop proof and recovers later recorded evidence", async () => {
+      const copy = await prepared(false); await terminal(copy.runId);
+      await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, copy.runId));
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_collection", processStoppedAt: null });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        await appendHeartbeatRunEvent(db, { ...target(), runId: copy.runId, eventType: "native.local_process_stopped", stream: "system" });
+        await vi.advanceTimersByTimeAsync(30_000); await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("reconstructs more than one page without a recurring idle scan", async () => {
+      const copy = await run();
+      const ids = Array.from({ length: 103 }, () => randomUUID());
+      await db.insert(heartbeatRuns).values(ids.map(id => ({ id, companyId, agentId, status: "failed",
+        runtimeMode: "legacy", invocationSource: "on_demand", responsibleUserId: userId })));
+      await db.insert(agentInstructionWorkingCopies).values(ids.map(runId => ({ ...copy, runId,
+        processStoppedAt: new Date(), nextAttemptAt: null,
+      })));
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        const rows = () => db.select({ state: agentInstructionWorkingCopies.state }).from(agentInstructionWorkingCopies)
+          .where(eq(agentInstructionWorkingCopies.companyId, companyId));
+        expect((await rows()).filter(row => row.state === "unchanged").length).toBeLessThanOrEqual(20);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await rows()).filter(row => row.state === "unchanged")).toHaveLength(103);
+        }, { timeout: 15_000 });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    }, 20_000);
+    it("retries a failed collection claim without losing the preserved bytes", async () => {
+      const copy = await prepared(); await terminal(copy.runId); clock(); const worker = coordinator();
+      const transactions = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("collection claim unavailable"));
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("prepared");
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        transactions.mockRestore();
+        const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(20_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        await vi.advanceTimersByTimeAsync(10_000); await saved(copy.runId);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { transactions.mockRestore(); await worker.stop(); }
+    });
+    it("joins an in-flight collection before shutdown and restarts quiet", async () => {
+      const copy = await prepared(); await terminal(copy.runId); clock(); const worker = coordinator();
+      const rename = fs.rename.bind(fs);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const reached = new Promise<void>(resolve => { entered = resolve; });
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (to === path.join(root, entryFile)) { entered(); await held; }
+        return rename(from, to);
+      });
+      let stopped: Promise<void> | undefined;
+      try {
+        const registration = copies.registerStoppedCollectionWork(worker, () => true, async () => true);
+        await reached;
+        let complete = false;
+        stopped = worker.stop().then(() => { complete = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(complete).toBe(false);
+        release(); await stopped; await registration.ready;
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("saved");
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("collected after stop");
+        const restarted = coordinator();
+        try {
+          await copies.registerStoppedCollectionWork(restarted, () => true, async () => true).ready;
+          expect(restarted.nextWakeAt()).toBeNull();
+        } finally { await restarted.stop(); }
+      } finally { release(); renameSpy.mockRestore(); await stopped; await worker.stop(); }
+    });
+    it("checks current run eligibility when a queued callback meets a resumed run", async () => {
+      const copy = await prepared(); await terminal(copy.runId); clock(); const worker = coordinator();
+      const transaction = db.transaction.bind(db); let resumed = false;
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        if (!resumed) {
+          resumed = true;
+          await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, copy.runId));
+        }
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try {
+        await copies.registerStoppedCollectionWork(worker, () => true, async () => true).ready;
+        transactions.mockRestore();
+        expect(resumed).toBe(true);
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("prepared");
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        await vi.advanceTimersByTimeAsync(1000); await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBeNull();
+        await terminal(copy.runId); await saved(copy.runId);
+      } finally { transactions.mockRestore(); await worker.stop(); }
+    });
+  });
+
+  describe("captured instruction commit worker", () => {
+    afterEach(async () => {
+      vi.useRealTimers(); vi.restoreAllMocks();
+
+      await db.update(agentInstructionWorkingCopies).set({ state: "saved", nextAttemptAt: null })
+        .where(eq(agentInstructionWorkingCopies.companyId, companyId));
+    });
+    const clock = () => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    async function captured(copy: NonNullable<Awaited<ReturnType<typeof copies.get>>>, dueAt = new Date(), owner = db) {
+      await owner.transaction(async tx => {
+        await notifyInstructionCommit(tx, { companyId: copy.companyId, runId: copy.runId });
+        await tx.update(agentInstructionWorkingCopies).set({ state: "pending_commit", attempts: 1,
+          candidateBase64: Buffer.from("recovered bytes").toString("base64"), nextAttemptAt: dueAt,
+          processStoppedAt: new Date(),
+        }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      });
+    }
+    async function saved(runId: string) {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await copies.get(companyId, runId))?.state).toBe("saved");
+      }, { timeout: 5000 });
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("recovered bytes");
+    }
+    function coordinator(canRun = () => true, canReconcile = () => true) {
+      return createDeliveryWorkCoordinator({ owner: db, canRun, canReconcile, onError: error => { throw error; } });
+    }
+    it("stays quiet for prepared copies, completed history, conflicts, and exhausted candidates", async () => {
+      for (const state of ["prepared", "saved", "conflict", "pending_commit"]) {
+        const copy = await run();
+        await db.update(agentInstructionWorkingCopies).set({ state, attempts: 3 }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      }
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    });
+    it("recovers a real capture at its saved deadline after a transient save failure", async () => {
+      const copy = await run();
+      await fs.writeFile(path.join(copy.localRoot, entryFile), "recovered bytes");
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        const rename = fs.rename.bind(fs);
+        let fail = true;
+        const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          if (fail && to === path.join(root, entryFile)) { fail = false; throw new Error("temporary file replacement failure"); }
+          return rename(from, to);
+        });
+        const pending = await copies.collectStopped({ companyId, runId: copy.runId });
+        expect(pending).toMatchObject({ state: "pending_commit", attempts: 1, nextAttemptAt: expect.any(Date) });
+        renameSpy.mockRestore();
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBe(pending!.nextAttemptAt!.getTime());
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        await vi.advanceTimersByTimeAsync(30_000);
+        await saved(copy.runId);
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    });
+    it.each(["restart", "drain", "standby"] as const)("reconstructs a saved candidate across %s", async mode => {
+      const copy = await run();
+      if (mode === "restart") await captured(copy);
+      let admitted = mode === "restart";
+      clock(); const worker = coordinator(() => admitted, () => mode !== "standby");
+      try {
+        await agentInstructionWorkingCopyService(db).registerCapturedCommitWork(worker, () => admitted, async () => true).ready;
+        if (mode !== "restart") {
+          await captured(copy);
+          await vi.advanceTimersByTimeAsync(1000);
+          if (mode !== "standby") await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+          const reads = vi.spyOn(db, "select");
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+          admitted = true; await vi.advanceTimersByTimeAsync(30_000);
+        }
+        await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("preserves the existing attempt cap and becomes quiet with the candidate retained", async () => {
+      const copy = await run(); await fs.writeFile(path.join(copy.localRoot, entryFile), "recovered bytes");
+      clock(); const worker = coordinator();
+      const rename = fs.rename.bind(fs);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const saving = new Promise<void>(resolve => { entered = resolve; });
+      let destinationWrites = 0;
+      const writes = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (to === path.join(root, entryFile)) {
+          if (++destinationWrites === 2) { entered(); await held; }
+          throw new Error("file replacement still unavailable");
+        }
+        return rename(from, to);
+      });
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        expect((await copies.collectStopped({ companyId, runId: copy.runId }))?.attempts).toBe(1);
+        for (const attempts of [2, 3]) {
+          const previous = await copies.get(companyId, copy.runId);
+          expect(previous?.nextAttemptAt).toBeInstanceOf(Date);
+          await vi.advanceTimersByTimeAsync(Math.max(0, previous!.nextAttemptAt!.getTime() - Date.now()) + 1);
+          if (attempts === 2) {
+            await saving;
+
+
+            expect((await copies.get(companyId, copy.runId))?.attempts).toBe(2);
+            await vi.advanceTimersByTimeAsync(31_000);
+            release();
+          }
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(100);
+            const row = await copies.get(companyId, copy.runId);
+            expect(row?.attempts).toBe(attempts);
+            if (attempts < 3) expect(row!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+            else expect(row?.nextAttemptAt).toBeNull();
+            expect(idleWorkSnapshot().active).toBe(0);
+          });
+        }
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        const count = writes.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(writes.mock.calls.length).toBe(count);
+        expect(worker.nextWakeAt()).toBeNull();
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_commit", attempts: 3,
+          candidateBase64: Buffer.from("recovered bytes").toString("base64"), nextAttemptAt: null });
+      } finally { release(); writes.mockRestore(); await worker.stop(); }
+    });
+    it("joins an active save during shutdown and reconstructs its remaining receipt", async () => {
+      const copy = await run(); await captured(copy);
+      clock(); const worker = coordinator();
+      const rename = fs.rename.bind(fs);
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const reached = new Promise<void>(resolve => { entered = resolve; });
+      const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (to === path.join(root, entryFile)) { entered(); await held; }
+        return rename(from, to);
+      });
+      let stopped: Promise<void> | undefined;
+      try {
+        const registration = copies.registerCapturedCommitWork(worker, () => true, async () => true);
+        await reached;
+        let complete = false;
+        stopped = worker.stop().then(() => { complete = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(complete).toBe(false);
+        release(); await stopped; await registration.ready;
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("recovered bytes");
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("saved");
+        const restarted = coordinator();
+        try {
+          await copies.registerCapturedCommitWork(restarted, () => true, async () => true).ready;
+          expect(restarted.nextWakeAt()).toBeNull();
+        } finally { await restarted.stop(); }
+      } finally { release(); renameSpy.mockRestore(); await stopped; await worker.stop(); }
+    });
+    it("honors a newer retry deadline written before its attempt claim", async () => {
+      const copy = await run(); await captured(copy);
+      clock(); const worker = coordinator();
+      const later = new Date(Date.now() + 60_000);
+      const transaction = db.transaction.bind(db);
+      let changed = false;
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        if (!changed) {
+          changed = true;
+          await transaction(async tx => {
+            await notifyInstructionCommit(tx, { companyId, runId: copy.runId });
+            await tx.update(agentInstructionWorkingCopies).set({ nextAttemptAt: later })
+              .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+          });
+        }
+        return transaction(callback, options);
+      }) as typeof db.transaction);
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        expect(changed).toBe(true);
+        expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_commit", attempts: 1, nextAttemptAt: later });
+        transactions.mockRestore();
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBe(later.getTime());
+        await vi.advanceTimersByTimeAsync(60_000); await saved(copy.runId);
+      } finally { transactions.mockRestore(); await worker.stop(); }
+    });
+    it("reactivates after a real worktree setting change without polling disabled settings", async () => {
+      const copy = await run(); await captured(copy);
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "sleep40-instruction-activation" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const service = heartbeatService(db, { runtimeEnv });
+      clock(); const worker = coordinator();
+      try {
+        await service.registerCapturedInstructionCommitWork(worker, () => true).ready;
+        expect(worker.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select");
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        await service.resolveSchedulingSuppression();
+        await settings.updateExperimental({ enableWorktreeRunExecution: true });
+        await saved(copy.runId);
+      } finally { await worker.stop(); await settings.updateExperimental({ enableWorktreeRunExecution: false }); }
+    });
+    it("reconstructs more than one page and drains the saved candidates in bounded batches", async () => {
+      const copy = await run();
+      const ids = Array.from({ length: 103 }, () => randomUUID());
+      await db.insert(heartbeatRuns).values(ids.map(id => ({ id, companyId, agentId,
+        invocationSource: "on_demand", responsibleUserId: userId })));
+      await db.insert(agentInstructionWorkingCopies).values(ids.map(runId => ({ ...copy, runId,
+        state: "pending_commit", attempts: 1, nextAttemptAt: new Date(), processStoppedAt: new Date(),
+        candidateBase64: Buffer.from("recovered bytes").toString("base64"),
+      })));
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        const rows = () => db.select({ state: agentInstructionWorkingCopies.state }).from(agentInstructionWorkingCopies)
+          .where(eq(agentInstructionWorkingCopies.companyId, companyId));
+        expect((await rows()).filter(row => row.state === "saved").length).toBeLessThanOrEqual(20);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await rows()).filter(row => row.state === "saved")).toHaveLength(103);
+        }, { timeout: 15_000 });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("recovered bytes");
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    }, 20_000);
+    it("requires outer commit and ignores a nested rollback", async () => {
+      const copy = await run(); clock(); const worker = coordinator();
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        await expect(db.transaction(async tx => {
+          await captured(copy, new Date(), tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+          throw new Error("outer rollback");
+        })).rejects.toThrow("outer rollback");
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("prepared");
+        await db.transaction(async tx => {
+          await captured(copy, new Date(), tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        });
+        await saved(copy.runId);
+      } finally { await worker.stop(); }
+    });
+    it("preserves a permission conflict instead of retrying it forever", async () => {
+      const copy = await run(); await captured(copy);
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+      clock(); const worker = coordinator();
+      try {
+        await copies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect((await copies.get(companyId, copy.runId))?.state).toBe("conflict");
+        });
+        expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+        expect((await copies.get(companyId, copy.runId))?.candidateBase64).toBe(Buffer.from("recovered bytes").toString("base64"));
+        await vi.advanceTimersByTimeAsync(1000);
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(worker.nextWakeAt()).toBeNull();
+      } finally { await worker.stop(); }
+    });
+    it.each((["shared", "separate", "dedicated"] as const).flatMap(mode =>
+      (["saved", "retry"] as const).map(outcome => ({ mode, outcome }))))("joins foreground ownership without consuming a recovery attempt ($mode, $outcome)", async ({ mode, outcome }) => {
+      const copy = await run(); await fs.writeFile(path.join(copy.localRoot, entryFile), "recovered bytes");
+      const exercise = async (workerDb: typeof db) => {
+        const recoveryCopies = mode === "shared" ? copies : agentInstructionWorkingCopyService(workerDb);
+        clock(); const worker = coordinator();
+        let release!: () => void, entered!: () => void;
+        const held = new Promise<void>(resolve => { release = resolve; });
+        const reached = new Promise<void>(resolve => { entered = resolve; });
+        let foreground: ReturnType<typeof copies.collectStopped> | undefined;
+        const rename = fs.rename.bind(fs);
+        let holding = true;
+        const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          if (holding && to === path.join(root, entryFile)) {
+            holding = false; entered(); await held;
+            if (outcome === "retry") throw new Error("temporary foreground replacement failure");
+          }
+          return rename(from, to);
+        });
+        try {
+          await recoveryCopies.registerCapturedCommitWork(worker, () => true, async () => true).ready;
+          foreground = copies.collectStopped({ companyId, runId: copy.runId });
+          await reached;
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+          });
+
+
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(await copies.get(companyId, copy.runId)).toMatchObject({ state: "pending_commit", attempts: 1 });
+          release();
+          const result = await foreground;
+          if (outcome === "retry") {
+            expect(result).toMatchObject({ state: "pending_commit", attempts: 1, nextAttemptAt: expect.any(Date) });
+            expect(result!.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now() + 29_000);
+            await vi.advanceTimersByTimeAsync(1000);
+            await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+            expect(worker.nextWakeAt()).toBe(result!.nextAttemptAt!.getTime());
+            await vi.advanceTimersByTimeAsync(Math.max(0, result!.nextAttemptAt!.getTime() - Date.now() - 5000));
+            expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+            expect((await copies.get(companyId, copy.runId))?.attempts).toBe(1);
+            await vi.advanceTimersByTimeAsync(5000);
+          } else expect(result).toMatchObject({ state: "saved", attempts: 1 });
+          await saved(copy.runId);
+          const events = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.files_updated")));
+          expect(events).toHaveLength(1);
+        } finally { release(); await foreground; renameSpy.mockRestore(); await worker.stop(); }
+      };
+      if (mode === "dedicated") await withDedicatedDbConnection(db, exercise);
+      else await exercise(db);
+    });
   });
 
   it("persists an atomic editor replacement, ignores repository instructions, and gives the next run exact bytes", async () => {

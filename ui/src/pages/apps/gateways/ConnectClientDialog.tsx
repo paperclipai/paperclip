@@ -39,6 +39,7 @@ import {
   tokenStatus,
 } from "./gateway-helpers";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
+import { describeError } from "@/api/errors";
 
 type PanelKey = string;
 type ClientIcon = ComponentType<{ className?: string }>;
@@ -137,7 +138,7 @@ export function ConnectClientDialog({
     },
     onError: (error) => pushToast({
       title: "Token was not issued",
-      body: error instanceof Error ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -149,7 +150,7 @@ export function ConnectClientDialog({
     } catch (error) {
       pushToast({
         title: "Copy failed",
-        body: error instanceof Error ? error.message : "Clipboard access is unavailable.",
+        body: describeError(error).body,
         tone: "error",
       });
     }

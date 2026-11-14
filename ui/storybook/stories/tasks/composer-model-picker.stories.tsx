@@ -81,7 +81,7 @@ export const ResetToAgentDefault: Story = {
     const screen = within(canvasElement.ownerDocument.body);
     await userEvent.click(screen.getByRole("button", { name: "Reset to agent default" }));
     await expect(screen.getByTestId("selected-effort")).toHaveTextContent("Default");
-    await expect(screen.getByRole("button", { name: "Choose exact model" })).toHaveTextContent("GPT-5.6 Sol");
+    await expect(screen.getByRole("button", { name: "Choose exact model" })).toHaveTextContent("GPT-6.1 Sol");
     await expect(screen.getByRole("button", { name: "Fast mode" })).toHaveAttribute("aria-pressed", "false");
   },
 };

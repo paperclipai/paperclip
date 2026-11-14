@@ -5,10 +5,12 @@ import {
   costEvents,
   activityLog,
   agents,
+  authUsers,
   agentWakeupRequests,
   agentRuntimeState,
   companySkills,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -68,6 +70,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-worktree-run-secret");
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
+    await db.insert(authUsers).values(["responsible-user", "operator"].map(id => ({ id, name: `Worktree fixture ${id}`,
+      email: `worktree-${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
   }, 20_000);
 
   afterEach(async () => {
@@ -90,6 +94,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -112,6 +117,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values(["responsible-user", "operator"].map(principalId => ({ companyId,
+      principalType: "user", principalId, membershipRole: "operator", status: "active" })));
 
     await db.insert(agents).values({
       id: agentId,
@@ -299,7 +306,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
     const userRun = await heartbeat.wakeup(agentId, {
       source: "on_demand",
-      triggerDetail: "user",
+      triggerDetail: "manual",
       payload: { issueId },
       contextSnapshot: { issueId, skipIssueComment: true },
       requestedByActorType: "user",

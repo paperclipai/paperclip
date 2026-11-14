@@ -1,3 +1,4 @@
+import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { experimental_decide as decide, type Experimental_DecisionModel } from "ai";
@@ -44,7 +45,7 @@ export async function runDecisionProvider(input: {
 }, options: { fetch?: typeof fetch } = {}): Promise<DecisionProviderOutcome> {
   const native = input.provider === "openai"
     ? createOpenAI({ apiKey: input.apiKey, fetch: options.fetch }).decisionModel(input.model)
-    : createOpenRouter({ apiKey: input.apiKey, fetch: options.fetch }).evaluationModel(input.model);
+    : createOpenRouter({ apiKey: input.apiKey, fetch: options.fetch, headers: OPENROUTER_ATTRIBUTION_HEADERS }).evaluationModel(input.model);
   let receipt = decisionReceipt(input.provider, null);
   // Capture only accounting metadata before SDK answer validation/refusal errors.
   const model: Exclude<Experimental_DecisionModel, string> = {

@@ -1,3 +1,5 @@
+import { notifyChatReceiver } from "../runtime/receiver-work-notifications.js";
+import { notifyDiscordCommandRegistration } from "./command-work-notifications.js";
 import type { EndpointRow, DbTransaction, RuntimeContext, LifecycleRuntimeFence, InternalSetupState } from "../runtime-types.js";
 
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
@@ -129,6 +131,10 @@ export function createDiscordGatewayEvents(db: Db, options: DiscordGatewayEvents
       }
       const now = new Date();
       if (event.type === "connecting") {
+        if (current.status === "attention") {
+          await notifyChatReceiver(tx, current);
+          await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: current.id });
+        }
         await tx
           .update(chatEndpoints)
           .set({
@@ -157,7 +163,9 @@ export function createDiscordGatewayEvents(db: Db, options: DiscordGatewayEvents
         if (current.status === "attention" && !gatewayOwnedAttention) return;
         const status =
           current.setup.step === "complete" ? "active" : "verifying";
-        if (status !== current.status) await notifyChatEndpointWork(tx, current.connectionId);
+        await notifyChatReceiver(tx, current);
+        await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: current.id });
+        if (status !== current.status) await notifyChatEndpointWork(tx, current.connectionId, current.companyId);
         await tx
           .update(chatEndpoints)
           .set({
@@ -186,6 +194,8 @@ export function createDiscordGatewayEvents(db: Db, options: DiscordGatewayEvents
         return;
       }
 
+      await notifyChatReceiver(tx, current);
+      await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: current.id });
       const detail = discordGatewayFailureDetail(event);
       const transientGuildOutage = event.type === "guild_unavailable";
       const terminal =

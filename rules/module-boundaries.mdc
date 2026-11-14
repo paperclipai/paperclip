@@ -1,0 +1,46 @@
+---
+description: Keep behavior with its owning module and justify changes to shared contracts and delivery scope.
+alwaysApply: true
+---
+
+# Module boundaries
+
+Apply to new or materially changed behavior across modules. Follow subsystem
+ownership rules; unrelated code need not be reorganized.
+
+- **Choose ownership first.** Identify the owner, existing contract, and missing
+  shared capability in the task's existing plan or PR. No separate document or
+  approval is required. Convenient local variables do not justify orchestrator logic.
+- **Isolate implementation details.** Provider protocols, payload parsing,
+  workarounds, and feature sequencing belong with their owner. Shared code consumes
+  normalized domain contracts, not provider payloads or SDK types. Small registries
+  and dispatch branches may select implementations and delegate behavior.
+- **Keep contracts narrow.** Reuse extension points; add only what the workflow
+  needs. Pass required dependencies, not the whole service context. Moving code
+  or renaming interfaces does not remove coupling. A coherent shared contract
+  should survive provider removal or substitution. One consumer can justify it;
+  speculative reuse or another fixture alone cannot. Preserve provider differences
+  rather than forcing a universal interface.
+- **Preserve invariant ownership.** Authorization, company isolation, audit,
+  transactions, and resource ownership retain their existing owners. Adapters
+  must neither bypass controls nor create parallel enforcement paths.
+- **Explain shared changes.** For each substantive change outside the owner,
+  explain the capability, why existing contracts are insufficient, affected
+  consumers, and behavior with the feature absent or disabled. Group related files.
+  Catalog entries, branding, schemas, and registration may stay in established
+  locations without teaching shared execution the provider protocol.
+- **Separate ownership from delivery scope.** Even well-factored platform work
+  may need a separate reviewable slice or explicit PR-stack dependency to clarify
+  effects on existing consumers. Keep tests and docs with behavior. Preserve
+  requested features and delivery constraints; avoid unusable intermediate states
+  and arbitrary PR/file counts.
+
+**Verify:** Exercise observable behavior through new and relevant existing
+consumers, including affected absent/disabled states—not just helper calls.
+A different-protocol fixture can expose coupling but proves neither production
+compatibility nor the abstraction's necessity.
+
+**Review:** Flag misplaced behavior, leaked private representations, duplicated
+invariant ownership, and unexplained shared changes; name the proper owner and
+contract. Recheck necessity and scope after refactoring. Identifier searches,
+line counts, and passing CI alone do not establish sound boundaries.

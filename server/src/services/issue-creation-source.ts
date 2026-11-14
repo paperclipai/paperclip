@@ -1,18 +1,26 @@
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 
 type IssueRow = typeof issues.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
+type CreationSourceRun = Pick<HeartbeatRunRow, "id" | "companyId" | "agentId" | "scopeKind" | "nativeIssueId" | "issueId"> & {
+  contextSnapshot: { issueId: unknown; taskId: unknown; taskKey: unknown; paperclipIssue: { id: unknown } } | null;
+};
 
-/** The task a run was executing when it created another task. */
+/** The task that created another task, and the run that did so when one did. */
 export interface IssueCreationSourceRecord {
-  run: HeartbeatRunRow;
+  run: CreationSourceRun | null;
   sourceIssue: IssueRow;
 }
 
 const CREATION_ACTIVITY_ACTIONS = ["issue.created", "issue.child_created"];
+
+/** The route supplies a fresh UUID; a different returned issue is reused. */
+export function childCreatedByRequest(proposedIssueId: string, returnedIssueId: string) {
+  return proposedIssueId === returnedIssueId;
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -59,15 +67,35 @@ export async function loadRunBoundIssue(
 }
 
 /**
- * Resolves the task from which an issue was created, using recorded run
- * provenance: the issue's origin run, or for historical rows without one, the
- * run on its creation activity. Company-scoped; a run or source task from
- * another company never resolves. Does not check viewer access.
+ * Resolves the task from which an issue was created. The recorded
+ * `origin_issue_id` wins; otherwise the task the origin run (or, for historical
+ * rows, the run on the creation activity) was executing. Company-scoped; a run
+ * or source task from another company never resolves. Does not check viewer
+ * access.
  */
 export async function resolveIssueCreationSource(
   db: Db,
-  issue: Pick<IssueRow, "id" | "companyId" | "originRunId">,
+  issue: Pick<IssueRow, "id" | "companyId" | "originRunId"> & { originIssueId?: string | null },
 ): Promise<IssueCreationSourceRecord | null> {
+  const run = await loadIssueCreationRun(db, issue);
+  if (issue.originIssueId && issue.originIssueId !== issue.id) {
+    const [sourceIssue] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issue.originIssueId), eq(issues.companyId, issue.companyId)))
+      .limit(1);
+    if (sourceIssue) return { run, sourceIssue };
+  }
+  if (!run) return null;
+  const sourceIssue = await loadRunBoundIssue(db, run);
+  if (!sourceIssue || sourceIssue.id === issue.id) return null;
+  return { run, sourceIssue };
+}
+
+async function loadIssueCreationRun(
+  db: Db,
+  issue: Pick<IssueRow, "id" | "companyId" | "originRunId">,
+): Promise<CreationSourceRun | null> {
   let runId = issue.originRunId;
   if (!runId) {
     const [creation] = await db
@@ -86,14 +114,26 @@ export async function resolveIssueCreationSource(
   }
   if (!runId || !isUuidLike(runId)) return null;
   const [run] = await db
-    .select()
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      scopeKind: heartbeatRuns.scopeKind,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: heartbeatRuns.issueId,
+      contextSnapshot: sql<CreationSourceRun["contextSnapshot"]>`case
+        when coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId}) is not null then null
+        else jsonb_build_object(
+          'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+          'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+          'taskKey', ${heartbeatRuns.contextSnapshot}->'taskKey',
+          'paperclipIssue', jsonb_build_object('id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'id')
+        ) end`,
+    })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId)))
     .limit(1);
-  if (!run) return null;
-  const sourceIssue = await loadRunBoundIssue(db, run);
-  if (!sourceIssue || sourceIssue.id === issue.id) return null;
-  return { run, sourceIssue };
+  return run ?? null;
 }
 
 /** Company-scoped agent summary for a creation source. */

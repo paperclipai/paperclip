@@ -72,8 +72,7 @@ export function VoiceSessionView({ companyId, endpointId, issueId, agentName, au
     enabled: Boolean(sessionId),
     refetchInterval: 1000,
     refetchIntervalInBackground: true,
-    retry: false,
-  });
+    });
   const rejected = notification.error instanceof ApiError && [401, 403, 404].includes(notification.error.status);
   useEffect(() => { if (rejected) setAccessLost(true); }, [rejected]);
   const accessRevoked = rejected || accessLost;

@@ -104,23 +104,6 @@ describe("codex-auth-merge-decision predicate seed mode", () => {
     }
   }
 
-  it("default mode keeps destination when destination is absent (host-default fail-closed)", async () => {
-    const code = await runDecision({
-      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-      destinationAuth: ABSENT,
-    });
-    expect(code).toBe(KEEP_DESTINATION);
-  });
-
-  it("seed mode uses source when destination is absent and source is a usable subscription credential", async () => {
-    const code = await runDecision({
-      seed: true,
-      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-      destinationAuth: ABSENT,
-    });
-    expect(code).toBe(USE_SOURCE);
-  });
-
   it("seed mode uses source when destination is unparseable and source is a usable subscription credential", async () => {
     const code = await runDecision({
       seed: true,

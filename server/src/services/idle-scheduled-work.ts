@@ -8,13 +8,14 @@ const limit = 10_000;
 
 export interface ScheduledWake {
   version: 1;
-  kind: "routines";
+  kind: "routines" | "routines_and_issue_monitors";
   generation: string;
   nextWakeAt: string;
 }
 
 export async function readIdleRoutineSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number): Promise<{
   blocked: boolean;
+  inspectionComplete?: false;
   scheduledWake?: ScheduledWake;
 }> {
   const unknown = await tx.execute<{ blocked: boolean }>(sql`SELECT EXISTS (
@@ -33,7 +34,7 @@ export async function readIdleRoutineSchedule(tx: Pick<Db, "execute">, ownerId: 
     FROM routine_triggers t JOIN routines r ON r.id = t.routine_id
     WHERE r.status = 'active' AND t.enabled AND NOT t.archived
     ORDER BY t.id LIMIT ${limit + 1}`);
-  if (rows.length > limit) return { blocked: true };
+  if (rows.length > limit) return { blocked: true, inspectionComplete: false };
   let earliest = Infinity;
   const validTimezones = new Set<string>();
   const validCrons = new Set<string>();

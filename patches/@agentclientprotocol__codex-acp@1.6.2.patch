@@ -35,7 +35,7 @@ diff --git a/dist/index.js b/dist/index.js
 @@ -26988,4 +26988,18 @@
  };
 +function paperclipBaseInstructions(request) {
-+  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && process.env.PAPERCLIP_RUNNER_HOME_MODE !== "preconfigured") return void 0;
 +  const prompt = request?._meta?.systemPrompt;
 +  if (typeof prompt === "string") return prompt;
 +  if (prompt && typeof prompt === "object" && typeof prompt.append === "string") {

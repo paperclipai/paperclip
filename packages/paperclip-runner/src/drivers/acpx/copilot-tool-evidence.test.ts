@@ -127,6 +127,42 @@ describe("Copilot authoritative semantic receipt correlation", () => {
   const make = (operation = "paperclip_finish", isError = false) => appendSemanticToolReceipt(
     { tool: operation, callId: "3", arguments: args }, { content: [{ type: "text", text: '{"accepted":false}' }], ...(isError ? { isError } : {}) });
   const terminal = (id: string, content: unknown, status = "completed") => ({ type: "tool_call", tag: "tool_call_update", toolCallId: id, status, rawOutput: { contents: content } });
+  it("retains empty native context arguments when ACP classifies the semantic tool as a read", () => {
+    const h = harness();
+    const bound = appendSemanticToolReceipt({ tool: "get_task_context", callId: "context", arguments: {} },
+      { content: [{ type: "text", text: "PRIVATE CONTEXT" }] });
+    h.projector.tool(tool("native-context", {}, "read"));
+    expect(h.events.map(details)).toEqual([{ stage: "tool", toolCallId: "native-context", operation: "read", status: "pending" }]);
+    h.projector.captureSemanticReceipt()!(bound.receipt);
+    h.projector.tool(terminal("native-context", bound.result.content));
+    expect(details(h.events.at(-1)!)).toMatchObject({ stage: "tool", status: "completed", semanticOperationId: "get_task_context" });
+    expect(h.events.map(details).some(d => d.stage === "evidence_incomplete")).toBe(false);
+    expect(h.events.map(e => details(e).stage)).toEqual(["tool", "semantic_result", "tool"]);
+    expect(JSON.stringify(h.events)).not.toContain("PRIVATE CONTEXT");
+  });
+  it("preserves streamed file-read attestation when the pending origin has no arguments yet", () => {
+    const h = harness();
+    h.projector.tool(tool("file-read", undefined, "read"));
+    h.projector.tool({ ...tool("file-read", { path: "instructions.md" }, "read"), tag: "tool_call_update" });
+    h.projector.tool(update("file-read", "PRIVATE FILE"));
+    expect(details(h.events.at(-1)!)).toMatchObject({ operation: "read", status: "completed",
+      readTargetSha256: `sha256:${createHash("sha256").update("instructions.md").digest("hex")}` });
+    expect(h.events.map(details).some(d => d.stage === "evidence_incomplete")).toBe(false);
+  });
+  it.each(["absent-origin", "changed-terminal-input", "changed-before-execution", "changed-to-file"])("rejects empty-read semantic correlation with %s", scenario => {
+    const h = harness();
+    const bound = appendSemanticToolReceipt({ tool: "get_task_context", callId: "context", arguments: {} },
+      { content: [{ type: "text", text: "PRIVATE CONTEXT" }] });
+    h.projector.tool(tool("native-context", scenario === "absent-origin" ? undefined : {}, "read"));
+    if (scenario === "changed-before-execution") h.projector.tool({ ...tool("native-context", { changed: true }, "read"), tag: "tool_call_update" });
+    if (scenario === "changed-to-file") h.projector.tool({ ...tool("native-context", { path: "instructions.md" }, "read"), tag: "tool_call_update" });
+    h.projector.captureSemanticReceipt()!(bound.receipt);
+    h.projector.tool({ ...terminal("native-context", bound.result.content),
+      ...(scenario === "changed-terminal-input" ? { rawInput: { changed: true } } : {}) });
+    expect(h.events.map(details)).toContainEqual(expect.objectContaining({ stage: "evidence_incomplete" }));
+    expect(h.events.map(details).filter(d => d.stage === "tool").every(d => d.semanticOperationId === undefined)).toBe(true);
+    expect(details(h.events.at(-1)!)).not.toHaveProperty("semanticOperationId");
+  });
   it.each(["paperclip_finish", "report_progress", "get_task_context"])("correlates %s with trusted callback, not native display name", operation => {
     const h = harness(); const bound = make(operation);
     h.projector.tool({ ...tool("native", args, "other"), title: "unrelated display" });

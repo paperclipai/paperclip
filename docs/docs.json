@@ -47,6 +47,7 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/sentry-run-failure-repairs",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",
@@ -123,9 +124,11 @@
               "api/agents",
               "api/issues",
               "api/approvals",
+              "api/attention",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
+              "api/tool-gateway-tokens",
               "api/activity",
               "api/dashboard"
             ]

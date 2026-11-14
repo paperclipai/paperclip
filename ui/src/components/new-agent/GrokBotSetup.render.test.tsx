@@ -35,7 +35,7 @@ it("restores the same saved agent when a failed initial resume succeeds on retry
   expect(retry).toBeTruthy();
   flushSync(() => retry!.click());
   await vi.waitFor(() => expect([...document.querySelectorAll("label")].some(label => label.textContent === "Webhook key")).toBe(true));
-  expect(api.connection).toHaveBeenCalledWith(companyId, agentId, expect.any(AbortSignal));
+  await vi.waitFor(() => expect(api.connection).toHaveBeenCalledWith(companyId, agentId, expect.any(AbortSignal)));
   expect(api.create).not.toHaveBeenCalled();
   expect(api.pair).not.toHaveBeenCalled();
 });
@@ -81,4 +81,45 @@ it("copies the masked pairing code and offers a retry after a clipboard failure"
   expect(copyTextToClipboard).toHaveBeenNthCalledWith(1, pairingCode);
   expect(copyTextToClipboard).toHaveBeenNthCalledWith(2, pairingCode);
   expect(document.body.textContent).not.toContain(pairingCode);
+});
+
+it("copies a masked reconnect code without adding it to Bot instructions and retries clipboard failure", async () => {
+  const pairingCode = "synthetic_reconnect_code_12345";
+  api.connection.mockResolvedValue({ enabled: true, canConfigureConnection: true,
+    resourceUrl: "https://paperclip.example/mcp/runner", binding: null });
+  api.pair.mockResolvedValue({ bindingId: "binding-fixture", pairingCode,
+    expiresAt: new Date(Date.now() + 60_000).toISOString() });
+  vi.mocked(copyTextToClipboard).mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue();
+  cache = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
+  flushSync(() => root.render(<QueryClientProvider client={cache}><GrokBotConnection companyId="company-fixture" agentId="agent-fixture" /></QueryClientProvider>));
+  const reconnect = await vi.waitFor(() => {
+    const button = [...host.querySelectorAll("button")].find(element => element.textContent === "Reconnect agent access")!;
+    expect(button.disabled).toBe(false);
+    return button;
+  });
+  flushSync(() => reconnect.click());
+  const copy = await vi.waitFor(() => {
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="Copy pairing code"]');
+    expect(button).toBeTruthy();
+    return button!;
+  });
+  const label = [...host.querySelectorAll("label")].find(element => element.textContent === "One-use pairing code")!;
+  const input = document.getElementById(label.htmlFor) as HTMLInputElement;
+  expect(input.type).toBe("password");
+  expect(input.readOnly).toBe(true);
+  expect(input.value).toBe(pairingCode);
+  expect(host.textContent).not.toContain(pairingCode);
+  flushSync(() => copy.click());
+  await vi.waitFor(() => expect(host.textContent).toContain("Copy failed"));
+  flushSync(() => copy.click());
+  await vi.waitFor(() => expect(host.textContent).toContain("Copied!"));
+  expect(copyTextToClipboard).toHaveBeenNthCalledWith(1, pairingCode);
+  expect(copyTextToClipboard).toHaveBeenNthCalledWith(2, pairingCode);
+  const instructions = host.querySelector<HTMLButtonElement>('button[aria-label="Copy connection instructions"]')!;
+  flushSync(() => instructions.click());
+  await vi.waitFor(() => expect(copyTextToClipboard).toHaveBeenCalledTimes(3));
+  expect(vi.mocked(copyTextToClipboard).mock.calls[2]![0]).toContain("https://paperclip.example/mcp/runner");
+  expect(vi.mocked(copyTextToClipboard).mock.calls[2]![0]).not.toContain(pairingCode);
+  expect(api.pair).toHaveBeenCalledExactlyOnceWith("company-fixture", "agent-fixture", undefined);
 });

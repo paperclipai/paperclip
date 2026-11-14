@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: assistant-connections
+status: planned
+scenarios:
+  - id: assistant-connections.connect-external-assistant
+    capabilities:
+      - assistant-connections/setup
+    context: >-
+      Public MCP is enabled at a configured origin; the person asks their Paperclip CEO how to
+      connect an external assistant.
+    query: >-
+      How do I connect ChatGPT to this company?
+    expected_outcome: >-
+      The agent points to the supported assistant setup instructions and human connection
+      surface for the intended company. It does not invent an endpoint, token or
+      installed-client state. The actual signed-in person completes setup; a copied company hint
+      alone does not grant membership or scopes.
+  - id: assistant-connections.consent-read-only
+    capabilities:
+      - assistant-connections/consent
+    context: >-
+      A synthetic external client requests read and write scopes, while the signed-in person has
+      only viewer authority.
+    query: >-
+      Connect my assistant so it can see our tasks.
+    expected_outcome: >-
+      The consent flow shows the intended company and requested access and permits only scopes
+      within the person's authority and explicit acceptance. The resulting client can read
+      allowed tasks but cannot create or modify them. An agent never approves the human consent
+      screen on the person's behalf.
+  - id: assistant-connections.decline-consent
+    capabilities:
+      - assistant-connections/consent
+    context: >-
+      The external client is waiting for authorization and the person declines at the consent
+      screen.
+    query: >-
+      I do not want to connect that assistant.
+    expected_outcome: >-
+      The authorization remains denied and the client receives no usable grant. The person
+      returns to a clear state without duplicate consent prompts or a claimed successful
+      connection. Existing unrelated assistant grants are not revoked by declining this one.
+  - id: assistant-connections.device-login
+    capabilities:
+      - assistant-connections/device-login
+    context: >-
+      A supported CLI client initiated device authorization against a compatible configured
+      issuer and resource; the human has not entered the code.
+    query: >-
+      Help me finish connecting this CLI to Paperclip.
+    expected_outcome: >-
+      The person uses the exact supported verification page and current code, sees the company
+      and scope decision, and completes authorization as themselves. The waiting client accepts
+      credentials only for the verified company. Expired, reused or mismatched codes fail
+      clearly without agent self-consent or reused credentials from another identity.
+  - id: assistant-connections.use-scoped-client
+    capabilities:
+      - assistant-connections/client-use
+      - tasks/create
+    context: >-
+      This scenario changes the surface to an authorized external assistant client with a grant
+      for only Acorn company and task creation.
+    query: >-
+      Create a website task for Morgan in Acorn.
+    expected_outcome: >-
+      The external assistant uses the granted Paperclip capability to create one task in Acorn
+      under the person's current permissions and returns its real link. The grant cannot be used
+      as a general REST board bearer or target another company. This is a companion
+      external-client scenario, not evidence that Agent Chat has inherited its credentials.
+  - id: assistant-connections.revoke-personal-grant
+    capabilities:
+      - assistant-connections/revocation
+    context: >-
+      The person has two assistant grants; the first already delegated an active task.
+      Revocation management requires their signed-in browser identity.
+    query: >-
+      Disconnect my old assistant, but leave the website task running.
+    expected_outcome: >-
+      The supported personal grant control revokes the selected client access and subsequent
+      calls fail. The unrelated grant remains usable and the delegated task retains its ordinary
+      lifecycle. Chat does not report that revocation cancels already-authorized work or use
+      agent identity to manage another person's grants.

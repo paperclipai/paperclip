@@ -247,15 +247,16 @@ describeEmbeddedPostgres("terminal workspace compaction", () => {
     expect(await fs.readFile(path.join(worktreePath, "README.md"), "utf8")).toContain("uncommitted edit");
   }
 
-  it("compacts an undelivered no-PR workspace with leftover files and keeps every source change", async () => {
+  it.each([false, true])("compacts an undelivered workspace and preserves source with Git expiration %s", async gitCacheExpirationEnabled => {
     const seeded = await seedWorkspace({ commitOnBranch: true });
     const headBefore = await git(seeded.worktreePath, ["rev-parse", "HEAD"]);
     const statusBefore = await git(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]);
 
-    const sweep = await service().sweepTerminalWorkspaces();
+    const sweep = await service({ gitCacheExpirationEnabled }).sweepTerminalWorkspaces();
 
     // The branch carries unmerged work, so the reaper keeps the workspace.
-    expect(sweep).toMatchObject({ compacted: 1, compactionFailed: 0, archived: 0, skippedUndelivered: 1 });
+    expect(sweep).toMatchObject({ compacted: 1, compactionFailed: 0, archived: 0 });
+    if (!gitCacheExpirationEnabled) expect(sweep.skippedUndelivered).toBe(1);
     expect(await workspaceStatus(seeded.executionWorkspaceId)).toBe("active");
     await expectRegenerablePresent(seeded.worktreePath, false);
     await expectWorkPreserved(seeded.worktreePath);
@@ -289,6 +290,72 @@ describeEmbeddedPostgres("terminal workspace compaction", () => {
     expect(await workspaceStatus(seeded.executionWorkspaceId)).toBe("active");
     await expectRegenerablePresent(seeded.worktreePath, false);
     expect(await exists(path.join(seeded.worktreePath, "notes/findings.md"))).toBe(true);
+  }, 30_000);
+
+  it.each([false, true])("retains skipped startup compaction for the next sweep with Git expiration %s", async gitCacheExpirationEnabled => {
+    const seeded = await seedWorkspace();
+    const svc = service({ workspaceReaperCooldownDays: 7, gitCacheExpirationEnabled, gitCacheExpirationDryRun: true });
+
+    expect(await svc.sweepTerminalWorkspaces(50, undefined, { compact: false })).toMatchObject({ compacted: 0 });
+    await expectRegenerablePresent(seeded.worktreePath, true);
+    // The skipped compaction stays scheduled, so the worker wakes for it.
+    const next = await svc.nextTerminalWorkspaceSweepAt();
+    expect(next).not.toBeNull();
+    expect(next!).toBeLessThanOrEqual(Date.now());
+
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ compacted: 1 });
+    await expectRegenerablePresent(seeded.worktreePath, false);
+  }, 30_000);
+
+  it("leaves leftover trash for a later sweep when a sweep skips compaction", async () => {
+    const seeded = await seedWorkspace({ populate: false });
+    const trashEntry = path.join(path.dirname(seeded.worktreePath), WORKSPACE_COMPACTION_TRASH_DIR, "interrupted");
+    await writeFile(path.join(trashEntry, "0/left-pad/index.js"), "module.exports = 1;\n");
+    const twoHoursAgo = new Date(Date.now() - 2 * HOUR_MS);
+    await fs.utimes(trashEntry, twoHoursAgo, twoHoursAgo);
+    // The cooldown keeps the workspace a candidate across both sweeps.
+    const svc = service({ workspaceReaperCooldownDays: 7 });
+
+    await svc.sweepTerminalWorkspaces(50, undefined, { compact: false });
+    expect(await exists(trashEntry)).toBe(true);
+
+    await svc.sweepTerminalWorkspaces();
+    expect(await exists(trashEntry)).toBe(false);
+  }, 30_000);
+
+  it("purges skipped trash after a startup sweep archives the last workspace beside it", async () => {
+    const seeded = await seedWorkspace({ populate: false });
+    const trashEntry = path.join(path.dirname(seeded.worktreePath), WORKSPACE_COMPACTION_TRASH_DIR, "interrupted");
+    await writeFile(path.join(trashEntry, "0/left-pad/index.js"), "module.exports = 1;\n");
+    const twoHoursAgo = new Date(Date.now() - 2 * HOUR_MS);
+    await fs.utimes(trashEntry, twoHoursAgo, twoHoursAgo);
+    const svc = service();
+
+    // No cooldown: the startup sweep archives the only workspace in this
+    // directory, so no later sweep has a candidate there.
+    expect(await svc.sweepTerminalWorkspaces(50, undefined, { compact: false })).toMatchObject({ archived: 1 });
+    expect(await exists(trashEntry)).toBe(true);
+
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ checked: 0 });
+    expect(await exists(trashEntry)).toBe(false);
+  }, 30_000);
+
+  it("keeps skipped trash queued when the next sweep is aborted", async () => {
+    const seeded = await seedWorkspace({ populate: false });
+    const trashEntry = path.join(path.dirname(seeded.worktreePath), WORKSPACE_COMPACTION_TRASH_DIR, "interrupted");
+    await writeFile(path.join(trashEntry, "0/left-pad/index.js"), "module.exports = 1;\n");
+    const twoHoursAgo = new Date(Date.now() - 2 * HOUR_MS);
+    await fs.utimes(trashEntry, twoHoursAgo, twoHoursAgo);
+    const svc = service();
+    await svc.sweepTerminalWorkspaces(50, undefined, { compact: false });
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(svc.sweepTerminalWorkspaces(50, controller.signal)).rejects.toThrow();
+    expect(await exists(trashEntry)).toBe(true);
+
+    await svc.sweepTerminalWorkspaces();
+    expect(await exists(trashEntry)).toBe(false);
   }, 30_000);
 
   it("waits for the compaction delay after the issue tree becomes terminal", async () => {

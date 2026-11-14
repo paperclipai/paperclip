@@ -1,17 +1,39 @@
+import { execFile } from "node:child_process";
 import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 
-export function localAgentRunnerTarget(): { driver: "local"; platform: NodeJS.Platform; architecture: string; libc?: "glibc" | "unknown"; glibcVersion?: string } {
-  if (process.platform !== "linux") return { driver: "local", platform: process.platform, architecture: process.arch };
-  let libc: "glibc" | "unknown" = "unknown";
-  let glibcVersion: string | undefined;
+type LocalRunnerTarget = {
+  driver: "local";
+  platform: NodeJS.Platform;
+  architecture: string;
+  libc?: "glibc" | "unknown";
+  glibcVersion?: string;
+};
+
+async function detectLocalRunnerTarget(): Promise<LocalRunnerTarget> {
+  const target: LocalRunnerTarget = {
+    driver: "local", platform: process.platform, architecture: process.arch,
+  };
+  if (target.platform !== "linux") return target;
+  target.libc = "unknown";
   try {
-    const { header } = process.report.getReport() as { header?: { glibcVersionRuntime?: unknown } };
-    if (typeof header?.glibcVersionRuntime === "string" && header.glibcVersionRuntime.trim()) {
-      libc = "glibc";
-      glibcVersion = header.glibcVersionRuntime.trim();
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile("getconf", ["GNU_LIBC_VERSION"], {
+        encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1_024,
+      }, (error, output) => error ? reject(error) : resolve(output));
+    });
+    const version = /^glibc\s+(\d+\.\d+(?:\.\d+)?)$/.exec(stdout.trim())?.[1];
+    if (version) {
+      target.libc = "glibc";
+      target.glibcVersion = version;
     }
-  } catch { /* An unidentified libc must not select a GNU/Linux binary. */ }
-  return { driver: "local", platform: process.platform, architecture: process.arch, libc, ...(glibcVersion === undefined ? {} : { glibcVersion }) };
+  } catch {}
+  return target;
+}
+
+const localTarget = await detectLocalRunnerTarget();
+
+export function localAgentRunnerTarget(): LocalRunnerTarget {
+  return { ...localTarget };
 }
 
 export function localPaperclipRunnerSupported(): boolean {

@@ -16,7 +16,7 @@ test("recipes own discovery, names, section order and multiline capability descr
   assert.deepEqual(index.sections.map(section => section.title), ["Work", "Connections"]);
   assert.deepEqual(index.sections.flatMap(section => section.features.map(feature => feature.id)), ["tasks", "goals", "apps"]);
   assert.equal(index.sections[0].features[0].capabilities[0].description, "Create work; retain its description.");
-  assert.deepEqual(featureOrder(index), ["Overview", "Work", ["Tasks", ["Overview", "*"], "Goals", ["Overview", "*"]], "Connections", ["Apps", ["Overview", "*"]], "Foundations"]);
+  assert.deepEqual(featureOrder(index), ["Overview", "Design proposals", ["Foundations", "Components", "Layouts", "Pages", "AI Generated Test Pages", "Patterns", "Guidelines"], "Work", ["Tasks", ["Overview", "*"], "Goals", ["Overview", "*"]], "Connections", ["Apps", ["Overview", "*"]], "Foundations"]);
 });
 
 test("equal local orders preserve independently added features using their stable filename", t => {

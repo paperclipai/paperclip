@@ -1,15 +1,13 @@
 import type { ProjectSkillRepository } from '@paperclipai/shared';
 import { GithubIcon } from '@/components/icons/github-icon';
 import { Button } from '@/components/ui/button';
-import { Link } from '@/lib/router';
 import { LoaderCircle } from 'lucide-react';
 
-export function ProjectSkillRepositoryRow({ repository, pending, backgroundPending, disabled, showRepository = true, onImport }: {
+export function ProjectSkillRepositoryRow({ repository, pending, backgroundPending, disabled, onImport }: {
   repository: ProjectSkillRepository;
   pending?: boolean;
   backgroundPending?: boolean;
   disabled?: boolean;
-  showRepository?: boolean;
   onImport: () => void;
 }) {
   const actionPending = pending || repository.status === 'pending';
@@ -18,9 +16,9 @@ export function ProjectSkillRepositoryRow({ repository, pending, backgroundPendi
     <div className="flex items-center gap-3">
       <GithubIcon className="size-5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
-        {showRepository && <a href={repository.repositoryUrl} target="_blank" rel="noreferrer" className="block truncate text-sm font-medium hover:underline">
+        <a href={repository.repositoryUrl} target="_blank" rel="noreferrer" className="block truncate text-sm font-medium hover:underline">
           {repository.repositoryUrl.replace('https://github.com/', '')}
-        </a>}
+        </a>
         <p className="truncate text-xs text-muted-foreground">{repository.projectName} · {repository.trackingRef === 'HEAD' ? 'Default branch' : repository.trackingRef}{repository.projectVisibility === 'private' ? ' · Project access' : ''}</p>
       </div>
       <Button size="sm" variant="outline" disabled={actionPending || disabled} onClick={onImport}>
@@ -30,6 +28,6 @@ export function ProjectSkillRepositoryRow({ repository, pending, backgroundPendi
     </div>
     {importing && <p role="status" className="ml-8 text-xs text-muted-foreground">{pending ? 'Starting import…' : repository.importState === 'importing'
       ? 'Checking repository for skills… This can take a few minutes for large repositories.' : 'Import queued. Skills will appear here when ready.'}</p>}
-    {repository.lastError && <p role="alert" className="text-sm text-destructive">{repository.lastError} <Link to="/apps" className="underline">Manage GitHub connection</Link></p>}
+    {repository.lastError && <p role="alert" className="text-sm text-destructive">{repository.lastError}</p>}
   </section>;
 }

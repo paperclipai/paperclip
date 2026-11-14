@@ -3,6 +3,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { forbidden, HttpError } from "../../errors.js";
 import { authorizationService } from "../authorization.js";
 import { captureRunIdentity } from "../run-identity.js";
+import { boundRunIssueId } from "../run-task-binding.js";
 import { chatVoiceCallbacks, instanceUserRoles, companyMemberships } from "@paperclipai/db";
 import type { VoiceCaller } from "./voice-session-store.js";
 import { z } from "zod";
@@ -18,8 +19,8 @@ export function registerSpekoVoiceRuntime(db: Db, start: (binding: Binding, invo
 async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: string) {
   if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
   if (!runtimes.has(db) || !session.agentId || !session.runId || !session.issueId) throw forbidden("Speko tools require an active task run");
-  const { run, context } = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId });
-  if ((run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) !== session.issueId || !run.responsibleUserId || session.identityContextId && session.identityContextId !== context?.id) throw forbidden("The accepted requester or task changed");
+  const { run, context } = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId }, { readScope: "task_authorization" });
+  if (boundRunIssueId(run) !== session.issueId || !run.responsibleUserId || session.identityContextId && session.identityContextId !== context?.id) throw forbidden("The accepted requester or task changed");
   const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.companyId, session.companyId), eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "speko"), eq(chatEndpoints.assignedAgentId, session.agentId), eq(chatEndpoints.status, "active")));
   if (!endpoint) throw forbidden("This agent has no active Speko connection");
   const userId = run.responsibleUserId;
