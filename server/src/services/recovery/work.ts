@@ -3,13 +3,21 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from 
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
-import type { IssueRecoveryScope } from "../issue-recovery-notifications.js";
+import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
+  from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
 
 type Entry = { id: string; companyId: string; dueAt: number };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
 const PAGE_SIZE = 100;
+
+export const resolvedDependencyCandidate = sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
+      and r.related_issue_id = ${issues.id} and r.type = 'blocks' offset 0)
+    and not exists (select 1 from ${issueRelations} r inner join ${issues} blocker
+      on blocker.id = r.issue_id and blocker.company_id = r.company_id
+      where r.company_id = ${issues.companyId} and r.related_issue_id = ${issues.id}
+        and r.type = 'blocks' and blocker.status <> 'done' offset 0)`;
 
 export function registerIssueRecoveryWork(
   db: Db,
@@ -24,29 +32,69 @@ export function registerIssueRecoveryWork(
     schedulingSuppressed(): Promise<boolean>;
     /** The assigned-work invariant (assigned-work-sweep.ts). */
     assignedWork?: {
-      listSuspects(scope: { companyId?: string; issueId?: string }, cursor: string | null, limit: number):
+      listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[] }, cursor: string | null, limit: number):
         Promise<Array<{ id: string; companyId: string; updatedAt: Date }>>;
       checkIssue(scope: Scope): Promise<unknown>;
     };
   },
   canRun: () => boolean,
+  options: { backstopMs?: number } = {},
 ) {
+  function fullPasses() {
+    const completedAt = new Map<string, number>();
+    return {
+      backstop: (scope: IssueRecoveryScope | undefined) => scope?.backstop
+        ? Math.max(completedAt.get("*") ?? 0, completedAt.get(scope.companyId) ?? 0) + (options.backstopMs ?? ISSUE_RECOVERY_BACKSTOP_MS)
+        : null,
+      loaded(scope: IssueRecoveryScope | undefined, complete: boolean) {
+        if (complete && !scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) completedAt.set(scope?.companyId ?? "*", Date.now());
+      },
+    };
+  }
+  const reconstructionIntervalMs = (scope: IssueRecoveryScope | undefined) => scope?.backstop || scope?.graphRunId || scope?.graphIssueId ? 0 : 30_000;
+  const scopeKey = (scope: IssueRecoveryScope | undefined) => scope
+    ? JSON.stringify([scope.companyId, scope.issueId, scope.graphRunId, scope.graphIssueId, scope.backstop]) : "*";
+  const isGraph = (scope: IssueRecoveryScope | undefined) => Boolean(scope?.graphRunId || scope?.graphIssueId);
+  const graphs = new Map<string, { at: number; ids: Promise<string[] | null> }>();
+  async function resolveGraph(scope: IssueRecoveryScope | undefined) {
+    if (!scope || !isGraph(scope)) return;
+    const key = scopeKey(scope);
+    for (const [other, cached] of graphs) if (cached.at < Date.now() - 2_000) graphs.delete(other);
+    let cached = graphs.get(key);
+    if (!cached) {
+      cached = { at: Date.now(), ids: resolveIssueGraph(db, { companyId: scope.companyId, runId: scope.graphRunId, issueId: scope.graphIssueId }) };
+      graphs.set(key, cached);
+    }
+    const ids = await cached.ids.catch(error => { graphs.delete(key); throw error; });
+    scope.issueIds = ids ?? undefined;
+    scope.wholeCompany = ids === null;
+  }
+  async function toCompany(scope: IssueRecoveryScope | undefined, worker: { invalidate(hint?: string): void }) {
+    await resolveGraph(scope);
+    if (!scope?.wholeCompany) return false;
+    worker.invalidate(JSON.stringify({ companyId: scope.companyId }));
+    return true;
+  }
   function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>, eligible?: SQL) {
     const cursors = new Map<string, string>();
+    const passes = fullPasses();
     let enabled = false;
-    return registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
+    const worker: ReturnType<typeof registerScopedDeadlineWork<Entry, IssueRecoveryScope>> = registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
       queue,
-      reconstructionIntervalMs: 30_000,
+      reconstructionIntervalMs,
+      backstop: passes.backstop,
       beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
-      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
-      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId && (!scope.issueId || entry.id === scope.issueId)),
+      decodeScope: decodeIssueRecoveryHint,
+      matches: issueRecoveryScopeMatches,
       load: async scope => {
-        const key = scope ? JSON.stringify([scope.companyId, scope.issueId]) : "*";
+        const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
+        if (await toCompany(scope, worker)) return { rows: null, complete: true };
         const cursor = cursors.get(key);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
           scope ? eq(issues.companyId, scope.companyId) : undefined,
           scope?.issueId ? eq(issues.id, scope.issueId) : undefined,
+          scope?.issueIds ? inArray(issues.id, scope.issueIds) : undefined,
           cursor ? gt(issues.id, cursor) : undefined,
           statuses ? inArray(issues.status, statuses) : or(isNotNull(issues.checkoutRunId), isNotNull(issues.executionRunId)),
           statuses ? isNull(issues.hiddenAt) : undefined,
@@ -56,6 +104,7 @@ export function registerIssueRecoveryWork(
         )).orderBy(asc(issues.id)).limit(PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        passes.loaded(scope, complete);
         return { rows: rows.map(row => ({ ...row, dueAt: Date.now() })), complete };
       },
       check: async entry => {
@@ -66,6 +115,7 @@ export function registerIssueRecoveryWork(
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);
+    return worker;
   }
   /** Event-driven: run terminal states, hold settlements and boot mark the
    * company dirty; checks schedule their own grace and back-off deadlines.
@@ -73,22 +123,27 @@ export function registerIssueRecoveryWork(
   function registerAssignedWork(sweep: NonNullable<typeof owner.assignedWork>) {
     type Suspect = Entry & { updatedAt: number };
     const cursors = new Map<string, string>();
+    const passes = fullPasses();
     let enabled = false;
-    return registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
+    const worker: ReturnType<typeof registerScopedDeadlineWork<Suspect, IssueRecoveryScope>> = registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
       queue: DELIVERY_QUEUES.assignedWorkInvariant,
-      reconstructionIntervalMs: 30_000,
+      reconstructionIntervalMs,
+      backstop: passes.backstop,
       batchSize: 25,
       beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
-      decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
-      matches: (entry, scope) => !scope || (entry.companyId === scope.companyId && (!scope.issueId || entry.id === scope.issueId)),
+      decodeScope: decodeIssueRecoveryHint,
+      matches: issueRecoveryScopeMatches,
       priority: entry => entry.updatedAt,
       mergeEntry: (pending, loaded) => ({ ...loaded, dueAt: Math.max(pending.dueAt, loaded.dueAt) }),
       load: async scope => {
-        const key = scope ? JSON.stringify([scope.companyId, scope.issueId]) : "*";
+        const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
-        const rows = await sweep.listSuspects(scope ?? {}, cursors.get(key) ?? null, PAGE_SIZE);
+        if (await toCompany(scope, worker)) return { rows: null, complete: true };
+        const rows = await sweep.listSuspects(scope ? { companyId: scope.companyId, issueId: scope.issueId,
+          issueIds: scope.issueIds } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        passes.loaded(scope, complete);
         return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now() })), complete };
       },
       check: async entry => {
@@ -99,6 +154,7 @@ export function registerIssueRecoveryWork(
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);
+    return worker;
   }
   function registerCompany(queue: DeliveryQueue, kind: "blockers" | "actions", check: (scope: { companyId: string }) => Promise<number | null | void>) {
     const cursors = new Map<string, string>();
@@ -155,12 +211,7 @@ export function registerIssueRecoveryWork(
   const dependencies = register(DELIVERY_QUEUES.resolvedDependencies, ["blocked"], async scope => {
     const result = await owner.dependencies(scope);
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");
-  }, sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
-      and r.related_issue_id = ${issues.id} and r.type = 'blocks')
-    and not exists (select 1 from ${issueRelations} r inner join ${issues} blocker
-      on blocker.id = r.issue_id and blocker.company_id = r.company_id
-      where r.company_id = ${issues.companyId} and r.related_issue_id = ${issues.id}
-        and r.type = 'blocks' and blocker.status <> 'done')`);
+  }, resolvedDependencyCandidate);
   const locks = register(DELIVERY_QUEUES.staleIssueLocks, null, owner.locks);
   const assignedWork = owner.assignedWork ? registerAssignedWork(owner.assignedWork) : null;
   const watchdogs = registerTaskWatchdogWork(db, coordinator, {

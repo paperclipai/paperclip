@@ -106,17 +106,18 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     shareDeferred?: (runId: string) => boolean;
     now: Date;
   },
-): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput }> {
+): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput; personOriginChecked: boolean }> {
   const { agent, queuedRuns, dependencyReadiness, issueById, now } = input;
   const wakeReasonOf = (run: R) => readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+  const personOriginChecked = queuedRuns.length > 1;
   const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
-  const userRequests = queuedRuns.length > 1 && requestIds.length
+  const userRequests = personOriginChecked && requestIds.length
     ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
       eq(agentWakeupRequests.requestedByActorType, "user")))
     : [];
   const userRequestIds = new Set(userRequests.map(row => row.id));
-  const joinedUserRequests = queuedRuns.length > 1
+  const joinedUserRequests = personOriginChecked
     ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
       eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
@@ -126,7 +127,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
   const sourceRunIdOf = (run: R) =>
     readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
-  const sourceRunIds = queuedRuns.length > 1
+  const sourceRunIds = personOriginChecked
     ? [...new Set(queuedRuns.flatMap(run => {
       const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
       return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
@@ -184,7 +185,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
   const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id),
     personWaiting: personStarts.has(row.id) || Boolean(row.issueId && personTaskIds.has(row.issueId)) }));
   const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
-  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
+  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest }, personOriginChecked };
 }
 
 /** At most this many agents' lines are computed for one projection read. */

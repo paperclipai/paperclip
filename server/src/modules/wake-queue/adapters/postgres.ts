@@ -732,7 +732,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId });
+      await notifyRunDispatch(tx, { companyId, issueId: issue.id });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -811,7 +811,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId });
+      await notifyRunDispatch(tx, { companyId, issueId: issue.id });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

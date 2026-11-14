@@ -3400,8 +3400,15 @@
     {
       "idx": 487,
       "version": "7",
-      "when": 1794629516417,
-      "tag": "0487_multiple_agent_chat_conversations",
+      "when": 1794639469687,
+      "tag": "0487_heartbeat_runs_settled_process_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 488,
+      "version": "7",
+      "when": 1794645173024,
+      "tag": "0488_multiple_agent_chat_conversations",
       "breakpoints": true
     }
   ]

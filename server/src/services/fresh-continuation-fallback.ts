@@ -28,6 +28,7 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql, isPersonOwnedFailureCode, recoveryRunSql } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 
 export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode, isRecoveryRun } from "./continuation-cause.js";
 
@@ -772,7 +773,7 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
     .where(and(heldExecutionWhere(), freshContinuationCheckDue(now), recentInterruptionSourceSql(now)))
     // Newest interruption first: the most recent work is the work someone is waiting for.
     .orderBy(desc(sql`(select source.finished_at from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
-      and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId'))`),
+      and source.id = ${sourceRunKey(heldRunIdSql())})`),
       asc(issueRecoveryActions.id))
     .limit(limit);
 }
@@ -799,13 +800,15 @@ function liveDispositionHoldSql() {
 
 const cancelledAtDispatch = (alias: "newer" | "held") => sql.raw(`coalesce(${alias}.status = 'cancelled' and ${alias}.started_at is null
   and ${alias}.error_code = 'execution_reconciliation_required', false)`);
-const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id::text = ${issueId}::text
-  or ${sql.raw(alias)}.issue_id::text = ${issueId}::text or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
+// The issue id is a uuid (a column or a task's id), so each link is compared on
+// its own indexed column; a cast of the column would scan every run's context.
+const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id = ${issueId}::uuid
+  or ${sql.raw(alias)}.issue_id = ${issueId}::uuid or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
 
 function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQL; sourceRunId: SQL }) {
   const since = sql`${new Date(input.now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz`;
   const source = (condition: SQL) => sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${input.companyId}
-    and source.id::text = ${input.sourceRunId}::text and ${condition})`;
+    and source.id = ${sourceRunKey(input.sourceRunId)} and ${condition})`;
   const refusedLater = sql`held.company_id = source.company_id and held.id <> source.id and ${runOfTask("held", input.issueId)}
     and (held.created_at, held.id) > (source.created_at, source.id) and ${cancelledAtDispatch("held")}`;
   const personAsked = source(sql`(exists (select 1 from ${agentWakeupRequests} retry where retry.company_id = source.company_id
@@ -822,10 +825,10 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
 }
 
 /** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
-function recentInterruptionSourceSql(now: Date) {
+export function recentInterruptionSourceSql(now: Date) {
   const { recent, personAsked } = interruptionEligibility({ now, companyId: sql`${issueRecoveryActions.companyId}`,
     issueId: sql`${issueRecoveryActions.sourceIssueId}`,
-    sourceRunId: sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')` });
+    sourceRunId: heldRunIdSql() });
   return sql`(${recent} or ${personAsked})`;
 }
 
@@ -847,7 +850,7 @@ let lastLeftAloneLogAt = 0;
 const LEFT_ALONE_LOG_INTERVAL_MS = 10 * 60_000;
 
 /** Held reconciliation records of a task's latest unfinished run (joined to its task). */
-function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
+export function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
   return and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       sql`${issueRecoveryActions.evidence}->'executionReconciliation' is null`,
@@ -868,7 +871,7 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
       sql`${issues.assigneeAgentId} is not null`,
       // Only the task's latest run, unfinished and still its assignee's: other
       sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
-        and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+        and source.id = ${sourceRunKey(heldRunIdSql())}
         and source.status in ('failed', 'timed_out', 'interrupted', 'cancelled') and source.finished_at is not null
         and source.agent_id = ${issues.assigneeAgentId}
         and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = source.company_id and newer.id <> source.id
@@ -877,6 +880,10 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
           and (newer.status in ('queued', 'running', 'scheduled_retry') or (newer.created_at, newer.id) > (source.created_at, source.id))))`,
   )!;
 }
+
+const heldRunIdSql = () => sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
+/** The recorded run id as the run's key: the same match as `id::text = text`, but an index lookup. */
+const sourceRunKey = (runId: SQL) => canonicalExecutionUuid(sql`(${runId})::text`);
 
 /** The earliest time a deferred check becomes due again, if any. */
 export async function nextFreshContinuationCheckAt(db: Db, now = new Date()): Promise<number | null> {

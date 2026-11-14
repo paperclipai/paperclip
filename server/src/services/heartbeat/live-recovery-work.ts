@@ -1,6 +1,6 @@
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
-import { settledNativeProcessIdentityCondition } from "../native-local-process-stop.js";
+import { settledNativeProcessCandidates } from "../native-local-process-stop.js";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -9,6 +9,8 @@ import type { LiveResourceRecoveryScope, LiveRunRecoveryScope } from "../live-ru
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+const SETTLED_PENDING_BASE_DELAY_MS = 30_000;
+const SETTLED_PENDING_MAX_DELAY_MS = 15 * 60_000;
 type Scope = LiveRunRecoveryScope & LiveResourceRecoveryScope;
 type Entry = { id: string; companyId: string; runId?: string | null; dueAt: number };
 type CheckScope = { companyId: string; runId?: string; leaseId?: string; agentId?: string;
@@ -27,6 +29,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
 }, canRun: () => boolean) {
   function register(queue: DeliveryQueue, kind: RunKind | "orphanLease" | "shutdown" | "agent") {
     const cursors = new Map<string, string>();
+    const settledOutcomes = new Map<string, { companyId: string; parked: boolean; attempts: number; notBefore: number }>();
+    const settledScans = new Map<string, Set<string>>();
     let enabled = false;
     async function load(scope?: Scope) {
         const key = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId,
@@ -63,12 +67,11 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
               ? row.runId ? row.updatedAt.getTime() : row.updatedAt.getTime() + 5 * 60_000
               : Date.parse(String((row.metadata?.legacyShutdownWorkspaceSettlement as Record<string, unknown>)?.deadlineAt)) || Date.now(),
           }));
+        } else if (kind === "settled") {
+          const page = await loadSettled(scope, cursor);
+          if (page.complete) cursors.delete(key); else cursors.set(key, page.rows.at(-1)!.id);
+          return { complete: page.complete, rows: applySettledOutcomes(key, scope, page.rows, page.complete) };
         } else {
-          // Retirement may commit before Stop acknowledgement. This is only a
-          // work hint; the owner rechecks the complete provider/process proof.
-          const pendingApiStop = and(eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.driverKind, "cursor_cloud_api"),
-            sql`${heartbeatRuns.runnerProfileJson}->>'backend' = 'cursor_cloud_api'`,
-            sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`);
           const candidates = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
             nextAttemptAt: nativeRunFinalizations.nextAttemptAt, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
             .from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
@@ -83,12 +86,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                 : kind === "question" ? and(or(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
                     pendingFailedNativeRetryCancellationCondition()),
                   sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is not null`)
-                  : kind === "active" ? and(eq(heartbeatRuns.status, "running"),
-                    sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
-                    : and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
-                      isNotNull(heartbeatRuns.finishedAt), or(pendingApiStop,
-                        and(or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId),
-                          isNotNull(heartbeatRuns.processStartedAt)), settledNativeProcessIdentityCondition(db)))),
+                  : and(eq(heartbeatRuns.status, "running"),
+                    sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`),
             )).orderBy(asc(heartbeatRuns.id)).limit(100);
           rows = candidates.map(row => ({ id: row.id, companyId: row.companyId, dueAt: kind === "native"
             ? Math.max(Date.now(), row.nextAttemptAt?.getTime() ?? 0, row.leaseExpiresAt?.getTime() ?? 0) : Date.now() }));
@@ -96,6 +95,50 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         return { complete, rows };
+    }
+    async function loadSettled(scope: Scope | undefined, cursor: string | undefined) {
+      const bounds = and(scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
+        scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined, cursor ? gt(heartbeatRuns.id, cursor) : undefined);
+      const select = (condition: ReturnType<typeof and>) => db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns).where(and(bounds, condition)).orderBy(asc(heartbeatRuns.id)).limit(100);
+      const processes = await settledNativeProcessCandidates(db, { companyId: scope?.companyId, runId: scope?.runId,
+        after: cursor, limit: 100 });
+      const stops = await select(and(eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.driverKind, "cursor_cloud_api"),
+        sql`(${heartbeatRuns.resultJson}->'executionCancellation'->>'state') = 'requested'`,
+        eq(heartbeatRuns.runtimeMode, "native"), isNotNull(heartbeatRuns.finishedAt),
+        sql`${heartbeatRuns.runnerProfileJson}->>'backend' = 'cursor_cloud_api'`));
+      const merged = [...new Map([...processes, ...stops].map(row => [row.id, row])).values()]
+        .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+      const complete = processes.length < 100 && stops.length < 100 && merged.length <= 100;
+      return { complete, rows: merged.slice(0, 100).map(row => ({ ...row, dueAt: Date.now() })) };
+    }
+    function applySettledOutcomes(key: string, scope: Scope | undefined, rows: Entry[], complete: boolean) {
+      if (scope?.runId) settledOutcomes.delete(scope.runId);
+      const seen = settledScans.get(key) ?? new Set<string>();
+      for (const row of rows) seen.add(row.id);
+      if (!complete) settledScans.set(key, seen);
+      else {
+        settledScans.delete(key);
+        if (!scope?.runId) for (const [id, outcome] of settledOutcomes)
+          if ((!scope || outcome.companyId === scope.companyId) && !seen.has(id)) settledOutcomes.delete(id);
+      }
+      return rows.flatMap(row => {
+        const outcome = settledOutcomes.get(row.id);
+        if (outcome?.parked) return [];
+        return [{ ...row, dueAt: Math.max(row.dueAt, outcome?.notBefore ?? 0) }];
+      });
+    }
+    function recordSettledOutcome(entry: Entry, outcome: unknown): Entry | null | undefined {
+      if (outcome === "released") { settledOutcomes.delete(entry.id); return null; }
+      if (outcome === "skipped") {
+        settledOutcomes.set(entry.id, { companyId: entry.companyId, parked: true, attempts: 0, notBefore: 0 });
+        return null;
+      }
+      if (outcome !== "pending") return undefined;
+      const attempts = (settledOutcomes.get(entry.id)?.attempts ?? 0) + 1;
+      const notBefore = Date.now() + Math.min(SETTLED_PENDING_MAX_DELAY_MS, SETTLED_PENDING_BASE_DELAY_MS * 2 ** (attempts - 1));
+      settledOutcomes.set(entry.id, { companyId: entry.companyId, parked: false, attempts, notBefore });
+      return { ...entry, dueAt: notBefore };
     }
     return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
       queue,
@@ -114,10 +157,12 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
         const currentScope = { companyId: entry.companyId,
           ...(kind === "agent" ? { agentId: entry.id } : kind === "orphanLease" || kind === "shutdown"
             ? { leaseId: entry.id } : { runId: entry.id }) };
-        const loaded = await load(currentScope);
-        const current = (Array.isArray(loaded) ? loaded : loaded.rows).find(row => row.id === entry.id);
-        if (!current) return null;
-        if (current.dueAt > Date.now()) return current;
+        if (kind !== "settled") {
+          const loaded = await load(currentScope);
+          const current = (Array.isArray(loaded) ? loaded : loaded.rows).find(row => row.id === entry.id);
+          if (!current) return null;
+          if (current.dueAt > Date.now()) return current;
+        }
         let next: number | null = null;
         const errors: unknown[] = [];
         const scope: CheckScope = { companyId: entry.companyId,
@@ -126,8 +171,12 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); },
           onError: error => { errors.push(error); },
         };
-        await owner[kind](scope);
+        const outcome = await owner[kind](scope);
         if (errors.length) throw new AggregateError(errors, `Recovery obligation ${entry.id} failed`);
+        if (kind === "settled") {
+          const settled = recordSettledOutcome(entry, outcome);
+          if (settled !== undefined) return settled;
+        }
         if (kind === "native") {
           const refreshed = await load(currentScope);
           const remaining = (Array.isArray(refreshed) ? refreshed : refreshed.rows).find(row => row.id === entry.id);

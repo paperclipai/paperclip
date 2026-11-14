@@ -39,7 +39,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, inspectSettledNativeRunProcess, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { portableTaskPreparationLeaseId } from "../plugin-task-ownership.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
@@ -3109,10 +3109,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (!scope.runId || activeRunExecutions.has(scope.runId) || runningProcesses.has(scope.runId)
           || adapterExecutionControls.has(scope.runId)) {
           scope.onDeferredDeadline(Date.now() + 30_000);
-          return;
+          return "deferred";
         }
-        const outcome = await releaseSettledNativeRunProcess(db, scope.runId, scope);
-        if (outcome !== "pending") await acknowledgeRemoteStop(scope.runId, scope.companyId);
+        const { outcome, remoteStop } = await inspectSettledNativeRunProcess(db, scope.runId, scope);
+        if (outcome !== "pending" && remoteStop) await acknowledgeRemoteStop(scope.runId, scope.companyId);
+        return outcome;
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
       shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),
