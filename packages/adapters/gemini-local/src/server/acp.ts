@@ -386,6 +386,25 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+async function hasLocalGeminiCredentialFile(envConfig: Record<string, unknown>): Promise<boolean> {
+  // GEMINI_CLI_HOME is forwarded only when explicitly configured. The shared
+  // ACP engine does not inherit this variable from the server environment.
+  const home = firstNonEmptyString(envConfig.GEMINI_CLI_HOME, envConfig.HOME) ?? os.homedir();
+  for (const name of ["oauth_creds.json", "gemini-credentials.json"]) {
+    const credentialPath = path.join(path.resolve(home), ".gemini", name);
+    try {
+      const stat = await fs.stat(credentialPath);
+      if (!stat.isFile() || stat.size === 0) continue;
+      await fs.access(credentialPath, fs.constants.R_OK);
+      return true;
+    } catch {
+      // Missing or unreadable files are not a credential signal. Never read
+      // credential contents; Gemini remains responsible for authentication.
+    }
+  }
+  return false;
+}
+
 export async function testGeminiAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -478,6 +497,13 @@ export async function testGeminiAcpEnvironment(
       level: "info",
       message: "Gemini credentials are set for ACP authentication.",
       detail: `Detected in ${source}.`,
+    });
+  } else if (!targetIsRemote && await hasLocalGeminiCredentialFile(envConfig)) {
+    checks.push({
+      code: "gemini_acp_credentials_detected",
+      level: "info",
+      message: "A local Gemini credential file was detected.",
+      detail: "Detected in the configured Gemini home. Credential validity has not been verified.",
     });
   } else if (!targetIsRemote) {
     checks.push({
