@@ -771,6 +771,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
         dispositionOnlyRecoveryTurnId,
+        awaitingProviderTurn: snapshot.awaitingProviderTurn,
         adoptedAcceptedTurnId,
         lostAcceptedTurnId,
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
@@ -1108,6 +1109,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    awaitingProviderTurn?: boolean;
     adoptedAcceptedTurnId?: string | null;
     lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];

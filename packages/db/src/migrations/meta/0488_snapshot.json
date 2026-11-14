@@ -1,6 +1,6 @@
 {
-  "id": "ba9703d9-6f9e-4fed-99b0-d3022a3277ae",
-  "prevId": "0c05069d-095d-4b33-93e2-671611112289",
+  "id": "74693dce-f660-487f-b4ac-772e95e77a25",
+  "prevId": "73c8fa97-70fc-49c0-804e-e49cfdffd156",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19991,87 +19991,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.company_skill_security_approvals": {
-      "name": "company_skill_security_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval": {
-          "name": "approval",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_skill_security_approvals_company_content_idx": {
-          "name": "company_skill_security_approvals_company_content_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "content_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_skill_security_approvals_company_id_companies_id_fk": {
-          "name": "company_skill_security_approvals_company_id_companies_id_fk",
-          "tableFrom": "company_skill_security_approvals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.company_skill_stars": {
       "name": "company_skill_stars",
       "schema": "",
@@ -21012,12 +20931,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "security_approval_id": {
-          "name": "security_approval_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -21202,19 +21115,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
-          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
-          "tableFrom": "company_skill_versions",
-          "tableTo": "company_skill_security_approvals",
-          "columnsFrom": [
-            "security_approval_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -36258,6 +36158,56 @@
           ],
           "isUnique": false,
           "where": "\"heartbeat_runs\".\"finished_at\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_settled_process_identity_idx": {
+          "name": "heartbeat_runs_settled_process_identity_idx",
+          "columns": [
+            {
+              "expression": "process_host_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'native' and \"heartbeat_runs\".\"status\" in ('failed', 'cancelled', 'timed_out', 'interrupted')\n        and \"heartbeat_runs\".\"finished_at\" is not null\n        and (\"heartbeat_runs\".\"process_pid\" is not null or \"heartbeat_runs\".\"process_group_id\" is not null or \"heartbeat_runs\".\"process_started_at\" is not null)",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_pending_api_stop_idx": {
+          "name": "heartbeat_runs_pending_api_stop_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" = 'cancelled' and \"heartbeat_runs\".\"driver_kind\" = 'cursor_cloud_api'\n        and (\"heartbeat_runs\".\"result_json\"->'executionCancellation'->>'state') = 'requested'",
           "concurrently": true,
           "method": "btree",
           "with": {}

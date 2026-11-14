@@ -1,6 +1,6 @@
 {
-  "id": "0c8391e4-bb0f-4197-81bb-495958594eb3",
-  "prevId": "3b0ad36c-ebd9-47f2-baf3-abe949e69336",
+  "id": "e1f798e6-f13b-492e-b80e-04a9f546c428",
+  "prevId": "9087c952-c049-4549-a60e-6dfe952e2b9e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -21043,22 +21043,6 @@
           "method": "btree",
           "with": {}
         },
-        "company_skill_versions_security_approval_idx": {
-          "name": "company_skill_versions_security_approval_idx",
-          "columns": [
-            {
-              "expression": "security_approval_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"company_skill_versions\".\"security_approval_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "company_skill_versions_package_snapshot_idx": {
           "name": "company_skill_versions_package_snapshot_idx",
           "columns": [
@@ -36280,6 +36264,56 @@
           ],
           "isUnique": false,
           "where": "\"heartbeat_runs\".\"finished_at\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_settled_process_identity_idx": {
+          "name": "heartbeat_runs_settled_process_identity_idx",
+          "columns": [
+            {
+              "expression": "process_host_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"runtime_mode\" = 'native' and \"heartbeat_runs\".\"status\" in ('failed', 'cancelled', 'timed_out', 'interrupted')\n        and \"heartbeat_runs\".\"finished_at\" is not null\n        and (\"heartbeat_runs\".\"process_pid\" is not null or \"heartbeat_runs\".\"process_group_id\" is not null or \"heartbeat_runs\".\"process_started_at\" is not null)",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_pending_api_stop_idx": {
+          "name": "heartbeat_runs_pending_api_stop_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" = 'cancelled' and \"heartbeat_runs\".\"driver_kind\" = 'cursor_cloud_api'\n        and (\"heartbeat_runs\".\"result_json\"->'executionCancellation'->>'state') = 'requested'",
           "concurrently": true,
           "method": "btree",
           "with": {}

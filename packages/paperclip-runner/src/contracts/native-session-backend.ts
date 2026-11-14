@@ -80,6 +80,7 @@ export interface PersistedNativeSession {
   pendingRuntimeRequests?: HarnessRuntimeRequest[];
   goal?: HarnessThreadGoal | null;
   lineage?: HarnessThreadLineageEntry[];
+  awaitingProviderTurn?: boolean;
 }
 
 export interface NativeSessionRecoveryResult {

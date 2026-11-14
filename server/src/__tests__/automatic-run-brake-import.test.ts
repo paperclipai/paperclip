@@ -6,6 +6,6 @@ describe("automatic-run brake module graph", () => {
     const brake = await import("../services/recovery/automatic-run-brake.js");
     const rules = await brake.automaticRunOutcomeRules();
     expect(rules.isTransientSetupCode("environment_provider_unavailable")).toBe(true);
-    expect(rules.isPersonOwnedFailureCode("budget_hard_stop")).toBe(true);
+    expect(rules.hasNativePreDispatchFailureRecord({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } })).toBe(true);
   }, 600_000);
 });

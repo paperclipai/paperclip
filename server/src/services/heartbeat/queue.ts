@@ -13,6 +13,7 @@ import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
+import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
 import { queuedRunDispatchFacts } from "./queued-run-line.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2478,7 +2479,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const now = new Date();
     pruneDeclinedAgedClaims(now);
     const runById = new Map(queuedRuns.map(run => [run.id, run]));
-    const { facts, dispatchInput } = await queuedRunDispatchFacts(db, {
+    const { facts, dispatchInput, personOriginChecked } = await queuedRunDispatchFacts(db, {
       agent, queuedRuns, dependencyReadiness, issueById, now,
       shareDeferred: runId => declinedAgedClaimAt.has(runId) || claimBackedOff(runId, now, queuedRunTaskStamp(runById.get(runId)!, issueById)) });
     const dispatcher = createQueuedRunDispatcher(facts, dispatchInput);
@@ -2490,7 +2491,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const entry = byRun.get(run);
         return Boolean(entry && queuedRunDispatchClass(entry, now) === "person");
       },
-      personOrigin: (run: QueuedRunCandidate) => byRun.get(run)?.requestedByUser ?? false,
+      personOrigin: (run: QueuedRunCandidate) => personOriginChecked ? byRun.get(run)?.requestedByUser ?? false : undefined,
     };
   }
 
@@ -2599,15 +2600,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             continuesChain: true, triedRunIds: new Set([...triedRunIds, ...triedThisPass]) });
           break;
         }
+        const start = await reserveAutomaticRunStart(db, candidate, { personOrigin: dispatcher.personOrigin(candidate) });
+        if (start.held) continue;
         claimAttempts += 1;
         triedThisPass.push(candidate.id);
         const [queuedRun] = await db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, candidate.id), eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.status, "queued")));
-        if (!queuedRun) continue;
+        if (!queuedRun) {
+          await start.release();
+          continue;
+        }
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects, deferredCancellations, slots);
         } catch (err) {
+          await start.release();
           if (isPermanentClaimRejection(err)) {
             rejectedClaims.push({ run: queuedRun, err });
             continue;
@@ -2622,6 +2629,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           continue;
         }
         if (!claimed) {
+          await start.release();
           if (slots.full) break;
           noteDeclinedAgedClaim(candidate, "claim_declined");
           backOffClaim(candidate, dispatcher.personRun(candidate), taskStamp);
@@ -5347,7 +5355,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
-      await notifyRunDispatch(tx, { companyId: agent.companyId });
+      await notifyRunDispatch(tx, { companyId: agent.companyId, issueId: readNonEmptyString(enrichedContextSnapshot.issueId) });
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );

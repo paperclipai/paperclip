@@ -507,13 +507,23 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0487 builds two partial `heartbeat_runs` indexes concurrently for the
+settled-process recovery queue. `heartbeat_runs_settled_process_identity_idx`
+keys settled native runs that still hold a process identity by
+`process_host_hash`, company and id. Each server reads only the runs recorded in
+its own PID space, sandbox runs (`remote`) and rows saved before the hash, so
+finished runs from replaced containers are not read at all.
+`heartbeat_runs_pending_api_stop_idx` keys cancelled `cursor_cloud_api` runs
+whose Stop is still `requested`. Without them, the queue reads every finished
+run of a company on each hint.
+
 Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
 keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
 dispatch finds the person wakes that joined or were adopted by each queued run
 through it, so the read is bounded by the queue size, not by the agent's wake
 history.
 
-Migration 0490 builds `company_skill_versions_security_approval_idx` concurrently.
+Migration 0491 builds `company_skill_versions_security_approval_idx` concurrently.
 It keys skill versions by `security_approval_id`, partial on a non-null approval.
 Deleting a skill removes the approval records its versions used once no other
 version uses them, and that check reads the index instead of every version.
@@ -920,6 +930,20 @@ DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
+
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
+single-connection clients idle for reuse; they follow the same idle timeout and
+max lifetime as the main pool. This is not an admission limit: callers hold
+advisory locks and nest dedicated actions, so an action that finds no idle
+client opens one and closes it on release when four are already retained. A
+connection whose action throws is closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
 
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
@@ -1713,6 +1737,17 @@ grace. Retention uses committed producer notifications and actual deadlines;
 pinned history and an empty queue do not cause recurring scans. Deletion fences
 new adoption, rechecks references, and removes every recorded upload candidate
 and winning object within the company/workspace prefix.
+
+When retention finds a pinned version, it records the first reference that holds
+it in `metadata.retentionPin`: the current pointer, an importing parent, an
+operation, an unfinished child, a run, or a recovery action. The candidate query
+leaves that version out while the recorded reference still holds, so execution
+notifications do not re-examine unchanged history. When the recorded reference
+releases, the next pass checks every reference again. It records the next
+reference that holds, or schedules or retires the version. The record is durable,
+so a restarted server keeps the exclusion. A version without a record, such as
+one saved before this change, is examined once. Wakes coalesce for up to one
+second.
 
 Database backups contain snapshot receipts, not S3 payloads or encryption keys.
 Disaster recovery requires the database, object store, and original master key.

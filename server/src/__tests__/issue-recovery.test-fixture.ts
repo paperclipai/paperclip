@@ -50,7 +50,7 @@ export function issueRecoveryFixture() {
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
-  async function start() {
+  async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
     tasks.clear();
@@ -63,7 +63,7 @@ export function issueRecoveryFixture() {
         return work;
       } });
     };
-    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining);
+    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining, options);
     dispatch = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
     await Promise.all([worker.ready, dispatch.ready, cancellation.ready]);
@@ -77,7 +77,7 @@ export function issueRecoveryFixture() {
       void pass.then(() => passes.delete(pass), () => passes.delete(pass));
       return pass;
     } });
-    const work = other.registerIssueStateRecoveryWork(competing, () => true);
+    const work = other.registerIssueStateRecoveryWork(competing, () => true, { backstopMs: 0 });
     extraStops.push(() => competing.stop()); extraDeadlines.push(competing.nextWakeAt); await work.ready;
   }
   async function fixture() {
@@ -115,11 +115,12 @@ export function issueRecoveryFixture() {
       .where(eq(agents.id, f.agentId));
     return failures;
   }
-  async function settled() {
+  async function settled(options: { backstopPending?: boolean } = {}) {
     await vi.waitFor(async () => {
       await Promise.allSettled([...passes]);
       await heartbeat.drainActiveRunExecutions();
-      const wake = coordinator.nextWakeAt();
+      const next = coordinator.nextWakeAt();
+      const wake = options.backstopPending && next !== null && next > Date.now() + 60_000 ? null : next;
       const detail = wake === null ? "" : JSON.stringify({ now: Date.now(), tasks: await Promise.all([...tasks].map(async ([queue, task]) => ({ queue, at: task.nextRunAt?.(), pending: await task.hasPending() }))),
         runs: (await db.select().from(heartbeatRuns)).map(run => ({ id: run.id, status: run.status, error: run.errorCode, lease: run.controllerLeaseExpiresAt, reason: run.contextSnapshot?.wakeReason })) });
       expect(wake, detail).toBeNull();

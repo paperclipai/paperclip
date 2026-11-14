@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { chatMessageLinks, heartbeatRuns, type Db } from "@paperclipai/db";
 import { chatRunSourceMessageId } from "../run-origin.js";
 
@@ -52,21 +52,30 @@ export async function readGitHubResponseRun(db: Db, input: {
   companyId: string; endpointId: string; agentId: string; issueId: string | null;
   deliveryId: string; sourceMessageId: string | null;
 }) {
-  const [requestRun] = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).innerJoin(chatMessageLinks, and(
-    eq(chatMessageLinks.companyId, input.companyId), eq(chatMessageLinks.endpointId, input.endpointId),
-    eq(chatMessageLinks.deliveryId, input.deliveryId), eq(chatMessageLinks.direction, "inbound"),
-    or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
-      sql`coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${chatMessageLinks.commentId}::text`),
-  )).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
-    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`))
-    .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-  const [latestRun] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
-    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`,
-  )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-  const originMessageId = latestRun?.activeIdentityContextId ? await chatRunSourceMessageId(db, latestRun,
+  const { issueId } = input;
+  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false };
+  const latestRunId = sql`(select latest.id from (
+      (select r.id, r.created_at from ${heartbeatRuns} r
+        where r.company_id = ${input.companyId} and r.native_issue_id = ${issueId} and r.agent_id = ${input.agentId}
+        order by r.created_at desc, r.id desc limit 1)
+      union all
+      (select r.id, r.created_at from ${heartbeatRuns} r
+        where r.company_id = ${input.companyId} and r.native_issue_id is null
+          and r.context_snapshot->>'issueId' = ${issueId} and r.agent_id = ${input.agentId}
+        order by r.created_at desc, r.id desc limit 1)
+    ) latest order by latest.created_at desc, latest.id desc limit 1)`;
+  const wokeForRequest = sql<boolean>`exists (select 1 from ${chatMessageLinks} l
+    where l.company_id = ${input.companyId} and l.endpoint_id = ${input.endpointId}
+      and l.delivery_id = ${input.deliveryId} and l.direction = 'inbound'
+      and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
+        or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))`;
+  const [row] = await db.select({ ...responseRunColumns, wokeForRequest }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), sql`${heartbeatRuns.id} = ${latestRunId}`));
+  if (!row) return { latestRun: undefined, ownsLatestRequest: false };
+  const { wokeForRequest: requestRunIsLatest, ...latestRun } = row;
+  const originMessageId = latestRun.activeIdentityContextId ? await chatRunSourceMessageId(db, latestRun,
     { allowLegacyWakeComment: true, provider: "github" }) : null;
-  const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
-    (!!input.sourceMessageId && originMessageId === input.sourceMessageId));
+  const ownsLatestRequest = requestRunIsLatest ||
+    (!!input.sourceMessageId && originMessageId === input.sourceMessageId);
   return { latestRun, ownsLatestRequest };
 }
