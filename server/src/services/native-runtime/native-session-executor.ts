@@ -10365,6 +10365,7 @@ export async function executePaperclipNativeSession(input: {
   dotWorkspaceRoot?: string;
   observability?: ProviderObservabilityLaunch;
   runnerEnvironment?: NodeJS.ProcessEnv;
+  outputSecrets?: readonly string[];
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
@@ -10789,8 +10790,12 @@ async function executePaperclipNativeSessionAttempt(
   if (input.useRunnerd) await timeController("warm_restore", () => restoreWarmRunnerdController(
     replayPortablePreparation ? { ...input, restartRecovery: undefined } : input));
   const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
+  const outputRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY, input.outputSecrets);
   const redactIdentityText = (text: string) => redactSensitiveText(
     identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
+  );
+  const redactOutputText = (text: string) => redactSensitiveText(
+    outputRedactor.chunk("diagnostic", text) + outputRedactor.finish("diagnostic"),
   );
   if (
     input.execution.provider.kind !== "cursor_cloud" &&
@@ -11583,6 +11588,7 @@ async function executePaperclipNativeSessionAttempt(
     },
     {
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
+      secrets: input.outputSecrets,
       assertControllerActive,
       assertRunAdmissionActive,
       taskSessionPublication: input.taskSessionPublication,
@@ -12481,7 +12487,7 @@ async function executePaperclipNativeSessionAttempt(
               }
             },
             onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
-              const detail = redactIdentityText(
+              const detail = redactOutputText(
                 error instanceof Error ? error.message : String(error),
               ).slice(-4_096);
               await input.onLog?.(
@@ -12492,7 +12498,7 @@ async function executePaperclipNativeSessionAttempt(
             onSessionQuarantined: async (reason) => {
               await input.onLog?.(
                 "stderr",
-                `[paperclip-runner] warm native session quarantined: ${redactIdentityText(reason).slice(-1_000)}\n`,
+                `[paperclip-runner] warm native session quarantined: ${redactOutputText(reason).slice(-1_000)}\n`,
               );
             },
             onContinuityBreak: async (continuity) => {
@@ -12874,7 +12880,7 @@ async function executePaperclipNativeSessionAttempt(
         ), { companyId: input.execution.binding.companyId });
 
       const failedAtMs = Date.now();
-      const executionFailureMessage = redactIdentityText(
+      const executionFailureMessage = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(-4_096);
       if (!taskSettleScope) {
@@ -13093,10 +13099,10 @@ async function executePaperclipNativeSessionAttempt(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const message = redactIdentityText(
+      const message = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
-      const sanitizedStderrTail = redactIdentityText(message).slice(-4_096);
+      const sanitizedStderrTail = redactOutputText(message).slice(-4_096);
       const remoteRunnerRecovery = readRemoteRunnerRecoveryError(error);
       // Set inside the transaction only when the write below genuinely
       // transitions the run into "failed". Read after the transaction
@@ -13137,7 +13143,7 @@ async function executePaperclipNativeSessionAttempt(
             recoveryState:
               phase === "retryable_failure" ? "resuming_session" : "blocked",
             failureCode,
-            failureDetail: identityRedactor.redact({
+            failureDetail: outputRedactor.redact({
               message,
               ...(providerFailure ? { providerFailure } : {}),
               ...(remoteRunnerRecovery ? { remoteRunnerRecovery } : {}),
