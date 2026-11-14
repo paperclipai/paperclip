@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -14,6 +15,15 @@ import {
 import { runChildProcess } from "./server-utils.js";
 
 const cleanup: string[] = [];
+const hasBinSymlinkToUsrBin = (() => {
+  try {
+    return process.platform === "linux"
+      && fsSync.lstatSync("/bin").isSymbolicLink()
+      && fsSync.realpathSync("/bin") === "/usr/bin";
+  } catch {
+    return false;
+  }
+})();
 
 async function withTmpDir<T>(tmpDir: string, run: () => Promise<T>): Promise<T> {
   const previousTmpDir = process.env.TMPDIR;
@@ -332,6 +342,63 @@ describe("local process sandbox", () => {
 
       expect(result.exitCode, result.stderr).toBe(0);
       await expect(fs.readFile(path.join(workspace, "workspace-ok.txt"), "utf8")).resolves.toBe("ok");
+    },
+  );
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP) && hasBinSymlinkToUsrBin)(
+    "runs a workspace sandbox with Vault paths read-only when /bin resolves to /usr/bin",
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-bin-symlink-"));
+      cleanup.push(root);
+      const workspace = path.join(root, "Sources");
+      const progress = path.join(root, "Progress");
+      const knowledge = path.join(root, "Knowledge");
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.mkdir(progress);
+      await fs.mkdir(knowledge);
+
+      const readOnlyFiles = [
+        { path: path.join(root, "vault-root.txt"), content: "vault-root" },
+        { path: path.join(progress, "progress.txt"), content: "progress" },
+        { path: path.join(knowledge, "knowledge.txt"), content: "knowledge" },
+        { path: path.join(root, ".stignore"), content: "ignore-rules" },
+      ];
+      await Promise.all(readOnlyFiles.map(({ path: filePath, content }) => fs.writeFile(filePath, content, "utf8")));
+
+      const script = [
+        "const fs = require('node:fs');",
+        `const readOnlyFiles = ${JSON.stringify(readOnlyFiles)};`,
+        "fs.writeFileSync('workspace-ok.txt', 'ok');",
+        "for (const { path, content } of readOnlyFiles) {",
+        "  if (fs.readFileSync(path, 'utf8') !== content) process.exit(8);",
+        "  try { fs.writeFileSync(path, 'changed'); process.exit(9); }",
+        "  catch (error) { if (!['EROFS', 'EACCES'].includes(error.code)) throw error; }",
+        "}",
+      ].join("\n");
+      const result = await runChildProcess("filesystem-sandbox-bin-symlink", process.execPath, ["-e", script], {
+        cwd: workspace,
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        localProcessSandbox: {
+          workspaceDir: workspace,
+          filesystemScope: "workspace",
+          extraPaths: [
+            { path: root, access: "ro" },
+            { path: progress, access: "ro" },
+            { path: knowledge, access: "ro" },
+            { path: path.join(root, ".stignore"), access: "ro" },
+          ],
+          command: process.env.PAPERCLIP_TEST_BWRAP,
+        },
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      await expect(fs.readFile(path.join(workspace, "workspace-ok.txt"), "utf8")).resolves.toBe("ok");
+      for (const { path: filePath, content } of readOnlyFiles) {
+        await expect(fs.readFile(filePath, "utf8")).resolves.toBe(content);
+      }
     },
   );
 
