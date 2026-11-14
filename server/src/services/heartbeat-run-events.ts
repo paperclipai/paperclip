@@ -9,7 +9,7 @@ import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { and, asc, eq, getTableColumns, is, sql } from "drizzle-orm";
 import { PgTransaction } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import { heartbeatRunEvents, heartbeatRuns, primeDatabaseWorkTransactionId } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isUniqueViolation } from "../db-errors.js";
 
@@ -345,9 +345,9 @@ function decodeRunEventRow(raw: Record<string, unknown>): typeof heartbeatRunEve
 /**
  * A native source event: one lock read, then one statement that finds a
  * replayed event or reserves the sequence and inserts, and reads how much of
- * the source is retained. The lock must stay a statement of its own. A
- * statement that waits for the run lock keeps the snapshot it took before
- * waiting, so it would not see an event the lock holder had just committed.
+ * the source is retained. A statement that waits for the run lock keeps the
+ * snapshot it took before waiting, so it would not see an event the lock
+ * holder had just committed.
  */
 async function appendNativeSourceEvent(
   tx: Db,
@@ -361,15 +361,26 @@ async function appendNativeSourceEvent(
   // checkpoints, that are written for the same run while events stream.
   // Only progress needs the task binding. Other native/recovery events
   // must not read a potentially large context snapshot to append a log.
+  const replayed = sql`run_id = ${input.runId} and (source_event_id = ${source.sourceEventId}
+    or (source_instance_id = ${source.sourceInstanceId} and source_seq = ${source.sourceSeq}))`;
+  const probes = wakes.reassessment || wakes.progress || wakes.response || wakes.retention;
+  const columns = sql`"company_id", "agent_id", ("native_source_cursors" ->> ${source.sourceInstanceId})::bigint as "source_cursor"${
+    wakes.progress || wakes.response || wakes.reassessment ? sql`, "runtime_mode"` : sql.empty()}${
+    wakes.progress ? sql`, ${boundRunIssueIdSql()} as "issue_id"` : sql.empty()}${
+    Object.values(wakes).some(Boolean) ? sql`, pg_current_xact_id()::text as "xid"` : sql.empty()}`;
   const [run] = await tx.execute<{ company_id: string; agent_id: string; source_cursor: string | number | null;
-    runtime_mode?: string | null; issue_id?: string | null }>(
-    sql`select "company_id", "agent_id", ("native_source_cursors" ->> ${source.sourceInstanceId})::bigint as "source_cursor"${
-      wakes.progress || wakes.response || wakes.reassessment ? sql`, "runtime_mode"` : sql.empty()}${
-      wakes.progress ? sql`, ${boundRunIssueIdSql()} as "issue_id"` : sql.empty()
-    } from "heartbeat_runs" where "id" = ${input.runId} for no key update`);
+    runtime_mode?: string | null; issue_id?: string | null; xid?: string; probe_current?: boolean; replay_found?: boolean }>(probes
+    ? sql`with "snapshot_run" as (select "next_event_seq" from "heartbeat_runs" where "id" = ${input.runId}),
+        "locked_run" as (select ${columns}, "next_event_seq" from "heartbeat_runs" where "id" = ${input.runId} for no key update)
+      select "locked_run".*, "locked_run"."next_event_seq" = (select "next_event_seq" from "snapshot_run") as "probe_current",
+        exists (select 1 from heartbeat_run_events where ${replayed}) as "replay_found"
+      from "locked_run"`
+    : sql`select ${columns} from "heartbeat_runs" where "id" = ${input.runId} for no key update`);
   if (!run || run.company_id !== input.companyId || run.agent_id !== input.agentId) {
     throw new Error("heartbeat_run_event_binding_mismatch");
   }
+  if (run.xid) primeDatabaseWorkTransactionId(tx, run.xid);
+  const knownNew = run.probe_current === true && run.replay_found === false;
   // The stored cursor says the run holds every event of this source up to it.
   // An event at or just past it moves the cursor without counting the run's
   // events; any other event, or a run without a cursor, recounts them.
@@ -380,15 +391,14 @@ async function appendNativeSourceEvent(
   if (wakes.recovery) await notifyLiveRunRecovery(tx, input);
 
   const sourceHash = nativeSha256(source.canonicalPayload);
-  const replayed = sql`run_id = ${input.runId} and (source_event_id = ${source.sourceEventId}
-    or (source_instance_id = ${source.sourceInstanceId} and source_seq = ${source.sourceSeq}))`;
   const native = run.runtime_mode === "native";
   const reassessment = wakes.reassessment && native, progress = wakes.progress && native && run.issue_id;
   const response = wakes.response && native;
   if (reassessment || progress || response || wakes.retention) {
     // A wake is registered before the write it announces, and a replayed
     // event registers none. So these events look for their replay first.
-    const [existing] = await tx.execute<Record<string, unknown>>(sql`select * from heartbeat_run_events where ${replayed} limit 1`);
+    const [existing] = knownNew ? []
+      : await tx.execute<Record<string, unknown>>(sql`select * from heartbeat_run_events where ${replayed} limit 1`);
     if (existing) {
       const row = decodeRunEventRow(existing);
       if (row.sourcePayloadSha256 !== sourceHash) throw new HeartbeatRunEventConflictError();
