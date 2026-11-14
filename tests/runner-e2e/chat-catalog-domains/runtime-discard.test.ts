@@ -72,12 +72,12 @@ it("rejects an unbound later worker in the grade when its prompt lacks the direc
   const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
   expect(gradeDiscard(o).passed).toBe(false);
 });
-const contact = contactDetails("108262186bce-1"), label = "108262186bce-1", details = [contact.email, contact.phone], markers = [label, ...details];
+const contact = contactDetails("108262186bce-1"), label = "108262186bce-1", details = [contact.name, contact.phone], markers = [label, ...details];
 const heading = "## Contact Section — `108262186bce-1`";
 const consumedPlan = [
   "# Initial Website Plan", "", "Latest direction: add a contact section labelled `108262186bce-1`.", "",
   "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Contact — `108262186bce-1`** — contact form.", "", "---", "",
-  heading, "", `- Email: ${contact.email}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message.", "- Use visible labels.", "", "---", "",
+  heading, "", `- Contact: ${contact.name}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message.", "- Use visible labels.", "", "---", "",
   "## Accessibility Baseline", "", "- Use visible labels.", "",
 ].join("\n");
 const finalPlan = [
@@ -87,23 +87,23 @@ const finalPlan = [
 ].join("\n");
 it("collects only the contact section's distinctive whole lines", () => {
   expect(contactSectionLines(consumedPlan, markers)).toEqual(["Latest direction: add a contact section labelled `108262186bce-1`.",
-    "4. **Contact — `108262186bce-1`** — contact form.", heading, `- Email: ${contact.email}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message."]);
+    "4. **Contact — `108262186bce-1`** — contact form.", heading, `- Contact: ${contact.name}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message."]);
 });
 it("passes when shared lines remain and a note quotes the label inside a longer line", () => {
   expect(finalPlan.includes("108262186bce-1")).toBe(true);
   expect(documentContactRemoved(consumedPlan, finalPlan, label, details)).toBe(true);
 });
-it("fails when only the email and phone are removed", () => {
-  const detailsOnly = consumedPlan.split("\n").filter(line => !line.includes(contact.email) && !line.includes(contact.phone)).join("\n");
+it("fails when only the contact name and phone are removed", () => {
+  const detailsOnly = consumedPlan.split("\n").filter(line => !line.includes(contact.name) && !line.includes(contact.phone)).join("\n");
   expect(documentContactRemoved(consumedPlan, detailsOnly, label, details)).toBe(false);
 });
 it("fails when the final revision keeps the heading line or a contact detail line", () => {
   expect(documentContactRemoved(consumedPlan, `${finalPlan}\n${heading}\n`, label, details)).toBe(false);
-  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n  - Email: ${contact.email}  \n`, label, details)).toBe(false);
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n  - Contact: ${contact.name}  \n`, label, details)).toBe(false);
 });
-it("fails when the email or phone survives in reformatted lines", () => {
-  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n## Contact (${label})\nEmail: ${contact.email}\nPhone: ${contact.phone}\n`, label, details)).toBe(false);
-  expect(documentContactRemoved(consumedPlan, `${finalPlan}\nWrite to ${contact.email} for help.\n`, label, details)).toBe(false);
+it("fails when the contact name or phone survives in reformatted lines", () => {
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n## Contact (${label})\nContact: ${contact.name}\nPhone: ${contact.phone}\n`, label, details)).toBe(false);
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\nAsk ${contact.name} for help.\n`, label, details)).toBe(false);
 });
 it("fails when the final revision is missing or the saved revision has no contact section", () => {
   expect(documentContactRemoved(consumedPlan, undefined, label, details)).toBe(false);
@@ -125,9 +125,9 @@ const final14 = [
   "## Open Questions", "", "- Which pages and content are required at launch?", "",
 ].join("\n");
 it("passes the retained cohort-14 plan", () => expect(documentContactRemoved(consumed14, final14, label, details)).toBe(true));
-it("derives distinct, attempt-specific contact details", () => {
-  expect(contact).toEqual({ email: "contact-108262186bce-1@acorn-notes.example", phone: "+1-555-1861" });
-  expect(contactDetails("e972d9c1aa95-1").email).not.toBe(contact.email);
+it("derives the contact details, with an attempt-specific phone", () => {
+  expect(contact).toEqual({ name: "Harriet Quillfeather", phone: "+1-555-1861" });
+  expect(contactDetails("e972d9c1aa95-1").phone).not.toBe(contact.phone);
 });
 
 function citedInTurn() {
