@@ -4,10 +4,8 @@ export * from "./live-session.js";
 export * from "./durable-live-session-store.js";
 export * from "./runnerd-codex-transport.js";
 export {
-  RUNNER_CONFINEMENT_ENV,
   RUNNER_CONFINEMENT_UNAVAILABLE,
   RunnerConfinementUnavailableError,
-  resolveRunnerConfinementMode,
   type RunnerConfinementMode,
   type RunnerConfinementPolicy,
 } from "../control-plane/runner-confinement.js";

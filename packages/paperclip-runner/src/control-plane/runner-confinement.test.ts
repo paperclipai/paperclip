@@ -10,7 +10,6 @@ import {
   confineRunnerLaunch,
   instanceSessionStatePaths,
   resetRunnerConfinementAvailability,
-  resolveRunnerConfinementMode,
   runnerConfinementScope,
   runnerConfinementUnavailableReason,
   seatbeltInvocation,
@@ -55,6 +54,23 @@ describe("runnerConfinementScope", () => {
     expect(scope.deniedLoopbackPorts).toEqual([54329]);
   });
 
+  it("hides operator-configured state roots and private paths, keeping the launch's own session", () => {
+    const instance = join(root, "instance");
+    const stateRoot = join(root, "custom-state");
+    const storage = join(root, "custom-storage");
+    const scope = runnerConfinementScope(
+      { mode: "auto", instanceRoot: instance, sessionStateRoots: [stateRoot], privatePaths: [storage, root, "/", join(stateRoot, "own")] },
+      ["--state-dir", join(stateRoot, "own", "runner")],
+      {},
+    );
+    expect(scope.hidden).toEqual(expect.arrayContaining([stateRoot, storage]));
+    // Never the instance root's ancestors, nor a path holding the launch's own state.
+    expect(scope.hidden).not.toContain(root);
+    expect(scope.hidden).not.toContain("/");
+    expect(scope.hidden).not.toContain(join(stateRoot, "own"));
+    expect(scope.exposed).toContain(join(stateRoot, "own"));
+  });
+
   it("ignores a provider trace outside the instance trace directory", () => {
     const scope = runnerConfinementScope({ mode: "auto", instanceRoot: join(root, "i") }, [], { PAPERCLIP_PROVIDER_TRACE_PATH: "/elsewhere/t.ndjson" });
     expect(scope.exposed).toEqual([]);
@@ -74,15 +90,6 @@ describe("seatbeltInvocation", () => {
     expect(profile).toContain('(deny network-outbound (remote ip "localhost:5432"))');
     expect(invocation.args).toContain(`HIDE0=${hostile}`);
     expect(invocation.args.slice(-2)).toEqual(["/bin/runnerd", "--a"]);
-  });
-});
-
-describe("resolveRunnerConfinementMode", () => {
-  it("defaults to auto", () => {
-    expect(resolveRunnerConfinementMode({})).toBe("auto");
-    expect(resolveRunnerConfinementMode({ PAPERCLIP_LOCAL_AGENT_CONFINEMENT: " Required " })).toBe("required");
-    expect(resolveRunnerConfinementMode({ PAPERCLIP_LOCAL_AGENT_CONFINEMENT: "off" })).toBe("off");
-    expect(resolveRunnerConfinementMode({ PAPERCLIP_LOCAL_AGENT_CONFINEMENT: "bogus" })).toBe("auto");
   });
 });
 

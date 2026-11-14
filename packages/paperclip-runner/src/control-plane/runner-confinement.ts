@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
@@ -11,7 +12,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
  * secrets. macOS uses a Seatbelt profile through `sandbox-exec`; Linux uses a
  * Landlock domain. Both replace themselves with runnerd (same PID and argv).
  */
-export const RUNNER_CONFINEMENT_ENV = "PAPERCLIP_LOCAL_AGENT_CONFINEMENT";
 export const RUNNER_CONFINEMENT_UNAVAILABLE = "runner_confinement_unavailable";
 
 /** `auto` confines where supported, `required` refuses to launch otherwise, `off` never confines. */
@@ -25,6 +25,14 @@ export interface RunnerConfinementPolicy {
   deniedLoopbackPorts?: readonly number[];
   /** The session's company: other companies' directories under `companies/` are hidden. */
   companyId?: string;
+  /**
+   * Roots that hold one directory per session, such as an operator-configured
+   * runner state directory outside the instance root. Each is hidden except
+   * the launch's own `<root>/<session>` directory.
+   */
+  sessionStateRoots?: readonly string[];
+  /** Instance-private paths outside the default layout, such as configured storage or the secrets key. */
+  privatePaths?: readonly string[];
 }
 
 export interface RunnerConfinementScope {
@@ -52,13 +60,8 @@ export class RunnerConfinementUnavailableError extends Error {
   }
 }
 
-export function resolveRunnerConfinementMode(env: NodeJS.ProcessEnv = process.env): RunnerConfinementMode {
-  const value = env[RUNNER_CONFINEMENT_ENV]?.trim().toLowerCase();
-  return value === "off" || value === "required" ? value : "auto";
-}
-
 function within(candidate: string, root: string) {
-  return candidate === root || candidate.startsWith(`${root}${sep}`);
+  return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
 }
 
 /** Resolves symbolic links in the longest existing prefix, so profiles match the kernel's path. */
@@ -143,9 +146,24 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
     expose(join(companies, companyId));
   }
   const stateDirectory = flagValue(args, "--state-dir");
-  if (stateDirectory && isAbsolute(stateDirectory)) {
-    const state = resolve(stateDirectory);
-    for (const root of [paths.durableSessions, paths.runnerStates, paths.sessions]) {
+  const state = stateDirectory && isAbsolute(stateDirectory) ? resolve(stateDirectory) : null;
+  // Never hide the instance root or a directory above it: an operator may
+  // point a configured root at a broad directory.
+  const holdsInstance = (value: string) => within(instanceRoot, value);
+  const sessionRoots = [paths.durableSessions, paths.runnerStates, paths.sessions];
+  for (const configured of policy.sessionStateRoots ?? []) {
+    const root = resolve(configured);
+    if (!isAbsolute(configured) || sessionRoots.includes(root) || holdsInstance(root) || state === root) continue;
+    sessionRoots.push(root);
+    hide(root);
+  }
+  for (const configured of policy.privatePaths ?? []) {
+    const path = resolve(configured);
+    // A private path that holds the launch's own state would hide the session from itself.
+    if (isAbsolute(configured) && !holdsInstance(path) && (state === null || !within(state, path))) hide(path);
+  }
+  if (state) {
+    for (const root of sessionRoots) {
       if (!within(state, root) || state === root) continue;
       // The session's own directory: `<root>/<scope>`, whatever lies below it.
       expose(join(root, relative(root, state).split(sep)[0]!));
@@ -154,7 +172,7 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
   const sessionId = flagValue(args, "--session-id");
   const configuredOpencode = env.PAPERCLIP_OPENCODE_RUNTIME_DIR?.trim();
   for (const root of [paths.opencode, ...(configuredOpencode && isAbsolute(configuredOpencode) ? [resolve(configuredOpencode)] : [])]) {
-    // A runtime directory inside the session's own state is already exposed.
+    // A runtime directory inside hidden state is already covered by that state's rule.
     if (root !== paths.opencode && scope.hidden.some((hidden) => within(root, hidden))) continue;
     hide(root);
     const name = sessionId ? opencodeSessionDirectoryName(sessionId) : null;
@@ -338,7 +356,20 @@ export function runnerConfinementUnavailableReason(platform: NodeJS.Platform = p
     } else if (platform === "linux") {
       const python = pythonExecutable();
       if (!python) reason = "python3 is not installed";
-      else execFileSync(python, ["-I", "-S", "-c", LANDLOCK_HELPER, "--probe"], { stdio: "ignore", timeout: 10_000 });
+      else {
+        // Apply a real domain shaped like a launch: a hidden directory with an
+        // exposed child. A host that passes runs every launch fail-closed.
+        const probeRoot = mkdtempSync(join(tmpdir(), "paperclip-confinement-probe-"));
+        try {
+          mkdirSync(join(probeRoot, "hidden", "own"), { recursive: true });
+          execFileSync(python, ["-I", "-S", "-c", LANDLOCK_HELPER, "--required",
+            "--hide", join(probeRoot, "hidden"), "--expose", join(probeRoot, "hidden", "own"),
+            "--", "/bin/sh", "-c", 'ls "$1" >/dev/null 2>&1 && exit 3; ls "$2" >/dev/null', "sh", join(probeRoot, "hidden"), join(probeRoot, "hidden", "own")],
+          { stdio: "ignore", timeout: 30_000 });
+        } finally {
+          rmSync(probeRoot, { recursive: true, force: true });
+        }
+      }
     } else {
       reason = `confinement is not supported on ${platform}`;
     }
@@ -384,5 +415,7 @@ export function confineRunnerLaunch(input: {
   prepareRunnerConfinementScope(scope);
   if (platform === "darwin") return { ...seatbeltInvocation(scope, input.command, input.args), scope };
   const python = pythonExecutable()!;
-  return { ...landlockInvocation(scope, python, policy.mode === "required", input.command, input.args), scope };
+  // The probe proved this host applies the same domain, so a launch that cannot
+  // apply its own fails closed instead of running unconfined unnoticed.
+  return { ...landlockInvocation(scope, python, true, input.command, input.args), scope };
 }

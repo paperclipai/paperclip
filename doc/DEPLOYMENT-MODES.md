@@ -129,15 +129,21 @@ scope that all of its processes inherit: macOS uses a Seatbelt profile through
 state, its own company directory and the shared instance directories. It cannot
 read other sessions' saved state, other companies' directories, run logs,
 provider traces, storage, backups, the database files, `secrets/` or the
-instance `.env`. On macOS it also cannot connect to the embedded database port
+instance `.env`. Locations configured outside the instance directory
+(`PAPERCLIP_RUNNER_STATE_DIR`, `PAPERCLIP_STORAGE_LOCAL_DIR`,
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` and the embedded database directory) are
+hidden the same way. On macOS it also cannot connect to the embedded database port
 or run set-user-ID programs such as `ps`; use `pgrep` instead.
 
 `PAPERCLIP_LOCAL_AGENT_CONFINEMENT` selects the behavior:
 
-- `auto` (default): confine where the host supports it. Otherwise run without
-  confinement and log a warning once.
-- `required`: refuse to start a local session that cannot be confined, with the
-  named code `runner_confinement_unavailable`.
+- `auto` (default): confine where the host supports it. The server proves this
+  once per process by applying a real scope. If the proof fails, sessions run
+  without confinement and the server logs a warning once. If the proof passes,
+  a launch that cannot apply its scope fails instead of running unconfined.
+- `required`: refuse to start a local session that cannot be confined. The run
+  fails permanently with the named code `runner_confinement_unavailable`, and
+  recovery does not retry it.
 - `off`: never confine.
 
 Other providers start their own operating-system sandboxes, which cannot nest
