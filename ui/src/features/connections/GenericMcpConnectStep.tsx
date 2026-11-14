@@ -421,6 +421,7 @@ export function GenericMcpConnectStep({
                       name={name}
                       onBack={onBack}
                       onConnected={machineSignIn.onConnected}
+                      beforeFooter={defaults}
                     />
                   </div>
                 ) : null}
@@ -430,7 +431,7 @@ export function GenericMcpConnectStep({
         </CollapsibleContent>
       </Collapsible>
 
-      {/* Machine sign-in owns its footer: its last step is Test connection, not Check link. */}
+      {/* Machine sign-in owns its footer (Test connection, not Check link) and shows the access line above it. */}
       {machine ? null : (
         <>
           {defaults}

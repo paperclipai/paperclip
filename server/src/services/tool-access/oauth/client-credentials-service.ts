@@ -296,10 +296,14 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       if (!key || !privateKeyPem) {
         throw unprocessable("This connection's Paperclip key is missing. Set up machine sign-in again.", { code: "client_credentials_key_missing" });
       }
+      // The key ID comes from the private key actually read, never from config
+      // alone: a refresh that overlaps a rotation may read the new key while
+      // holding the old settings, and its signature and kid must still agree.
+      const signing = publicKeyForPrivateKey(privateKeyPem, key.algorithm, new Date(key.createdAt));
       clientAssertion = signClientAssertion({
         privateKeyPem,
         algorithm: key.algorithm,
-        keyId: key.keyId,
+        keyId: signing.keyId,
         clientId,
         audience: settings.tokenUrl,
         now: now(),

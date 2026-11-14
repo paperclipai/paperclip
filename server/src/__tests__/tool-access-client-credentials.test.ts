@@ -494,6 +494,24 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     expect(row!.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.client_private_key_next");
   });
 
+  it("signs with a key ID that matches the key a refresh actually reads", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    // A rotation lands between a refresh loading the settings and reading the
+    // vault: the vault holds the new key while config still names the old one.
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    const keyRef = row!.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_private_key")!;
+    const next = await generateClientKeyPair("RS256");
+    registerKey(provider, { keyId: next.publicKey.keyId, pem: next.publicKey.publicKeyPem });
+    await secretService(db).rotate(keyRef.secretId, { value: next.privateKeyPem });
+    const grant = await organizationGrant(created.connectionId);
+    const before = provider.state.issued;
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.issued).toBe(before + 1);
+    expect(decodeJwt(provider.state.tokenRequests.at(-1)!.body.get("client_assertion")!).header.kid).toBe(next.publicKey.keyId);
+  });
+
   it("never promotes a staged key that changed after it was registered", async () => {
     const company = await createCompany();
     const provider = useProvider();

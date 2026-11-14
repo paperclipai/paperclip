@@ -31,6 +31,7 @@ describe("Machine sign-in in the custom server step", () => {
           oauthClientId="" onOAuthClientIdChange={() => undefined} oauthClientSecret="" onOAuthClientSecretChange={() => undefined}
           advancedOpen onAdvancedOpenChange={() => undefined} guidance={null} submitting={false}
           onBack={() => undefined} onConnect={() => undefined} machineSignIn={machineSignIn}
+          defaults={<p data-testid="access-defaults">Connects for every agent. Change</p>}
         />,
       );
     });
@@ -46,6 +47,8 @@ describe("Machine sign-in in the custom server step", () => {
     expect(container.querySelector('[data-testid="machine-sign-in-setup"]')).not.toBeNull();
     expect(buttons()).not.toContain("Check link");
     expect(buttons()).toContain("Create key");
+    // Who gets access stays visible and changeable while machine setup is open.
+    expect(container.querySelector('[data-testid="access-defaults"]')).not.toBeNull();
   });
 
   it("keeps machine sign-in open when arrow keys move its own method choice", async () => {

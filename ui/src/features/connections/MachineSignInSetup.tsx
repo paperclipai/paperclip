@@ -73,6 +73,8 @@ export interface MachineSignInSetupProps {
   initialError?: string | null;
   onBack: () => void;
   onConnected: (result: ConnectToolAppResult) => void;
+  /** Shown above the footer, such as who gets access to the connection. */
+  beforeFooter?: React.ReactNode;
 }
 
 /**
@@ -91,6 +93,7 @@ export function MachineSignInSetup({
   initialError = null,
   onBack,
   onConnected,
+  beforeFooter,
 }: MachineSignInSetupProps) {
   const [method, setMethod] = useState<MachineSignInMethod>(initialSetup?.machineSignIn.method ?? initialMethod);
   const [signInService, setSignInService] = useState("");
@@ -261,6 +264,8 @@ export function MachineSignInSetup({
           </Field>
         </div>
       )}
+
+      {beforeFooter}
 
       <div className="flex items-center justify-between pt-3">
         <Button variant="ghost" onClick={onBack} disabled={busy !== null}>Back</Button>
