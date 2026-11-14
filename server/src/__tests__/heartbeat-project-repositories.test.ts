@@ -947,6 +947,30 @@ suite("task project repository provisioning", () => {
       expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: hint!.cwd, encoding: "utf8" }).trim()).toBe(await realpath(hint!.cwd));
     }
   }, 25_000);
+  it.each(["primary", "none"] as const)("starts a task without access to project repositories it does not check out (%s scope)", async (repositoryCheckout) => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const source = path.join(root, companyId, "api");
+    await mkdir(source, { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: source, stdio: "ignore" });
+    await writeFile(path.join(source, "api.txt"), "api");
+    execFileSync("git", ["add", "."], { cwd: source, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"], { cwd: source, stdio: "ignore" });
+    await db.insert(companies).values({ id: companyId, name: "Scoped", issuePrefix: "S" + companyId.slice(0, 6), defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Scoped reviews", repositoryCheckout });
+    await db.insert(projectWorkspaces).values([
+      { id: randomUUID(), companyId, projectId, name: "API", sourceType: "git_repo", repoUrl: pathToFileURL(source).href, isPrimary: true },
+      { id: randomUUID(), companyId, projectId, name: "Web", sourceType: "git_repo", repoUrl: "https://github.com/acme/web",
+        metadata: { repositoryProvider: "github" }, isPrimary: false },
+    ]);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", status: "idle", adapterType: "codex_local", adapterConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Review the document", status: "todo", assigneeAgentId: agentId });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
+    }, { timeout: 15_000 });
+  }, 40_000);
   it("starts a task in a project without repository checkouts in its task directory and adds a requested repository", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID();
     const source = path.join(root, companyId, "api");
