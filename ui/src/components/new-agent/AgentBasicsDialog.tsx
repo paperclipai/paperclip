@@ -14,6 +14,7 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { queryKeys } from "@/lib/queryKeys";
+import { createUuid } from "@/lib/uuid";
 import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
@@ -63,7 +64,7 @@ export function AgentBasicsDialog({
   const { selectedCompanyId: companyId } = useCompany();
   const cache = useQueryClient();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const setupId = useRef(setupAgentId ?? createUuid());
   const saved = useRef<Agent | null>(null);
   const busy = useRef(false);
   const active = useRef(true);
