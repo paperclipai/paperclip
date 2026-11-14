@@ -367,6 +367,26 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(recovered.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
   });
 
+  it("resolves a long submitted request through paginated run events only for authorized readers", async () => {
+    const fixture = await seedFixture();
+    const text = JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: `${"earlier context ".repeat(1500)}current request after 8 KiB` } });
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId, runId: fixture.privateRunId, agentId: fixture.ownerAgentId,
+      seq: 2, eventType: "turn.submitted", stream: "system",
+      payload: { prpEvent: { turnId: "turn-reference", eventType: "turn.submitted", payload: { text } } },
+    });
+    const reference = `/api/heartbeat-runs/${fixture.privateRunId}/events`;
+    for (const agentId of [fixture.ownerAgentId, fixture.grantedAgentId]) {
+      const app = createApp(fixture.companyId, agentId);
+      const first = await request(app).get(`${reference}?limit=1`).expect(200);
+      expect(first.body).toHaveLength(1);
+      const next = await request(app).get(`${reference}?afterSeq=${first.body[0].seq}&limit=1`).expect(200);
+      expect(next.body[0].payload.prpEvent).toMatchObject({ turnId: "turn-reference", payload: { text } });
+    }
+    await request(createApp(fixture.companyId, fixture.otherAgentId)).get(reference).expect(404);
+    await request(createApp(randomUUID(), fixture.otherAgentId)).get(reference).expect(404);
+  });
+
   it("returns full private-run content to the owner and an explicitly granted agent", async () => {
     const fixture = await seedFixture();
 
