@@ -639,7 +639,9 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     // with this token's expiry (the grant's own expiry wins over the connection's).
     await deps.ensureDefaultOrganizationGrant(connection);
     await db.update(connectionGrants).set({
-      providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify({ accessTokenExpiresAt: expiresAt, tokenType: token.tokenType, refreshedAt: at.toISOString() })}::jsonb))`,
+      providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify({ accessTokenExpiresAt: expiresAt, tokenType: token.tokenType, refreshedAt: at.toISOString() })}::jsonb)
+        -- A live refresh keeps its lease; one abandoned by a stopped server is cleared with the tested credentials.
+        - (case when (${connectionGrants.providerTenant} #>> '{oauth,refreshLease,expiresAt}')::timestamptz <= ${at.toISOString()}::timestamptz then 'refreshLease' else '' end))`,
       updatedAt: now(),
     }).where(and(
       eq(connectionGrants.companyId, companyId),

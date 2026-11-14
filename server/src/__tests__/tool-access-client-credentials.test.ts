@@ -686,6 +686,32 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     expect(Date.now() - started).toBeLessThan(15_000);
   }, 60_000);
 
+  it("recovers from a refresh abandoned by a stopped server", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    const grant = await organizationGrant(created.connectionId);
+    const abandoned = async () => {
+      const current = await organizationGrant(created.connectionId);
+      await db.update(connectionGrants).set({
+        providerTenant: { ...(current.providerTenant ?? {}), oauth: {
+          ...((current.providerTenant ?? {}).oauth as object ?? {}),
+          accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+          refreshLease: { id: "stopped-server", expiresAt: "2000-01-01T00:00:00.000Z" },
+        } },
+      }).where(eq(connectionGrants.id, grant.id));
+    };
+    // The next request takes over the abandoned lease and gets a new token.
+    await abandoned();
+    const before = provider.state.issued;
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, actor });
+    expect(provider.state.issued).toBe(before + 1);
+    // A successful retest also clears an abandoned lease.
+    await abandoned();
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    expect(((await organizationGrant(created.connectionId)).providerTenant?.oauth as Record<string, unknown>).refreshLease).toBeUndefined();
+  });
+
   it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
     const company = await createCompany();
     const provider = useProvider();
