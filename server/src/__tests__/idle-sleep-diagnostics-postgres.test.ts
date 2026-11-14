@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentApiKeys, agents, budgetPolicies, chatDeliveries, chatEndpoints, companies,
   companyTransferRuns, connectionEventDeliveries, createDb, heartbeatRuns, issues,
-  routineTriggers, routines, toolApplications, toolConnections, type Db } from "@paperclipai/db";
+  routineTriggers, routines, instanceSettings, toolApplications, toolConnections, toolInvocations, toolMcpTasks, type Db } from "@paperclipai/db";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerMcpTaskWork } from "../services/mcp-task-work.js";
 import { queueBudgetEvaluation } from "../services/budget-evaluation-work.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -138,4 +142,95 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
     expect(report.diagnostics?.checks).toContainEqual({ reason: "durable.snapshot", state: "unknown" });
     expect(JSON.stringify(report)).not.toMatch(/private-bad-interval|numeric|SELECT|runtime_config/);
   });
+
+  // These inventory fixtures never make a provider call: all retained polls are
+  // in the future. The normal gateway and deadline owner remain unmodified.
+  async function retainedMcpTask() {
+    const f = await seed();
+    const [application] = await db.insert(toolApplications).values({ companyId: f.companyId,
+      name: "Retained MCP task fixture", type: "rest_api" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId,
+      applicationId: application!.id, name: "Retained task connection", uid: randomUUID(),
+      transport: "mcp_remote", status: "draft", enabled: false }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({ companyId: f.companyId,
+      connectionId: connection!.id, toolName: "fixture.task", status: "succeeded" }).returning();
+    const [task] = await db.insert(toolMcpTasks).values({ companyId: f.companyId,
+      invocationId: invocation!.id, connectionId: connection!.id, grantId: randomUUID(),
+      actorType: "system", catalogToolName: "fixture.task", requestHash: "fixture-request",
+      endpointHash: "fixture-endpoint", protocolVersion: "2026-07-28",
+      sealedProviderTaskId: "not-read-by-this-inventory-test", providerTaskIdHash: randomUUID(),
+      status: "working", expiresAt: new Date(Date.now() + 3_600_000),
+      nextPollAt: new Date(Date.now() + 600_000), argumentsIdentity: "fixture-arguments" }).returning();
+    return task!;
+  }
+
+  async function withMcpTaskSettings(body: () => Promise<void>) {
+    const [saved] = await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+    try {
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      await body();
+    } finally {
+      vi.unstubAllEnvs();
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      if (saved) await db.insert(instanceSettings).values(saved);
+    }
+  }
+
+  it("uses the normal effective MCP Tasks authority for retained future work and settled history", async () => {
+    await withMcpTaskSettings(async () => {
+      const taskState = async () => (await read()).diagnostics?.checks.find(check => check.reason === "tool_mcp_tasks")?.state;
+      expect(await taskState()).toBe("none"); // default off, no row
+      const task = await retainedMcpTask();
+      const settings = instanceSettingsService(db);
+      await settings.updateExperimental({ enableMcpTasks: false });
+      expect(await taskState()).toBe("none"); // explicitly disabled retained work
+      vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "fixture",
+        features: { enableMcpTasks: true }, plugins: { autoInstall: [] } }));
+      const gateway = createToolGatewayService(db);
+      expect(await gateway.nextMcpTaskPollAt()).toBe(task.nextPollAt!.getTime());
+      expect(await taskState()).toBe("present"); // first OLD-product causal oracle
+      await db.update(toolMcpTasks).set({ status: "completed", nextPollAt: null }).where(eq(toolMcpTasks.id, task.id));
+      expect(await gateway.nextMcpTaskPollAt()).toBeNull();
+      expect(await taskState()).toBe("none");
+      vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
+      await instanceSettingsService(db).updateExperimental({ enableMcpTasks: true });
+      vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "fixture",
+        features: { enableMcpTasks: false }, plugins: { autoInstall: [] } }));
+      await db.update(toolMcpTasks).set({ status: "working", nextPollAt: task.nextPollAt }).where(eq(toolMcpTasks.id, task.id));
+      expect(await gateway.nextMcpTaskPollAt()).toBeNull();
+      expect(await taskState()).toBe("none"); // raw true cannot defeat managed false
+    });
+  }, 30_000);
+
+  it("normal settings re-enable rearms the settled MCP Tasks owner without another task write", async () => {
+    await withMcpTaskSettings(async () => {
+      const task = await retainedMcpTask();
+      const settings = instanceSettingsService(db);
+      await settings.updateExperimental({ enableMcpTasks: false });
+      const gateway = createToolGatewayService(db);
+      const poll = vi.spyOn(gateway, "pollDueMcpTasks"); // pass-through, no mocked result
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        onError: error => { errors.push(error); } });
+      try {
+        const worker = registerMcpTaskWork(coordinator, gateway, null, () => true);
+        await worker.ready;
+        expect(poll).toHaveBeenCalledTimes(1);
+        expect(worker.reconciliationSnapshot().reconciled).toBe(true);
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await settings.updateExperimental({ enableMcpTasks: true });
+        await expect.poll(() => poll.mock.calls.length, { timeout: 2_000 }).toBeGreaterThan(1);
+        await expect.poll(() => worker.reconciliationSnapshot().reconciled, { timeout: 2_000 }).toBe(true);
+        expect(coordinator.nextWakeAt()).toBe(task.nextPollAt!.getTime());
+        expect(await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, task.id))).toMatchObject([
+          { status: "working", nextPollAt: task.nextPollAt, leaseOwner: null, leaseExpiresAt: null },
+        ]);
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        poll.mockRestore();
+      }
+    });
+  }, 30_000);
 });
