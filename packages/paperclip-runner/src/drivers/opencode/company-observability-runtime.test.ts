@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 
-// Real installed OpenCode and real HTTP export; the model is a local SSE fixture.
 const enabled = process.env.PAPERCLIP_OPENCODE_QUALIFY === "1";
 async function listen(server: Server) {
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));

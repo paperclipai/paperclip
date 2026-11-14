@@ -40,7 +40,6 @@ function outputText(value: unknown): string {
   try { return JSON.stringify(value) ?? ""; } catch { return ""; }
 }
 
-/** Select permitted request text before the export budget is spent on envelope/history. */
 function requestText(value: unknown): { text: string; omittedHistory: boolean } {
   const fallback = { text: typeof value === "string" ? value : "", omittedHistory: false };
   let envelope: Record<string, unknown>;
@@ -53,8 +52,6 @@ function requestText(value: unknown): { text: string; omittedHistory: boolean } 
   const task = record(envelope.task);
   if (typeof task.prompt !== "string") return fallback;
   let prompt = task.prompt, omittedHistory = false;
-  // The generated handoff is prose followed by one JSON line, then a blank
-  // line and the current prompt. Do not guess from headings inside user text.
   if (prompt.startsWith("## Fresh session handoff\n")) {
     const boundary = prompt.indexOf("\n\n");
     if (boundary !== -1) {
@@ -65,7 +62,7 @@ function requestText(value: unknown): { text: string; omittedHistory: boolean } 
           prompt = prompt.slice(boundary + 2);
           omittedHistory = true;
         }
-      } catch { /* Unrecognized framing retains the submitted prompt. */ }
+      } catch {}
     }
   }
   const identity = [task.identifier, task.title].filter((text): text is string => typeof text === "string").join(" — ");
@@ -171,8 +168,6 @@ export function createOpenCodeCompanyObservability(input: {
           const request = requestText(record(event.payload).text);
           current.root.attributes["braintrust.input"] = clean(request.text);
           current.truncated ||= request.omittedHistory;
-          // Relative to the Paperclip instance. Page by afterSeq and select this
-          // turn's submitted PRP event. The server retains authorization/redaction.
           current.root.attributes["paperclip.observability.input.events"] = `/api/heartbeat-runs/${encodeURIComponent(event.runId)}/events`;
         }
       }
