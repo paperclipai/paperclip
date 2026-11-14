@@ -2491,6 +2491,28 @@ describe("agent permission routes", () => {
       }));
     });
 
+    it("passes limit to listConfigRevisions when valid and rejects invalid limit values with 400", async () => {
+      mockAgentService.getById.mockResolvedValue(baseAgent);
+      mockAgentService.listConfigRevisions.mockResolvedValue([]);
+      mockAccessService.decide.mockResolvedValue({
+        allowed: true,
+        reason: "allow",
+        explanation: "Allowed",
+      });
+      const app = await createApp({ type: "board", userId: "board-user", companyIds: [companyId], source: "session" });
+
+      const validResponse = await request(app).get(`/api/agents/${agentId}/config-revisions?limit=5`);
+      expect(validResponse.status).toBe(200);
+      expect(mockAgentService.listConfigRevisions).toHaveBeenCalledWith(agentId, { limit: 5 });
+
+      for (const badLimit of ["0", "-1", "2.5", "abc", "501"]) {
+        mockAgentService.listConfigRevisions.mockClear();
+        const invalidResponse = await request(app).get(`/api/agents/${agentId}/config-revisions?limit=${badLimit}`);
+        expect(invalidResponse.status).toBe(400);
+        expect(mockAgentService.listConfigRevisions).not.toHaveBeenCalled();
+      }
+    });
+
     it("allows a board member without agents:create to read agent configuration", async () => {
       // Board (human) users with company membership but no agents:create
       // grant should still be able to view agent configuration — this is

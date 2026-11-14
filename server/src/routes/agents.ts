@@ -4308,7 +4308,24 @@ export function agentRoutes(
       return;
     }
     await assertCanReadAgent(req, agent);
-    const revisions = await svc.listConfigRevisions(id);
+    let limit: number | undefined;
+    if (req.query.limit !== undefined) {
+      const rawLimit = req.query.limit;
+      if (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit)) {
+        res.status(400).json({ error: "limit must be an integer between 1 and 500" });
+        return;
+      }
+      const parsed = Number(rawLimit);
+      if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 500) {
+        res.status(400).json({ error: "limit must be an integer between 1 and 500" });
+        return;
+      }
+      limit = parsed;
+    }
+    const revisions =
+      limit !== undefined
+        ? await svc.listConfigRevisions(id, { limit })
+        : await svc.listConfigRevisions(id);
     res.json(revisions.map((revision) => redactConfigRevision(revision)));
   });
 
