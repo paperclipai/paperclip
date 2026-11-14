@@ -13001,6 +13001,7 @@ registerCurrentRoute({
     201: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
+    403: r.forbidden,
     409: r.conflict,
     422: r.unprocessable,
   },
@@ -13015,6 +13016,14 @@ registerCurrentRoute({
   summary:
     "Unbind a tool access profile from a company, agent, project, routine, or issue",
   body: unbindToolProfileBindingSchema,
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
 });
 
 registerCurrentRoute({
