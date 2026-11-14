@@ -451,9 +451,16 @@ export function wrapDuplexChannelAsNodeDuplex(
       }
     },
     final(callback) {
-      channel
-        .close()
-        .then(() => callback(), (error) => callback(error instanceof Error ? error : new Error(String(error))));
+      // Finish the writable side now, not once the close settles. Node wraps
+      // this non-socket `Duplex` in an internal `JSStreamSocket`, which holds
+      // its shutdown request open until this callback runs; any session write
+      // in that window (a watchdog PING, a late response) fails Node's
+      // internal assertion and crashes the process. A provider close can take
+      // seconds. A close that fails later still reaches the `error` listeners.
+      channel.close().then(undefined, (error) => {
+        duplex.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
+      callback();
     },
   });
   channel.onData((chunk) => {

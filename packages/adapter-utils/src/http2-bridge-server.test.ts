@@ -2325,4 +2325,86 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(duplex.destroyed).toBe(false);
   });
+
+  it("test_a_session_write_while_the_channel_close_is_pending_does_not_crash_the_host", async () => {
+    // Node wraps this non-socket `Duplex` in an internal `JSStreamSocket`. Once
+    // the sandbox exits, that socket ends its writable side and holds the
+    // shutdown open until `final` calls back. A session write in that window
+    // (here the watchdog PING) used to fail Node's internal assertion and
+    // crash the whole host process (Sentry PAPERCLIP-BACKEND-84), because
+    // `final` waited for a provider close that can take seconds.
+    const uncaught: unknown[] = [];
+    const onUncaught = (error: unknown) => uncaught.push(error);
+    process.on("uncaughtException", onUncaught);
+    const [serverSide, clientSide] = duplexPair();
+    let sandboxExited = false;
+    let dataListener: ((chunk: Uint8Array) => void) | undefined;
+    let exitListener: ((exit: { exitCode: number | null }) => void) | undefined;
+    let closeCalls = 0;
+    let releaseClose: () => void = () => undefined;
+    serverSide.on("data", (chunk: Buffer) => {
+      if (!sandboxExited) dataListener?.(chunk);
+    });
+    const channel: CommandManagedDuplexChannel = {
+      write: (data) => {
+        if (!sandboxExited) serverSide.write(Buffer.from(data));
+      },
+      onData: (listener) => {
+        dataListener = listener;
+      },
+      onExit: (listener) => {
+        exitListener = listener;
+      },
+      stop: () => undefined,
+      // A provider close that stays pending, like a stalled sandbox kill.
+      close: () => {
+        closeCalls += 1;
+        return new Promise<void>((resolve) => {
+          releaseClose = resolve;
+        });
+      },
+    };
+    const handle = createHttp2BridgeServer({
+      bridgeToken: BRIDGE_TOKEN,
+      pingIntervalMs: 20,
+      forwardRequest: async () => ({ status: 200, headers: {}, body: Buffer.alloc(0) }),
+    });
+    const boundDuplex = handle.bindChannel(channel);
+    const rawClient = connectRawClient(clientSide);
+    rawClient.on("error", () => undefined);
+    try {
+      await new Promise<void>((resolve) => rawClient.once("connect", () => resolve()));
+      sandboxExited = true;
+      exitListener?.({ exitCode: 0 });
+      // Several watchdog intervals pass while the provider close is pending.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(uncaught).toEqual([]);
+      expect(closeCalls).toBe(1);
+      expect(boundDuplex.writableFinished).toBe(true);
+    } finally {
+      releaseClose();
+      process.off("uncaughtException", onUncaught);
+      rawClient.destroy();
+      await handle.close();
+    }
+  });
+
+  it("wrapDuplexChannelAsNodeDuplex reports a channel close that fails after the writable side finishes", async () => {
+    const channel: CommandManagedDuplexChannel = {
+      write: () => undefined,
+      onData: () => undefined,
+      onExit: () => undefined,
+      stop: () => undefined,
+      close: async () => {
+        throw new Error("provider close failed");
+      },
+    };
+    const duplex = wrapDuplexChannelAsNodeDuplex(channel);
+    const failed = new Promise<Error>((resolve) => duplex.once("error", resolve));
+    duplex.end();
+
+    await expect(failed).resolves.toMatchObject({ message: "provider close failed" });
+    expect(duplex.writableFinished).toBe(true);
+  });
 });
