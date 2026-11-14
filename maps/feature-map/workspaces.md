@@ -58,7 +58,7 @@ Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx)
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
 For experimental native remote storage, follow the
-[deployment prerequisites and explicit local import](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+[deployment prerequisites and explicit local import](../../doc/workspace-storage.md#experimental-native-remote-workspace-storage).
 With durable Postgres, S3, and a stable key configured, a new disposable
 Paperclip Runner sandbox task with a supported fresh source enrolls by default.
 Verify an explicit `remoteWorkspaceStorageEnabled: false` disables new enrollment,
