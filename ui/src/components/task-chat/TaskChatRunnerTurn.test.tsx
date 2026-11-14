@@ -111,6 +111,54 @@ describe("TaskChatRunnerTurn", () => {
     expect(container.textContent).not.toContain("Thinking");
   });
 
+  it("keeps startup feedback briefly, then says a queued turn with no named hold is waiting to start", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-13T17:39:05Z"));
+      render([], "queued");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Thinking");
+      // The fixture's run was queued 2 s before render: the grace ends at +28 s.
+      act(() => { vi.advanceTimersByTime(27_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      act(() => { vi.advanceTimersByTime(2_000); });
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Waiting to start");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Waiting to start");
+      expect(container.textContent).not.toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not repeat the agent's waiting line in the turn body", () => {
+    // The shared header (rendered by the thread) shows the waiting line; the body adds no second line.
+    act(() => root.render(
+      <MemoryRouter><ThemeProvider><TaskChatRequestHistoryContext.Provider value="issue-1">
+        <TaskChatRunnerTurn runId="run-1" agentName="Runner" items={[]} status="queued" showHeader={false}
+          startedAtMs={Date.now() - 2_000} execution={{
+            phase: "queued", label: "Waiting for Codie", cause: "agent_at_capacity",
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: null, nextAction: null, permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
+            agentQueue: { agentId: "agent-1", agentName: "Codie", maxConcurrentRuns: 20, runningCount: 20, position: 41, queuedCount: 295 },
+          }} />
+      </TaskChatRequestHistoryContext.Provider></ThemeProvider></MemoryRouter>,
+    ));
+    expect(container.textContent).not.toContain("Waiting for Codie");
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+  });
+
+  it("does not call a running turn waiting, however long it runs", () => {
+    vi.useFakeTimers();
+    try {
+      render([], "running");
+      act(() => { vi.advanceTimersByTime(10 * 60_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   const resolvedQuestion = (
     id: string,
     prompt: string,
