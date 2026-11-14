@@ -37,7 +37,7 @@ describe("failed native retry caller admission", () => {
     const tx = { select: () => ({ from: (table: unknown) => ({ where: () => ({
       for: (...args: unknown[]) => { locks.push(args); return { limit: async () => table === heartbeatRuns ? [run]
         : phase ? [{ phase, failureCode }] : [] }; },
-    }) }) }), update: () => ({ set: update }), execute: async () => [] };
+    }) }) }), update: () => ({ set: update }) };
     const db = { transaction: async (fn: (value: typeof tx) => Promise<unknown>) => fn(tx) } as unknown as Db;
     return { db, run, locks, update };
   }

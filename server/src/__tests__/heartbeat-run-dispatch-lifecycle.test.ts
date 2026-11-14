@@ -17,7 +17,6 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
   const dialect = new PgDialect();
   const execute = vi.fn(async (query: any) => {
     if (dialect.sqlToQuery(query).sql.includes("pg_current_xact_id")) return [{ xid: "42" }];
-    if (dialect.sqlToQuery(query).sql.includes("with seed(id)")) return [];
     throw new Error("unexpected database query");
   });
   const db: { execute: typeof execute; transaction: (callback: (tx: any) => Promise<any>) => Promise<any> } = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>): Promise<any> {

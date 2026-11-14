@@ -62,7 +62,6 @@ function createFakeDb(args: {
       expect(statement.params).toContain(interactionRow.issueId);
       if (statement.sql.includes("origin_kind")) return [{ id: interactionRow.issueId, originKind: null, originId: null }];
       if (statement.sql.includes("with recursive affected")) return [{ issueId: interactionRow.issueId }];
-      if (statement.sql.includes("with seed(id)")) return [{ id: interactionRow.issueId }];
       throw new Error(`Unexpected interaction fixture query: ${statement.sql}`);
     }),
     select: vi.fn(() => {

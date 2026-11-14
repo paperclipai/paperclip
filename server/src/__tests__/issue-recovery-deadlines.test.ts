@@ -9,7 +9,7 @@ import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
 import { recoveryService } from "../services/recovery/service.js";
-import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueGraphRecovery, notifyIssueRecovery }
+import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueRecovery, resolveIssueGraph }
   from "../services/issue-recovery-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
@@ -190,7 +190,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     await state.db.execute(sql`analyze issues`);
     await state.db.execute(sql`analyze heartbeat_runs`);
     const [read] = await state.db.transaction(async tx => {
-      await notifyIssueGraphRecovery(tx, { companyId: f.companyId, runId: graph.runId });
+      expect(await resolveIssueGraph(tx as unknown as typeof state.db, { companyId: f.companyId, runId: graph.runId })).toEqual(graph.affected);
       return tx.execute<{ rows: number }>(sql`select (coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0))::int as rows
         from pg_stat_xact_user_tables where relname = 'issues'`);
     });
@@ -272,28 +272,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       { companyId: f.companyId, issueId: doneBlocker.id, relatedIssueId: ready.id, type: "blocks" as const },
     ]);
     const checked: string[] = [];
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    state.coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, onError: error => state.errors.push(error) });
-    const register = state.coordinator.register.bind(state.coordinator);
-    state.coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
-      const pass = task.run(signal); state.passes.add(pass);
-      void pass.then(() => state.passes.delete(pass), () => state.passes.delete(pass));
-      return pass;
-    } });
-    state.worker = registerIssueRecoveryWork(state.db, state.coordinator, {
-      stranded: async () => {}, orphanBlockers: async () => {}, recoveryActions: async () => {},
-      dependencies: async scope => { checked.push(scope.issueId); return { enqueueFailed: 0 }; }, locks: async () => {},
-      watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false,
-    }, () => true);
-    await state.worker.ready;
-    async function settleWork() {
-      for (let step = 0; step < 120; step++) {
-        await vi.advanceTimersByTimeAsync(1000);
-        await Promise.allSettled([...state.passes]); await immediate();
-        if (state.coordinator.nextWakeAt() === null && idleWorkSnapshot().active === 0) return;
-      }
-      throw new Error("Recovery did not settle its committed work within two virtual minutes");
-    }
+    await recordedRecovery({ dependencies: async scope => { checked.push(scope.issueId); return { enqueueFailed: 0 }; } });
     await settleWork();
     expect(checked).toEqual([ready.id]);
     checked.length = 0;
@@ -302,8 +281,10 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect(checked).toEqual([ready.id]);
     checked.length = 0;
     await issueService(state.db).update(openBlocker.id, { status: "done" });
-    await settleWork();
+    await settleWork({ backstopPending: true });
     expect(new Set(checked)).toEqual(new Set([ready.id, ...waiting.map(row => row.id)]));
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS);
+    await settleWork();
     await quiet();
   });
   it("uses ordinary watchdog configuration and subtree closure to dispatch a reusable review", async () => {

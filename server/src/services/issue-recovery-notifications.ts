@@ -5,7 +5,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./deliv
 /** An issue hint is reserved for local facts such as comments. Lifecycle,
  * graph, run and eligibility changes retain company scope because their
  * consequences can include ancestors and shared execution references. */
-export type IssueRecoveryScope = { companyId: string; issueId?: string; issueIds?: string[]; backstop?: true };
+export type IssueRecoveryScope = { companyId: string; issueId?: string; graphRunId?: string; graphIssueId?: string; backstop?: true;
+  issueIds?: string[]; wholeCompany?: boolean };
 
 export const ISSUE_RECOVERY_MAX_ISSUE_IDS = 100;
 export const ISSUE_RECOVERY_BACKSTOP_MS = 5 * 60_000;
@@ -33,15 +34,26 @@ export function issueRecoveryScopeMatches(entry: { id: string; companyId: string
   if (!scope) return true;
   if (entry.companyId !== scope.companyId) return false;
   if (scope.issueId) return entry.id === scope.issueId;
-  return scope.issueIds ? scope.issueIds.includes(entry.id) : true;
+  if (scope.graphRunId || scope.graphIssueId) return scope.wholeCompany === true || (scope.issueIds?.includes(entry.id) ?? false);
+  return true;
 }
 
 export async function notifyIssueGraphRecovery(transaction: object,
   scope: { companyId: string; runId?: string | null; issueId?: string | null }) {
   if (!scope.runId && !scope.issueId) return notifyIssueRecovery(transaction, { companyId: scope.companyId });
+  const companyHint = JSON.stringify({ companyId: scope.companyId });
+  for (const queue of COMPANY_QUEUES) await notifyDeliveryWork(transaction, queue, companyHint);
+  const graphHint = JSON.stringify({ companyId: scope.companyId, graphRunId: scope.runId ?? undefined, graphIssueId: scope.issueId ?? undefined });
+  for (const queue of TASK_QUEUES) {
+    await notifyDeliveryWork(transaction, queue, graphHint);
+    await notifyDeliveryWork(transaction, queue, JSON.stringify({ companyId: scope.companyId, backstop: true }));
+  }
+}
+
+export async function resolveIssueGraph(db: Db, scope: { companyId: string; runId?: string; issueId?: string }): Promise<string[] | null> {
   const company = sql`${scope.companyId}::uuid`;
   const run = scope.runId ? sql`${scope.runId}::uuid` : sql`null::uuid`;
-  const rows = await (transaction as Db).execute<{ id: string }>(sql`with seed(id) as (
+  const rows = await db.execute<{ id: string }>(sql`with seed(id) as (
       select id from issues where company_id = ${company} and id = ${scope.issueId ?? null}::uuid
       union select issue_id from heartbeat_runs where company_id = ${company} and id = ${run} and issue_id is not null
       union select native_issue_id from heartbeat_runs where company_id = ${company} and id = ${run} and native_issue_id is not null
@@ -57,13 +69,5 @@ export async function notifyIssueGraphRecovery(transaction: object,
         and issue_id in (select id from seed) limit ${ISSUE_RECOVERY_MAX_ISSUE_IDS + 1})
     ) select id::text as id from affected limit ${ISSUE_RECOVERY_MAX_ISSUE_IDS + 1}`);
   const issueIds = rows.map(row => row.id).sort();
-  if (!issueIds.length || issueIds.length > ISSUE_RECOVERY_MAX_ISSUE_IDS) {
-    return notifyIssueRecovery(transaction, { companyId: scope.companyId });
-  }
-  const companyHint = JSON.stringify({ companyId: scope.companyId });
-  for (const queue of COMPANY_QUEUES) await notifyDeliveryWork(transaction, queue, companyHint);
-  for (const queue of TASK_QUEUES) {
-    await notifyDeliveryWork(transaction, queue, JSON.stringify({ companyId: scope.companyId, issueIds }));
-    await notifyDeliveryWork(transaction, queue, JSON.stringify({ companyId: scope.companyId, backstop: true }));
-  }
+  return issueIds.length && issueIds.length <= ISSUE_RECOVERY_MAX_ISSUE_IDS ? issueIds : null;
 }

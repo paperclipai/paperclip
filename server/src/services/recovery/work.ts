@@ -3,7 +3,7 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from 
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
-import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryScopeMatches, type IssueRecoveryScope }
+import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
   from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
@@ -40,12 +40,28 @@ export function registerIssueRecoveryWork(
         ? Math.max(completedAt.get("*") ?? 0, completedAt.get(scope.companyId) ?? 0) + (options.backstopMs ?? ISSUE_RECOVERY_BACKSTOP_MS)
         : null,
       loaded(scope: IssueRecoveryScope | undefined, complete: boolean) {
-        if (complete && !scope?.issueId && !scope?.issueIds) completedAt.set(scope?.companyId ?? "*", Date.now());
+        if (complete && !scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) completedAt.set(scope?.companyId ?? "*", Date.now());
       },
     };
   }
   const reconstructionIntervalMs = (scope: IssueRecoveryScope | undefined) => scope?.backstop ? 0 : 30_000;
-  const scopeKey = (scope: IssueRecoveryScope | undefined) => scope ? JSON.stringify(scope) : "*";
+  const scopeKey = (scope: IssueRecoveryScope | undefined) => scope
+    ? JSON.stringify([scope.companyId, scope.issueId, scope.graphRunId, scope.graphIssueId, scope.backstop]) : "*";
+  const isGraph = (scope: IssueRecoveryScope | undefined) => Boolean(scope?.graphRunId || scope?.graphIssueId);
+  const graphs = new Map<string, { at: number; ids: Promise<string[] | null> }>();
+  async function resolveGraph(scope: IssueRecoveryScope | undefined) {
+    if (!scope || !isGraph(scope)) return;
+    const key = scopeKey(scope);
+    for (const [other, cached] of graphs) if (cached.at < Date.now() - 2_000) graphs.delete(other);
+    let cached = graphs.get(key);
+    if (!cached) {
+      cached = { at: Date.now(), ids: resolveIssueGraph(db, { companyId: scope.companyId, runId: scope.graphRunId, issueId: scope.graphIssueId }) };
+      graphs.set(key, cached);
+    }
+    const ids = await cached.ids.catch(error => { graphs.delete(key); throw error; });
+    scope.issueIds = ids ?? undefined;
+    scope.wholeCompany = ids === null;
+  }
   function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>, eligible?: SQL) {
     const cursors = new Map<string, string>();
     const passes = fullPasses();
@@ -60,6 +76,7 @@ export function registerIssueRecoveryWork(
       load: async scope => {
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
+        await resolveGraph(scope);
         const cursor = cursors.get(key);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
           scope ? eq(issues.companyId, scope.companyId) : undefined,
@@ -107,6 +124,7 @@ export function registerIssueRecoveryWork(
       load: async scope => {
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
+        await resolveGraph(scope);
         const rows = await sweep.listSuspects(scope ? { companyId: scope.companyId, issueId: scope.issueId,
           issueIds: scope.issueIds } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
