@@ -36,6 +36,9 @@ const MODERN_ERROR_CODES = new Set([MCP_ERROR_HEADER_MISMATCH, MCP_ERROR_MISSING
 export const MCP_TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks";
 const MCP_TASK_METHODS = new Set(["tasks/get", "tasks/update", "tasks/cancel"]);
 
+/** MCP OAuth Client Credentials extension; declared only by connections that use machine sign-in. */
+export const MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID = "io.modelcontextprotocol/oauth-client-credentials";
+
 const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
@@ -54,7 +57,7 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * they may then return URL input requests, which Paperclip shows as a link.
  * Legacy sessions keep the handshake capabilities they have always received.
  */
-export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean; elicitationForm?: boolean } = {}): Record<string, unknown> {
+export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean } = {}): Record<string, unknown> {
   const version: string = protocolVersion;
   // The skills and tasks extensions are defined against stateless MCP only.
   // Tasks are declared only where Paperclip can wait on one: a provider tool
@@ -66,6 +69,7 @@ export function mcpClientCapabilities(protocolVersion: string, options: { declar
     return { elicitation: options.elicitationForm ? { form: {}, url: {} } : { url: {} }, extensions: {
       ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
       ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
+      ...(options.declareClientCredentials ? { [MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID]: {} } : {}),
     } };
   }
   // 2025-06-18 knows only form questions (`{}`); 2025-11-25 added URL mode.
@@ -209,7 +213,7 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; progressToken?: string } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean; progressToken?: string } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
@@ -222,7 +226,7 @@ export function mcpHttpRequestInit(
       _meta: {
         ...record(params._meta),
         [META_PROTOCOL_VERSION]: protocolVersion,
-        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks, elicitationForm: options.elicitationForm }),
+        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks, elicitationForm: options.elicitationForm, declareClientCredentials: options.declareClientCredentials }),
         [META_CLIENT_INFO]: MCP_CLIENT_INFO,
       },
     };
