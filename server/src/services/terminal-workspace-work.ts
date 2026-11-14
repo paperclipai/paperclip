@@ -36,6 +36,7 @@ export function registerTerminalWorkspaceWork(
     nextTerminalWorkspaceSweepAt(): Promise<number | null>;
     hasTerminalWorkspaceSweepContinuation(): boolean;
     terminalWorkspaceWorkSettled?(hints?: ReadonlySet<string>, options?: { targeted?: boolean }): void;
+    takeDueTerminalWorkspaceTargets?(): { workspaceIds: string[]; rotation: boolean };
   },
   canRun: () => boolean,
 ) {
@@ -70,9 +71,21 @@ export function registerTerminalWorkspaceWork(
       next = Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
       const startup = !startupSweepStarted;
       startupSweepStarted = true;
+      let dueRotation = due;
+      if (due && !startup && service.takeDueTerminalWorkspaceTargets) {
+        const dueTargets = service.takeDueTerminalWorkspaceTargets();
+        dueRotation = dueTargets.rotation;
+        for (const id of dueTargets.workspaceIds) targetWorkspaceIds.add(id);
+        if (targetWorkspaceIds.size + targetIssueIds.size > MAX_TERMINAL_WORKSPACE_TARGETS) {
+          dueRotation = true;
+          targetWorkspaceIds.clear(); targetIssueIds.clear();
+        }
+      }
       const options = { compact: !startup, allowRemoteDeliveryChecks: !startup };
       const targeted = targetWorkspaceIds.size + targetIssueIds.size > 0;
-      if (startup || due || rotationRequested || !targeted
+      if (due && service.takeDueTerminalWorkspaceTargets && !startup && !dueRotation && !targeted && !rotationRequested
+        && !service.hasTerminalWorkspaceSweepContinuation()) return { checked: 0 };
+      if (startup || dueRotation || rotationRequested || !targeted
         || (service.hasTerminalWorkspaceSweepContinuation() && Date.now() >= lastRotationPageAt + 1000)) {
         rotationRequested = false;
         lastRotationPageAt = Date.now();
