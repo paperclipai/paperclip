@@ -2,12 +2,46 @@ import { describe, expect, it } from "vitest";
 import {
   buildIssueReferenceHref,
   extractIssueReferenceIdentifiers,
+  extractIssueReferenceMatches,
   findIssueReferenceMatches,
   normalizeIssueIdentifier,
   parseIssueReferenceHref,
 } from "./issue-references.js";
 
 describe("issue references", () => {
+  it.each([findIssueReferenceMatches, extractIssueReferenceMatches, extractIssueReferenceIdentifiers])(
+    "scans long alphanumeric runs promptly with %s",
+    (extract) => {
+      const markdown = `${"a1".repeat(80_000)}\nPAP-1`;
+      const startedAt = performance.now();
+      expect(extract(markdown)).toHaveLength(1);
+      expect(performance.now() - startedAt).toBeLessThan(1500);
+    },
+  );
+
+  it.each(["/issues/PAP-1", "https://x.test/issues/PAP-1"])(
+    "trims long unmatched bracket suffixes promptly from %s",
+    (path) => {
+      const startedAt = performance.now();
+      expect(extractIssueReferenceMatches(path + "]".repeat(160_000))).toEqual([
+        { index: 0, length: path.length, identifier: "PAP-1", matchedText: path },
+      ]);
+      expect(performance.now() - startedAt).toBeLessThan(1500);
+    },
+  );
+
+  it("preserves references embedded in alphanumeric runs and balanced path brackets", () => {
+    expect(findIssueReferenceMatches("12pap-5 PAP-1PAP-2")).toEqual([
+      { index: 2, length: 5, identifier: "PAP-5", matchedText: "pap-5" },
+      { index: 8, length: 5, identifier: "PAP-1", matchedText: "PAP-1" },
+      { index: 13, length: 5, identifier: "PAP-2", matchedText: "PAP-2" },
+    ]);
+    const path = "/issues/PAP-1?q=[value]";
+    expect(findIssueReferenceMatches(`${path}].!`)).toEqual([
+      { index: 0, length: path.length, identifier: "PAP-1", matchedText: path },
+    ]);
+  });
+
   it("normalizes identifiers to uppercase", () => {
     expect(normalizeIssueIdentifier("pap-123")).toBe("PAP-123");
     expect(normalizeIssueIdentifier("pc1a2-7")).toBe("PC1A2-7");

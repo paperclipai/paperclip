@@ -74,20 +74,33 @@ function stripMarkdownCode(markdown: string): string {
 }
 
 function trimTrailingPunctuation(token: string): string {
-  let trimmed = token;
-  while (trimmed.length > 0) {
-    const last = trimmed[trimmed.length - 1]!;
+  let openParens = 0;
+  let closeParens = 0;
+  let openBrackets = 0;
+  let closeBrackets = 0;
+  for (const character of token) {
+    if (character === "(") openParens += 1;
+    else if (character === ")") closeParens += 1;
+    else if (character === "[") openBrackets += 1;
+    else if (character === "]") closeBrackets += 1;
+  }
+
+  let end = token.length;
+  while (end > 0) {
+    const last = token[end - 1]!;
     if (!".,!?;:".includes(last) && last !== ")" && last !== "]") break;
 
     if (
-      (last === ")" && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0))
-      || (last === "]" && (trimmed.match(/\[/g)?.length ?? 0) >= (trimmed.match(/\]/g)?.length ?? 0))
+      (last === ")" && openParens >= closeParens)
+      || (last === "]" && openBrackets >= closeBrackets)
     ) {
       break;
     }
-    trimmed = trimmed.slice(0, -1);
+    if (last === ")") closeParens -= 1;
+    else if (last === "]") closeBrackets -= 1;
+    end -= 1;
   }
-  return trimmed;
+  return token.slice(0, end);
 }
 
 function sha256Hex(value: string): string {
