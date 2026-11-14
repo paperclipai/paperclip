@@ -3,6 +3,7 @@ import type { PermissionKey } from "@paperclipai/shared";
 /** Domain actions use the ordinary grant evaluator, including its user ceiling. */
 export const CONNECTION_MANAGEMENT_PERMISSIONS = {
   "connections:read": "tools:manage_connections",
+  "connections:remove": "tools:manage_connections",
   "connections:configure": "tools:manage_connections",
   "connections:profiles": "tools:manage_profiles",
   "connections:gateway": "tools:manage_connections",
