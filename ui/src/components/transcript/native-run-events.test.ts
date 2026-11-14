@@ -1523,6 +1523,63 @@ describe("edit diffs", () => {
   });
 });
 
+describe("assistant progress messages that share one streamed item", () => {
+  const ITEM = "acpx-assistant-turn-1";
+  const delta = (seq: number, messageId: string, text: string) =>
+    itemEvent(seq, "item.delta", ITEM, {
+      kind: "agentMessage",
+      channel: "unknown",
+      text,
+      update: { kind: "agentMessage", channel: "progress", providerItemId: messageId, text, delta: text },
+    });
+  const toolStarted = (seq: number) =>
+    event(seq, "tool.execution.started", {
+      schema: "paperclip.tool.execution.v1",
+      executionId: `exec-${seq}`,
+      transport: "process",
+      operation: "execute",
+      name: "rg wars",
+      status: "running",
+      output: null,
+      outputBytes: 0,
+      outputTruncated: false,
+      outputDigest: null,
+    });
+  const messages = (events: HeartbeatRunEvent[]) =>
+    transcriptToTaskChatItems(nativeRunEventsToTranscript(events), {
+      runId: RUN_ID,
+      agentName: "Engineer",
+      running: true,
+    }).flatMap((item) => (item.kind === "message" ? [item.text] : []));
+
+  it("starts each provider message on a new paragraph in the conversation-only view", () => {
+    expect(messages([
+      delta(1, "msg_a", "Reading the cor"),
+      delta(2, "msg_a", "p lists."),
+      delta(3, "msg_b", "Still reading:"),
+      delta(4, "msg_b", " next is the registry."),
+      delta(5, "msg_c", "\nContext gathered."),
+    ])).toEqual([
+      "Reading the corp lists.\n\nStill reading: next is the registry.\nContext gathered.",
+    ]);
+  });
+
+  it("keeps messages that a tool call separates as their own rows without extra breaks", () => {
+    expect(messages([
+      delta(1, "msg_a", "Reading the corp lists."),
+      toolStarted(2),
+      delta(3, "msg_b", "Still reading."),
+    ])).toEqual(["Reading the corp lists.", "Still reading."]);
+  });
+
+  it("joins deltas without a provider message id as before", () => {
+    expect(messages([
+      itemEvent(1, "item.delta", ITEM, { kind: "agentMessage", channel: "progress", text: "Reading" }),
+      itemEvent(2, "item.delta", ITEM, { kind: "agentMessage", channel: "progress", text: " the code." }),
+    ])).toEqual(["Reading the code."]);
+  });
+});
+
 describe("an OpenCode reply settled from an answer and a closing line", () => {
   it("shows the saved reply once, without the answer repeated as progress", () => {
     const answer = "Two inbox items need you: [COM-2](/COM/issues/COM-2) and [COM-1](/COM/issues/COM-1).";
