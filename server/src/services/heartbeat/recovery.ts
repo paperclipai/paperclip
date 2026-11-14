@@ -594,9 +594,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       activeRuns: snapshotRuns,
       capturedAt: now,
     });
-    abort?.throwIfAborted();
-
     for (const { run } of activeRuns) {
+      abort?.throwIfAborted();
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",

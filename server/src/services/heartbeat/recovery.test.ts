@@ -1588,6 +1588,37 @@ describePostgres("heartbeat recovery module ownership", () => {
     }
   });
 
+  it("records no more hot-restart run events after the preparation times out during its first event", async () => {
+    const runs = [await seedOwnedNativeRun(), await seedOwnedNativeRun(), await seedOwnedNativeRun()];
+    const deps = callbacks(db), recovery = createHeartbeatRecovery(db, deps);
+    hotRestart.read.mockResolvedValue({ version: 1, requestedAt: new Date().toISOString(), previousServerPid: process.pid,
+      previousServerVersion: null, drainRequired: false, requestedByRunId: null, preflightActiveRunIds: [] });
+    let finishFirstEvent!: () => void;
+    const firstEvent = new Promise<undefined>(resolve => { finishFirstEvent = () => resolve(undefined); });
+    deps.appendRunEvent.mockImplementationOnce(() => firstEvent);
+    const hotRestartEvents = () => deps.appendRunEvent.mock.calls
+      .filter(([, event]) => event.message.startsWith("Hot restart requested")).length;
+    let preparation: ReturnType<typeof recovery.prepareHotRestartShutdown> | undefined;
+    try {
+      const step = await runBoundedShutdownStep({ step: "hot_restart_prepare", signal: "SIGTERM", timeoutMs: 2_000,
+        log: { info: vi.fn(), error: vi.fn() },
+        run: abort => (preparation = recovery.prepareHotRestartShutdown("SIGTERM", new Date(), abort)) });
+      expect(step.outcome).toBe("timed_out");
+      expect(hotRestartEvents()).toBe(1);
+      const runIds = runs.map(run => run.id);
+      expect((await recovery.drainRunningRunsForShutdown("SIGTERM", new Date(), runIds)).restartSuspendedRunIds.sort())
+        .toEqual([...runIds].sort());
+      finishFirstEvent();
+      await expect(preparation).rejects.toThrow("timed out");
+      expect(hotRestartEvents()).toBe(1);
+      expect(native.detach).toHaveBeenCalledTimes(runs.length);
+    } finally {
+      finishFirstEvent?.();
+      await preparation?.catch(() => undefined);
+      for (const run of runs) await removeNativeRun(run.id);
+    }
+  });
+
   it("does not dispatch recovery for a run still preparing in this heartbeat process", async () => {
     const run = await seedRun();
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
