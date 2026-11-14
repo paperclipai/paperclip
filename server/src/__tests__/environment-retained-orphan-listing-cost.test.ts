@@ -257,7 +257,7 @@ suite("retained orphan sandbox listing cost", () => {
     const query = db.select({ id: environmentLeases.id }).from(environmentLeases)
       .where(releasableRetainedOrphanCondition()).orderBy(asc(environmentLeases.id)).limit(201).offset(0).toSQL();
     const rows = await db.$client.unsafe(`explain (analyze, format json) ${query.sql}`, query.params as never[]);
-    return (rows[0] as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan;
+    return (rows[0] as unknown as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan;
   }
 
   it("reads heartbeat runs only for retained orphan candidates, not for the whole lease history", async () => {
