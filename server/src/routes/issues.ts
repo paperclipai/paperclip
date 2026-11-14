@@ -295,6 +295,7 @@ import {
 } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
+import { limitIssueRelatedWork } from "../services/issue-references.js";
 import {
   assertBoard,
   assertCompanyAccess,
@@ -10222,7 +10223,7 @@ export function issueRoutes(
       stalledDependencies,
       blockedBy: visibleRelations.blockedBy,
       blocks: visibleRelations.blocks,
-      relatedWork: visibleReferenceSummary,
+      relatedWork: limitIssueRelatedWork(visibleReferenceSummary),
       referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
       project: compactIssueProject(visibleProject),

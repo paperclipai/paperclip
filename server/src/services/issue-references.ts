@@ -445,3 +445,40 @@ export function issueReferenceService(db: Db) {
     emptySummary,
   };
 }
+
+export const ISSUE_RELATED_WORK_MAX_ITEMS = 50;
+export const ISSUE_RELATED_WORK_MAX_SOURCES = 5;
+
+export type LimitedIssueRelatedWork<TItem> = {
+  outbound: TItem[];
+  inbound: TItem[];
+  outboundTotal: number;
+  inboundTotal: number;
+  truncated: boolean;
+};
+
+export function limitIssueRelatedWork<TItem extends object = IssueRelatedWorkItem>(
+  summary: { outbound: TItem[]; inbound: TItem[] },
+  maxItems = ISSUE_RELATED_WORK_MAX_ITEMS,
+  maxSources = ISSUE_RELATED_WORK_MAX_SOURCES,
+): LimitedIssueRelatedWork<TItem> {
+  let truncated = false;
+  const limit = (items: TItem[]): TItem[] => {
+    if (items.length > maxItems) truncated = true;
+    return items.slice(0, maxItems).map((item) => {
+      const sources = (item as { sources?: unknown }).sources;
+      if (!Array.isArray(sources) || sources.length <= maxSources) return item;
+      truncated = true;
+      return { ...item, sources: sources.slice(0, maxSources) };
+    });
+  };
+  const outbound = limit(summary.outbound);
+  const inbound = limit(summary.inbound);
+  return {
+    outbound,
+    inbound,
+    outboundTotal: summary.outbound.length,
+    inboundTotal: summary.inbound.length,
+    truncated,
+  };
+}
