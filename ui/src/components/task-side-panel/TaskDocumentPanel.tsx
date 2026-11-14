@@ -4,6 +4,7 @@ import type { IssueDocument } from "@paperclipai/shared";
 import { FileQuestion, Loader2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { IssueDocumentDeleteButton } from "@/components/IssueDocumentDeleteButton";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { DocumentMarkdownBody } from "@/components/DocumentMarkdownBody";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -18,6 +19,8 @@ export function TaskDocumentPanel({
   revisionId,
   documentIssueId,
   currentIssueId = issueId,
+  canDeleteDocuments = false,
+  onDeleted,
 }: {
   issueId: string;
   documentKey: string;
@@ -25,6 +28,8 @@ export function TaskDocumentPanel({
   revisionId?: string;
   documentIssueId?: string;
   currentIssueId?: string;
+  canDeleteDocuments?: boolean;
+  onDeleted?: (documentKey: string) => void;
 }) {
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -79,9 +84,10 @@ export function TaskDocumentPanel({
 
   return (
     <article className="space-y-4">
-      <header className="space-y-1">
-        <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
-        <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
+          <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
           <span aria-hidden>·</span>
           <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
@@ -91,7 +97,16 @@ export function TaskDocumentPanel({
             panelOpen={annotationPanelOpen}
             onToggle={() => setAnnotationPanelOpen((open) => !open)}
           /> : <span>· Reviewed version</span>}
+          </div>
         </div>
+        {!revisionId && issueId === currentIssueId ? (
+          <IssueDocumentDeleteButton
+            issueId={issueId}
+            document={document}
+            canDeleteDocuments={canDeleteDocuments}
+            onDeleted={onDeleted}
+          />
+        ) : null}
       </header>
       {document.body.trim() ? (
         <IssueDocumentAnnotations
