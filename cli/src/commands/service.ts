@@ -9,7 +9,7 @@ import { ensureServiceShim } from "../onboard-service.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 
 type CommonOptions = { instance?: string; json?: boolean };
-type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
+export type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
 
 function output(value: unknown, json: boolean | undefined): void {
   if (json) console.log(JSON.stringify(value, null, 2));
@@ -40,11 +40,29 @@ async function probeHealth(instanceId: string): Promise<HealthResult> {
   }
 }
 
-async function waitForHealth(instanceId: string, expectedVersion: string | null, timeoutMs = 60_000): Promise<HealthResult> {
-  const deadline = Date.now() + timeoutMs;
+export async function readRestartReportVersion(instanceId: string, requestedAt: string): Promise<string | null> {
+  try {
+    const report = JSON.parse(await fs.readFile(path.join(resolvePaperclipInstanceRoot(instanceId), "hot-restart-report.json"), "utf8")) as { requestedAt?: unknown; newServerVersion?: unknown };
+    return report.requestedAt === requestedAt && typeof report.newServerVersion === "string" ? report.newServerVersion : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function waitForHealth(
+  instanceId: string,
+  expectedVersion: string | null,
+  options: { timeoutMs?: number; requestedAt?: string; probe?: (instanceId: string) => Promise<HealthResult> } = {},
+): Promise<HealthResult> {
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+  const probe = options.probe ?? probeHealth;
   let last: HealthResult = { ok: false, serverVersion: null };
   while (Date.now() < deadline) {
-    last = await probeHealth(instanceId);
+    last = await probe(instanceId);
+    if (last.ok && last.serverVersion === null && expectedVersion && options.requestedAt) {
+      const reported = await readRestartReportVersion(instanceId, options.requestedAt);
+      if (reported) last = { ...last, serverVersion: reported };
+    }
     if (last.ok && (!expectedVersion || last.serverVersion === expectedVersion)) return last;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -158,7 +176,7 @@ export async function restartManagedService(input: { instanceId?: string; expect
     const before = await detection.manager.status();
     const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
     await detection.manager.restart();
-    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
+    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion), { requestedAt: intent.requestedAt });
     return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
   });
 }
