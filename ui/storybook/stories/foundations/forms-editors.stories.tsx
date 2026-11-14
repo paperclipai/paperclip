@@ -173,6 +173,53 @@ const adapterSchema: JsonSchemaNode = {
   },
 };
 
+const backendsSchema: JsonSchemaNode = {
+  type: "object",
+  properties: {
+    backends: {
+      type: "array",
+      title: "Backends",
+      description: "Model servers the plugin routes runs to.",
+      "x-paperclip-itemLabel": "name",
+      "x-paperclip-itemSummary": ["type", "baseUrl", "key"],
+      items: {
+        type: "object",
+        required: ["id", "type", "baseUrl"],
+        properties: {
+          id: { type: "string", title: "ID" },
+          name: { type: "string", title: "Name" },
+          type: { type: "string", title: "Type", enum: ["litellm", "ollama", "llama-server", "openai"] },
+          baseUrl: { type: "string", title: "Base URL" },
+          key: { title: "API key", format: "secret-ref" },
+          prefix: { type: "string", title: "Model prefix" },
+          slots: { type: "integer", title: "Slots", minimum: 1 },
+          header: { type: "string", title: "Auth header" },
+          scheme: { type: "string", title: "Auth scheme" },
+        },
+      },
+    },
+  },
+};
+
+const backendsValues = {
+  backends: [
+    {
+      id: "litellm",
+      name: "LiteLLM proxy",
+      type: "litellm",
+      baseUrl: "https://ai.example.com",
+      key: "secret:litellm-master-key",
+      prefix: "litellm/",
+      slots: 8,
+      header: "Authorization",
+      scheme: "Bearer",
+    },
+    { id: "vm", name: "GPU VM", type: "llama-server", baseUrl: "http://10.0.0.5:8080", prefix: "vm/", slots: 1 },
+    { id: "mbp", name: "MacBook Pro", type: "ollama", baseUrl: "http://mbp.local:11434", prefix: "mbp/", slots: 4 },
+    { id: "spare", type: "openai", baseUrl: "https://api.example.net/v1", key: "secret:spare-key", slots: 2 },
+  ],
+};
+
 const validAdapterValues = {
   ...getDefaultValues(adapterSchema),
   adapterName: "Codex",
@@ -440,6 +487,22 @@ function JsonSchemaFormGallery() {
   );
 }
 
+function JsonSchemaFormArrayEntries() {
+  const [values, setValues] = useState<Record<string, unknown>>(backendsValues);
+
+  return (
+    <Section
+      eyebrow="JsonSchemaForm"
+      title="Arrays of objects"
+      description="Entries start collapsed to a one-line summary labeled from x-paperclip-itemLabel. An open entry lays its fields out two per row."
+    >
+      <div className="max-w-3xl">
+        <JsonSchemaForm schema={backendsSchema} values={values} onChange={setValues} />
+      </div>
+    </Section>
+  );
+}
+
 function InlineEditorGallery() {
   const [title, setTitle] = useState("Storybook: Forms & Editors stories");
   const [description, setDescription] = useState(
@@ -660,6 +723,7 @@ function FormsEditorsShowcase() {
       <MarkdownEditorGallery />
       <MarkdownBodyGallery />
       <JsonSchemaFormGallery />
+      <JsonSchemaFormArrayEntries />
       <InlineEditorGallery />
       <EnvironmentVariablesEditorGallery />
       <ScheduleEditorGallery />
@@ -741,6 +805,11 @@ type Story = StoryObj<typeof meta>;
 export const AllFormsAndEditors: Story = {
   name: "All Forms And Editors",
   render: () => <FormsEditorsShowcase />,
+};
+
+export const JsonSchemaFormArrays: Story = {
+  name: "JsonSchemaForm Array Entries",
+  render: () => <JsonSchemaFormArrayEntries />,
 };
 
 export const RoutineRunVariablesDialogOpen: Story = {
