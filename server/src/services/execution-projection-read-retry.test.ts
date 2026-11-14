@@ -42,6 +42,7 @@ function fixture(options: {
       const query = {
         where(value: SQL) { condition = value; return query; },
         innerJoin() { return query; },
+        leftJoinLateral() { return query; },
         orderBy(...values: SQL[]) { order = values; return query; },
         limit() { return query; },
         then(resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) {

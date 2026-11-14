@@ -15,6 +15,7 @@ import {
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { heartbeatRunContextSnapshotOnce, heartbeatRunJsonOnce, heartbeatRunResultJsonOnce } from "./heartbeat-run-json.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
@@ -46,14 +47,14 @@ const executionRunColumns = {
   startedAt: heartbeatRuns.startedAt,
   status: heartbeatRuns.status,
   contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-    'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
-    'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
-    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
-    'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
+    'issueId', ${heartbeatRunContextSnapshotOnce}->'issueId',
+    'wakeReason', ${heartbeatRunContextSnapshotOnce}->'wakeReason',
+    'failureRetriesBeforeAiConnectionWait', ${heartbeatRunContextSnapshotOnce}->'failureRetriesBeforeAiConnectionWait',
+    'failureRetriesBeforeWorkspaceWait', ${heartbeatRunContextSnapshotOnce}->'failureRetriesBeforeWorkspaceWait',
+    'executionRetryAccounting', ${heartbeatRunContextSnapshotOnce}->'executionRetryAccounting')`,
   resultJson: sql<Record<string, unknown>>`jsonb_build_object(
-    'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
-    'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
+    'finalizationPhase', ${heartbeatRunResultJsonOnce}->'finalizationPhase',
+    'finalizationReasonCode', ${heartbeatRunResultJsonOnce}->'finalizationReasonCode')`,
 };
 type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -84,6 +85,7 @@ export async function executionProjectionsForRuns(
   const runs = await read(async () => db
     .select(executionRunColumns)
     .from(heartbeatRuns)
+    .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
     .where(
       and(
         eq(heartbeatRuns.companyId, companyId),

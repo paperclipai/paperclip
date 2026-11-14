@@ -35,6 +35,7 @@ function readingDatabase(serverEncoding: string, ...results: unknown[][]) {
     const query = {
       from: () => query,
       leftJoin: () => query,
+      leftJoinLateral: () => query,
       where: (condition: SQL) => {
         scopes.push(new PgDialect().sqlToQuery(condition).params);
         return query;
