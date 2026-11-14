@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { eq } from "drizzle-orm";
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../../../services/delivery-work-coordinator.js";
 import { createDb, closeRegisteredClients, authUsers, agents } from "@paperclipai/db";
 import { prepareOwnedLinuxDistribution } from "./normal-distribution-bootstrap.js";
 import { heartbeatService } from "../../../services/heartbeat.js";
@@ -99,7 +100,7 @@ export async function startNormalDotAppGeneration(input: {
     const address=appServer.address();assert(address&&typeof address!=="string");
     const origin=`http://127.0.0.1:${address.port}`;
     Object.assign(process.env,{PAPERCLIP_API_URL:origin,PAPERCLIP_RUNTIME_API_URL:origin,PAPERCLIP_LISTEN_HOST:"127.0.0.1",PAPERCLIP_LISTEN_PORT:String(address.port)});
-    const coordinator=app.locals.deliveryWork;assert(coordinator&&typeof coordinator.register==="function");
+    const coordinator:ReturnType<typeof createDeliveryWorkCoordinator>=app.locals.deliveryWork;assert(coordinator&&typeof coordinator.register==="function");
     const normalOwner=heartbeatService(db,{pluginWorkerManager:linuxBootstrap.workerManager});owner=normalOwner;
     const canRun=()=>{
       const taskDrain=isIdleTaskDrainActive(),warmStandby=taskDrain?null:standby();
@@ -113,7 +114,7 @@ export async function startNormalDotAppGeneration(input: {
         run:async signal=>{recordNative("run_enter");try{const value=await task.run(signal);recordNative("run_fulfilled");return value;}
           catch(error){recordNative("run_rejected");throw error;}},
         hasPending:async allowed=>{const pending=await task.hasPending(allowed);recordNative("has_pending",pending);return pending;},
-        ...(task.onSettled?{onSettled:(hints?:ReadonlySet<string>)=>{recordNative("settled",hints?.size??0);task.onSettled!(hints);}}:{}),
+        ...(task.onSettled?{onSettled:(hints?:ReadonlySet<string>)=>{recordNative("settled",hints?.size??0);return task.onSettled!(hints);}}:{}),
         ...(task.nextRunAt?{nextRunAt:()=>{const at=task.nextRunAt!();recordNative("next_run_at",at);return at;}}:{}),
       });
     }};
