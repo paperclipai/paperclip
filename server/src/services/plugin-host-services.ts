@@ -70,9 +70,12 @@ import {
   preparePluginLocalFolder,
   readPluginLocalFolderText,
   requireLocalFolderDeclaration,
-  setStoredLocalFolder,
   writePluginLocalFolderTextAtomic,
 } from "./plugin-local-folders.js";
+import {
+  buildApprovedPrivateNetworkHostSet,
+  getStoredPrivateNetworkHosts,
+} from "./plugin-private-network.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
@@ -174,7 +177,10 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+export async function validateAndResolveFetchUrl(
+  urlString: string,
+  approvedPrivateNetworkHosts?: Set<string>,
+): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -214,13 +220,14 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
-    if (safeResults.length === 0) {
+    const isApprovedPrivateNetworkHost = approvedPrivateNetworkHosts?.has(originalHostname.toLowerCase()) ?? false;
+    if (safeResults.length === 0 && !isApprovedPrivateNetworkHost) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
       );
     }
 
-    const resolved = safeResults[0]!;
+    const resolved = (safeResults.length > 0 ? safeResults : results)[0]!;
     return {
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
@@ -1024,6 +1031,15 @@ export function buildHostServices(
       storedConfig: await getStoredLocalFolderConfig(companyId, folderKey),
     });
 
+  const getApprovedPrivateNetworkHosts = async (companyId: string | undefined): Promise<Set<string>> => {
+    if (!companyId) return new Set();
+    if (!options.manifest?.capabilities?.includes("http.outbound.private-network")) return new Set();
+    await ensurePluginAvailableForCompany(companyId);
+    const settings = await registry.getCompanySettings(pluginId, companyId);
+    const storedHosts = getStoredPrivateNetworkHosts(settings?.settingsJson);
+    return buildApprovedPrivateNetworkHostSet(options.manifest.privateNetworkHosts, storedHosts);
+  };
+
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
     companyId: string,
@@ -1656,17 +1672,20 @@ export function buildHostServices(
           },
         });
 
-        const nextSettings = setStoredLocalFolder(existing?.settingsJson, params.folderKey, {
-          path: params.path,
-          access: status.access,
-          requiredDirectories: status.requiredDirectories,
-          requiredFiles: status.requiredFiles,
-        });
-        await registry.upsertCompanySettings(pluginId, companyId, {
-          enabled: existing?.enabled ?? true,
-          settingsJson: nextSettings,
-          lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
-        });
+        await registry.patchCompanySettingsEntry(
+          pluginId,
+          companyId,
+          "localFolders",
+          params.folderKey,
+          {
+            path: params.path,
+            access: status.access,
+            requiredDirectories: status.requiredDirectories,
+            requiredFiles: status.requiredFiles,
+            updatedAt: new Date().toISOString(),
+          },
+          { lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; ") },
+        );
         return status;
       },
 
@@ -1787,9 +1806,9 @@ export function buildHostServices(
 
     http: {
       async fetch(params) {
-        // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
+        const approvedPrivateNetworkHosts = await getApprovedPrivateNetworkHosts(params.companyId);
+        const target = await validateAndResolveFetchUrl(params.url, approvedPrivateNetworkHosts);
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);

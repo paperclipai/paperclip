@@ -99,6 +99,45 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(projectsList).not.toHaveBeenCalled();
   });
 
+  it("rejects an http.fetch companyId that does not match the host invocation scope", async () => {
+    const httpFetch = vi.fn(async () => ({ status: 200, statusText: "OK", headers: {}, body: "" }));
+    const services = {
+      http: { fetch: httpFetch },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["http.outbound"],
+      services,
+    });
+
+    await expect(
+      handlers["http.fetch"](
+        { url: "http://ha.tieredint.com", companyId: "company-b" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(httpFetch).not.toHaveBeenCalled();
+  });
+
+  it("allows http.fetch without a companyId regardless of invocation scope (unaffected by the allowlist feature)", async () => {
+    const httpFetch = vi.fn(async () => ({ status: 200, statusText: "OK", headers: {}, body: "" }));
+    const services = {
+      http: { fetch: httpFetch },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["http.outbound"],
+      services,
+    });
+
+    await expect(
+      handlers["http.fetch"]({ url: "http://example.com" }),
+    ).resolves.toEqual({ status: 200, statusText: "OK", headers: {}, body: "" });
+    expect(httpFetch).toHaveBeenCalledWith({ url: "http://example.com" });
+  });
+
   it("filters companies.list to the current invocation company", async () => {
     const services = {
       companies: {
