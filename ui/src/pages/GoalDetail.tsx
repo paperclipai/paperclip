@@ -81,17 +81,15 @@ export function GoalDetail() {
   }, [goal?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   const updateGoal = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      goalsApi.update(goalId!, data),
-    onSuccess: () => {
+    mutationFn: (variables: { goalId: string; companyId: string; data: Record<string, unknown> }) =>
+      goalsApi.update(variables.goalId, variables.data),
+    onSuccess: (_updatedGoal, variables) => {
       queryClient.invalidateQueries({
-        queryKey: queryKeys.goals.detail(goalId!)
+        queryKey: queryKeys.goals.detail(variables.goalId)
       });
-      if (resolvedCompanyId) {
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(resolvedCompanyId)
-        });
-      }
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.goals.list(variables.companyId)
+      });
     }
   });
 
@@ -126,7 +124,7 @@ export function GoalDetail() {
       openPanel(
         <GoalProperties
           goal={goal}
-          onUpdate={(data) => updateGoal.mutate(data)}
+          onUpdate={(data) => updateGoal.mutate({ goalId: goal.id, companyId: goal.companyId, data })}
         />
       );
     }
@@ -156,15 +154,39 @@ export function GoalDetail() {
         </div>
 
         <InlineEditor
+          key={"goal:" + goal.id + ":title"}
           value={goal.title}
-          onSave={(title) => updateGoal.mutate({ title })}
+          draftKey={"goal:" + goal.id + ":title"}
+          readCurrentValue={async () =>
+            (await goalsApi.get(goal.id, {
+              fresh: true,
+              cache: "no-store",
+            })).title
+          }
+          onSave={(title) => updateGoal.mutateAsync({
+            goalId: goal.id,
+            companyId: goal.companyId,
+            data: { title },
+          })}
           as="h2"
           className="text-xl font-bold"
         />
 
         <InlineEditor
+          key={"goal:" + goal.id + ":description"}
           value={goal.description ?? ""}
-          onSave={(description) => updateGoal.mutate({ description })}
+          draftKey={"goal:" + goal.id + ":description"}
+          readCurrentValue={async () =>
+            (await goalsApi.get(goal.id, {
+              fresh: true,
+              cache: "no-store",
+            })).description ?? ""
+          }
+          onSave={(description) => updateGoal.mutateAsync({
+            goalId: goal.id,
+            companyId: goal.companyId,
+            data: { description },
+          })}
           as="p"
           className="text-sm text-muted-foreground"
           placeholder="Add a description..."
