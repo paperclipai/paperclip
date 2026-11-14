@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { type FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -9,7 +10,6 @@ import type {
 } from "@paperclipai/shared";
 import { Check, ChevronDown, Copy, KeyRound, Link as LinkIcon, Plus, RotateCcw, X } from "lucide-react";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -141,8 +141,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
+    ...companyProjectsQuery(companyId, { includeArchived: true }),
   });
   const gatewaysView = useQueryView(gatewaysQuery);
 

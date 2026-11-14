@@ -11,6 +11,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { agentInteractionPermissionsSchema } from "../agent-interaction-permissions.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -19,6 +20,7 @@ export const agentPermissionsSchema = z.object({
   canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  interactions: agentInteractionPermissionsSchema.optional(),
 }).catchall(z.unknown());
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
@@ -35,6 +37,7 @@ export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructio
 
 export const upsertAgentInstructionsFileSchema = z.object({
   path: z.string().min(1).max(512),
+  renameTo: z.string().min(1).max(512).optional(),
   content: z.string().max(1024 * 1024),
   baseRevisionId: z.string().uuid().nullable().optional(),
   baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
@@ -320,6 +323,7 @@ export const updateAgentPermissionsSchema = z.object({
   canAssignTasks: z.boolean(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  interactions: z.never({ error: "Use /api/agents/:id/interaction-permissions to change interaction permissions" }).optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

@@ -1,10 +1,61 @@
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
-use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
+use paperclip_runner_core::generated_acpx_sidecar_contract::{
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE,
+    GENERATED_ACPX_TURN_DISPATCH_SCHEMA,
+};
 use serde_json::{json, Value};
 
 const PROJECTED_INPUT_PROVIDER_ID: &str = "input / réquest";
+
+static BACKGROUND_TASKS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn background_tasks_mode(snapshot: bool) -> Option<String> {
+    let path = BACKGROUND_TASKS.get()?.as_ref()?;
+    let modes = std::fs::read_to_string(path).unwrap_or_default();
+    let mut tokens = modes.split_whitespace();
+    let terminal = tokens.next().unwrap_or("").to_owned();
+    if !snapshot {
+        return Some(terminal);
+    }
+    Some(
+        tokens
+            .find_map(|token| token.strip_prefix("snapshot-"))
+            .map(str::to_owned)
+            .unwrap_or(terminal),
+    )
+}
+
+fn background_tasks_value(mode: &str) -> Option<Value> {
+    match mode {
+        "quiet" => Some(json!({"live":0})),
+        "live" => Some(json!({"live":1})),
+        "malformed" => Some(json!({"live":"0"})),
+        _ => None,
+    }
+}
+
+fn apply_background_snapshot(response: &mut Value, id: u64, idle: bool) {
+    let Some(mode) = background_tasks_mode(true) else {
+        return;
+    };
+    if mode == "reject" {
+        *response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+            "error":{"code":"temporarily_unavailable","message":"Snapshot is unavailable.","retryable":true}});
+        return;
+    }
+    let result = &mut response["result"];
+    if idle {
+        result["turnId"] = Value::Null;
+        result["pendingToolCount"] = json!(0);
+        result["pendingInputCount"] = json!(0);
+        result["pendingRuntimeRequests"] = json!([]);
+    }
+    if let Some(tasks) = background_tasks_value(&mode) {
+        result["backgroundTasks"] = tasks;
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -31,6 +82,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|pair| pair[1].parse::<u64>())
         .transpose()?;
     let mut opened_identity: Option<Value> = None;
+    let _ = BACKGROUND_TASKS.set(
+        args.windows(2)
+            .find(|pair| pair[0] == "--background-tasks")
+            .map(|pair| pair[1].clone()),
+    );
     let lifetime_fence_candidates = args
         .windows(2)
         .find(|pair| pair[0] == "--lifetime-fence-ports")
@@ -67,8 +123,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_lost = false;
     let mut session_identity = Value::Null;
     let mut source_run = String::new();
+    let mut pending_provider_run: Option<String> = None;
+    let mut provider_rearmable = false;
     let mut source_pending_completion: Option<String> = None;
     let mut source_goal_revision = 0_u64;
+    let mut runtime_directory: Option<std::path::PathBuf> = None;
+    // `--cancel-reply lost|late`: the provider stops its prompt, but the reply
+    // to turn.cancel is dropped, or written only before the next request.
+    let cancel_reply = args
+        .windows(2)
+        .find(|pair| pair[0] == "--cancel-reply")
+        .map(|pair| pair[1].clone());
+    let mut late_cancel_reply: Option<Value> = None;
+    // With --cancel-reply, a cancelled turn forgets its pending tool calls.
+    let mut cancel_retired_tools = false;
     let mut source_journal = if mode == "source-reconcile" {
         let path = args
             .windows(2)
@@ -115,6 +183,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if let Some(reply) = late_cancel_reply.take() {
+            write_json(&mut stdout, &reply)?;
+        }
         if command == "turn.start" {
             if let Some(fault) = args
                 .windows(2)
@@ -148,6 +219,104 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         }
+        if command == "turn.cancel"
+            && provider_turn_tokens()
+                .iter()
+                .any(|token| token == "provider-turn-open")
+            && request["params"]["turnId"]
+                .as_str()
+                .is_some_and(|turn| turn.starts_with("provider-"))
+        {
+            let turn = request["params"]["turnId"].as_str().unwrap().to_owned();
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"cancelled":true,"sessionClosed":true}}),
+            )?;
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                    "eventType":"runtime.turn_terminal","runId":"run-1","turnId":turn,
+                    "payload":{"status":"cancelled","stopReason":"cancelled"}}),
+            )?;
+            next_sequence += 1;
+            continue;
+        }
+        if command == "session.provider_turn" {
+            if let Some(journal) = source_journal.as_mut() {
+                write_json(journal, &request)?;
+            }
+            let tokens = provider_turn_tokens();
+            let lost = if request["params"]["armed"] == json!(true) {
+                "provider-arm-reply-lost"
+            } else {
+                "provider-disarm-reply-lost"
+            };
+            if tokens.iter().any(|token| token == lost) {
+                continue;
+            }
+            let armed = request["params"]["armed"] == json!(true)
+                && (pending_provider_run.is_some() || provider_rearmable)
+                && !tokens.iter().any(|token| token == "provider-arm-reject");
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"armed":armed}}),
+            )?;
+            if request["params"]["armed"] == json!(false)
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-turn-after-disarm")
+            {
+                if let Some(run) = pending_provider_run.take() {
+                    next_sequence = write_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        &run,
+                        &mut source_pending_completion,
+                    )?;
+                }
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-sidecar-exit-after-arm")
+            {
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    std::process::exit(0);
+                });
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-lost-after-arm")
+            {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                        "eventType":"runtime.diagnostic","runId":null,"turnId":null,
+                        "payload":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"The provider exited."}}),
+                )?;
+                next_sequence += 1;
+            }
+            if armed && tokens.iter().any(|token| token == "provider-turn-hold") {
+                continue;
+            }
+            if let (true, Some(run)) = (armed, pending_provider_run.take()) {
+                next_sequence = write_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &run,
+                    &mut source_pending_completion,
+                )?;
+                provider_rearmable = tokens.iter().any(|token| token == "provider-terminal-live");
+            } else {
+                provider_rearmable = false;
+            }
+            pending_provider_run = None;
+            continue;
+        }
         if let Some(journal) = source_journal.as_mut() {
             write_json(journal, &request)?;
             if command == "run.attach" {
@@ -172,6 +341,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "turnId":if fault == "active" {json!("unexpected-turn")} else {json!(source_pending_completion)},
                     "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
                     "pendingRuntimeRequests":[]});
+            }
+            if command == "session.snapshot" {
+                apply_background_snapshot(&mut response, id, false);
             }
             if command == "session.snapshot" && fault == "foreign-snapshot" {
                 response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
@@ -239,6 +411,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
+            }
+            if command == "session.open" {
+                runtime_directory = request["params"]["runtimeDirectory"]
+                    .as_str()
+                    .map(std::path::PathBuf::from);
+            }
+            // Like the real runtime port: journal the turn, then its prompt
+            // dispatch, before the provider can see the prompt.
+            // `hang-before-dispatch` / `hang-after-dispatch` freeze the start
+            // on either side of that boundary without replying.
+            if command == "turn.start" {
+                if let Some(directory) = runtime_directory.as_ref() {
+                    let turn = request["params"]["turnId"].as_str().unwrap();
+                    let path = directory.join(GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE);
+                    let record = |phase: &str| {
+                        format!(
+                            "{}\n",
+                            json!({"schema":GENERATED_ACPX_TURN_DISPATCH_SCHEMA,"turnId":turn,"phase":phase})
+                        )
+                    };
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    options
+                        .open(&path)?
+                        .write_all(record("received").as_bytes())?;
+                    if fault == "hang-before-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                    let mut journal = std::fs::OpenOptions::new().append(true).open(&path)?;
+                    journal.write_all(record("dispatched").as_bytes())?;
+                    // The runtime port fsyncs here; the fixture skips it to stay fast.
+                    if fault == "hang-after-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                }
             }
             if command == "session.open" && fault == "slow-open" {
                 std::thread::sleep(std::time::Duration::from_secs(10));
@@ -322,15 +535,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"type":"text_delta", "text":"Completed fake ACPX work."}),
                 )?;
                 next_sequence += 1;
+                let status = background_tasks_mode(true)
+                    .and_then(|_| std::fs::read_to_string(BACKGROUND_TASKS.get()?.as_ref()?).ok())
+                    .and_then(|modes| {
+                        modes
+                            .split_whitespace()
+                            .find_map(|token| token.strip_prefix("status-").map(str::to_owned))
+                    })
+                    .unwrap_or_else(|| "completed".to_owned());
                 write_turn_event(
                     &mut stdout,
                     next_sequence,
                     "runtime.turn_terminal",
                     &source_run,
                     turn,
-                    json!({"status":"completed"}),
+                    json!({"status":status}),
                 )?;
                 next_sequence += 1;
+                next_sequence = offer_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &source_run,
+                    &mut pending_provider_run,
+                    &mut source_pending_completion,
+                )?;
+            }
+            if command == "tool.resolve" && request["params"]["callId"] == "call-provider-finish" {
+                let turn = source_pending_completion
+                    .take()
+                    .ok_or("missing provider completion")?;
+                if request["params"]["turnId"] != turn {
+                    return Err("provider completion identity mismatch".into());
+                }
+                next_sequence = finish_provider_turn(&mut stdout, next_sequence, &source_run)?;
+                continue;
             }
             if command == "tool.resolve" {
                 let turn = source_pending_completion
@@ -561,8 +799,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
             "flood" => {
-                for sequence in 1..=513 {
-                    write_event(&mut stdout, sequence)?;
+                for _ in 0..288 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "count-flood" => {
+                for _ in 0..=65_536 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "backlog" => {
+                for _ in 0..2_048 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "large-backlog" => {
+                for _ in 0..192 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
                 }
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
@@ -627,7 +887,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                if command == "tool.resolve"
+                    && (mode == "turns-tool-resolution-rejected" || cancel_retired_tools)
+                {
                     write_json(
                         &mut stdout,
                         &json!({
@@ -665,6 +927,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 if command == "session.open" {
                     opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "turn.cancel" {
+                    if let Some(fault) = cancel_reply.as_deref() {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.turn_terminal",
+                            "run-1",
+                            request
+                                .pointer("/params/turnId")
+                                .and_then(Value::as_str)
+                                .unwrap(),
+                            json!({"status":"interrupted"}),
+                        )?;
+                        next_sequence += 1;
+                        cancel_retired_tools = true;
+                        if fault == "late" {
+                            late_cancel_reply = Some(response);
+                        }
+                        continue;
+                    }
+                }
+                if command == "session.snapshot" {
+                    apply_background_snapshot(&mut response, id, true);
                 }
                 if command == "session.suspend" {
                     if let Some(delay_ms) = suspend_delay_ms {
@@ -804,6 +1090,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         json!({"status":"completed"}),
                     )?;
                     next_sequence += 1;
+                }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
+                            | "turns-tool-result-terminal"
+                            | "turns-reserved-result-terminal"
+                    )
+                {
+                    next_sequence = offer_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        "run-1",
+                        &mut pending_provider_run,
+                        &mut None,
+                    )?;
                 }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
                     for index in 1..=2 {
@@ -1279,14 +1582,187 @@ fn bootstrap_success(
     })
 }
 
+fn provider_turn_tokens() -> Vec<String> {
+    BACKGROUND_TASKS
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|modes| modes.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn offer_provider_turn(
+    output: &mut impl Write,
+    sequence: u64,
+    default_run: &str,
+    pending: &mut Option<String>,
+    pending_finish: &mut Option<String>,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    if tokens.iter().any(|token| token == "provider-turn-unarmed") {
+        return write_provider_turn(output, sequence, default_run, pending_finish);
+    }
+    *pending = Some(default_run.to_owned());
+    Ok(sequence)
+}
+
+fn write_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+    pending_finish: &mut Option<String>,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_started",
+            json!({"origin":"provider"}),
+        ),
+    )?;
+    sequence += 1;
+    if let Some(call_id) = tokens
+        .iter()
+        .find_map(|token| token.strip_prefix("provider-reuse-call="))
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":call_id,"operationId":"issues.read","input":{"id":"issue-1"}}),
+            ),
+        )?;
+        sequence += 1;
+    }
+    if tokens.iter().any(|token| token == "provider-result") {
+        let result = valid_reserved_completion_result();
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":result.clone()}),
+            ),
+        )?;
+        write_json(
+            output,
+            &frame(
+                sequence + 1,
+                "runtime.event",
+                json!({"type":"semantic_result","callId":"call-provider-finish","operationId":"paperclip_finish","ok":true,"result":result}),
+            ),
+        )?;
+        sequence += 2;
+    }
+    if tokens
+        .iter()
+        .any(|token| token == "provider-result-resolved")
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":valid_reserved_completion_result()}),
+            ),
+        )?;
+        *pending_finish = Some(turn_id);
+        return Ok(sequence + 1);
+    }
+    finish_provider_turn(output, sequence, default_run)
+}
+
+fn finish_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"text_delta","text":"Claude finished its own work."}),
+        ),
+    )?;
+    sequence += 1;
+    if tokens.iter().any(|token| token == "provider-turn-open") {
+        return Ok(sequence);
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"status","tag":"usage_update","text":"terminal prompt usage",
+                "breakdown":{"inputTokens":6,"outputTokens":4,"cachedReadTokens":0,"cachedWriteTokens":0,"thoughtTokens":0}}),
+        ),
+    )?;
+    sequence += 1;
+    let live = if tokens.iter().any(|token| token == "provider-terminal-live") {
+        1
+    } else {
+        0
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_terminal",
+            json!({"status":"completed","stopReason":"end_turn","backgroundTasks":{"live":live}}),
+        ),
+    )?;
+    Ok(sequence + 1)
+}
+
 fn write_turn_event(
     output: &mut impl Write,
     sequence: u64,
     event_type: &str,
     run_id: &str,
     turn_id: &str,
-    payload: Value,
+    mut payload: Value,
 ) -> io::Result<()> {
+    if event_type == "runtime.turn_terminal" {
+        if let Some(tasks) =
+            background_tasks_mode(false).and_then(|mode| background_tasks_value(&mode))
+        {
+            payload["backgroundTasks"] = tasks;
+        }
+    }
     write_json(
         output,
         &json!({
@@ -1332,6 +1808,20 @@ fn write_event(output: &mut impl Write, sequence: u64) -> io::Result<()> {
             "runId": null,
             "turnId": null,
             "payload": { "code": "fake_event", "message": "bounded" },
+        }),
+    )
+}
+
+fn write_padded_event(output: &mut impl Write, sequence: u64, padding: usize) -> io::Result<()> {
+    write_json(
+        output,
+        &json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sequence": sequence,
+            "eventType": "runtime.diagnostic",
+            "runId": null,
+            "turnId": null,
+            "payload": { "code": "fake_event", "message": "x".repeat(padding) },
         }),
     )
 }

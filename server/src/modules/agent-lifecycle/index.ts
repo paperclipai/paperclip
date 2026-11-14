@@ -1,3 +1,5 @@
+import type { ActivityPublication } from "../../types/activity-publication.js";
+import { AgentLifecycleConflict } from "./domain/policy.js";
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents, companies } from "@paperclipai/db";
 import { and, asc, desc, eq, gt, inArray, lte, sql } from "drizzle-orm";
@@ -41,6 +43,24 @@ export function scheduleAgentLifecycle(db: Db, id: string) {
  * purging dependent records. Ordinary producers only schedule asynchronous work. */
 export function processAgentLifecycle(db: Db, id: string): Promise<void> {
   return workers.get(db)?.process(id) ?? Promise.resolve();
+}
+
+export function initializeImportedAgentConfigurationInTransaction(tx: Db, effects: LifecycleEffects, publications: ActivityPublication[],
+  id: string, data: Pick<AgentConfigurationPatch, "adapterConfig" | "reportsTo">) {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Imported configuration requires a database transaction");
+  if (Object.keys(data).some(key => key !== "adapterConfig" && key !== "reportsTo")) throw new AgentLifecycleConflict("Only initial imported instructions and reporting links can be initialized");
+  return updateAgentConfiguration(tx, effects, id, data, undefined, publications);
+}
+
+export async function requestAgentHireInTransaction(tx: Db, effects: LifecycleEffects, publications: ActivityPublication[],
+  ...args: Parameters<ReturnType<typeof agentRecords>["create"]>) {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Imported hires require a database transaction");
+  const records = agentRecords(tx, { ...effects, transaction: async (database, companyId, work) => {
+    const [company] = await database.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("no key update");
+    if (!company) throw new AgentLifecycleConflict("Import company is unavailable");
+    return work(database, publications);
+  } });
+  return records.create(...args);
 }
 
 export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {

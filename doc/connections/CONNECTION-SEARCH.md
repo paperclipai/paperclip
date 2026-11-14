@@ -50,7 +50,9 @@ queries to a provider. Broad provider descriptions are not evidence of support.
 Configured connection metadata remains scoped to the current company and
 identity. Archived and unauthorized catalogs cannot establish an aggregator route.
 
-Built-in connections remain preferred for the same app. Existing AI access is
+Built-in connections remain preferred for the same app. An aggregator listing
+counts as the same app when its name or any alias matches the built-in name, so
+Composio's "Circleback MCP" does not appear beside built-in Circleback. Existing AI access is
 checked through the agent's AI binding and credential selection. An aggregator route still requires a
 saved provider choice or a verified explicit user request. Fuzzy retrieval never
 grants consent. A provider connection is not proof that its underlying app is
@@ -71,7 +73,7 @@ pnpm exec vitest run packages/shared/src/connection-search.test.ts packages/shar
 
 The database suite covers the original AgentMail sentence, split names, typos,
 capability overlap, multiple services, AI discovery, experimental gating,
-Circleback/Attio/ClickUp, indexed Executor tools, and provider consent. The native
+Otter.ai/Fathom/Attio/ClickUp, built-in Circleback over its Composio listing, indexed Executor tools, and provider consent. The native
 tool authority test searches a paragraph longer than the old 200-character limit
 and then creates a real connection interaction. Existing tests retain checks for
 private metadata, administrative denials, stale identities, and saved declines.

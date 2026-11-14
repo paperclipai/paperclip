@@ -61,6 +61,7 @@ import {
   type SuggestTasksInteraction,
   type SuggestedTaskTreeNode,
 } from "@/lib/issue-thread-interactions";
+import { claimReviseDraftWork, clearReviseDraft, getReviseDraft, releaseReviseDraftWork, reviseDraftKey, updateReviseDraft, useReviseDraft } from "@/lib/revise-draft-store";
 import { cn } from "@/lib/utils";
 import { QuestionForm } from "./QuestionForm";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
@@ -306,7 +307,13 @@ function CompactTarget({
   if (!target || !label) return null;
   const href = target.type === "issue_attachment"
     ? `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`
-    : target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
+    : target.href ? normalizeRequestConfirmationTargetHref(target.href)
+      // A document on this chat opens in its document panel, like a reply's
+      // `#document-<key>` link, so the person can read what they are asked to review.
+      // Plan reviews keep their header chip; their plan preview opens the plan.
+      : target.type === "issue_document" && target.key !== "plan" && (target.issueId ?? interaction.issueId) === interaction.issueId
+        ? `#document-${encodeURIComponent(target.key)}`
+        : null;
   if (href) {
     return (
       <a
@@ -560,12 +567,12 @@ function ReceiptDisclosure({
               <strong>{interaction.payload.toolAction.toolDisplayName}</strong>{" "}
               · {interaction.payload.toolAction.risk} risk
             </p>
-            <p className="mt-1">
+            {interaction.payload.toolAction.expiresAt ? <p className="mt-1">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </p>
+            </p> : null}
             <div className="mt-2">
               <MarkdownBody externalReferences={externalReferences}>
                 {interaction.payload.toolAction.previewMarkdown}
@@ -843,11 +850,12 @@ function ConfirmationCard({
   mentions?: MentionOption[];
 }) {
   const preparingApproval = isInteractionPreparingApproval(interaction);
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState(() =>
-    draftKey ? loadStructuredDraft(draftKey, "") : "",
-  );
-  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const target = interaction.payload.target;
+  const sharedKey = reviseDraftKey(interaction.id, target?.type === "issue_document" ? target.revisionId : null);
+  const [draft, updateDraft] = useReviseDraft(sharedKey);
+  const { revising: rejecting, reason, working } = draft;
+  const setRejecting = (revising: boolean) => revising ? updateDraft({ revising }) : clearReviseDraft(sharedKey);
+  const setReason = (value: string) => updateDraft({ reason: value });
   const [actionError, setActionError] = useState<string | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
   const collectsRejectReason = Boolean(
@@ -859,8 +867,17 @@ function ConfirmationCard({
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan";
   useEffect(() => {
-    if (draftKey) saveStructuredDraft(draftKey, reason);
-  }, [draftKey, reason]);
+    if (!draftKey) return;
+    const legacyReason = loadStructuredDraft(draftKey, "");
+    const current = getReviseDraft(sharedKey);
+    if (legacyReason && !current.reason && !current.revising && !current.working) {
+      updateReviseDraft(sharedKey, { reason: legacyReason, revising: true });
+    }
+    clearDraft(draftKey);
+  }, [draftKey, sharedKey]);
+  useEffect(() => {
+    if (interaction.status !== "pending") clearReviseDraft(sharedKey);
+  }, [interaction.status, sharedKey]);
   async function resolve(action: "accept" | "reject") {
     if (
       action === "reject" &&
@@ -868,16 +885,17 @@ function ConfirmationCard({
       !reason.trim()
     )
       return;
-    setWorking(action);
+    if (!claimReviseDraftWork(sharedKey, action)) return;
     setActionError(null);
     try {
       if (action === "accept") await onAcceptInteraction?.(interaction);
       else await onRejectInteraction?.(interaction, reason.trim() || undefined);
       if (draftKey) clearDraft(draftKey);
+      clearReviseDraft(sharedKey);
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
-      setWorking(null);
+      releaseReviseDraftWork(sharedKey);
     }
   }
 
@@ -921,12 +939,12 @@ function ConfirmationCard({
             >
               {interaction.payload.toolAction.risk} risk
             </span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            {interaction.payload.toolAction.expiresAt ? <span className="ml-auto text-xs text-muted-foreground">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </span>
+            </span> : null}
           </div>
           <MarkdownBody externalReferences={externalReferences}>
             {interaction.payload.toolAction.previewMarkdown}

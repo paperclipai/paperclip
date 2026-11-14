@@ -12,6 +12,11 @@ on:
         required: false
         default: false
         type: boolean
+      runner_chaos_evals:
+        description: Run the Runner chaos evals as part of this verification. Cloud readiness passes false and runs them as a separate, non-gating job.
+        required: false
+        default: true
+        type: boolean
     outputs:
       runner_artifact_prefix:
         value: ${{ jobs.runner_binaries.outputs.artifact_prefix }}
@@ -24,8 +29,10 @@ on:
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
 jobs:
+  # Release callers keep the default and stay gated on these evals. Cloud
+  # readiness turns them off here and runs them beside its source proof.
   runner_chaos_evals:
-    if: ${{ !inputs.runner_binaries_only }}
+    if: ${{ !inputs.runner_binaries_only && inputs.runner_chaos_evals }}
     name: Pre-release Runner chaos evals
     uses: ./.github/workflows/runner-chaos-evals.yml
     with:

@@ -76,6 +76,13 @@ export const heartbeatRuns = pgTable(
     completionContractId: uuid("completion_contract_id"),
     completionContractSha256: text("completion_contract_sha256"),
     nextEventSeq: bigint("next_event_seq", { mode: "number" }).notNull().default(1),
+    // Per native source instance, the highest source sequence below which the
+    // run stores every event: {"<source instance id>": <seq>}. The append that
+    // reserves the sequence keeps it, so an in-order event needs no count of
+    // the run's events. It is a lower bound: a missing or stale entry (rows
+    // saved before it existed, or by a writer that does not keep it) makes the
+    // next out-of-order append recount the source's events from the table.
+    nativeSourceCursors: jsonb("native_source_cursors").$type<Record<string, number>>(),
     nativePhase: text("native_phase"),
     nativePhaseUpdatedAt: timestamp("native_phase_updated_at", { withTimezone: true }),
     sessionIdBefore: text("session_id_before"),
@@ -152,6 +159,15 @@ export const heartbeatRuns = pgTable(
     ),
     scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
       .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Committed budget Stops that are not delivered yet. The predicate must stay
+    // identical to `pendingBudgetRunCancellationPredicate` in the server, so the
+    // budget worker, run control, and the idle check read only these few rows
+    // instead of every run's result JSON.
+    pendingBudgetCancellationIdx: index("heartbeat_runs_pending_budget_cancellation_idx")
+      .on(table.companyId)
+      .where(sql`jsonb_typeof(${table.resultJson}->'startupCancellation'->'budgetEnforcement') = 'object'
+        and ${table.resultJson}->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null`)
+      .concurrently(),
     // Runs a dispatch gate refused for a pause; that hold's release resumes them.
     treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
       .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
@@ -161,6 +177,14 @@ export const heartbeatRuns = pgTable(
     legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
       .on(table.controllerLeaseExpiresAt)
       .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
+    // Runs woken by one chat comment. Not partial: the planner ignores the
+    // expression statistics of a partial index and would then walk the run
+    // history by creation time to satisfy `order by created_at limit 1`.
+    companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
+      .concurrently(),
+    queuedCreatedIdx: index("heartbeat_runs_queued_created_idx").on(table.companyId, table.createdAt, table.id)
+      .where(sql`${table.status} = 'queued'`).concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
@@ -190,6 +214,15 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
+      .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
+      .concurrently(),
+    // Runs of one native session. Retention, recovery and resume reads filter
+    // by company and session; without this they walk the agent's run history.
+    companyNativeSessionIdx: index("heartbeat_runs_company_native_session_idx")
+      .on(table.companyId, table.nativeSessionId)
+      .where(sql`${table.nativeSessionId} is not null`)
+      .concurrently(),
     companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
       table.companyId,
       table.issueId,
@@ -215,6 +248,18 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    companyFinishedIdx: index("heartbeat_runs_company_finished_idx").on(table.companyId, table.finishedAt.desc())
+      .where(sql`${table.finishedAt} is not null`).concurrently(),
+    settledProcessIdentityIdx: index("heartbeat_runs_settled_process_identity_idx")
+      .on(table.processHostHash, table.companyId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' and ${table.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
+        and ${table.finishedAt} is not null
+        and (${table.processPid} is not null or ${table.processGroupId} is not null or ${table.processStartedAt} is not null)`)
+      .concurrently(),
+    pendingApiStopIdx: index("heartbeat_runs_pending_api_stop_idx").on(table.companyId, table.id)
+      .where(sql`${table.status} = 'cancelled' and ${table.driverKind} = 'cursor_cloud_api'
+        and (${table.resultJson}->'executionCancellation'->>'state') = 'requested'`)
+      .concurrently(),
     companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
       table.companyId,
       table.createdAt.desc(),
@@ -234,6 +279,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // Runs that recorded an execution workspace in their legacy context. Workspace
+    // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
+    companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
+      .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),

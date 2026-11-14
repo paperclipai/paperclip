@@ -1,5 +1,5 @@
 import childProcess, { execFileSync, type SpawnOptions } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import { promisify } from "node:util";
@@ -23,8 +23,24 @@ export const RUNNERD_EXECUTABLE_NAME = "paperclip-runnerd";
 export interface AgentFilesystemSandboxConfig {
   hidden: string[];
   required: boolean;
+  /**
+   * The product instance root. Each runnerd launch then also hides every run's
+   * saved sessions, run logs, database files and secrets, except its own session.
+   */
+  instanceRoot?: string;
 }
 
+/** One runnerd launch's sandbox: the attempt's hidden set plus its run scope. */
+export interface RunnerdLaunchSandbox {
+  hidden: string[];
+  /** The launch's own entries beneath hidden directories, created before launch. */
+  exposed: string[];
+  /** Exposed paths that are files rather than directories. */
+  exposedFiles: string[];
+  /** Directories created before launch because their parent is hidden. */
+  precreated: string[];
+  required: boolean;
+}
 function within(candidate: string, root: string) {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
@@ -90,6 +106,7 @@ export function agentFilesystemSandboxConfig(input: {
   installedRelease: boolean;
   sharedTemporary?: string;
   gitStores?: readonly string[];
+  instanceRoot?: string;
 }): AgentFilesystemSandboxConfig | null {
   if (!agentFilesystemSandboxApplies(input)) return null;
   const sharedTemporary = path.resolve(input.sharedTemporary ?? (input.env.TMPDIR?.trim() || os.tmpdir()));
@@ -125,23 +142,119 @@ export function agentFilesystemSandboxConfig(input: {
     if (required) throw new Error(message);
     console.warn(`[agent-filesystem-sandbox] ${message}`);
   }
-  return hidden.length ? { hidden, required } : null;
+  if (!hidden.length) return null;
+  const instanceRoot = input.instanceRoot?.trim();
+  // The instance root lives in the attempt root; never in the shared directory.
+  if (instanceRoot && path.isAbsolute(instanceRoot) && !within(path.resolve(instanceRoot), sharedTemporary)) {
+    return { hidden, required, instanceRoot: path.resolve(instanceRoot) };
+  }
+  return { hidden, required };
+}
+
+function flagValue(args: readonly string[], flag: string) {
+  const index = args.indexOf(flag);
+  const value = index >= 0 ? args[index + 1] : undefined;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/** Mirrors opencodeRuntimeSessionDirectoryName in the OpenCode driver. */
+export function opencodeSessionDirectoryName(normalizedSessionId: string) {
+  const safe = normalizedSessionId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+  return safe && safe !== "." && safe !== ".." ? safe : null;
+}
+
+/** The attempt instance's directories that hold every run's state. */
+export function instanceRunStatePaths(instanceRoot: string) {
+  const runner = path.join(instanceRoot, "runtime", "paperclip-runner");
+  return {
+    durableSessions: path.join(runner, "durable-sessions"),
+    runnerStates: path.join(runner, "runner"),
+    controlPlane: path.join(runner, "control-plane"),
+    opencode: path.join(runner, "opencode"),
+    acpx: path.join(runner, "acpx"),
+    runLogs: path.join(instanceRoot, "data", "run-logs"),
+    providerTraces: path.join(instanceRoot, "data", "provider-traces"),
+    backups: path.join(instanceRoot, "data", "backups"),
+    database: path.join(instanceRoot, "db"),
+    secrets: path.join(instanceRoot, "secrets"),
+  };
+}
+
+/** Instance directories an agent may use, created on first use beside hidden ones. */
+const INSTANCE_SHARED_DIRECTORIES = ["companies", "projects", "workspaces", "runtime-context-assets", "skills", "runtime/provider-packs"] as const;
+
+/**
+ * Selects one runnerd launch's sandbox. Runnerd is launched per session with
+ * `--state-dir` inside that session's directory, so the launch keeps exactly
+ * its own durable session, OpenCode session and provider trace and loses every
+ * other run's.
+ */
+export function runnerdLaunchSandbox(config: AgentFilesystemSandboxConfig, args: readonly string[], env: NodeJS.ProcessEnv): RunnerdLaunchSandbox {
+  const launch: RunnerdLaunchSandbox = { hidden: [...config.hidden], exposed: [], exposedFiles: [], precreated: [], required: config.required };
+  if (!config.instanceRoot) return launch;
+  const paths = instanceRunStatePaths(config.instanceRoot);
+  const hide = (value: string) => { if (!launch.hidden.includes(value)) launch.hidden.push(value); };
+  const expose = (value: string, file = false) => {
+    if (!launch.exposed.includes(value)) launch.exposed.push(value);
+    if (file && !launch.exposedFiles.includes(value)) launch.exposedFiles.push(value);
+  };
+  for (const value of [paths.durableSessions, paths.runnerStates, paths.controlPlane, paths.opencode, paths.runLogs, paths.providerTraces, paths.backups, paths.database, paths.secrets]) hide(value);
+  // Hiding those leaves their parents (the instance root, its runtime and data
+  // directories) without new entries. Create the directories the product makes
+  // there on first use, so a long-lived runnerd still sees later additions.
+  launch.precreated.push(paths.acpx, ...INSTANCE_SHARED_DIRECTORIES.map((name) => path.join(config.instanceRoot!, ...name.split("/"))));
+  const stateDirectory = flagValue(args, "--state-dir");
+  if (stateDirectory && path.isAbsolute(stateDirectory)) {
+    const state = path.resolve(stateDirectory);
+    for (const root of [paths.durableSessions, paths.runnerStates]) {
+      if (!within(state, root) || state === root) continue;
+      // The session's own directory: `<root>/<scope>`, whatever lies below it.
+      expose(path.join(root, path.relative(root, state).split(path.sep)[0]!));
+    }
+  }
+  const sessionId = flagValue(args, "--session-id");
+  const configuredOpencode = env.PAPERCLIP_OPENCODE_RUNTIME_DIR?.trim();
+  const opencodeRoots = [paths.opencode, ...(configuredOpencode && path.isAbsolute(configuredOpencode) ? [path.resolve(configuredOpencode)] : [])];
+  for (const root of opencodeRoots) {
+    if (root !== paths.opencode && (within(root, paths.durableSessions) || within(root, paths.runnerStates))) continue;
+    hide(root);
+    const name = sessionId ? opencodeSessionDirectoryName(sessionId) : null;
+    if (name) expose(path.join(root, name));
+  }
+  const trace = env.PAPERCLIP_PROVIDER_TRACE_PATH?.trim();
+  if (trace && path.isAbsolute(trace) && path.dirname(path.resolve(trace)) === paths.providerTraces) expose(path.resolve(trace), true);
+  return launch;
+}
+
+/** Creates the launch's own entries, which a process inside the sandbox could not create. */
+export function prepareRunnerdLaunchSandbox(launch: RunnerdLaunchSandbox) {
+  for (const directory of launch.precreated) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  for (const exposed of launch.exposed) {
+    if (launch.exposedFiles.includes(exposed)) {
+      mkdirSync(path.dirname(exposed), { recursive: true, mode: 0o700 });
+      // Append mode never truncates a trace the run already started.
+      closeSync(openSync(exposed, "a", 0o600));
+    } else {
+      mkdirSync(exposed, { recursive: true, mode: 0o700 });
+    }
+  }
 }
 
 export function parseAgentFilesystemSandboxConfig(value: string | undefined): AgentFilesystemSandboxConfig | null {
   if (!value?.trim()) return null;
   const parsed = JSON.parse(value) as Partial<AgentFilesystemSandboxConfig>;
-  if (!Array.isArray(parsed.hidden) || parsed.hidden.some((entry) => typeof entry !== "string" || !path.isAbsolute(entry)) || typeof parsed.required !== "boolean") {
+  if (!Array.isArray(parsed.hidden) || parsed.hidden.some((entry) => typeof entry !== "string" || !path.isAbsolute(entry)) || typeof parsed.required !== "boolean"
+    || (parsed.instanceRoot !== undefined && (typeof parsed.instanceRoot !== "string" || !path.isAbsolute(parsed.instanceRoot)))) {
     throw new Error(`${AGENT_FILESYSTEM_SANDBOX_ENV} is malformed`);
   }
-  return { hidden: parsed.hidden, required: parsed.required };
+  return { hidden: parsed.hidden, required: parsed.required, ...(parsed.instanceRoot ? { instanceRoot: parsed.instanceRoot } : {}) };
 }
 
 export const agentFilesystemSandboxHelper = path.join(import.meta.dirname, "agent-filesystem-sandbox.py");
 
 /** Rewrites one launch so the helper applies the domain and then execs it unchanged. */
 export function sandboxedInvocation(
-  config: AgentFilesystemSandboxConfig,
+  config: Pick<AgentFilesystemSandboxConfig, "hidden" | "required"> & { exposed?: readonly string[] },
   python: string,
   command: string,
   args: readonly string[],
@@ -156,6 +269,7 @@ export function sandboxedInvocation(
       ...(config.required ? ["--required"] : []),
       ...locale,
       ...config.hidden.flatMap((hidden) => ["--hide", hidden]),
+      ...(config.exposed ?? []).flatMap((exposed) => ["--expose", exposed]),
       "--", command, ...args,
     ],
   };
@@ -239,6 +353,105 @@ export function probeAgentFilesystemSandbox(
   return { result, failures };
 }
 
+/** What a sandboxed run must be able to do with each probe fixture path. */
+const RUN_SCOPE_EXPECTATIONS = {
+  otherDurableSession: "denied",
+  durableSessionListing: "denied",
+  ownDurableSession: "allowed",
+  otherRunnerState: "denied",
+  controlPlaneState: "denied",
+  otherOpencodeSession: "denied",
+  ownOpencodeSession: "allowed",
+  acpxRuntime: "allowed",
+  otherRunLog: "denied",
+  databaseWal: "denied",
+  secrets: "denied",
+  otherProviderTrace: "denied",
+  ownProviderTrace: "allowed",
+  harnessEnviron: "denied",
+} as const;
+
+/**
+ * Proves the run scope on a fixture instance laid out like the real one: a
+ * sandboxed run keeps its own session and trace and loses every other run's
+ * state, the instance database and its secrets.
+ */
+export function probeRunScopedSandbox(
+  config: AgentFilesystemSandboxConfig,
+  python = pythonExecutable(),
+  env: NodeJS.ProcessEnv = process.env,
+  harnessPid = process.pid,
+) {
+  if (!config.instanceRoot) return { result: {} as Record<string, string>, failures: [] as string[] };
+  // A sibling of the instances directory: inside the attempt root, never in /tmp.
+  const fixture = mkdtempSync(path.join(path.dirname(path.dirname(config.instanceRoot)), ".agent-sandbox-probe-"));
+  try {
+    const instance = path.join(fixture, "instance");
+    const paths = instanceRunStatePaths(instance);
+    const write = (file: string) => { mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, "other run\n", { mode: 0o600 }); };
+    const ownState = path.join(paths.durableSessions, "own-scope", "runner");
+    mkdirSync(ownState, { recursive: true, mode: 0o700 });
+    const fixtures = {
+      otherDurableSession: path.join(paths.durableSessions, "other-scope", "opencode", "data", "opencode.db"),
+      otherRunnerState: path.join(paths.runnerStates, "other-run", "state.json"),
+      controlPlaneState: path.join(paths.controlPlane, "control-plane-state.json"),
+      otherOpencodeSession: path.join(paths.opencode, "other-session", "data", "opencode", "opencode.db"),
+      otherRunLog: path.join(paths.runLogs, "company", "agent", "other-run.ndjson"),
+      databaseWal: path.join(paths.database, "pg_wal", "000000010000000000000001"),
+      secrets: path.join(paths.secrets, "master.key"),
+      otherProviderTrace: path.join(paths.providerTraces, "other-run.ndjson"),
+    };
+    for (const file of Object.values(fixtures)) write(file);
+    const ownTrace = path.join(paths.providerTraces, "own-run.ndjson");
+    const launch = runnerdLaunchSandbox({ ...config, instanceRoot: instance },
+      ["--state-dir", ownState, "--session-id", "own-session"], { PAPERCLIP_PROVIDER_TRACE_PATH: ownTrace });
+    prepareRunnerdLaunchSandbox(launch);
+    const checks = [
+      ["otherDurableSession", "read", fixtures.otherDurableSession],
+      ["durableSessionListing", "list", paths.durableSessions],
+      ["ownDurableSession", "write", ownState],
+      ["otherRunnerState", "read", fixtures.otherRunnerState],
+      ["controlPlaneState", "read", fixtures.controlPlaneState],
+      ["otherOpencodeSession", "read", fixtures.otherOpencodeSession],
+      ["ownOpencodeSession", "write", path.join(paths.opencode, "own-session")],
+      ["acpxRuntime", "write", paths.acpx],
+      ["otherRunLog", "read", fixtures.otherRunLog],
+      ["databaseWal", "list", path.dirname(fixtures.databaseWal)],
+      ["secrets", "read", fixtures.secrets],
+      ["otherProviderTrace", "read", fixtures.otherProviderTrace],
+      ["ownProviderTrace", "append", ownTrace],
+      ["harnessEnviron", "read", `/proc/${harnessPid}/environ`],
+      // Recorded, not required: Landlock cannot hide another process's argv.
+      ["harnessCmdline", "read", `/proc/${harnessPid}/cmdline`],
+    ] as const;
+    const script = [
+      'out=""',
+      'for spec in "$@"; do name=${spec%%|*}; rest=${spec#*|}; mode=${rest%%|*}; target=${rest#*|}',
+      '  case "$mode" in',
+      '    read) cat "$target" >/dev/null 2>&1 ;;',
+      '    list) ls "$target" >/dev/null 2>&1 ;;',
+      '    write) f="$target/.agent-sandbox-probe" && : > "$f" 2>/dev/null && cat "$f" >/dev/null 2>&1 && rm -f "$f" ;;',
+      '    append) printf "" >> "$target" 2>/dev/null && cat "$target" >/dev/null 2>&1 ;;',
+      '  esac',
+      '  if [ $? -eq 0 ]; then out="$out$name=allowed;"; else out="$out$name=denied;"; fi',
+      'done',
+      'printf "%s\\n" "$out"',
+    ].join("\n");
+    const invocation = sandboxedInvocation(launch, python, "/bin/sh", ["-c", script, "sh", ...checks.map(([name, mode, target]) => `${name}|${mode}|${target}`)], env);
+    const output = execFileSync(invocation.command, invocation.args, { encoding: "utf8", cwd: "/", env, timeout: 30_000 });
+    const result = Object.fromEntries(output.trim().split(";").filter(Boolean).map((entry) => {
+      const separator = entry.lastIndexOf("=");
+      return [`run:${entry.slice(0, separator)}`, entry.slice(separator + 1)];
+    })) as Record<string, string>;
+    const failures = Object.entries(RUN_SCOPE_EXPECTATIONS)
+      .filter(([name, expected]) => result[`run:${name}`] !== expected)
+      .map(([name, expected]) => `run scope: ${name} is ${result[`run:${name}`] ?? "unprobed"}, expected ${expected}`);
+    return { result, failures };
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
 /**
  * Wraps runnerd launches made by this process. Runs only in the E2E server
  * entry; the wrapper execs runnerd, so its PID, argv, cwd and environment are
@@ -252,6 +465,8 @@ export function installAgentFilesystemSandbox(repositoryRoot: string, env: NodeJ
   let probe: ReturnType<typeof probeAgentFilesystemSandbox>;
   try {
     probe = probeAgentFilesystemSandbox(config, repositoryRoot, python);
+    const runScope = probeRunScopedSandbox(config, python);
+    probe = { result: { ...probe.result, ...runScope.result }, failures: [...probe.failures, ...runScope.failures] };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (config.required) throw new Error(`agent_filesystem_sandbox_unavailable: ${message}`);
@@ -286,10 +501,16 @@ export function wrapRunnerdLaunch<T extends (...args: any[]) => unknown>(origina
     const afterArgs = hasArgs ? rest.slice(1) : rest;
     const options = afterArgs[0] && typeof afterArgs[0] === "object" ? afterArgs[0] as SpawnOptions : undefined;
     if (options?.shell) throw new Error("agent_filesystem_sandbox: refusing to start runnerd through a shell, outside the sandbox");
-    const invocation = sandboxedInvocation(config, python, command as string, args, options?.env ?? process.env);
+    const env = options?.env ?? process.env;
+    const launch = runnerdLaunchSandbox(config, args, env);
+    // The server creates the launch's own entries; inside the sandbox their
+    // hidden parents accept no new entries. A failure here fails the launch.
+    prepareRunnerdLaunchSandbox(launch);
+    const invocation = sandboxedInvocation(launch, python, command as string, args, env);
     const result = Reflect.apply(original, this, [invocation.command, invocation.args, ...afterArgs]);
     const pid = (result as { pid?: number } | undefined)?.pid;
-    console.log(`[agent-filesystem-sandbox] runnerd launched inside the sandbox via ${api}${pid ? ` (pid ${pid})` : ""}`);
+    const scope = config.instanceRoot ? ` ${JSON.stringify({ runScopedHidden: launch.hidden.filter((value) => !config.hidden.includes(value)), exposed: launch.exposed })}` : "";
+    console.log(`[agent-filesystem-sandbox] runnerd launched inside the sandbox via ${api}${pid ? ` (pid ${pid})` : ""}${scope}`);
     return result;
   } as T;
   // execFile's promisified form resolves { stdout, stderr } through this hook;

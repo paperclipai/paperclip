@@ -124,6 +124,25 @@ describe("HarnessDriverBackend", () => {
     expect(startTurn).toHaveBeenCalledExactlyOnceWith({ message });
   });
 
+  it.each([
+    { cancelled: false, failureCleanup: false, retainUnsettledRemoteRunner: true },
+    { cancelled: true, failureCleanup: false, retainUnsettledRemoteRunner: false },
+    { cancelled: true, failureCleanup: true, retainUnsettledRemoteRunner: true },
+  ])("asks to retain an unsettled remote Runner on close only when the run was not stopped (cancelled=$cancelled, failureCleanup=$failureCleanup)",
+    async ({ cancelled, failureCleanup, retainUnsettledRemoteRunner }) => {
+      const close = vi.fn(async () => {});
+      const session = Object.assign(new FakeHarnessSession(), { close });
+      const backend = new HarnessDriverBackend({ ...driver, openSession: async () => session });
+      const opened = await backend.openSession({ identity: {
+        runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+      } });
+      if (cancelled) await cancelSession(opened, { reason: failureCleanup ? "Native session event consumption failed." : "Stop requested",
+        signal: new AbortController().signal, ...(failureCleanup ? { failureCleanup } : {}) }).cleanup;
+      if (failureCleanup) expect(await opened.result()).toBeNull();
+      await opened.close({ reason: "native session execution complete" });
+      expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "native session execution complete", retainUnsettledRemoteRunner });
+    });
+
   it("forwards reasoning when the provider explicitly supports it", async () => {
     const startTurn = vi.fn(async () => ({ turnId: "turn-1" }));
     const session = Object.assign(new FakeHarnessSession(), { startTurn, supportsTurnReasoning: () => true });
@@ -198,6 +217,30 @@ describe("HarnessDriverBackend", () => {
     expect(await restored.session!.snapshot()).toMatchObject(fields);
     checkpoint.codexUsageBaseline.latest.inputTokens = 999;
     expect(recover.mock.calls[0]![0].codexUsageBaseline!.latest.inputTokens).toBe(150);
+  });
+
+  it.each([true, false])("carries the provider-turn wait marker through a serialized native checkpoint only while waiting (%s)", async (awaiting) => {
+    class WaitSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), semanticResult: undefined, activeTurnId: null,
+          ...(awaiting ? { awaitingProviderTurn: true } : {}) };
+      }
+    }
+    const original = new HarnessDriverBackend({ ...driver, openSession: async () => new WaitSession() });
+    const session = await original.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    const checkpoint = JSON.parse(JSON.stringify(await session.snapshot()));
+    const recover = vi.fn(async (_snapshot: PersistedHarnessSession) => ({ recovered: true, session: new WaitSession() }));
+    await new HarnessDriverBackend({ ...driver, recoverSession: recover })
+      .recoverSession(checkpoint, { signal: new AbortController().signal });
+    if (awaiting) {
+      expect(checkpoint.awaitingProviderTurn).toBe(true);
+      expect(recover.mock.calls[0]![0].awaitingProviderTurn).toBe(true);
+    } else {
+      expect(checkpoint).not.toHaveProperty("awaitingProviderTurn");
+      expect(recover.mock.calls[0]![0]).not.toHaveProperty("awaitingProviderTurn");
+    }
   });
 
   it("rejects and closes a provider session without a durable provider identity", async () => {

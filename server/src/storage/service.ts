@@ -107,6 +107,7 @@ function assertPutFileInput(input: PutFileInput): void {
 export function createStorageService(provider: StorageProvider): StorageService {
   return {
     provider: provider.id,
+    ...(provider.immutableObjectNamespace ? { immutableObjectNamespace: provider.immutableObjectNamespace } : {}),
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);
@@ -156,6 +157,12 @@ export function createStorageService(provider: StorageProvider): StorageService 
       ensureCompanyPrefix(companyId, objectKey);
       await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal,
         ...(options?.allVersions ? { allVersions: true } : {}) }));
+    },
+
+    async abortIncompleteUploads(companyId: string, objectKey: string, options) {
+      ensureCompanyPrefix(companyId, objectKey);
+      if (!provider.abortIncompleteUploads) return 0;
+      return cancellable(options?.signal, () => provider.abortIncompleteUploads!({ objectKey, signal: options?.signal }));
     },
   };
 }

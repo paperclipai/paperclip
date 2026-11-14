@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { agents, companies, environments, instanceSettings, plugins, createDb, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, environments, heartbeatRuns, instanceSettings, plugins, principalPermissionGrants, createDb, type Db } from "@paperclipai/db";
+import express from "express";
+import request from "supertest";
+import { agentRoutes } from "../../../routes/agents.js";
+import { errorHandler } from "../../../middleware/error-handler.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { configureAgentLifecycle, createAgentLifecycle, createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
@@ -8,6 +12,7 @@ import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.
 import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { assertAgentsReadyForEnvironmentChange } from "../../../services/plugin-environment-driver.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("environment-bound lifecycle plugins", () => {
@@ -38,8 +43,8 @@ const support = await getEmbeddedPostgresTestSupport();
     ]);
   });
 
-  function worker() {
-    const work = configureAgentLifecycle(db, { ...createLifecycleDriver(db, { call } as never), runHost: async () => "complete" as const });
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete") {
+    const work = configureAgentLifecycle(db, { ...createLifecycleDriver(db, { call } as never), runHost });
     workers.push(work);
     return work;
   }
@@ -49,6 +54,11 @@ const support = await getEmbeddedPostgresTestSupport();
     return id;
   }
   async function current(id: string) { return (await db.select().from(agents).where(eq(agents.id, id)))[0]!; }
+  function app(actor: Express.Request["actor"]) {
+    const value = express(); value.use(express.json());
+    value.use((req, _res, next) => { req.actor = actor; next(); });
+    value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
+  }
   async function selection(id: string) {
     return createLifecycleDriver(db, { call } as never).requiredPluginIds((await createLifecycleStore(db, createAgentLifecycleEffects()).get(id))!);
   }
@@ -147,10 +157,91 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await current(id)).lifecycleState).toBe("verifying");
   });
 
-  it("refuses to move a ready agent to an environment whose plugin it has not selected", async () => {
+  it.each(["idle", "running"])("automatically pauses an %s agent, prepares its new environment, and verifies before readiness", async status => {
+    const id = await agent(otherEnvironmentId, { status, lifecycleRequiredPluginIds: [] });
+    const saved = await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    expect(saved).toMatchObject({ defaultEnvironmentId: boundEnvironmentId, lifecycleState: "pausing", status: "paused" });
+    expect(await current(id)).toMatchObject({ lifecycleHolds: [], lifecycleOperation: { resumeState: "verifying" } });
+
+    const phases: string[] = [];
+    const runHost = vi.fn(async (row: LifecycleAgent) => { phases.push(row.lifecycleState); return "complete" as const; });
+    await worker(runHost).process(id);
+    expect(phases).toEqual(["pausing", "resuming", "verifying"]);
+    expect(call.mock.calls.map(args => args[2].phase)).toEqual(["resuming", "verifying"]);
+    expect(await current(id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleRequiredPluginIds: [boundPluginId] });
+  });
+
+  it.each(["board", "agent"] as const)("lets a configuration-authorized %s migrate without separate manual-pause authority", async type => {
+    const id = await agent(otherEnvironmentId, { status: "running", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" }, lifecycleRequiredPluginIds: [] });
+    const principalId = type === "agent" ? await agent(otherEnvironmentId) : randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: type === "board" ? "user" : "agent",
+      principalId, membershipRole: "member", status: "active" });
+    await db.insert(principalPermissionGrants).values({ companyId, principalType: type === "board" ? "user" : "agent",
+      principalId, permissionKey: "agents:configure" });
+    const actor: Express.Request["actor"] = type === "board"
+      ? { type, source: "session", userId: principalId, companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "member", status: "active" }] }
+      : { type, source: "agent_key", agentId: principalId, companyId };
+    await request(app(actor)).post(`/api/agents/${id}/pause`).send({}).expect(403);
+    const response = await request(app(actor)).patch(`/api/agents/${id}`).send({ defaultEnvironmentId: boundEnvironmentId });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await current(id)).toMatchObject({ defaultEnvironmentId: boundEnvironmentId, lifecycleState: "pausing", status: "paused" });
+  });
+
+  it.each(["board", "agent"] as const)("rejects a %s without configuration permission before saving the environment or pausing", async type => {
+    const id = await agent(otherEnvironmentId, { status: "running", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" }, lifecycleRequiredPluginIds: [] });
+    const principalId = type === "agent" ? await agent(otherEnvironmentId) : randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: type === "board" ? "user" : "agent", principalId, membershipRole: "member", status: "active" });
+    const actor: Express.Request["actor"] = type === "board"
+      ? { type, source: "session", userId: principalId, companyIds: [companyId],
+        memberships: [{ companyId, membershipRole: "member", status: "active" }] }
+      : { type, source: "agent_key", agentId: principalId, companyId };
+    const before = await current(id);
+    await request(app(actor)).patch(`/api/agents/${id}`).send({ defaultEnvironmentId: boundEnvironmentId }).expect(403);
+    expect(await current(id)).toMatchObject({ defaultEnvironmentId: otherEnvironmentId, lifecycleState: "ready", status: "running",
+      lifecycleVersion: before.lifecycleVersion, lifecycleOperation: before.lifecycleOperation });
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("retains the migration across a pending stop and worker restart without starting the new plugin early", async () => {
+    const id = await agent(otherEnvironmentId, { status: "running", lifecycleRequiredPluginIds: [] });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(), processPid: process.pid }).returning();
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    const driver = createLifecycleDriver(db, { call } as never);
+    const stopping = worker(row => row.lifecycleState === "pausing" ? driver.runHost(row) : Promise.resolve("complete"));
+    await stopping.process(id);
+    expect((await current(id)).lifecycleState).toBe("pausing");
+    expect(call).not.toHaveBeenCalled();
+    await stopping.stop();
+    await db.update(heartbeatRuns).set({ processPid: null,
+      resultJson: { executionCancellation: { state: "acknowledged" } } }).where(eq(heartbeatRuns.id, run.id));
+    await createAgentLifecycle(db).retry(id);
+    await worker().process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "ready", lifecycleRequiredPluginIds: [boundPluginId] });
+  });
+
+  it.each(["manual", "budget", "company_paused"])("preserves a %s hold added while migration is pausing", async reason => {
     const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
-    await expect(agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId })).rejects.toThrow("Pause the agent");
-    expect((await current(id)).defaultEnvironmentId).toBe(otherEnvironmentId);
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    await createAgentLifecycle(db).pauseAgent(id, reason);
+    await worker().process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "paused", status: "paused", lifecycleHolds: [reason] });
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("keeps the agent blocked when verification of the new environment fails", async () => {
+    const id = await agent(otherEnvironmentId, { lifecycleRequiredPluginIds: [] });
+    await agentConfiguration(db).update(id, { defaultEnvironmentId: boundEnvironmentId });
+    await worker(vi.fn(async (row: LifecycleAgent) => {
+      if (row.lifecycleState === "verifying") throw Object.assign(new Error("Fixture verification failed"), { code: "harness_test_failed" });
+      return "complete" as const;
+    })).process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleRequiredPluginIds: [boundPluginId] });
+    expect((await current(id)).lifecycleError).toBeTruthy();
   });
 
   it("lets a ready agent move when the plugin is selected, and keeps the selection when it leaves", async () => {

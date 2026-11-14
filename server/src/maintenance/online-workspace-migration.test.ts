@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { assertOnlineMigrationManifest, assertOnlineMigrationRuntime, assertOnlineMigrationSchema, onlineWorkspaceMigrationReceipt, parseOnlineWorkspaceMigrationRequest, runOnlineWorkspaceMigration } from "./online-workspace-migration.js";
 import type { Db } from "@paperclipai/db";
@@ -52,7 +53,10 @@ describe("online workspace migration request", () => {
   it("refuses duplicate membership and bounds the exact cohort", () => {
     const cohort = { ...request(), mode: "cohort", concurrency: 2 };
     expect(() => parseOnlineWorkspaceMigrationRequest({ ...cohort, workspaceIds: [cohort.workspaceIds[0], cohort.workspaceIds[0]] })).toThrow();
-    expect(() => parseOnlineWorkspaceMigrationRequest({ ...cohort, workspaceIds: Array(9).fill(cohort.workspaceIds[0]) })).toThrow();
+    const workspaceIds = Array.from({ length: 32 }, () => randomUUID());
+    expect(parseOnlineWorkspaceMigrationRequest({ ...cohort, workspaceIds, concurrency: 8 }).workspaceIds).toHaveLength(32);
+    expect(() => parseOnlineWorkspaceMigrationRequest({ ...cohort, workspaceIds: [...workspaceIds, randomUUID()] })).toThrow();
+    expect(() => parseOnlineWorkspaceMigrationRequest({ ...cohort, workspaceIds, concurrency: 9 })).toThrow();
   });
 });
 

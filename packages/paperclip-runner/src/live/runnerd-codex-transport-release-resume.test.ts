@@ -78,16 +78,19 @@ async function nativeWire(port: number, path: string, closeGate?: Promise<void>)
   });
 }
 
-it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot", "early claim", "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"] as const)(
+it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "acpx slow restart", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot", "early claim", "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"] as const)(
   "releases and resumes the native Codex source before attachment (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "runner-release-resume-"));
-    const acpx = mode === "acpx cache adoption";
+    const acpx = mode === "acpx cache adoption" || mode === "acpx slow restart";
     const sidecar = join(root, "sidecar"), sidecarScript = join(root, "sidecar-entry");
+    const restartStarted = join(root, "restart-started");
     if (acpx) {
       const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
       const fake = resolve(import.meta.dirname, "../../runner/target/debug/fake-acpx-sidecar");
       await writeFile(sidecarScript, "qualified fixture entry");
-      await writeFile(sidecar, `#!/bin/sh\nexec ${quote(fake)} --mode source-reconcile --profile-digest ${quote(QUALIFIED_ACPX_PROFILES.claude.commandDigest)} --journal ${quote(join(root, "calls"))} --source-fault ${quote(join(root, "fault"))}\n`, { mode: 0o700 });
+      const restartDelay = mode === "acpx slow restart"
+        ? `if [ -e ${quote(join(root, "calls"))} ]; then touch ${quote(restartStarted)}; sleep 1.5; fi\n` : "";
+      await writeFile(sidecar, `#!/bin/sh\n${restartDelay}exec ${quote(fake)} --mode source-reconcile --profile-digest ${quote(QUALIFIED_ACPX_PROFILES.claude.commandDigest)} --journal ${quote(join(root, "calls"))} --source-fault ${quote(join(root, "fault"))}\n`, { mode: 0o700 });
     }
     const listener = createServer();
     await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
@@ -214,6 +217,12 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       const opened = await bundle.transport.request("thread/start", { cwd: root, dynamicTools: [], ...(acpx ? { model: "explicit-source-model" } : {}) });
       const threadId = String((opened.thread as { id: string }).id);
       await complete();
+      if (mode === "acpx slow restart") {
+        await vi.waitFor(async () => expect(await readFile(restartStarted, "utf8")).toBe(""));
+        expect(await bundle.transport.release!()).toEqual(identity);
+        expect(pair.release).toHaveBeenCalledOnce();
+        expect(authority!.store.state.commands.filter(command => command.type === "runner.drain")).toHaveLength(1);
+      }
       if (mode === "empty goal snapshot") {
         await writeFile(goalGate, "release late goal");
         await vi.waitFor(() => expect(authority!.store.state.committedEvents.some(event => event.eventType === "session.goal.updated"

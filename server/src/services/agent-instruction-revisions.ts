@@ -1,3 +1,6 @@
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { extractAgentMentionIds } from "@paperclipai/shared";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
@@ -169,12 +172,14 @@ export function agentInstructionRevisionService(db: Db) {
       parentRevisionId: null, baseRevisionId: null, restoredFromRevisionId: null, source: "api",
       ...actorFields(actor), createdAt: new Date(0) };
   }
+  // The writer of a commit; a read passes no actor and names no writer.
   function actorFields(actor?: RevisionActor) {
+    const origin = actor ? currentPluginInteractionOrigin() : undefined;
     return {
-      actorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
-      actorUserId: actor?.type === "board" ? actor.userId ?? null : null,
-      responsibleUserId: actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
-      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null,
+      actorAgentId: origin?.agentId ?? (actor?.type === "agent" ? actor.agentId ?? null : null),
+      actorUserId: origin ? null : actor?.type === "board" ? actor.userId ?? null : null,
+      responsibleUserId: origin ? null : actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
+      sourceRunId: origin ? origin.runId ?? null : actor && actor.type !== "plugin" ? actor.runId ?? null : null,
     };
   }
   // Every save writes one `agent.files_updated` row with the path and content
@@ -267,6 +272,13 @@ export function agentInstructionRevisionService(db: Db) {
     instructionPath(input.entryFile);
     const bytes = "content" in input ? instructionBytes(input.content) : null;
     const result = await db.transaction(async (tx) => {
+      // Only a legacy revision can restore new bytes. A save or the current ETag
+      // restores the current bytes, which resolveRevision checks under the lock.
+      const [restoredInput] = "restoreRevisionId" in input
+        ? await tx.select().from(revisions).where(and(owner(input, input.entryFile), eq(revisions.id, input.restoreRevisionId))) : [];
+      const submittedContent = (bytes ?? (restoredInput ? Buffer.from(restoredInput.contentBase64, "base64") : Buffer.alloc(0))).toString("utf8");
+      await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+        operation: "configure", targetAgentId: input.agentId, lockAgentIds: extractAgentMentionIds(submittedContent), lock: "update" });
       const state = await lockTarget(tx, input, actor.type === "plugin" ? undefined : actor);
       const bound = actor.type === "plugin"
         ? await authorizePluginReset(tx, actor, input, state.agent)
@@ -294,11 +306,16 @@ export function agentInstructionRevisionService(db: Db) {
             )
           : null;
       const candidate = bytes ?? Buffer.from(restored!.contentBase64, "base64");
+      if (current?.contentBase64 !== candidate.toString("base64")) {
+        await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+          operation: "mention", texts: [submittedContent] });
+      }
+      const origin = currentPluginInteractionOrigin();
       const writer = actorFields(bound);
       const recordSave = (row: Revision, adopted: boolean) => tx.insert(activityLog).values({ companyId: input.companyId,
-        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
-        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: writer.sourceRunId,
+        actorType: origin ? "agent" : bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
+        actorId: origin?.agentId ?? (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
+        agentId: origin?.agentId ?? (bound.type === "agent" ? bound.agentId : null), runId: writer.sourceRunId,
         responsibleUserId: writer.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
         details: { path: input.entryFile, contentHash: row.contentHash, byteLength: row.byteLength, created: current === null,
           source: adopted ? "adopted" : restored ? "legacy_restore" : (input as InstructionCommitInput).source } })

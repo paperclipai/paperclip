@@ -385,6 +385,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableMcpTasks: {
+    title: "Durable app actions (MCP Tasks)",
+    description:
+      "Let connected apps run long actions, such as CI runs or deploys, as tasks that Paperclip keeps track of across timeouts, restarts, and deploys, so the work is never started twice.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:

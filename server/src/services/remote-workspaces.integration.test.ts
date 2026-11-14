@@ -407,7 +407,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "restore lock busy"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "full sandbox disk", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -461,6 +461,26 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
       expect(transient).toMatchObject({ step: "sandbox_restore", retryable: true, message: "remote_workspace_restore_failed: step=sandbox_restore; "
         + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1" });
+      expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      vi.mocked(second.runner!.execute).mockRestore();
+    }
+    if (mode === "full sandbox disk") {
+      // The sandbox cannot hold even one copy: every restored file write fails
+      // with ENOSPC. That repeats on every automatic retry, so it is named and
+      // goes to the board, whose Retry works once the sandbox has space.
+      const preload = path.join(root, "full-disk.cjs");
+      await fs.writeFile(preload, `const fs=require('node:fs'),open=fs.promises.open;
+fs.promises.open=async(...args)=>{const handle=await open.apply(fs.promises,args);
+ if(process.argv.includes('restore'))handle.writeFile=async()=>{throw Object.assign(Error('ENOSPC: no space left on device, write'),{code:'ENOSPC'})};
+ return handle;};
+require('node:module').syncBuiltinESMExports();`);
+      const run = second.runner!.execute.bind(second.runner);
+      vi.spyOn(second.runner!, "execute").mockImplementation(async command => run(command.args?.[1]?.includes("remote_workspace_restore_failed")
+        ? { ...command, env: { ...command.env, NODE_OPTIONS: `--require ${preload}` } } : command));
+      const full = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(full).toMatchObject({ step: "sandbox_restore", retryable: false, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract reason=sandbox_disk_full" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
       vi.mocked(second.runner!.execute).mockRestore();
     }
@@ -760,7 +780,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
+  it.each(["pending", "needs_repair"] as const)("cold restores a workspace and prepares its preserved %s repository through normal admission", async state => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -787,7 +807,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
       const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
         executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
-        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"],
+        state, failureCode: state === "needs_repair" ? "repository_preparation_failed" : null }).returning();
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
@@ -842,7 +863,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+        .toMatchObject([{ ...repository, state: "ready", failureCode: null, pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
           branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
@@ -1112,6 +1133,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
       eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
     expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    // The restore records where it spent its time and the storage requests it sent.
+    expect(operation?.metadata?.restoreTiming).toMatchObject({ schema: "paperclip.remote-workspace-restore-timing.v1",
+      downloadMs: expect.any(Number), decryptMs: expect.any(Number), plaintextVerifyMs: expect.any(Number), publishMs: expect.any(Number),
+      bytes: expect.any(Number), requests: expect.objectContaining({ requests: expect.any(Number) }) });
     await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
     await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
     failCleanup = false;
@@ -1254,7 +1279,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
+      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
@@ -1266,6 +1292,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
       captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
+        bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);
@@ -1334,6 +1362,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["journal", "ledger"])("respects historical %s generation reservations without changing the committed parent", async highest => {
     const reserved = await reserve({ kind: "empty" }), first = await target("reserved-generations");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "new-generation.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     // A crash after journaling can leave no ledger row; retention can leave a
     // deleted ledger after the source operation is gone. Both remain reserved.
@@ -1391,6 +1420,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it("reserves distinct generations for competing boundaries and fences the losing publication", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("competing-boundaries");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "competing-save.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     let arrivals = 0, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -1427,6 +1457,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["failed", "succeeded"])("protects an active duplicate after its peer %s and cleans it only after the last invocation settles", async peer => {
     const reserved = await reserve({ kind: "empty" }), first = await target("active-duplicate");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "duplicate-save.txt"), "new workspace contents\n");
     let release!: () => void, entered!: () => void, releaseOwnership!: () => void, postUpload!: () => void, uploads = 0, checks = 0;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -1495,6 +1526,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["untracked", "malformed-owner", "malformed-active"])("keeps adopted %s work pinned after a newer final save", async marker => {
     const reserved = await reserve({ kind: "empty" }), first = await target("unknown-save-work");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "adopted-save.txt"), "new workspace contents\n");
     const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
       target: first, assertOwned: async () => undefined, boundary: "repository:legacy" };
     const failed: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
@@ -1510,6 +1542,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (marker === "malformed-active") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(jsonb_set(${workspaceOperations.metadata},
       '{saveWork,unknown}', 'false'::jsonb), '{saveWork,activeIds}', '{"unfinished":"unknown"}'::jsonb)` })
       .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    await fs.writeFile(path.join(prepared.remoteRoot, "after-adopted-save.txt"), "newer final workspace contents\n");
     const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
     const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, old!.sourceOperationId));
     expect(held).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { state: "pending" } } });

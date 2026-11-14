@@ -5,7 +5,12 @@ import { prepareAgentConfiguration } from "../services/agent-configuration.js";
 
 const existing = { id: "agent", companyId: "company", status: "idle", budgetMonthlyCents: 500 } as AgentConfigurationRecord;
 // Preparation queues retention work through the database before reading the patch.
-const fakeDb = () => ({ execute: async () => [] }) as unknown as Db;
+const fakeDb = () => ({
+  execute: async () => [],
+  select: () => ({ from: () => ({ where: () => ({
+    orderBy: async () => [{ id: "ceo", companyId: "company", permissions: {} }],
+  }) }) }),
+}) as unknown as Db;
 describe("budget authority in configuration preparation", () => {
   it("rejects agent-originated budget changes before persistence or policy audit", async () => {
     const db = fakeDb();

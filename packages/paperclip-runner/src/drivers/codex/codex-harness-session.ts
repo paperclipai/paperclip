@@ -91,6 +91,10 @@ export class CodexHarnessSession
     }
   }
 
+  downloadAttachment(grant: Parameters<NonNullable<HarnessSession["downloadAttachment"]>>[0]) {
+    return this.transport.downloadAttachment?.(grant) ?? Promise.resolve(null);
+  }
+
   supportsTurnReasoning(): boolean {
     return this.transport.supportsTurnReasoning?.() === true;
   }
@@ -472,6 +476,19 @@ export class CodexHarnessSession
       );
       return;
     }
+    if (this.awaitingProviderTurn && this.activeTurnId === null && !this.turnStartPending) {
+      this.emit(
+        "item.completed",
+        {
+          kind: "interrupt_acknowledgement",
+          text: "Paperclip stopped waiting for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          reason: boundedText(input.reason),
+        },
+        { itemId: `interrupt:provider-turn-wait:${++this.interruptSequence}` },
+      );
+      return;
+    }
     if (this.terminal || this.activeTurnId === null) {
       throw new HarnessOperationAlreadyTerminalError("interruption");
     }
@@ -832,7 +849,7 @@ export class CodexHarnessSession
           ["completed", "failed", "interrupted", "cancelled"].includes(status)
         ) {
           reconciledTerminalTurnId = expectedTurnId;
-          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true, expectedTurn.awaitingProviderTurn === true);
         } else {
           throw new HarnessReconciliationError(
             `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
@@ -916,15 +933,29 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}),
     };
   }
 
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.assertProtocolIntegrity();
+    if (this.activeTurnId !== null && this.activeTurnId !== input.turnId) return null;
+    const receipt = await this.transport.settleCancelledTurn?.(input) ?? null;
+    this.assertProtocolIntegrity();
+    if (receipt) {
+      this.cancelPendingRequests("session_closed");
+      this.activeTurnId = null;
+      this.eventQueue.close();
+    }
+    return receipt;
+  }
+
   // `force` is part of the contract. Codex closes the same way with or without it.
-  async close(input: { reason: string; force?: boolean }): Promise<void> {
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
-    await this.transport.close(input?.reason);
+    await this.transport.close(input?.reason, { retainUnsettledRemoteRunner: input?.retainUnsettledRemoteRunner === true });
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {

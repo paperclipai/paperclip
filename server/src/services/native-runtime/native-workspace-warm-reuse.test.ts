@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, plugins } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, plugins, workspaceOperations } from "@paperclipai/db";
 import type { Environment } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -11,6 +11,9 @@ import * as leases from "../environments.js";
 import * as providers from "../sandbox-provider-runtime.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { recoverRetainedWorkspace } from "../workspace-recovery.js";
+import { preserveLegacyWorkspaceRestoreSources } from "../legacy-workspace-restore-recovery.js";
+import { settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
+import { settleRecoveredWorkspaceRestoreHolds } from "../workspace-restore-hold-settlement.js";
 import { nativeWorkspaceExportPendingForLease, nativeWorkspaceExportPendingForResource } from "./native-workspace-finalization-state.js";
 
 describe("native workspace export warm reuse fence", () => {
@@ -25,7 +28,7 @@ describe("native workspace export warm reuse fence", () => {
   afterEach(() => vi.restoreAllMocks());
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
 
-  async function seed(plugin: boolean) {
+  async function seed(plugin: boolean, release = true) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), pluginId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Native warm fence", issuePrefix: `W${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
@@ -64,11 +67,11 @@ describe("native workspace export warm reuse fence", () => {
     const input = { companyId, agentId, issueId, environment: environment as unknown as Environment,
       heartbeatRunId: runId, persistedExecutionWorkspace: null };
     const acquired = await runtime.acquireRunLease(input);
-    await runtime.releaseRunLeases(runId, "released", undefined, "keep_running");
+    if (release) await runtime.releaseRunLeases(runId, "released", undefined, "keep_running");
     const reference = { schema: "paperclip.native-workspace-sync/v3", state: "prepared", leaseId: acquired.lease.id,
       providerLeaseId: acquired.lease.providerLeaseId, workspaceId: issueId, remoteCwd: "/work", resourceDisposition: "keep_running",
       descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null };
-    await db.update(heartbeatRuns).set({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: reference } }).where(eq(heartbeatRuns.id, runId));
+    if (release) await db.update(heartbeatRuns).set({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: reference } }).where(eq(heartbeatRuns.id, runId));
     const nextRunId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, issueId, nativeIssueId: issueId, runtimeMode: "native", status: "running" });
     call.mockClear();
@@ -276,5 +279,65 @@ describe("native workspace export warm reuse fence", () => {
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");
       expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentResumeLease"]);
     } finally { release(); await ordinary; }
+  });
+
+  // Regression: a run resumed a warm sandbox and was interrupted before provider
+  // work. The restore hold stopped the sandbox and changed its lease to
+  // retain_on_failure. Recovery saved the files, yet the next run got a created
+  // lease (and a full workspace realize) because nothing restored reuse.
+  async function settleRestoreHold(fault: "none" | "unsettled" | "dirty" | "unstopped") {
+    const f = await seed(true, false), actionId = randomUUID(), operationId = randomUUID();
+    // The interrupted run's real terminal hold over its active warm lease.
+    const [interrupted] = await db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: new Date(),
+      resultJson: { workspaceRestoreFailure: "restore_failed" } }).where(eq(heartbeatRuns.id, f.runId)).returning();
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(await db.transaction(tx => preserveLegacyWorkspaceRestoreSources(tx as unknown as typeof db, interrupted, source)))
+      .toEqual([f.lease.id]);
+    const [stopping] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(stopping).toMatchObject({ leasePolicy: "retain_on_failure", status: "pending_cleanup" });
+    if (fault !== "unstopped") expect(await settleStopOnlyCleanup(db, stopping, { attemptId: String(stopping.metadata!.pendingCleanupAttemptId),
+      receipt: { providerLeaseId: f.lease.providerLeaseId, state: "stopped" } })).not.toBeNull();
+    // The recovery's own receipts: files saved from this allocation, and its finalize.
+    const system = { ...createSystemRecovery(f.runId), state: fault === "unsettled" ? "running" : "complete",
+      phase: "reconcile_effects", preservationOperationIds: [operationId] };
+    await db.insert(issueRecoveryActions).values({ id: actionId, companyId: f.input.companyId, sourceIssueId: f.input.issueId,
+      kind: "active_run_watchdog", ownerType: "system", cause: "native_continuation_requires_reconciliation", fingerprint: f.runId,
+      nextAction: "Recover saved work", evidence: { runId: f.runId, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] }, systemRecovery: system,
+        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId,
+          status: fault === "unsettled" ? "recovering" : "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] } } });
+    await db.insert(workspaceOperations).values([{ id: operationId, companyId: f.input.companyId, issueId: f.input.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_recovery", status: "succeeded", finishedAt: new Date(),
+      metadata: { recoveryActionId: actionId, leaseId: f.lease.id, providerLeaseId: f.lease.providerLeaseId } },
+    { companyId: f.input.companyId, issueId: f.input.issueId, heartbeatRunId: f.runId, phase: "workspace_finalize",
+      status: "succeeded", finishedAt: new Date(), metadata: { owningService: "workspace_recovery", preservationOperationIds: [operationId] } }]);
+    // An unsaved writer still bound to the stopped sandbox keeps it held.
+    if (fault === "dirty") await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: f.reference } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const restored = await settleRecoveredWorkspaceRestoreHolds(db, { companyId: f.input.companyId, issueId: f.input.issueId,
+      runId: f.runId, actionId });
+    f.call.mockClear();
+    return { ...f, restored };
+  }
+
+  it("resumes the warm sandbox on the same provider lease after a restore hold settles", async () => {
+    const f = await settleRestoreHold("none");
+    const next = await f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId });
+    expect(next.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed" });
+    expect(next.lease).toMatchObject({ heartbeatRunId: f.nextRunId, providerLeaseId: f.lease.providerLeaseId,
+      leasePolicy: "reuse_by_environment" });
+    expect(f.restored).toEqual([f.lease.id]);
+    expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentResumeLease"]);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
+      .toMatchObject({ heartbeatRunId: f.runId, status: "expired", leasePolicy: "reuse_by_environment" });
+  });
+
+  it.each(["unsettled", "dirty", "unstopped"] as const)("keeps a %s restore hold out of warm reuse", async fault => {
+    const f = await settleRestoreHold(fault);
+    expect(f.restored).toEqual([]);
+    const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(held.leasePolicy).toBe("retain_on_failure");
+    expect(held.metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.runId, originalLeasePolicy: "reuse_by_environment" });
+    if (fault !== "unstopped") await expectFreshAllocation(f);
   });
 });

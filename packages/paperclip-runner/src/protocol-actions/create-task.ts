@@ -29,7 +29,7 @@ export const createTaskAction = {
   },
   "documentation": {
     "title": "Create task",
-    "description": "Create a project task from a conversation, or a child from an ordinary task. Set parentTaskId to place the task under a specific task, such as a top-level task you just created. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
+    "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
     "note": null
   },
   "examples": {
@@ -81,7 +81,7 @@ export const createTaskAction = {
       "operationId": "create_task",
       "version": 1,
       "title": "Create task",
-      "description": "Create a project task from a conversation, or a child from an ordinary task. Set parentTaskId to place the task under a specific task, such as a top-level task you just created. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
+      "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
       "exposure": "optional",
       "requiredClaims": [
         "delegation:tasks:create"
@@ -101,7 +101,7 @@ export const createTaskAction = {
           },
           "title": {
             "type": "string",
-            "description": "Child task title.",
+            "description": "Task title.",
             "minLength": 1,
             "maxLength": 500
           },
@@ -110,7 +110,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets.",
+            "description": "Self-contained task instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The new task does not inherit this conversation. Do not use unresolved references such as provided above, or copy credentials or secrets.",
             "maxLength": 20000
           },
           "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
@@ -156,7 +156,7 @@ export const createTaskAction = {
               "string",
               "null"
             ],
-            "description": "Optional parent task ID. Omit it to create a child of the current task, or a top-level task from a conversation. To split work into a parent and subtasks, create the parent first, then pass its ID here for each subtask. Agents nest one level: a child of a child is placed beside it, and the result reports the parent actually used. A conversation is never a parent.",
+            "description": "Optional parent task ID. Omit it to create a child of the current task, or a top-level task from a conversation. Agents nest one level: a child of a child is placed beside it, and the result reports the parent actually used. A conversation is never a parent.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -285,7 +285,7 @@ export const createTaskAction = {
           },
           "description": {
             "type": "string",
-            "description": "Self-contained child instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The child does not inherit the parent conversation. Do not use unresolved references such as provided above, or copy credentials or secrets."
+            "description": "Self-contained task instructions with actual required inputs, exact payloads or accessible authorized source references, constraints, and requested outputs. The new task does not inherit this conversation. Do not use unresolved references such as provided above, or copy credentials or secrets."
           },
           "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {

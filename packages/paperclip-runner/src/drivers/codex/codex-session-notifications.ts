@@ -30,6 +30,7 @@ import {
   recordWorkspaceChanges,
 } from "./codex-session-workspace.js";
 import {
+  RUNNERD_RUN_TERMINAL,
   RUNNERD_RUNTIME_ACTIVITY,
   boundedText,
   differingJsonPaths,
@@ -152,6 +153,19 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
   }
 
 async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+    if (notification.method === "paperclip/runTerminal") {
+      if ((notification.params as Record<PropertyKey, unknown>)[RUNNERD_RUN_TERMINAL] !== true) return;
+      if (state.awaitingProviderTurn && state.activeTurnId === null && !state.turnStartPending) {
+        state.awaitingProviderTurn = false;
+        state.emit("item.completed", {
+          kind: "interrupt_acknowledgement",
+          text: "The Runner ended the wait for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          cause: "run_terminal",
+        }, { itemId: `interrupt:provider-turn-wait:run-terminal:${state.sourceSequence + 1}` });
+      }
+      return;
+    }
     if (notification.method === "paperclip/runtimeActivityRecorded") {
       const params = notification.params;
       if ((params as Record<PropertyKey, unknown>)[RUNNERD_RUNTIME_ACTIVITY] !== true) return;
@@ -538,7 +552,8 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         state.recordHistoryEvent(notification.method, turnId);
         return;
       }
-      const autonomousGoalTurn = state.currentGoal?.status === "active"
+      const providerStartedTurn = params.origin === "provider" && state.awaitingProviderTurn;
+      const autonomousGoalTurn = (state.currentGoal?.status === "active" || providerStartedTurn)
         && state.activeTurnId === null
         && !state.turnStartPending
         && !state.protocolFailed
@@ -569,9 +584,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       state.activeTurnId = turnId;
       state.turnStartPending = false;
       state.turnStarted = true;
+      state.awaitingProviderTurn = false;
       state.emit(
         "turn.started",
-        { status: text(turn.status, "inProgress") },
+        { status: text(turn.status, "inProgress"), ...(providerStartedTurn ? { origin: "provider" } : {}) },
         { turnId },
       );
       return;
@@ -608,7 +624,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       }
       if (ignoreUnboundRestoredTurnLoss(state, turn, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "turn terminal")) return;
-      mapTerminalTurn(state, turn, turnId);
+      mapTerminalTurn(state, turn, turnId, false, params.awaitingProviderTurn === true);
       return;
     }
     if (notification.method === "item/started") {

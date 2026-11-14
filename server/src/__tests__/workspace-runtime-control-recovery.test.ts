@@ -652,6 +652,28 @@ describeEmbeddedPostgres("managed runtime-control operation recovery", () => {
       expect(hints.some(hint => hint.includes(operationId!))).toBe(true);
     });
 
+    it("wakes the ownership worker when a local workspace command starts, before its row is visible", async () => {
+      const seeded = await seedWorkspace();
+      const recorder = workspaceOperationService(db).createRecorder({ companyId: seeded.companyId,
+        executionWorkspaceId: seeded.executionWorkspaceId });
+      const hints: string[] = [];
+      const stop = subscribeDatabaseWork(db, DELIVERY_QUEUES.ownershipInvariantReport, (event, eventHints) => {
+        if (event === "settled") hints.push(...(eventHints ?? []));
+      });
+      let operationId: string | undefined;
+      try {
+        await recorder.recordOperation({ phase: "workspace_teardown", command: "true", run: async () => {
+          operationId = (await db.select().from(workspaceOperations).where(eq(workspaceOperations.status, "running")))[0]?.id;
+          return { status: "succeeded" };
+        } });
+        for (let attempt = 0; attempt < 50 && !hints.some(hint => operationId && hint.includes(operationId)); attempt += 1) {
+          await delay(20);
+        }
+      } finally { stop(); }
+      expect(operationId).toBeTruthy();
+      expect(hints.some(hint => hint.includes(operationId!))).toBe(true);
+    });
+
     it("stamps new operations with the server's boot id and start time", async () => {
       const seeded = await seedWorkspace();
       const service = workspaceOperationService(db);

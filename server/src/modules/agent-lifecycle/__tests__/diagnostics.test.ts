@@ -1,3 +1,5 @@
+import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "../../../services/ai-connection-configuration-failure.js";
+import { unprocessable } from "../../../errors.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { createLifecycleWorker } from "../application/worker.js";
@@ -83,6 +85,23 @@ describe("lifecycle failure diagnostics", () => {
     expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "verifying" }, error)).toBe(true);
     expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
     expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "cleaning_up" }, error)).toBe(false);
+  });
+
+  it.each([
+    "ai_connection_responsible_user_missing", "ai_connection_default_missing", "ai_connection_missing",
+    "ai_connection_incompatible", "ai_connection_unavailable", "ai_connection_credential_not_shared",
+  ] as const)("holds owned AI selection failures with safe guidance: %s", reason => {
+    const error = reason === "ai_connection_credential_not_shared" ? aiConnectionCredentialNotSharedFailure()
+      : aiConnectionConfigurationFailure(reason, "private provider detail", { connectionId: "private-id" });
+    const context = { stage: "host" as const, phase: "verifying" as const };
+    expect(lifecycleVerificationNeedsRetry(context, error)).toBe(true);
+    const message = lifecycleFailureMessage(context, error);
+    expect(message).toContain("Automatic verification is paused");
+    expect(message).not.toMatch(/private|retry automatically/);
+    expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
+    // Only the selector can establish this evidence; unrelated HTTP errors still retry.
+    expect(lifecycleVerificationNeedsRetry(context, unprocessable("same text", { code: reason }))).toBe(false);
+    expect(lifecycleVerificationNeedsRetry(context, { code: reason })).toBe(false);
   });
 
   it("allows two automatic retries of a generic failed test before waiting for repair", () => {

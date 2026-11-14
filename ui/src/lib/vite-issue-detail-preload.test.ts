@@ -1,7 +1,7 @@
 import { runInNewContext } from "node:vm";
 import { expect, it } from "vitest";
 import { preloadIssueDetail } from "./vite-issue-detail-preload";
-import { TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
+import { EARLY_CHAT_BOOTSTRAP_GLOBAL, TASK_COLLECTION_PAINTED_EVENT } from "./issue-detail-preload-events";
 
 function bootstrap(pathname: string, imports: Record<string, string[]> = {}, responseOk = true, cacheControl = "public, max-age=31536000, immutable") {
   const hook = preloadIssueDetail().transformIndexHtml;
@@ -15,17 +15,18 @@ function bootstrap(pathname: string, imports: Record<string, string[]> = {}, res
   const links: { rel: string; href: string; crossOrigin: string }[] = [];
   const fetches: unknown[][] = [];
   const listeners = new Map<string, (event: unknown) => void>();
+  const win: Record<string, unknown> = { addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener) };
   runInNewContext(tags[0].children, {
     location: { pathname, origin: "https://board.example" },
     fetch: (...args: unknown[]) => { fetches.push(args); return Promise.resolve({ ok: responseOk, headers: { get: () => cacheControl }, arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) }); },
-    window: { addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener) },
+    window: win,
     document: {
       createElement: () => ({}),
       head: { appendChild: (link: typeof links[number]) => links.push(link) },
       addEventListener: (name: string, listener: (event: unknown) => void) => listeners.set(name, listener),
     },
   });
-  return { links, fetches, painted: () => listeners.get(TASK_COLLECTION_PAINTED_EVENT)!({}), intent: (type: string, pathname: string, origin = "https://board.example") => {
+  return { win, links, fetches, painted: () => listeners.get(TASK_COLLECTION_PAINTED_EVENT)!({}), intent: (type: string, pathname: string, origin = "https://board.example") => {
     listeners.get(type)!({ target: { closest: () => ({ pathname, origin }) } });
   } };
 }
@@ -80,4 +81,16 @@ it.each([[true, "public, max-age=31536000, immutable", 1], [false, "public, max-
   await new Promise(resolve => setImmediate(resolve));
   expect(page.links).toHaveLength(linkCount);
   expect(page.fetches).toHaveLength(1);
+});
+
+it.each([["/PAP/issues/PAP-1", "PAP-1"], ["/issues/PAP-1/", "PAP-1"]])("starts the chat's first-frame data on a hard load of %s", (pathname, ref) => {
+  const page = bootstrap(pathname);
+  expect(page.fetches).toContainEqual([`/api/issues/${ref}/chat-bootstrap`, { credentials: "include", headers: { Accept: "application/json" } }]);
+  expect(page.win[EARLY_CHAT_BOOTSTRAP_GLOBAL]).toMatchObject({ ref });
+});
+
+it.each(["/PAP/chats/helper", "/PAP/issues", "/PAP/issues/all", "/PAP/inbox/mine"])("does not fetch chat data on a hard load of %s", pathname => {
+  const page = bootstrap(pathname);
+  expect(page.fetches.filter(([url]) => String(url).includes("chat-bootstrap"))).toEqual([]);
+  expect(page.win[EARLY_CHAT_BOOTSTRAP_GLOBAL]).toBeUndefined();
 });

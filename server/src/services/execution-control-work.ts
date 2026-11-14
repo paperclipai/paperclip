@@ -5,7 +5,8 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
-import { hasPendingNativeReplacements } from "./native-runtime/native-safe-replacement.js";
+import { heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt } from "./fresh-continuation-fallback.js";
+import { hasPendingNativeReplacements, nextNativeOwnershipProofDeadlineAt } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
@@ -88,7 +89,9 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      return await hasPendingNativeReplacements(db) ? retry() : null;
+      if (await hasPendingNativeReplacements(db)) return retry();
+      const at = await nextNativeOwnershipProofDeadlineAt(db);
+      return at === null ? null : deadline([new Date(at)]);
     },
     async continuation() {
       const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
@@ -103,11 +106,14 @@ export function executionControlSchedule(db: Db) {
       return rows.length ? retry() : null;
     },
     async disposition() {
-      const [conversation, execution] = await Promise.all([
+      const now = new Date();
+      const [conversation, execution, held, nextCheck] = await Promise.all([
         db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(obsoleteExecutionConversationHold()).limit(1),
         unresolvedExecutionDispositions(db, 1),
+        heldExecutionsAwaitingFreshContinuation(db, now, 1),
+        nextFreshContinuationCheckAt(db),
       ]);
-      return conversation.length || execution.length ? retry() : null;
+      return conversation.length || execution.length || held.length ? retry() : deadline([nextCheck ? new Date(nextCheck) : null]);
     },
     async localLogin() {
       const rows = await db.select({ at: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(

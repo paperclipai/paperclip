@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agents, companies, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
@@ -11,6 +11,8 @@ import { createLifecycleWorker } from "../application/worker.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+
+import { aiConnectionService } from "../../../services/ai-connections.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIFECYCLE_VERIFICATION_RETRY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -53,6 +55,80 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { agent: await current(agent.id), work, driver, runHost };
   }
 
+  it("parks a real missing-default selection across restart and permits repair through the normal ready handoff", async () => {
+    const userId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    let repaired = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState === "verifying" && !repaired) await aiConnectionService(db).select({
+        companyId, userId, agentId: agent.id, adapterType: "paperclip_runner", runnerProvider: "opencode",
+        model: "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        binding: { mode: "responsible_user", provider: "openrouter", method: "api_key" },
+      });
+      return "complete" as const;
+    });
+    const onReady = vi.fn();
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const, onReady };
+    const work = configureAgentLifecycle(db, driver); workers.push(work);
+    const hired = await createAgentLifecycle(db).requestHire(companyId, { name: "Missing default", adapterType: "process" });
+    await work.process(hired.id);
+    const held = await current(hired.id);
+    expect(held).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleOperation: { retryRequired: true } });
+    expect(held.lifecycleError).toContain("personal default");
+    expect(held.lifecycleError).not.toContain("retry automatically");
+    expect(held.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(onReady).not.toHaveBeenCalled();
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(calls);
+    // Repair and Retry must still pass verification before the normal ready handoff.
+    repaired = true;
+    await createAgentLifecycle(db).retry(hired.id);
+    await restarted.sweep();
+    expect(await current(hired.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("parks owned account failures after pause/resume and accepts a durable connection repair recheck", async () => {
+    const userId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    let repaired = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState === "resuming" && !repaired) await aiConnectionService(db).select({ companyId, userId,
+        agentId: agent.id, adapterType: "paperclip_runner", runnerProvider: "opencode",
+        model: "openrouter/deepseek/deepseek-v4.1-flash-1017", binding: { mode: "responsible_user", provider: "openrouter", method: "api_key" } });
+      return "complete" as const;
+    });
+    const onReady = vi.fn();
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const, onReady };
+    const lifecycle = createAgentLifecycle(db), work = configureAgentLifecycle(db, driver); workers.push(work);
+    const hired = await lifecycle.requestHire(companyId, { name: "Resume account repair", adapterType: "process" });
+    await work.process(hired.id);
+    await lifecycle.pauseAgent(hired.id); await work.process(hired.id);
+    expect((await current(hired.id)).lifecycleState).toBe("paused");
+    onReady.mockClear();
+    await lifecycle.resumeAgent(hired.id); await work.process(hired.id);
+    const held = await current(hired.id);
+    expect(held).toMatchObject({ lifecycleState: "resuming", lifecycleOperation: { retryRequired: true } });
+    expect(held.lifecycleOperation).not.toHaveProperty("retryAt");
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep(); expect(runHost).toHaveBeenCalledTimes(calls);
+    repaired = true;
+    expect(await db.transaction(tx => requestAgentLifecycleRecheckInTransaction(tx, { companyId, agentId: hired.id,
+      configurationRepaired: true }, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle)))).toBe(true);
+    await restarted.sweep();
+    expect((await current(hired.id)).lifecycleState).toBe("ready");
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
   it("persists a failed test across worker restarts without scanning, claiming, or probing it again", async () => {
     const { agent, work, driver, runHost } = await failed();
     expect(agent).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleOperation: { retryRequired: true } });
@@ -73,6 +149,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await work.process(agent.id);
     expect(runHost).toHaveBeenCalledTimes(calls);
     expect((await current(agent.id)).lifecycleOperation).toEqual(agent.lifecycleOperation);
+  });
+
+  it("does not let an in-flight failed verifier overwrite a completed connection repair", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Repair while checking", status: "paused",
+      lifecycleState: "verifying", lifecycleHolds: [], lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, verificationFailures: 2 } }).returning();
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    const owner = "old-account-check";
+    const claimed = await store.claim(agent!.id, owner, new Date());
+    expect(claimed).not.toBeNull();
+    await db.transaction(async tx => {
+      expect(await requestAgentLifecycleRecheckInTransaction(tx, { companyId, agentId: agent!.id,
+        expectedVersion: agent!.lifecycleVersion, configurationRepaired: true },
+      () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle))).toBe(true);
+    });
+    await store.defer(claimed!, owner, "Old missing account", new Date(), { retryRequired: true });
+    const repaired = await current(agent!.id);
+    expect(repaired.lifecycleError).toBeNull();
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("verificationFailures");
+    expect(await store.claim(agent!.id, "new-check", new Date())).not.toBeNull();
   });
 
   it("permits an explicit retry of the same operation and completes verification before readiness", async () => {

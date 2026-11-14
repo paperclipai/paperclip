@@ -124,7 +124,26 @@ export function createRunnerE2EServerStopper(options: {
       if (state.finalRequested || state.restartPromise) return Promise.reject(new Error("Restart already requested or final cleanup active"));
       state.restartPromise = (async () => {
         state.gracefulDeadline = Date.now() + options.forcedTimeoutMs;
-        await state.owner.signal("SIGKILL");
+        try {
+          await state.owner.signal("SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+          if (!exited(child)) child.kill("SIGKILL");
+          while (!exited(child) && Date.now() < state.gracefulDeadline) await wait(25);
+          if (!exited(child)) throw error;
+          const refused: number[] = [];
+          await settleUncertainIdentity(() => state.owner.observe(), () => state.gracefulDeadline!);
+          for (const group of state.owner.liveGroups()) {
+            try {
+              await state.owner.signal("SIGKILL", new Set([group.processGroupId]));
+            } catch (groupError) {
+              if ((groupError as NodeJS.ErrnoException).code !== "EPERM") throw groupError;
+              refused.push(group.processGroupId);
+            }
+          }
+          options.log(`Warning: SIGKILL of the Paperclip process groups reported EPERM after server pid=${child.pid} exited; `
+            + `groups still refusing SIGKILL: ${refused.join(",") || "none"}; continuing cleanup\n`);
+        }
         await stopOnce(child, state, "SIGKILL");
       })();
       return state.restartPromise;

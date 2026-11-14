@@ -9,6 +9,14 @@ import {
 } from "./wake-context.js";
 
 describe("wake context", () => {
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"])(
+    "keeps a bounded response classified through a %s resource wait", retryReason => {
+      const context = { interactionId: "response", interactionStatus: "answered", mutation: "interaction",
+        dependencyBlockedInteraction: true, wakeReason: `${retryReason}_retry`, retryReason };
+      expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
+      expect(isResolvedInteractionContinuationWakeContext({ ...context, dependencyBlockedInteraction: false })).toBe(false);
+      expect(isResolvedInteractionContinuationWakeContext({ ...context, mutation: undefined })).toBe(false);
+    });
   it("recognizes a retired available connection without accepting ordinary expiry", () => {
     const context = { interactionId: "connection", interactionStatus: "expired", interactionKind: "connection_intent",
       connectionIntentResolution: "existing_connection", mutation: "interaction", wakeReason: "issue_commented" };

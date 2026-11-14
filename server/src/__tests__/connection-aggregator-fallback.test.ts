@@ -1,5 +1,6 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/protocol-actions/request-human-input.js";
+import { toolInputVariantError } from "../../../packages/paperclip-runner/src/contracts/tool-input-variants.js";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -338,14 +339,14 @@ const support = await getEmbeddedPostgresTestSupport();
     it("keeps an external typo as a discovery suggestion until its app is selected", async () => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(claims,
-        "Find Circlebak meeting transcripts and action items from yesterday");
-      expect(result.results.some(item => item.service === "via:composio:circleback-mcp")).toBe(true);
+        "Find Fathm meeting transcripts and action items from yesterday");
+      expect(result.results.some(item => item.service === "via:composio:fathom")).toBe(true);
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("aggregator.targetService");
     });
     it.each([
-      ["help me find tools for circle back", "circleback-mcp"],
-      ["Can you connect Circleback MCP to get all our meeting notes?", "circleback-mcp"],
+      ["help me find tools for otter ai", "otter-ai-mcp"],
+      ["Can you connect Fathom to get all our meeting notes?", "fathom"],
       ["Find Attio tools to review all our customer contacts before next week's meeting", "attio"],
       ["Help me find a ClickUp connection to organize our team's projects", "clickup"],
     ])("finds verified aggregator apps in natural-language queries: %s", async (query, target) => {
@@ -379,18 +380,32 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     it("returns multiple aggregator apps without inventing a combined route or choosing consent", async () => {
       await resetQuestions();
-      const result = await connectionIntentService(db).search(claims, "Find Circleback and Attio tools");
-      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["via:composio:circleback-mcp", "via:composio:attio"]));
+      const result = await connectionIntentService(db).search(claims, "Find Fathom and Attio tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["via:composio:fathom", "via:composio:attio"]));
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("aggregator.targetService");
     });
     it("keeps native and aggregator app matches from the same query", async () => {
       await resetQuestions();
-      const result = await connectionIntentService(db).search(claims, "Find Notion and Circleback tools");
-      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["notion", "via:composio:circleback-mcp"]));
+      const result = await connectionIntentService(db).search(claims, "Find Notion and Fathom tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["notion", "via:composio:fathom"]));
       expect(result.providerQuestion).toBeUndefined();
     });
 
+    // Composio lists Circleback too (circleback_mcp), but with fewer tools and no
+    // meeting cards; the built-in connection answers these requests directly.
+    it.each([
+      "help me find tools for circle back",
+      "Can you connect Circleback MCP to get all our meeting notes?",
+      "Find Circleback meeting transcripts and action items from yesterday",
+    ])("prefers the built-in Circleback connection over its aggregator listing: %s", async (query) => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, query);
+      expect(result.results[0]?.service).toBe("circleback");
+      expect(result.results.some(item => item.service.startsWith("via:"))).toBe(false);
+      expect(result.providerQuestion).toBeUndefined();
+      expect(result.instruction).toContain("connection_request");
+    });
     it("prefers the built-in Jira connection and returns a direct instruction", async () => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(
@@ -486,7 +501,9 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(questionSetToAskUserQuestionsPayload(result.providerQuestionSet!).questions).toEqual([result.providerQuestion]);
       expect(result.instruction).toContain("questionSet:providerQuestionSet");
       expect(result.instruction).not.toContain("do not add questionSet");
-      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })).toBe(false);
+      // The advertised schema is a plain object; the questions rule is a server-checked variant.
+      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })
+        && toolInputVariantError("request_human_input", { ...input, payload: { version: 1 } }) === null).toBe(false);
       expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1,
         questionSet: { ...result.providerQuestionSet, questions: [{ ...result.providerQuestionSet!.questions[0], answerMode: "text" }] } } })).toBe(false);
       expect(result.results.every((item) => item.state !== "ready")).toBe(true);

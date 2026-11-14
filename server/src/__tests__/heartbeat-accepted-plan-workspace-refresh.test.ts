@@ -863,7 +863,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9302",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Make the plan only.");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("guards cross-issue accepted-plan retries even when the waking issue is standard work mode", async () => {
@@ -1025,7 +1025,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       otherActiveClaimIdentifier: "PAP-9402",
     }));
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Issue: \"PAP-9401\"");
-    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Implement the accepted plan on this issue.");
   }, 20_000);
 
   it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
@@ -1163,7 +1163,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Implement the accepted plan on this issue.",
     );
   }, 20_000);
 });

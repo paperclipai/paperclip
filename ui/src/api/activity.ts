@@ -20,6 +20,8 @@ export interface RunForIssue {
   errorCode?: string | null;
   /** Bounded model rejection or the fixed credential-sharing denial message. */
   error?: string | null;
+  /** Bounded code naming why a generic failure (such as `adapter_failed`) failed, e.g. `40001`. */
+  failureCause?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;

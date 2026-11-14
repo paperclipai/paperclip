@@ -5,9 +5,12 @@ import { replayCommand } from "./config.js";
 import type { TimelineEntry } from "./timeline.js";
 import type { FaultReceipt, OracleArtifacts, TaskGrade, TaskRecord, WavePlan } from "./types.js";
 
+export { captureWakeEvidence, wakeEvidenceOnce } from "./wake-evidence.js";
+
 const LOG_BEFORE_BYTES = 128 * 1024;
 const LOG_AFTER_BYTES = 512 * 1024;
-const EVENTS_PER_RUN = 200;
+export const EVENTS_HEAD = 400;
+export const EVENTS_TAIL = 200;
 const OBSERVER_POLL_LINE = /INFO\S*: \S*(?:GET|HEAD) \/(?:issues\/[0-9a-f-]+(?:\/runs)?|ready|liveness|health) 200/;
 
 type Json = Record<string, any>;
@@ -24,19 +27,24 @@ export function knownSecretValues(env: NodeJS.ProcessEnv = process.env): string[
   return Object.entries(env).filter(([key, value]) => value && /(?:KEY|TOKEN|SECRET|PASSWORD)$/.test(key)).map(([, value]) => value!);
 }
 
-async function lastEvents(api: ChaosApi, runId: string): Promise<Json[]> {
-  const kept: Json[] = [];
-  let afterSeq = 0;
+export async function runEvents(api: ChaosApi, runId: string): Promise<Json[]> {
+  const head: Json[] = [], tail: Json[] = [];
+  let total = 0, afterSeq = 0, omittedFrom: unknown = null, omittedTo: unknown = null;
   for (let page = 0; page < 200; page += 1) {
     const rows = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=500`);
     if (!rows?.length) break;
-    kept.push(...rows);
-    if (kept.length > EVENTS_PER_RUN) kept.splice(0, kept.length - EVENTS_PER_RUN);
+    for (const row of rows) {
+      total += 1;
+      if (head.length < EVENTS_HEAD) { head.push(row); continue; }
+      tail.push(row);
+      if (tail.length > EVENTS_TAIL) { const dropped = tail.shift()!; omittedFrom ??= dropped.seq ?? null; omittedTo = dropped.seq ?? null; }
+    }
     const next = Number(rows[rows.length - 1]?.seq);
     if (!Number.isFinite(next) || next <= afterSeq || rows.length < 500) break;
     afterSeq = next;
   }
-  return kept;
+  const omitted = total - head.length - tail.length;
+  return omitted > 0 ? [...head, { omittedEvents: omitted, fromSeq: omittedFrom, toSeq: omittedTo }, ...tail] : [...head, ...tail];
 }
 
 async function logWindow(serverLogPath: string, faults: readonly FaultReceipt[]): Promise<string> {
@@ -83,7 +91,8 @@ export async function writeEvidenceBundle(input: {
   await write("task-record.json", record);
   await write("faults.json", relevant.length ? relevant : input.faults);
   await write("startup-phases.json", (relevant.length ? relevant : input.faults).map(fault => ({ faultId: fault.faultId, kind: fault.kind,
-    startedAt: fault.startedAt, stoppedAt: fault.stoppedAt, restartedAt: fault.restartedAt, healthyAt: fault.healthyAt, readyAt: fault.readyAt, phases: fault.phases })));
+    startedAt: fault.startedAt, stoppedAt: fault.stoppedAt, restartedAt: fault.restartedAt, healthyAt: fault.healthyAt, readyAt: fault.readyAt, phases: fault.phases,
+    ...(fault.repeatedRestart ? { repeatedRestarts: fault.repeatedRestart.restarts } : {}) })));
   await write("timeline.json", input.timeline);
   if (input.artifacts) await write("oracle-artifacts.json", input.artifacts);
   await attempt("server-log", async () => write("server-log-window.txt", await logWindow(input.serverLogPath, relevant.length ? relevant : input.faults)));
@@ -93,7 +102,7 @@ export async function writeEvidenceBundle(input: {
     await attempt("runs", async () => { runs = await api.get<Json[]>(`/api/issues/${record.issueId}/runs`); await write("runs.json", runs); });
     for (const run of runs) {
       const runId = String(run.runId ?? run.id);
-      await attempt(`events ${runId}`, async () => write(`run-${runId}-events.json`, await lastEvents(api, runId)));
+      await attempt(`events ${runId}`, async () => write(`run-${runId}-events.json`, await runEvents(api, runId)));
       await attempt(`workspace-operations ${runId}`, async () => write(`run-${runId}-workspace-operations.json`,
         await api.get(`/api/heartbeat-runs/${runId}/workspace-operations`)));
     }
