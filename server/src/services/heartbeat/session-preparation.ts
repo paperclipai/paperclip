@@ -51,6 +51,8 @@ export interface HeartbeatSessionPreparationInput {
   };
   config: {
     runtimeConfig: Record<string, unknown>;
+    /** Agent adapter settings before a routed pool member was applied. */
+    configuredAdapterConfig?: Record<string, unknown>;
     agentIdentity: { keyId: string } | undefined;
     issueAssigneeOverrides: unknown;
     originalAiIssueOverrides: unknown;
@@ -78,7 +80,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
   const { run, agent, getLatestAgentConfigRevision } = input;
   const { context, issueRef, issueContext, taskProjectContext, workspaceProjectContext, wakeCommentId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision } = input.task;
   const { taskSession, taskSessionDecodedParams, explicitResumeSessionParams, explicitResumeSessionDisplayId, sessionCodec } = input.session;
-  const { runtimeConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides, managedAiRuntime, aiBinding, requestedAiBinding, secretManifest, runtimeSkillEntries, routineEnvContext } = input.config;
+  const { runtimeConfig, configuredAdapterConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides, managedAiRuntime, aiBinding, requestedAiBinding, secretManifest, runtimeSkillEntries, routineEnvContext } = input.config;
   const { requestedExecutionWorkspaceMode, effectiveExecutionWorkspaceMode, projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings, executionPolicy, requestedReusableExecutionWorkspaceConfig, reusableExistingExecutionWorkspace } = input.workspace;
   const { environmentResolution, selectedEnvironmentId, selectedEnvironmentForConfig } = input.environment;
   const latestAgentConfigRevision = await getLatestAgentConfigRevision(
@@ -167,7 +169,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       ? await db.select().from(agentConfigRevisions).where(and(eq(agentConfigRevisions.companyId, agent.companyId), eq(agentConfigRevisions.agentId, agent.id))).orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id)).limit(21)
       : [];
     const candidates = aiConnectionSessionCompatibilityInputs({
-      effectiveAdapterConfig: runtimeConfig, agentRuntimeConfig: agent.runtimeConfig,
+      adapterType: agent.adapterType, effectiveAdapterConfig: runtimeConfig, configuredAdapterConfig, agentRuntimeConfig: agent.runtimeConfig,
       agentConfigRevision: sessionConfigMetadataInput.agentConfigRevision,
       issueOverrides: issueAssigneeOverrides, originalIssueOverrides: originalAiIssueOverrides,
       binding: aiBinding, router: requestedAiBinding?.mode === "router",

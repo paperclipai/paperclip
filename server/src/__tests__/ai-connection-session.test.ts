@@ -79,3 +79,45 @@ describe("AI pool session adoption", () => {
     expect(aiConnectionSessionCompatibilityInputs({ ...input, storedIdentity: "grant:bob:0" })).toEqual([]);
   });
 });
+
+describe("pool adoption of the same account with ignored runner profile keys", () => {
+  const claudeBinding = { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: "account", grantId: "grant" };
+  const managedAiConnection = { ...claudeBinding, identity: credentialIdentity, sessionIdentity };
+  const configured = { cwd: "/fixture", engine: "cli", model: "claude-sonnet-5", effort: "high" };
+  const routed = { ...configured, provider: "acpx", acpxAgent: "claude" };
+  const first = revision("revision-1", null, claudeBinding);
+  const adoption = revision("revision-2", claudeBinding, pool);
+  async function adopt(options: { adapterType?: string; previous?: Record<string, unknown>; next?: Record<string, unknown>; configuredAdapterConfig?: Record<string, unknown>; storedIdentity?: string; currentSessionIdentity?: string } = {}) {
+    const adapterType = options.adapterType ?? "claude_local";
+    const previous = { ...base, adapterType, effectiveAdapterConfig: { ...(options.previous ?? configured), managedAiConnection }, agentRuntimeConfig: { aiConnection: claudeBinding }, agentConfigRevision: aiConnectionRevisionMetadata(first) };
+    const afterInput = { ...base, adapterType, effectiveAdapterConfig: { ...(options.next ?? routed), managedAiConnection } as Record<string, unknown>, agentConfigRevision: aiConnectionRevisionMetadata(adoption) };
+    const before = await buildEffectiveRunSessionConfigMetadata(previous);
+    const after = await buildEffectiveRunSessionConfigMetadata(afterInput);
+    const candidates = aiConnectionSessionCompatibilityInputs({ ...afterInput, configuredAdapterConfig: options.configuredAdapterConfig ?? options.previous ?? configured, originalIssueOverrides: null, binding: claudeBinding, router: true,
+      storedIdentity: options.storedIdentity ?? sessionIdentity, sessionIdentity: options.currentSessionIdentity ?? sessionIdentity, credentialIdentity, revisions: [adoption, first] });
+    const alternatives = await Promise.all(candidates.map(candidate => buildEffectiveRunSessionConfigMetadata({ ...afterInput, ...candidate })));
+    return resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: String(afterInput.effectiveAdapterConfig.model), taskSessionParams: { __paperclipConfiguredModel: "claude-sonnet-5", __paperclipConfigFingerprint: before.fingerprint, __paperclipConfigFingerprintVersion: before.version, __paperclipConfigCategoryFingerprints: before.categoryFingerprints }, configMetadata: after, compatibleConfigMetadata: alternatives });
+  }
+  it("keeps the session when the member matches the agent's own model and effort", async () => {
+    expect(await adopt()).toMatchObject({ reset: false, changedCategories: [] });
+  });
+  it.each([
+    ["a different model", { next: { ...routed, model: "claude-opus-5" } }],
+    ["a different effort", { next: { ...routed, effort: "low" } }],
+    ["a missing member effort", { next: { ...routed, effort: undefined } }],
+    ["another routed setting", { next: { ...routed, variant: "fast" } }],
+    ["an unrelated adapter setting", { next: { ...routed, maxTurnsPerRun: 5 } }],
+    ["a different account", { storedIdentity: "other-grant:alice:0" }],
+    ["a different credential session", { currentSessionIdentity: "grant:alice:1" }],
+    ["an adapter that runs the routed provider", { adapterType: "paperclip_runner", previous: { ...configured, provider: "codex" }, next: { ...routed } }],
+    ["an adapter outside the verified set", { adapterType: "hermes_local" }],
+  ])("still resets for %s", async (_label, options) => {
+    expect((await adopt(options)).reset).toBe(true);
+  });
+  it("does not offer the earlier settings when configured settings are unavailable", () => {
+    const input = { ...base, adapterType: "claude_local", effectiveAdapterConfig: { ...routed, managedAiConnection }, originalIssueOverrides: null, binding: claudeBinding, router: true, storedIdentity: sessionIdentity, sessionIdentity, credentialIdentity, revisions: [] };
+    const withoutConfigured = aiConnectionSessionCompatibilityInputs(input);
+    expect(withoutConfigured.every(candidate => (candidate.effectiveAdapterConfig as Record<string, unknown>).provider === "acpx")).toBe(true);
+    expect(aiConnectionSessionCompatibilityInputs({ ...input, configuredAdapterConfig: configured }).length).toBe(withoutConfigured.length * 2);
+  });
+});
