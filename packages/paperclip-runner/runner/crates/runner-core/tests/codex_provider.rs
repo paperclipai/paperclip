@@ -5853,6 +5853,176 @@ fn durable_backend_settles_tools_before_a_natural_terminal_event() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+fn start_turn_with_pending_tool(executor: &mut CodexCommandExecutor, config: CodexProviderConfig) {
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Call the tool."}),
+        ))
+        .unwrap();
+}
+
+#[test]
+fn a_rejected_recorded_result_still_answers_the_provider_and_frees_the_session() {
+    // Chat-eval cohort 13: the controller recorded a REST-shaped result whose
+    // `{ ok, operationId }` the bridge reads as a mismatched semantic envelope.
+    // The rejected delivery left OpenCode waiting ~290 s and the call pending,
+    // so the next run's run.attach failed with durable_pending_tool_calls.
+    let directory = temporary_directory("rejected-recorded-result");
+    let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    start_turn_with_pending_tool(&mut executor, config);
+    let deadline = event_deadline();
+    let mut input_seen = false;
+    while !input_seen && std::time::Instant::now() < deadline {
+        input_seen = poll_and_ack(&mut executor)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "semantic_tool.input");
+    }
+    assert!(input_seen, "the provider requests its tool");
+
+    let rejected = json!({
+        "callId": "semantic-call-1", "operationId": "get_task_context", "isError": false,
+        "result": {"ok": true, "status": 200, "operationId": "GET /api/companies/{companyId}/workflows",
+            "contentType": "application/json; charset=utf-8", "data": []},
+    });
+    let delivered = executor
+        .execute(&command(
+            "result",
+            4,
+            "semantic_tool.result",
+            rejected.clone(),
+        ))
+        .expect("a recorded result must settle its call even when the bridge rejects it");
+    assert_eq!(delivered.result["status"], "delivered");
+    let mut observed = Vec::new();
+    let deadline = event_deadline();
+    while !observed.iter().any(|event: &PolledEvent| {
+        event.event_type == "turn.failed" || event.event_type == "turn.completed"
+    }) && std::time::Instant::now() < deadline
+    {
+        observed.extend(poll_and_ack(&mut executor).unwrap());
+    }
+    let diagnostic = delivered
+        .events
+        .iter()
+        .find(|(_, _, payload)| payload["code"] == "semantic_tool_result_undeliverable")
+        .map(|(_, _, payload)| payload)
+        .expect("the rejected delivery is named");
+    assert_eq!(diagnostic["callId"], "semantic-call-1");
+    assert!(diagnostic["reason"]
+        .as_str()
+        .unwrap()
+        .contains("envelope does not match"));
+    let settled = observed
+        .iter()
+        .find(|event| event.event_type == "semantic_tool.result")
+        .expect("the call has a recorded settlement");
+    assert_eq!(settled.payload["semantic_tool"]["outcome"], "failed");
+    let calls = fs::read_to_string(directory.join("calls.log")).unwrap();
+    assert!(
+        calls.contains("tool-response:failure"),
+        "the provider must receive an answer, not wait for its client timeout: {calls}"
+    );
+
+    // A crash before the command finished replays the same delivery.
+    let replay = executor
+        .execute(&command(
+            "result-replay",
+            5,
+            "semantic_tool.result",
+            rejected,
+        ))
+        .expect("an exact replay of the rejected delivery is a duplicate");
+    assert_eq!(replay.result["status"], "duplicate");
+
+    executor
+        .execute(&command(
+            "attach",
+            6,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("the next run attaches to the same session");
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn run_attach_expires_a_call_left_pending_by_a_closed_turn() {
+    // The provider stopped waiting when its turn ended, and the next run's
+    // controller never delivers the old run's result. Attachment records the
+    // call as expired instead of refusing every later run.
+    let directory = temporary_directory("closed-turn-pending-attach");
+    let config = provider_config(
+        &directory,
+        &[
+            "--require-dynamic-tool",
+            "--emit-tool-call",
+            "--finish-turn-with-pending-tool",
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    start_turn_with_pending_tool(&mut first, config);
+    let mut observed = Vec::new();
+    let deadline = event_deadline();
+    while !observed.iter().any(|event| event == "turn.completed")
+        && std::time::Instant::now() < deadline
+    {
+        observed.extend(
+            poll_and_ack(&mut first)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_type),
+        );
+    }
+    assert!(observed.iter().any(|event| event == "semantic_tool.input"));
+    assert!(!observed.iter().any(|event| event == "semantic_tool.result"));
+    // A deploy lands here: the next Runner restores this saved state.
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut resumed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let attached = resumed
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("a call left by a closed turn must not block the next run");
+    let expired = attached
+        .events
+        .iter()
+        .find(|(event_type, _, payload)| {
+            event_type == "harness.diagnostic" && payload["code"] == "semantic_tool_result_expired"
+        })
+        .map(|(_, _, payload)| payload.clone())
+        .expect("the expired call is named");
+    assert_eq!(
+        expired["calls"],
+        json!([{"callId": "semantic-call-1", "operationId": "get_task_context"}])
+    );
+    resumed.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn durable_terminal_delivery_reconciliation_does_not_launch_a_cold_provider() {
     let directory = temporary_directory("cold-terminal-delivery");
