@@ -140,6 +140,7 @@ test("right divider matches the left highlight, resizes in both directions, pers
 });
 
 test("both pane dividers animate a double-click reset while manual sizing stays immediate", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await openShell(page, "three-panes");
   const left = page.getByRole("separator", { name: "Resize sidebar", exact: true });
   const leftShell = page.locator(".design-page-navigation");

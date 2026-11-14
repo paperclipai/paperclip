@@ -1,6 +1,6 @@
 import { addCents, normalizeCents, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
 
 export interface BudgetExposure {
@@ -16,7 +16,9 @@ export interface BudgetExposure {
 export type SpendPolicy = Pick<typeof budgetPolicies.$inferSelect, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">;
 export type ObservedSpend = BudgetExposure & {
   windowStart: Date; windowEnd: Date; total: number; totalExact: string;
-  pendingRunCount: number; recoveringRunCount: number;
+  /** Terminal runs whose accounting is unfinished. Display only: each one
+   * contributes its bounded estimate to exposure and never gates admission. */
+  pendingRunCount: number;
 };
 
 export function budgetWindow(kind: string, now = new Date()) {
@@ -113,39 +115,77 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const inWindow = policy.windowKind === "calendar_month_utc"
       ? sql`coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) >= ${start.toISOString()}::timestamptz
         and coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) < ${end.toISOString()}::timestamptz` : sql`true`;
-    const run = and(eq(heartbeatRuns.companyId, policy.companyId), eq(heartbeatRuns.costAccountingPending, true),
+    const lateReceiptDebt = sql`coalesce(${usage}->>'accountingLateReceiptPending', 'false') = 'true'`;
+    const run = and(eq(heartbeatRuns.companyId, policy.companyId), or(eq(heartbeatRuns.costAccountingPending, true), lateReceiptDebt),
       policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
       policy.scopeType === "project" ? sql`${usage}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined)!;
-    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), inWindow)!;
+    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt))!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
     // qualifiers from a single-table selection's direct column chunks.
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
-    const recovering = sql`exists (select 1 from ${nativeRunFinalizations}
-      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
-        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} <> 'terminal_failure')`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`;
+    // "Usage with no reliable price" means usage from a complete receipt that
+    // could not be priced. These unpriced charges are not that, so they never
+    // trip the blocking policy (they stay visible in Costs):
+    // - a final charge accounting settled without its receipt: lost with a
+    //   stopped provider, closure evidence that never arrived, or a failed
+    //   capture (its receipt is never certified complete, even if a later
+    //   report adds usage). Accounting is never a company gate (plan decision 1); its
+    //   exposure is recorded, and the activity entry is the board's notice;
+    // - a charge that carries a known partial cost;
+    // - metered API or subscription billing with no observed tokens.
+    // Unknown billing with no tokens (for example Cursor Cloud) still counts.
+    // The receipt-unavailable exemption covers only that run's settled final
+    // charge; later growth from a complete receipt is ordinary usage.
+    const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
+    const exemptFromUnpricedBlock = sql`((${finalCharge}
+        and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
+          and lost_receipt_run.company_id = ${costEvents.companyId}
+          and (lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'
+            or lost_receipt_run.usage_json->>'accountingClosureTimedOut' = 'true'
+            or lost_receipt_run.usage_json->>'accountingCaptureFailed' = 'true'
+            or coalesce(lost_receipt_run.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%')))
+      or ${costEvents.costCents} > 0
+      or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
+        and ${costEvents.outputTokens} = 0))`;
+    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
+      and not ${exemptFromUnpricedBlock})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
     // observation describe one operation, so count their maximum, not both.
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
-    runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
+    // Unfinished accounting is exposure, not a gate (SPEC 11.6, invariant 3).
+    // Its bounded estimate is the larger of the run's held reservation and its
+    // observed cost, counted above; a hard stop reads the ledger plus observed
+    // cost. No terminal run's cleanup or accounting state refuses new work.
   }
-  const [ledger = {}] = billable.length ? await db.select(ledgerColumns).from(costEvents).where(or(...ledgerPredicates)) : [];
-  const [held = {}] = billable.length ? await db.select(heldColumns).from(budgetReservations)
-    .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
-    .where(or(...heldPredicates)) : [];
-  const [runs = {}] = billable.length ? await db.select(runColumns).from(heartbeatRuns).where(or(...runPredicates)) : [];
-  const [browser = {}] = billable.length ? await db.select(browserColumns).from(browserUseRuns)
-    .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseRuns.companyId)))
-    .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
-    .where(or(...browserPredicates)) : [];
+  // A single statement preserves hold-to-ledger atomicity even when a caller
+  // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
+  // JSON projection so the driver does not collapse repeated aggregate names.
+  const columns = (values: Record<string, SQL>) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.as(key)]));
+  let ledger: Record<string, string> = {}, held: Record<string, string> = {}, runs: Record<string, string> = {}, browser: Record<string, string> = {};
+  if (billable.length) {
+    const ledgerQuery = db.select(columns(ledgerColumns)).from(costEvents).where(or(...ledgerPredicates));
+    const heldQuery = db.select(columns(heldColumns)).from(budgetReservations)
+      .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
+      .where(or(...heldPredicates));
+    const runsQuery = db.select(columns(runColumns)).from(heartbeatRuns).where(or(...runPredicates));
+    const browserQuery = db.select(columns(browserColumns)).from(browserUseRuns)
+      .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseSessions.companyId)))
+      .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
+      .where(or(...browserPredicates));
+    const [row] = await db.execute<{ ledger: Record<string, string>; held: Record<string, string>; runs: Record<string, string>; browser: Record<string, string> }>(sql`
+      select row_to_json(ledger) as ledger, row_to_json(held) as held,
+        row_to_json(runs) as runs, row_to_json(browser) as browser
+      from (${ledgerQuery}) ledger cross join (${heldQuery}) held
+        cross join (${runsQuery}) runs cross join (${browserQuery}) browser`);
+    ({ ledger, held, runs, browser } = row);
+  }
   return policies.map((_, index) => {
     const ledgerCents = normalizeCents(String(ledger[`total${index}`] ?? 0));
     const liveObservedCents = normalizeCents(String(runs[`live${index}`] ?? 0));
@@ -154,14 +194,22 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     return { windowStart: windows[index].start, windowEnd: windows[index].end,
       ledgerCents, liveObservedCents, effectiveHeldCents: addCents(String(held[`held${index}`] ?? 0), String(runs[`unreserved${index}`] ?? 0), String(browser[`held${index}`] ?? 0)),
       total: Number(totalExact), totalExact, pendingRunCount, pendingTerminalRunCount: pendingRunCount,
-      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0) };
+      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0) };
   });
 }
 
-export async function computeObservedSpend(db: Db, policy: SpendPolicy) {
-  return (await computeObservedSpends(db, [policy]))[0];
+export async function computeObservedSpend(db: Db, policy: SpendPolicy, now = new Date()) {
+  return (await computeObservedSpends(db, [policy], now))[0];
 }
 
 export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date()): Promise<ObservedSpend[]> {
-  return withBudgetSpan("budget.exposure.evaluate", () => readObservedSpends(db, policies, now), { "budget.policy_count": policies.length });
+  return withBudgetSpan("budget.exposure.evaluate", async () => {
+    // Each policy contributes several aggregate columns. Bound statement width
+    // below PostgreSQL's target-list limit. Multi-scope evaluators/reports own
+    // a repeatable-read transaction; individual admission batches fit one SQL.
+    const result: ObservedSpend[] = [];
+    for (let offset = 0; offset < policies.length; offset += 128)
+      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now));
+    return result;
+  }, { "budget.policy_count": policies.length });
 }

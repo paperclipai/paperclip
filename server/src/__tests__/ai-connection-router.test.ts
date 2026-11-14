@@ -27,6 +27,8 @@ import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { environmentService } from "../services/environments.js";
+import * as executionConfiguration from "../services/heartbeat/execution-configuration.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -115,6 +117,7 @@ describe("durable, authorized connection routing", () => {
     expect((await db.select().from(toolConnections).where(eq(toolConnections.id, members[0]!.binding.connectionId)))[0]?.status).toBe("active");
   });
   it("requires company connection management authority on pool configuration routes", async () => {
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     const app = express(); app.use(express.json());
     let actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); }); app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
@@ -122,6 +125,7 @@ describe("durable, authorized connection routing", () => {
     expect((await request(app).get(url)).status).toBe(200);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connection-pools`)).status).toBe(403);
     expect((await request(app).delete(`/api/companies/${otherCompanyId}/ai-connection-pools/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { ...actor, memberships: [{ companyId, status: "active", membershipRole: "viewer" }] };
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).post(url).send({ pluginKey, config: pool })).status).toBe(403);
@@ -130,10 +134,12 @@ describe("durable, authorized connection routing", () => {
     actor = { type: "agent", agentId, companyId, source: "agent_jwt" } as unknown as typeof actor;
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision + 1 })).status).toBe(409);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(200);
     expect((await request(app).get(url)).body.some((entry: { id: string }) => entry.id === pool.id)).toBe(false);
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
   });
   it("deletes pools without erasing pins, cursors, or admitted recovery evidence", async () => {
     const pool = await makePool(); const selected = await resolve(pool.id, "retained");
@@ -442,6 +448,52 @@ describe("durable, authorized connection routing", () => {
       expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: String(selected.runtimeConfig.model), taskSessionParams: { __paperclipConfiguredModel: selected.runtimeConfig.model, __paperclipConfigFingerprint: previous.fingerprint, __paperclipConfigFingerprintVersion: previous.version, __paperclipConfigCategoryFingerprints: previous.categoryFingerprints }, configMetadata: current, compatibleConfigMetadata }).reset).toBe(false);
     } finally { await before.cleanup(); await after.cleanup(); }
   });
+  it.each([
+    { useHostAuth: undefined, nativeHomeMode: undefined }, { useHostAuth: true, nativeHomeMode: undefined },
+    { useHostAuth: false, nativeHomeMode: undefined }, { useHostAuth: false, nativeHomeMode: "preconfigured" },
+  ])("applies SSH authentication before selecting a busy pool (%j)", async ({ useHostAuth, nativeHomeMode }) => {
+    const original = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true, enableNativeRunner: true, enableEnvironments: true, enableWorktreeRunExecution: true });
+    const pool = await makePool({ members: [members[0]!] });
+    const environment = await environmentService(db).create(companyId, { name: `SSH routing fixture ${useHostAuth} ${nativeHomeMode}`, driver: "ssh", status: "active", envVars: {}, config: {
+      host: "ssh.example.test", username: "fixture", remoteWorkspacePath: "/workspace", ...(useHostAuth === undefined ? {} : { useHostAuth }),
+    } });
+    const configured = { provider: "acpx", acpxAgent: "claude", model: "fixture-host-model", ...(nativeHomeMode ? { homeMode: nativeHomeMode } : {}) };
+    const [agent] = await db.insert(agents).values({ companyId, name: "SSH routing fixture", status: "idle", adapterType: "paperclip_runner",
+      adapterConfig: configured, defaultEnvironmentId: environment.id,
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false, wakeOnDemand: true } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "SSH pool routing fixture", status: "todo", assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    proposal.mockClear();
+    proposal.mockImplementation(async () => ({ kind: "exhausted", retryAt: new Date(Date.now() + 60_000).toISOString(), skipped: {} }));
+    const preparation = vi.spyOn(executionConfiguration, "prepareHeartbeatExecutionConfiguration").mockRejectedValue(new Error("fixture stopped before provider configuration"));
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", triggerDetail: "system",
+        payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" } });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const saved = await heartbeat.getRun(run!.id);
+      if (useHostAuth === false) {
+        expect(proposal).toHaveBeenCalled();
+        expect(preparation).not.toHaveBeenCalled();
+        expect(saved?.errorCode).toBe("ai_connection_pool_exhausted");
+      } else {
+        expect(proposal).not.toHaveBeenCalled();
+        expect(saved?.contextSnapshot?.aiRouterSelection).toBeUndefined();
+        expect(saved?.error).toContain("fixture stopped before provider configuration");
+        expect(preparation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ config: expect.objectContaining({
+          aiBinding: undefined, sourceWorkspaceConfig: expect.objectContaining(configured),
+        }) }));
+      }
+    } finally {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      await heartbeat.drainActiveRunExecutions();
+      preparation.mockRestore();
+      proposal.mockImplementation(defaultProposal);
+      await instanceSettingsService(db).updateExperimental(original);
+    }
+  }, 30_000);
+
   it("admits a healthy pool member when the saved Grok connection is held", async () => {
     const original = await instanceSettingsService(db).getExperimental();
     await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true,

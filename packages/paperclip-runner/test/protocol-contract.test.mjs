@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 29);
+  assert.equal(schemas.length, 31);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -47,6 +47,39 @@ test("canonical replay fixtures use supported required versions", async () => {
   ]) {
     assert.equal(assertReplayFixtureCompatibility(await fixture(`replay/${name}`)).protocolVersion, 1);
   }
+});
+
+test("runtime activity is a closed Runner notification in every supported event version", async () => {
+  const validators = compileProtocolValidators(await loadSchemaCatalog(resolve(protocolRoot, "schemas")));
+  const happy = await fixture("replay/happy-path.json");
+  const base = happy.events[0];
+  for (const [version, validate] of [[1, event => validators.fixture({ ...happy, events: [event] })], [2, validators.eventV2], [3, validators.eventV3]]) {
+    const event = { ...base, schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "runtime.activity.recorded", priority: 1, sourceKind: "runner", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
+    assert.equal(validate(event), true);
+    assert.equal(validate({ ...event, sourceKind: "control_plane" }), false);
+    for (const payload of [{ ...event.payload, runId: "caller-run" }, { ...event.payload, activityKey: "" },
+      { ...event.payload, activityKey: "x".repeat(161) }, { ...event.payload, namespace: "invalid\nkey" }]) {
+      assert.equal(validate({ ...event, payload }), false);
+    }
+  }
+});
+
+test("PRP v3 marks a provider-started turn and a completed turn that awaits one with closed values", async () => {
+  const validators = compileProtocolValidators(await loadSchemaCatalog(resolve(protocolRoot, "schemas")));
+  const happy = await fixture("replay/happy-path.json");
+  const event = (eventType, payload) => ({ ...happy.events[0], schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType, priority: 0,
+    sourceKind: "runner", payload: { provider: "acpx", providerTurnId: "provider-1", ...payload } });
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress", origin: "provider" })), true);
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress" })), true);
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress", origin: "controller" })), false);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: true })), true);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed" })), true);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: false })), false);
+  const command = (payload) => ({ ...happy.commands[0], schema: "paperclip.prp.command.v3", type: "turn.start", payload });
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work.", providerStartedTurns: true })), true);
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work." })), true);
+  assert.equal(validators.commandV3(command({ turnId: "turn-1", text: "Work.", providerStartedTurns: "yes" })), false);
 });
 
 test("unknown additive fields remain compatible with PRP v1", async () => {

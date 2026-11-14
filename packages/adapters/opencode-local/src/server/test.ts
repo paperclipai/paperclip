@@ -19,6 +19,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -26,7 +27,7 @@ import {
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
-import { parseOpenCodeJsonl } from "./parse.js";
+import { openCodeErrorStatusCodes, parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 
@@ -102,6 +103,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "opencode_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -142,6 +144,7 @@ export async function testEnvironment(
   // `fs.mkdtemp` directory leaks on the early-throw path.
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let nativeProbeWorkspaceLocalDir: string | null = null;
+  let nativeProbeHomeLocalDir: string | null = null;
   try {
     let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
     let runtimeCwd = cwd;
@@ -150,6 +153,23 @@ export async function testEnvironment(
     if (!targetIsRemote && ctx.adapterType === "paperclip_runner" && !asString(config.cwd, "").trim()) {
       nativeProbeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-native-probe-"));
       runtimeCwd = nativeProbeWorkspaceLocalDir;
+    }
+    // The native runner gives every OpenCode process its own home and data
+    // directory. The probe must too: OpenCode keeps one SQLite database per
+    // data directory, and concurrent processes sharing the host user's
+    // database fail with "database is locked".
+    if (!targetIsRemote && ctx.adapterType === "paperclip_runner") {
+      nativeProbeHomeLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-native-probe-home-"));
+      Object.assign(preparedRuntimeConfig.env, {
+        HOME: nativeProbeHomeLocalDir,
+        XDG_DATA_HOME: path.join(nativeProbeHomeLocalDir, "data"),
+        XDG_CACHE_HOME: path.join(nativeProbeHomeLocalDir, "cache"),
+        XDG_STATE_HOME: path.join(nativeProbeHomeLocalDir, "state"),
+        // Match the native driver: a fresh cache must not fetch a catalog or
+        // install default plugins before the pinned model answers.
+        OPENCODE_DISABLE_MODELS_FETCH: "true",
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+      });
     }
     if (targetIsRemote) {
       preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-opencode-envtest-${runId}-`));
@@ -219,6 +239,7 @@ export async function testEnvironment(
       } catch (err) {
         checks.push({
           code: "opencode_command_unresolvable",
+          ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
           level: "error",
           message: err instanceof Error ? err.message : "Command is not executable",
           detail: command,
@@ -397,6 +418,7 @@ export async function testEnvironment(
         const parsed = parseOpenCodeJsonl(probe.stdout);
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+        const providerRejectedAuth = openCodeErrorStatusCodes(probe.stdout).includes(401);
 
         if (probe.timedOut) {
           checks.push({
@@ -429,7 +451,7 @@ export async function testEnvironment(
             ...(detail ? { detail } : {}),
             hint: "Run `opencode models` and choose an available provider/model ID.",
           });
-        } else if (OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
+        } else if (providerRejectedAuth || OPENCODE_AUTH_REQUIRED_RE.test(authEvidence)) {
           checks.push({
             code: "opencode_hello_probe_auth_required",
             level: "warn",
@@ -457,8 +479,8 @@ export async function testEnvironment(
       }
     }
   } finally {
-    if (nativeProbeWorkspaceLocalDir) {
-      await fs.rm(nativeProbeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    for (const dir of [nativeProbeWorkspaceLocalDir, nativeProbeHomeLocalDir]) {
+      if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
     await restoreWorkspace?.();
     if (!restoreWorkspace && preparedRuntimeWorkspaceLocalDir) {

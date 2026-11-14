@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
+use crate::attachment_download::{AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -60,6 +62,22 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.poll_disconnected_events(),
+            Self::Acpx(executor) => executor.poll_disconnected_events(),
+            Self::Managed(executor) => executor.poll_disconnected_events(),
+            Self::Dot(executor) => executor.poll_disconnected_events(),
+        }
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        match self {
+            Self::LocalFacade(executor) => executor.maintain_disconnected_provider(),
+            _ => Ok(None),
+        }
+    }
+
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
         match self {
             Self::LocalFacade(executor) => executor.rotate_authority(config),
@@ -75,6 +93,14 @@ impl CommandExecutor for SelectedExecutor {
             Self::Acpx(executor) => executor.maintain_backpressured_provider(),
             Self::Managed(executor) => executor.maintain_backpressured_provider(),
             Self::Dot(executor) => executor.maintain_backpressured_provider(),
+        }
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        match self {
+            Self::LocalFacade(executor) => executor.provider_poll_is_live(),
+            Self::Acpx(executor) => executor.provider_poll_is_live(),
+            _ => false,
         }
     }
 
@@ -117,6 +143,8 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
+    attachments: AttachmentDownloads,
+    attachment_result: Option<PolledEvent>,
 }
 
 impl NativeProviderCommandExecutor {
@@ -124,6 +152,8 @@ impl NativeProviderCommandExecutor {
         let state_dir = state_dir.into();
         let credentials = CredentialObserver::new(&state_dir, &config.normalized_session_id);
         Self {
+            attachments: AttachmentDownloads::new(&state_dir),
+            attachment_result: None,
             state_dir,
             config: config.clone(),
             selected: None,
@@ -133,10 +163,37 @@ impl NativeProviderCommandExecutor {
     }
 
     fn select_recovery(&mut self) -> Result<(), DurableRunnerError> {
+        if !self.recovery_checked
+            && self
+                .config
+                .acpx_launch_profile
+                .as_ref()
+                .is_some_and(|profile| {
+                    profile
+                        .candidate_admission
+                        .as_ref()
+                        .is_some_and(|admission| admission.agent == "antigravity")
+                })
+            && [
+                CODEX_PROVIDER_STATE_FILE,
+                ACPX_PROVIDER_STATE_FILE,
+                MANAGED_PROVIDER_STATE_FILE,
+                DOT_PROVIDER_STATE_FILE,
+                MUSE_PROVIDER_STATE_FILE,
+                "credential-observer-state.json",
+            ]
+            .iter()
+            .any(|file| self.state_dir.join(file).exists())
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot adopt a prior durable runner activation",
+            ));
+        }
         self.credentials.restore()?;
         if self.recovery_checked {
             return Ok(());
         }
+        self.attachments.initialize()?;
         self.recovery_checked = true;
         let codex = self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists();
         let acpx = self.state_dir.join(ACPX_PROVIDER_STATE_FILE).exists();
@@ -181,6 +238,44 @@ impl NativeProviderCommandExecutor {
         Ok(())
     }
 
+    fn poll_with_credentials(
+        &mut self,
+        poll: fn(&mut SelectedExecutor) -> Result<Vec<PolledEvent>, DurableRunnerError>,
+    ) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.credentials.poll(false)?;
+        if let Some(event) = self.credentials.pending() {
+            return Ok(vec![event]);
+        }
+        if self.attachment_result.is_none() {
+            self.attachment_result = self.attachments.take_result_event();
+        }
+        if let Some(event) = &self.attachment_result {
+            return Ok(vec![event.clone()]);
+        }
+        let events = self
+            .selected
+            .as_mut()
+            .map_or_else(|| Ok(Vec::new()), poll)?;
+        let terminal = events.iter().any(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "turn.completed"
+                    | "turn.failed"
+                    | "turn.interrupted"
+                    | "turn.cancelled"
+                    | "harness.exited"
+            )
+        });
+        if terminal {
+            self.attachments.finish_turn();
+        }
+        self.credentials.poll(terminal)?;
+        Ok(self
+            .credentials
+            .pending()
+            .map_or(events, |event| vec![event]))
+    }
+
     fn select_from_payload(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
         let kind = payload
             .pointer("/provider/kind")
@@ -190,6 +285,32 @@ impl NativeProviderCommandExecutor {
                     "run.prepare requires a supported provider kind before runner execution",
                 )
             })?;
+        if let Some(admission) = self
+            .config
+            .acpx_launch_profile
+            .as_ref()
+            .and_then(|profile| profile.candidate_admission.as_ref())
+        {
+            if kind != "acpx" {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX candidate cannot authorize another provider kind",
+                ));
+            }
+            admission
+                .validate_binding(
+                    payload
+                        .pointer("/provider/agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    payload
+                        .pointer("/provider/model")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    &self.config.run_id,
+                    &self.config.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         self.selected = Some(match kind {
             "muse" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
                 &self.state_dir,
@@ -205,7 +326,7 @@ impl NativeProviderCommandExecutor {
                 &self.config,
                 ExternalProviderCodec::Grok,
             )),
-            "codex" | "opencode" => SelectedExecutor::LocalFacade(
+            "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
             "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
@@ -226,6 +347,62 @@ impl NativeProviderCommandExecutor {
 }
 
 impl CommandExecutor for NativeProviderCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        // Observe credentials without selecting or restoring a provider.
+        self.credentials.poll(true)?;
+        if self.credentials.pending().is_some() {
+            return Ok(false);
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.host_park_ready(),
+            Some(SelectedExecutor::Acpx(executor)) => executor.host_park_ready(),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_for_park(&mut self, deadline: Instant) -> Result<bool, DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_for_park(deadline),
+            _ => Ok(false),
+        }
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        // A per-turn Runner exits with its run. Restarting the provider after
+        // its turn would only spawn a generation for teardown; a later turn of
+        // the same run still restarts lazily at its start.
+        if self.config.turn_scoped {
+            return Ok(());
+        }
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.prepare_next_turn(),
+            _ => Ok(()),
+        }
+    }
+
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.take_turn_end_restart_failure(),
+            _ => None,
+        }
+    }
+
+    fn observe_recovery_state(
+        &mut self,
+        state: &crate::durable::DurableState,
+    ) -> Result<(), DurableRunnerError> {
+        if state.warm_transition.is_some() {
+            return Ok(());
+        }
+        self.select_recovery()?;
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::LocalFacade(executor)) => executor.observe_recovery_state(state),
+            Some(SelectedExecutor::Acpx(executor)) => executor.observe_recovery_state(state),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected
@@ -238,6 +415,9 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         if let Some(event) = self.credentials.pending() {
             return Ok(vec![event]);
         }
+        if let Some(event) = &self.attachment_result {
+            return Ok(vec![event.clone()]);
+        }
         self.selected
             .as_mut()
             .map_or_else(|| Ok(Vec::new()), CommandExecutor::retained_events)
@@ -248,6 +428,24 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.select_recovery()?;
+        if command.command_type == DOWNLOAD_COMMAND {
+            if !matches!(
+                self.selected,
+                Some(SelectedExecutor::LocalFacade(_) | SelectedExecutor::Acpx(_))
+            ) {
+                return Err(DurableRunnerError::invalid(
+                    "attachment downloads require a workspace provider",
+                ));
+            }
+            let grant: AttachmentGrant =
+                serde_json::from_value(command.payload.clone()).map_err(|_| {
+                    DurableRunnerError::invalid("attachment download command is invalid")
+                })?;
+            let download_id = self.attachments.start(grant, &self.config.turn_id)?;
+            return Ok(CommandExecution::result(
+                json!({"status": "pending", "downloadId": download_id.to_string()}),
+            ));
+        }
         if self.selected.is_none()
             && matches!(command.command_type.as_str(), "run.prepare" | "run.attach")
         {
@@ -264,7 +462,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         ) {
             self.credentials.poll(true)?;
         }
-        let result = self
+        let mut result = self
             .selected
             .as_mut()
             .ok_or_else(|| {
@@ -273,6 +471,32 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                 )
             })?
             .execute(command);
+        if command.command_type == "turn.start" && result.is_ok() {
+            self.attachments.open_next_turn();
+        }
+        if command.command_type == "session.snapshot"
+            && matches!(
+                self.selected,
+                Some(SelectedExecutor::LocalFacade(_) | SelectedExecutor::Acpx(_))
+            )
+        {
+            if let Ok(execution) = &mut result {
+                execution.result["attachmentDownloadVersion"] = json!(1);
+            }
+        }
+        if result.is_ok()
+            && matches!(
+                command.command_type.as_str(),
+                "turn.stop"
+                    | "run.cancel"
+                    | "session.close"
+                    | "session.destroy"
+                    | "runner.suspend"
+                    | "runner.shutdown"
+            )
+        {
+            self.attachments.close();
+        }
         if result.is_ok() && matches!(command.command_type.as_str(), "run.prepare" | "run.attach") {
             self.credentials.configure(&command.payload)?;
         }
@@ -287,29 +511,23 @@ impl CommandExecutor for NativeProviderCommandExecutor {
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.select_recovery()?;
-        self.credentials.poll(false)?;
-        if let Some(event) = self.credentials.pending() {
-            return Ok(vec![event]);
-        }
-        let events = self
-            .selected
+        self.poll_with_credentials(CommandExecutor::poll_events)
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.poll_with_credentials(CommandExecutor::poll_disconnected_events)
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        self.selected
             .as_mut()
-            .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)?;
-        let terminal = events.iter().any(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "turn.completed"
-                    | "turn.failed"
-                    | "turn.interrupted"
-                    | "turn.cancelled"
-                    | "harness.exited"
-            )
-        });
-        self.credentials.poll(terminal)?;
-        Ok(self
-            .credentials
-            .pending()
-            .map_or(events, |event| vec![event]))
+            .map_or(Ok(None), CommandExecutor::maintain_disconnected_provider)
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(CommandExecutor::provider_poll_is_live)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
@@ -321,6 +539,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.attachments.reset();
         self.config = config.clone();
         if let Some(executor) = self.selected.as_mut() {
             executor.rotate_authority(config);
@@ -331,6 +550,10 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         self.select_recovery()?;
         if count > 0 && self.credentials.pending().is_some() {
             return self.credentials.acknowledge(count);
+        }
+        if count == 1 && self.attachment_result.is_some() {
+            self.attachment_result = None;
+            return Ok(());
         }
         if let Some(executor) = self.selected.as_mut() {
             executor.acknowledge_events(count)
@@ -368,6 +591,7 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         } else {
             Ok(())
         };
+        self.attachments.close();
         cleanup.and(self.credentials.poll(true))
     }
 }

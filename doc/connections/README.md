@@ -8,14 +8,34 @@ agent tutorial from provider research and protocol classification through
 manifest generation, branding, secrets, deterministic tests, real-account
 proof, and PR submission.
 
+Chat and email channels: [conversation-channel contract](./CONNECTOR-PLAYBOOK.md#chat-channel-connectors),
+[question inventory and quality bar](./CONNECTOR-PLAYBOOK.md#question-experience-inventory),
+and [per-provider question coverage index](./CHAT-QUESTION-COVERAGE.md).
+
 Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
+
+MCP protocol versions (2026-07-28 stateless MCP and older handshake servers):
+[MCP-PROTOCOL-VERSIONS.md](./MCP-PROTOCOL-VERSIONS.md).
+
+MCP extensions: [MCP Apps](./MCP-APPS.md) (interactive views in the task chat),
+[MCP Skills](./MCP-SKILLS.md) (skills that connected apps publish, reviewed
+by the board and delivered to agents), [MCP Tasks](./MCP-TASKS.md) (long
+provider calls that survive timeouts, restarts, and deploys),
+[MCP elicitation](./MCP-ELICITATION.md) (an app's question to the person,
+answered in the task chat), and [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md)
+(OAuth client credentials for organization connections where no person signs
+in).
+
+[Machine sign-in](./MCP-CLIENT-CREDENTIALS.md) (OAuth client credentials for
+organization connections where no person signs in).
 
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Braintrust](./BRAINTRUST.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md), [Ditto](./DITTO.md),
-[Unikraft](./UNIKRAFT.md), [AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md), and
-[Enterpret](./ENTERPRET.md). Optional credential custody:
+[Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Braintrust](./BRAINTRUST.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md), [Ditto](./DITTO.md), [Circleback](./CIRCLEBACK.md),
+[1Password](./1PASSWORD.md), [Unikraft](./UNIKRAFT.md), [AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md),
+[Enterpret](./ENTERPRET.md), [Supabase](./SUPABASE.md), and
+[Vercel](./vercel.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip

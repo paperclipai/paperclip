@@ -37,4 +37,15 @@ describe("native harness backup expiration config parsing", () => {
     vi.stubEnv("PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DAYS", "0");
     expect(loadConfig()).toMatchObject({ nativeHarnessBackupExpirationDays: 1 });
   });
+
+  it("keeps native runner evidence for seven days by default and at least one day", () => {
+    vi.stubEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", undefined);
+    expect(loadConfig()).toMatchObject({ nativeRunnerEvidenceRetentionDays: 7 });
+    vi.stubEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", "14");
+    expect(loadConfig()).toMatchObject({ nativeRunnerEvidenceRetentionDays: 14 });
+    vi.stubEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", "0");
+    expect(loadConfig()).toMatchObject({ nativeRunnerEvidenceRetentionDays: 1 });
+    vi.stubEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", "many");
+    expect(loadConfig()).toMatchObject({ nativeRunnerEvidenceRetentionDays: 7 });
+  });
 });

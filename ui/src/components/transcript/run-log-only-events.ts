@@ -1,8 +1,12 @@
+import { isProviderRateLimitNotice } from "@paperclipai/shared";
+
 /** Internal provider bookkeeping belongs in run logs, including older notice records. */
 export function isRunLogOnlyProviderEvent(
   eventType: string,
   payload: Record<string, unknown>,
 ): boolean {
+  // Rate-limit snapshots feed the agent's usage-limit property, not the transcript.
+  if (isProviderRateLimitNotice(eventType, payload)) return true;
   if (eventType === "harness.diagnostic") {
     return payload.code === "codex_unrelated_information";
   }

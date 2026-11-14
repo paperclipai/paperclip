@@ -52,6 +52,33 @@ it.each([null, plan])("uses the fetched task's plan without another loading roun
   expect(host.textContent).toBe(value?.body ?? "No plan");
   expect(issuesApi.getDocument).not.toHaveBeenCalled();
 });
+it.each([null, plan])("uses core plan data while a separate plan request remains pending: %s", async (value) => {
+  let release!: () => void;
+  vi.mocked(issuesApi.getDocument).mockReturnValue(new Promise<IssueDocument>((resolve, reject) => {
+    release = () => value ? resolve(value) : reject(new ApiError("Not found", 404, null));
+  }));
+  await mount();
+  expect(host.firstElementChild?.getAttribute("data-loading")).toBe("true");
+  try {
+    await act(async () => { await fetchDetail(value); });
+    await vi.waitFor(() => {
+      expect(host.firstElementChild?.getAttribute("data-loading")).toBe("false");
+      expect(host.textContent).toBe(value?.body ?? "No plan");
+    });
+  } finally {
+    await act(async () => { release(); });
+  }
+});
+it.each([null, plan])("recovers an errored plan query from the core projection: %s", async (value) => {
+  vi.mocked(issuesApi.getDocument).mockRejectedValue(new Error("Plan request unavailable"));
+  await mount();
+  await vi.waitFor(() => expect(host.firstElementChild?.getAttribute("data-error")).toBe("true"));
+  await act(async () => { await fetchDetail(value); });
+  await vi.waitFor(() => {
+    expect(host.firstElementChild?.getAttribute("data-error")).toBe("false");
+    expect(host.textContent).toBe(value?.body ?? "No plan");
+  });
+});
 it("revalidates document events after seeding an absent plan, including deletion", async () => {
   await fetchDetail(null);
   await mount();
@@ -79,13 +106,12 @@ it("fetches normally for list-only snapshots and responses without a plan projec
   expect(issuesApi.getDocument).toHaveBeenCalledExactlyOnceWith(issue.id, "plan");
   expect(host.firstElementChild?.getAttribute("data-loading")).toBe("true");
 });
-it("does not overwrite a separately fetched plan when task detail finishes later", async () => {
-  const newerPlan = { ...plan, body: "Newer revision", latestRevisionId: "revision-2" };
+it.each([null, { ...plan, body: "Newer revision", latestRevisionId: "revision-2" }])("does not overwrite a separately fetched plan when task detail finishes later: %s", async (newerPlan) => {
   client.setQueryData(planKey, newerPlan);
   await fetchDetail(plan);
   await mount();
   expect(client.getQueryData(planKey)).toEqual(newerPlan);
-  expect(host.textContent).toBe("Newer revision");
+  expect(host.textContent).toBe(newerPlan?.body ?? "No plan");
 });
 it("does not mistake a refreshed list snapshot for a fresh plan after query eviction", async () => {
   await fetchDetail(null);

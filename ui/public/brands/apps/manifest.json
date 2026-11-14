@@ -2,6 +2,13 @@
   "schemaVersion": 1,
   "providers": [
     {
+      "slug": "1password",
+      "provider": "1Password",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/1password.svg",
+      "darkAsset": "/brands/apps/1password-dark.svg"
+    },
+    {
       "slug": "agentmail",
       "provider": "AgentMail",
       "catalogVisible": true,
@@ -75,6 +82,12 @@
       "provider": "Candid",
       "catalogVisible": false,
       "localAsset": "/brands/apps/candid.png"
+    },
+    {
+      "slug": "circleback",
+      "provider": "Circleback",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/circleback.png"
     },
     {
       "slug": "clickhouse",
@@ -479,7 +492,7 @@
     {
       "slug": "vercel",
       "provider": "Vercel",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/vercel.svg",
       "darkAsset": "/brands/apps/vercel-dark.svg"
     },
@@ -708,6 +721,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/tailscale.png"
     }
   ]
 }

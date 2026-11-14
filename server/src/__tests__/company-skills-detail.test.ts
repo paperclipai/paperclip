@@ -153,6 +153,12 @@ describeEmbeddedPostgres("companySkillService.detail", () => {
         actualState: null,
       }),
     ]);
+    await fs.writeFile(path.join(skillDir, "new-reference.md"), "# New reference\n");
+    expect((await svc.detail(companyId, skillId))?.fileInventory)
+      .toContainEqual({ path: "new-reference.md", kind: "markdown" });
+    await fs.rm(path.join(skillDir, "new-reference.md"));
+    expect((await svc.detail(companyId, skillId))?.fileInventory)
+      .not.toContainEqual(expect.objectContaining({ path: "new-reference.md" }));
   });
 
   it("uses explicit company skill column selections when resolving detail usage", async () => {

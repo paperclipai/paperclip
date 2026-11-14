@@ -1,21 +1,29 @@
+import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
+import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
+import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
+import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
+import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
+import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
-import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { dirname, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
+import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
-  AcpElicitationHandler,
   AcpRuntimeOptions,
   AcpRuntimeEvent,
   AcpRuntimeTurnResult,
@@ -42,6 +50,7 @@ import {
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
+import type { AcpxHostElicitationHandler, AcpxHostExtensionRequestHandler, AcpxHostPermissionHandler } from "./interaction-delivery.js";
 import {
   requireVerifiedAcpxModel,
   type AcpxModelStatus,
@@ -88,6 +97,8 @@ export interface AcpxRuntimePortIdentity {
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   acpxRecordId: string;
   backendSessionId: string;
   agentSessionId: string;
@@ -116,14 +127,26 @@ export interface AcpxRuntimeGoalSnapshot {
   updatedAt?: number | string | null;
 }
 
+/** A harness-native proposed plan captured for Paperclip's approval gate. */
+export interface AcpxPlanProposal {
+  toolCallId: string;
+  markdown: string;
+}
+
 export interface AcpxRuntimeTurnInput {
   text: string;
   requestId: string;
   signal?: AbortSignal;
-  onElicitation?: AcpElicitationHandler;
-  onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
-  onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onElicitation?: AcpxHostElicitationHandler;
+  onPermissionRequest?: AcpxHostPermissionHandler;
+  onExtensionRequest?: AcpxHostExtensionRequestHandler;
   onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  /** Receives a harness-native proposed plan that Paperclip, not the harness, approves. */
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  /** Receives the typed AIR failure behind ACPX's generic terminal error. */
+  onTerminalSessionFailure?: (failure: AcpxTerminalSessionFailure) => void;
+  /** Records the turn start and the prompt dispatch durably (turn-dispatch-journal.ts). */
+  dispatchJournal?: AcpxTurnDispatchJournal;
 }
 
 export interface AcpxRuntimeTurn {
@@ -136,6 +159,20 @@ export interface AcpxRuntimeTurn {
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
+export type AcpxProviderTurnBinding = {
+  onPermissionRequest: AcpxHostPermissionHandler;
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  busy(): boolean;
+};
+
+export interface AcpxProviderCycleStream {
+  next(): Promise<ClaudeProviderCycleItem | null>;
+  adopt(binding: AcpxProviderTurnBinding): boolean;
+  drop(): void;
+  cancel(): boolean;
+  decisionFor(toolCallId: unknown): Promise<boolean> | null;
+}
+
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
@@ -145,6 +182,9 @@ export interface AcpxRuntimePort {
   queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  backgroundTaskState?(): ClaudeBackgroundTaskState | null;
+  providerCycles?(): AcpxProviderCycleStream | null;
+  providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -166,9 +206,12 @@ export interface AcpxRuntimePortOpenOptions {
   stateDirectory: string;
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
+  readOnly?: boolean;
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   permissionPolicy: ReturnType<typeof acpxRuntimePermissionPolicy>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** Kernel credential-home quorum inherited by the provider sentinel. */
@@ -231,6 +274,8 @@ export interface AcpxRuntimeHostDependencies {
 }
 
 export interface OpenAcpxRuntimeHostOptions {
+  /** Trusted startup authority from runnerd; never provider session data. */
+  candidateAdmission?: AcpxCandidateStartupAdmission;
   /** Explicit task execution policy; never inferred from auto-approval. Required for Pi. */
   providerPolicy?: AcpxProviderRuntimePolicy;
   /** Never persisted as session options or recovery identity. */
@@ -244,6 +289,8 @@ export interface OpenAcpxRuntimeHostOptions {
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
@@ -300,6 +347,7 @@ export class AcpxRuntimeHost {
   readonly #toolBridge: RunnerToolBridge | null;
   readonly #claudeSkillNames: readonly string[];
   readonly #assertAgentFilesHeld: (() => void) | undefined;
+  readonly #candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
   #activeTurnInterruption: AcpxRuntimeTurn["cancel"] | null = null;
   #closingStarted = false;
@@ -316,6 +364,7 @@ export class AcpxRuntimeHost {
     toolBridge: RunnerToolBridge | null;
     claudeSkillNames: readonly string[];
     assertAgentFilesHeld?: () => void;
+    candidateAdmission?: AcpxCandidateStartupAdmission;
   }) {
     this.#runtime = input.runtime;
     this.#binding = input.binding;
@@ -326,6 +375,7 @@ export class AcpxRuntimeHost {
     this.#toolBridge = input.toolBridge;
     this.#claudeSkillNames = [...input.claudeSkillNames];
     this.#assertAgentFilesHeld = input.assertAgentFilesHeld;
+    this.#candidateAdmission = input.candidateAdmission ? structuredClone(input.candidateAdmission) : undefined;
   }
 
   static async open(
@@ -337,6 +387,7 @@ export class AcpxRuntimeHost {
       throw new Error("Pi admission requires an explicit task execution policy");
     }
     const preconfigured = usesPreconfiguredHome(options.environment);
+    const preparedHome = preparedHarnessHome(options.environment, options.agent);
     if (preconfigured && options.permissionMode !== "approve-all") {
       throw new Error("preconfigured home currently requires ACPX approve-all; local permission rules still apply");
     }
@@ -346,15 +397,16 @@ export class AcpxRuntimeHost {
     }
     // shortcut: qualify session permissions that deny Runner state before enabling this provider.
     if (preconfigured && options.agent === "codex") throw new Error("preconfigured ACPX Codex cannot protect Runner state; use native Codex or isolated mode");
-    const nativeMcp = preconfigured ? null : nativeMcpLaunchBinding(options.environment);
-    if (nativeMcp?.name === "paperclip") {
-      throw new Error("assigned native MCP name conflicts with the task bridge");
-    }
-    if (!preconfigured && options.runtimeContext?.mcp.bindingId && !nativeMcp
+    if (!preconfigured && options.runtimeContext?.mcp.bindingId
       && !(options.assignedMcpTransport === "prp" && options.semanticTools)) {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
+    if (options.candidateAdmission) {
+      assertAcpxExecutionAdmission(profile, options.candidateAdmission);
+      options = { ...options, candidateAdmission: parseAcpxCandidateStartupAdmission(options.candidateAdmission, { agent: options.agent, model: options.model, normalizedSessionId: options.normalizedSessionId }) };
+      if (preconfigured || typeof options.providerPolicy?.readOnly !== "boolean") throw new Error("ACPX candidate requires a fresh isolated session and explicit task policy");
+    }
     const binding = await runAbortableAdmissionStage(
       options.signal,
       () =>
@@ -369,12 +421,14 @@ export class AcpxRuntimeHost {
           mode: resolveAcpxProviderMode(options.agent, options.mode),
           piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
           claudeEffort: resolveClaudeEffort(options.agent, options.claudeEffort),
-          ...(preconfigured ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
-          ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
+          grokEffort: resolveGrokEffort(options.agent, options.grokEffort),
+          grokDisableWebSearch: resolveGrokDisableWebSearch(options.agent, options.grokDisableWebSearch),
+          ...(preconfigured || preparedHome ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
+          ...(["cursor", "copilot", "pi", "kimi"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
@@ -391,11 +445,11 @@ export class AcpxRuntimeHost {
     const installation = await runAbortableAdmissionStage(
       options.signal,
       () =>
-        (dependencies.verifyInstallation ?? verifyAcpxProfileInstallation)(
-          profile,
-        ),
+        dependencies.verifyInstallation
+          ? dependencies.verifyInstallation(profile)
+          : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
@@ -441,6 +495,7 @@ export class AcpxRuntimeHost {
       retainedRejectedRuntimeAdmissions.add(retained);
       retainRuntimeHostCleanup(ownedCleanup);
     };
+    let admissionStage: keyof typeof ACPX_ADMISSION_CODES = "sandbox";
     try {
       const sandbox = await runAbortableAdmissionStage(
         options.signal,
@@ -463,19 +518,34 @@ export class AcpxRuntimeHost {
           }),
         dependencies.retainAdmissionCleanup,
       );
+      admissionStage = "credential";
+      if (options.agent === "antigravity") assertAcpxProfileEnvironment(options.agent, options.environment ?? {});
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
-          acquire: () =>
-            (dependencies.stageCredential ?? stageManagedCodexCredential)({
+          acquire: async () => {
+            const lease = await (dependencies.stageCredential ?? stageManagedCodexCredential)({
               agentHomeDirectory: sandbox.agentHomeDirectory,
               environment: options.environment,
               sourcePath: options.managedCodexCredentialSourcePath,
-            }),
+            });
+            return retainAcpxCredentialRefresh({
+              lease, agentHomeDirectory: sandbox.agentHomeDirectory,
+              retainRefresh: () => admissionSucceeded && lease.mode !== "api_key",
+            });
+          },
           resource: "credential",
           releaseLate: (lateCredential) => lateCredential.close(),
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
+        });
+      } else if (options.agent === "antigravity") {
+        credential = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => stageManagedAntigravityCredential({ agentHomeDirectory: sandbox.agentHomeDirectory,
+            environment: options.environment, retainRefresh: () => admissionSucceeded }),
+          resource: "credential", releaseLate: late => late.close(),
+          reportFailure: failure => dependencies.reportRetainedCleanupFailure(failure),
         });
       } else if (options.agent === "grok") {
         credential = await acquireAbortableAdmissionResource({
@@ -498,6 +568,7 @@ export class AcpxRuntimeHost {
         });
       }
       options.signal?.throwIfAborted();
+      admissionStage = "configuration";
       const configurationLifetime = credential;
       await runAbortableAdmissionStage(
         options.signal,
@@ -512,13 +583,17 @@ export class AcpxRuntimeHost {
         },
       );
       options.signal?.throwIfAborted();
-      assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      admissionStage = "credential";
+      // Antigravity's selected OAuth document has already been validated and
+      // staged; it is intentionally absent from the native launch environment.
+      if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each
       // resumed process receives the newly registered copy; collection already
       // requires verified provider shutdown in the native executor.
-      const agentFiles = ["cursor", "copilot", "pi"].includes(options.agent)
+      const agentFiles = ["cursor", "copilot", "pi", "kimi"].includes(options.agent)
         ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
           ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
         ]) : null;
@@ -538,6 +613,7 @@ export class AcpxRuntimeHost {
         );
         options.signal?.throwIfAborted();
       }
+      admissionStage = "skills";
       if (options.agent === "pi") {
         const skills = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -560,7 +636,7 @@ export class AcpxRuntimeHost {
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
-      if (!preconfigured && (options.agent === "claude" || options.agent === "grok")) {
+      if (!preconfigured && !preparedHome && (options.agent === "claude" || options.agent === "grok" || options.agent === "kimi")) {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
         // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
@@ -572,6 +648,7 @@ export class AcpxRuntimeHost {
         );
         options.signal?.throwIfAborted();
       }
+      admissionStage = "command";
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: () => installation.openCommand({ signal: options.signal }),
@@ -585,6 +662,7 @@ export class AcpxRuntimeHost {
         signal => installation.openCommand({ signal }),
       );
       command = commandOwner.command;
+      admissionStage = "tool_bridge";
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
@@ -603,12 +681,14 @@ export class AcpxRuntimeHost {
       if (admittedLifetime === null) {
         throw new Error("ACPX provider lifetime lease is unavailable");
       }
+      admissionStage = "runtime";
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: async () => {
           options.assertWorkspaceHeld?.();
           agentFiles?.assertHeld();
           await assertAcpxProfileWorkspace(options.agent, binding.workspacePath);
+          if (options.candidateAdmission) assertAcpxExecutionAdmission(profile, options.candidateAdmission);
           return dependencies.openRuntime({
             ...(options.clientCapabilities === undefined ? {} : {
               clientCapabilities: structuredClone(options.clientCapabilities),
@@ -621,9 +701,11 @@ export class AcpxRuntimeHost {
             providerSessionKey: binding.profileSessionKey,
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,
+            readOnly: options.providerPolicy?.readOnly,
             mode: binding.mode,
             piThinkingLevel: binding.piThinkingLevel,
             claudeEffort: binding.claudeEffort,
+            grokEffort: binding.grokEffort, grokDisableWebSearch: binding.grokDisableWebSearch,
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
@@ -640,10 +722,6 @@ export class AcpxRuntimeHost {
               ...(options.providerPolicy?.readOnly ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
-              // This is Paperclip's authenticated gateway, not a direct upstream
-              // binding. Its existing grants and approval checks remain authoritative.
-              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
-                bearerToken: nativeMcp.token, runnerOwned: true }] : []),
             ],
             ...(options.onGoalUpdate === undefined
               ? {}
@@ -672,6 +750,7 @@ export class AcpxRuntimeHost {
           });
         },
       });
+      admissionStage = "identity";
       const runtimeIdentity = await runAbortableAdmissionStage(
         options.signal,
         () =>
@@ -689,6 +768,7 @@ export class AcpxRuntimeHost {
         throw new Error("ACPX runtime Pi thinking level conflicts with session binding");
       }
       if (runtimeIdentity.claudeEffort !== binding.claudeEffort) throw new Error("ACPX runtime Claude effort conflicts with session binding");
+      if (runtimeIdentity.grokEffort !== binding.grokEffort || runtimeIdentity.grokDisableWebSearch !== binding.grokDisableWebSearch) throw new Error("ACPX runtime Grok effort conflicts with session binding");
       const observedIdentity: AcpxExpectedSessionIdentity = {
         kind: "acpx",
         normalizedSessionId: binding.normalizedSessionId,
@@ -716,12 +796,14 @@ export class AcpxRuntimeHost {
         command,
         toolBridge,
         assertAgentFilesHeld: agentFiles?.assertHeld,
+        candidateAdmission: options.candidateAdmission,
         claudeSkillNames: options.agent === "claude"
           ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
           : [],
       });
     } catch (error) {
       error = classifyAcpxProfileError(options.agent, error) ?? error;
+      recordAcpxAdmissionFailure(error, admissionStage);
       const cleanup = cleanupRuntimeResources(
         runtime,
         toolBridge,
@@ -828,6 +910,18 @@ export class AcpxRuntimeHost {
     return this.#runtime.goalSnapshot?.() ?? null;
   }
 
+  backgroundTaskState(): ClaudeBackgroundTaskState | null {
+    return this.#runtime.backgroundTaskState?.() ?? null;
+  }
+
+  providerCycles(): AcpxProviderCycleStream | null {
+    return this.#runtime.providerCycles?.() ?? null;
+  }
+
+  providerTurnsAvailable(): boolean {
+    return this.#runtime.providerTurnsAvailable?.() ?? false;
+  }
+
   async controlGoal(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -839,6 +933,7 @@ export class AcpxRuntimeHost {
   }
 
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {
+    if (this.#candidateAdmission) parseAcpxCandidateStartupAdmission(this.#candidateAdmission, { agent: this.#candidateAdmission.agent, model: this.#binding.requestedModel, normalizedSessionId: this.#binding.normalizedSessionId });
     this.#assertAgentFilesHeld?.();
     if (this.#closed || this.#closingStarted) {
       throw new Error("ACPX runtime host is closing");
@@ -861,6 +956,9 @@ export class AcpxRuntimeHost {
       ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
       ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
       ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
+      ...(input.onPlanProposal ? { onPlanProposal: input.onPlanProposal } : {}),
+      ...(input.onTerminalSessionFailure ? { onTerminalSessionFailure: input.onTerminalSessionFailure } : {}),
+      ...(input.dispatchJournal ? { dispatchJournal: input.dispatchJournal } : {}),
     });
     this.#activeTurn = turn;
     const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);

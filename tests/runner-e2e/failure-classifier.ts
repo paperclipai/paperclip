@@ -20,14 +20,31 @@ const CANDIDATE =
 const SANDBOX_TRANSFER_TIMEOUT =
   /RPC call "environmentSync(?:In|Out)" timed out after \d+ms/i;
 
+/** A case fixture proved its required starting state cannot be created on this
+ * lane (no supported product path, or a missing operator-supplied account).
+ * Retrying cannot change that, so it is never transient, whatever the wording. */
+export class SetupPrerequisiteUnavailable extends Error {
+  readonly failureClass = "permanent_infrastructure" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "SetupPrerequisiteUnavailable";
+  }
+}
+
 export function classifyFailure(error: unknown): FailureClass {
   if (error instanceof ObservedStateTimeout || error instanceof RemoteAdmissionReadError) return error.failureClass;
+  // Matched by error type (by name, so a second module instance still counts), never by message words.
+  if (error instanceof Error && error.name === "SetupPrerequisiteUnavailable") return "permanent_infrastructure";
   const message =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   if (/browser bootstrap failed before task creation/i.test(message))
     return "transient_infrastructure";
   if (/secret.*(?:leak|plaintext|redaction)/i.test(message))
     return "secret_leak";
+  // A settled chat-catalog grade lists the oracle's failed check ids. Those ids are
+  // free-form names ("specific-operator-qualification-next-step") and must not be
+  // read as infrastructure words: the oracle rejected the candidate's outcome.
+  if (/\bSettled scenario failed:/.test(message)) return "candidate_failure";
   if (/cleanup|teardown|lease.*release/i.test(message)) {
     return TRANSIENT.test(message)
       ? "transient_infrastructure"

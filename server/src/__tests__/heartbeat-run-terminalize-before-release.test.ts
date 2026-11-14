@@ -345,7 +345,7 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     const [environment] = await db.insert(environments).values({ name: `cleanup-${runId}`, driver: "sandbox" }).returning();
     await db.insert(environmentLeases).values({ companyId, environmentId: environment.id,
-      heartbeatRunId: runId, agentId, provider, providerLeaseId: "sandbox-owned",
+      heartbeatRunId: runId, provider, providerLeaseId: "sandbox-owned",
       status: "active", leasePolicy: "ephemeral" });
     const releaseRunLeases = vi.fn(async () => []);
     const heartbeat = heartbeatService(db, {

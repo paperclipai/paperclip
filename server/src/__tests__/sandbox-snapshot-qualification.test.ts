@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Environment, SandboxEnvironmentConfig } from "@paperclipai/shared";
+import type { Environment, PluginSandboxEnvironmentConfig } from "@paperclipai/shared";
 import { fingerprintEnvironmentSandboxProviderConfig as fingerprint, SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, type SandboxTemplateIdentity } from "../services/sandbox-snapshot-qualification.js";
 
 function fixture() {
-  const config = { provider: "daytona", snapshot: "managed-snapshot", apiKey: "fixture-account" } as SandboxEnvironmentConfig;
+  const config: PluginSandboxEnvironmentConfig & { snapshot: string } = { provider: "daytona", reuseLease: false, snapshot: "managed-snapshot", apiKey: "fixture-account" };
   const template: SandboxTemplateIdentity = { id: "template", capturedAt: "2026-10-15T00:00:00Z", templateKind: "snapshot", bindingField: "snapshot" };
   const identity = { provider: "daytona", requestedRef: config.snapshot, id: "a6b9e7d0-f886-471a-b461-640dd03e8d0f", name: config.snapshot, organizationId: "provider-account", createdAt: "2026-10-07T23:19:57.133Z" };
   const proof = { v: 2, companyId: "company", snapshot: config.snapshot, template,

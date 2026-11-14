@@ -1,3 +1,5 @@
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { createTelegramCallbackNoticeAuthority } from "./telegram/callback-notices.js";
 
 import { slackThreadChannelId } from "./slack/messages.js";
@@ -316,6 +318,7 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
           );
       }
       if (input.disposition.kind === "endpoint_attention" && currentEndpoint) {
+        await notifyChatEndpointConfiguration(tx, currentEndpoint);
         await tx
           .update(chatEndpoints)
           .set({
@@ -325,6 +328,7 @@ export function createProviderEffects(db: Db, options: ProviderEffectsOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, currentEndpoint.id));
+        await notifyChatConnectionHealth(tx, currentEndpoint);
         await tx
           .update(toolConnections)
           .set({

@@ -1,0 +1,103 @@
+name: Runner E2E TestOps registration
+run-name: Runner E2E TestOps registration / ${{ inputs.plan }} / ${{ inputs.operation }}
+
+# One-shot, idempotent registration of a sibling runner E2E TestOps plan. It
+# never runs a provider cell. `inspect` only reads; `register` creates missing
+# cases and the plan and assigns the plan to the standing plan's GitHub job.
+on:
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Sibling TestOps plan to register"
+        type: choice
+        options: [reliability]
+        default: reliability
+      operation:
+        description: "inspect reads TestOps only; register creates any missing case, the plan and its job assignment"
+        type: choice
+        options: [inspect, register]
+        default: inspect
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-e2e-testops-registration
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize registration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require default branch and allowlisted numeric actor IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "TestOps registration may run only from the default branch." >&2
+            exit 1
+          fi
+          if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null; then
+            echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
+            exit 1
+          fi
+          for attempt in 1 2 3; do
+            if triggering_actor_id="$(timeout 30s gh api "users/$TRIGGERING_ACTOR" --jq .id)"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep "$((attempt * 2))"
+          done
+          if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
+            echo "GitHub actor identity contexts disagree; refusing registration." >&2
+            exit 1
+          fi
+          for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
+            if ! jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null; then
+              echo "The initiating GitHub account is not authorized to register TestOps plans." >&2
+              exit 1
+            fi
+          done
+
+  register:
+    name: Register the Reliability plan in TestOps
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: runner-e2e-testops-reporting
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Inspect or register the plan, its cases and its job assignment
+        env:
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          ALLURE_ENDPOINT: https://paperclip.testops.cloud
+          ALLURE_PROJECT_ID: '1'
+          REGISTRATION_PLAN: ${{ inputs.plan }}
+          REGISTRATION_OPERATION: ${{ inputs.operation }}
+        run: node tests/runner-e2e/reliability-testops-registration.mjs testops-registration/receipt.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: reliability-testops-registration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: testops-registration/receipt.json
+          if-no-files-found: ignore
+          retention-days: 90

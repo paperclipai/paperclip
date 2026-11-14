@@ -10,6 +10,8 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "browser-use-cloud",
   "daytona",
   "unikraft",
+  "vercel",
+  "1password",
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "monday",

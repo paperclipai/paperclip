@@ -81,8 +81,20 @@ export function wakeMustNotJoinActiveRun(
   wakeContext: Record<string, unknown>,
   interactionReceipt: boolean,
 ): boolean {
-  return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+  // A context compaction run does no task work, so ordinary wakes and
+  // compactions never merge, in either arrival order.
+  return hasRetainedExternalChatRetry(activeRunContext) || interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+    Boolean(readNonEmptyString(parseObject(activeRunContext).contextCompactionRequestId)) ||
+    Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
+}
+
+export function hasRetainedExternalChatRetry(context: unknown): boolean {
+  const active = parseObject(context);
+  const activeSource = readNonEmptyString(active.source);
+  return readNonEmptyString(active.retryOfRunId) !== null &&
+    (activeSource?.startsWith("chat:") === true ||
+      (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
 }
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
@@ -115,21 +127,30 @@ export type EnrichPromotedWakeContextResult = {
 /**
  * Fills the promoted run's context snapshot with the fields the original
  * wake enrichment always fills, without overwriting a field the deferred
- * wake already carried. The deferred wake's own context snapshot was
- * already enriched once when it was first queued, so most calls only
- * normalize the interaction-continuation keys.
+ * wake already carried. A deferred wake queued through the wake queue was
+ * already enriched once, so most calls only normalize the
+ * interaction-continuation keys.
  */
 export function enrichPromotedWakeContext(
   input: EnrichPromotedWakeContextInput,
 ): EnrichPromotedWakeContextResult {
   const contextSnapshot = { ...input.contextSnapshot };
   const { reason, source, triggerDetail, payload } = input;
+  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
     contextSnapshot.wakeReason = reason;
+  }
+  // Some durable receipts, such as a board Retry, store only the payload and
+  // never had a queued context snapshot. Keep their issue scope.
+  if (!readNonEmptyString(contextSnapshot["issueId"]) && issueIdFromPayload) {
+    contextSnapshot.issueId = issueIdFromPayload;
+  }
+  if (!readNonEmptyString(contextSnapshot["taskId"]) && issueIdFromPayload) {
+    contextSnapshot.taskId = issueIdFromPayload;
   }
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;

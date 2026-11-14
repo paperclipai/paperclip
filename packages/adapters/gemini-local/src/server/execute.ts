@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -362,434 +363,437 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let remoteRuntimeRootDir: string | null = null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
-  if (executionTargetIsRemote) {
-    try {
-      localSkillsDir = await buildGeminiSkillsDir(config);
-      await onLog(
-        "stdout",
-        `[paperclip] Syncing workspace and Gemini runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+  try {
+    if (executionTargetIsRemote) {
+      try {
+        localSkillsDir = await buildGeminiSkillsDir(config);
+        await onLog(
+          "stdout",
+          `[paperclip] Syncing workspace and Gemini runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+        );
+        const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+          privateRuntime: Boolean(config.managedAiConnection),
+          runId,
+          target: executionTarget,
+          adapterKey: "gemini",
+          timeoutSec,
+          workspaceLocalDir: cwd,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          assets: [{
+            key: "skills",
+            localDir: localSkillsDir,
+            followSymlinks: true,
+          }],
+        });
+        restoreRemoteWorkspace = () =>
+          preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+        effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
+        refreshPaperclipWorkspaceEnvForExecution({
+          env,
+          envConfig,
+          workspaceCwd: effectiveWorkspaceCwd,
+          workspaceSource,
+          workspaceId,
+          workspaceRepoUrl,
+          workspaceRepoRef,
+          workspaceHints,
+          agentHome,
+          executionTargetIsRemote,
+          executionCwd: effectiveExecutionCwd,
+        });
+        remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
+        if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && remoteRuntimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(remoteRuntimeRootDir));
+        const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget, Boolean(config.managedAiConnection));
+        const managedRemoteHomeDir =
+          managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+            ? preparedExecutionTargetRuntime.runtimeRootDir
+            : null;
+        if (managedRemoteHomeDir) {
+          env.HOME = managedRemoteHomeDir;
+        }
+        const remoteHomeDir =
+          managedRemoteHomeDir ??
+          (await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+            cwd,
+            env,
+            timeoutSec,
+            graceSec,
+            onLog,
+          }));
+        if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+          remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
+          await runAdapterExecutionTargetShellCommand(
+            runId,
+            executionTarget,
+            `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+            { cwd, env, timeoutSec, graceSec, onLog },
+          );
+        }
+        // Gemini CLI refuses headless runs without an auth selection persisted in
+        // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
+        // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
+        // the runtime root replaces the image home, so any settings baked into the
+        // image are invisible -- pre-select the api-key auth whenever an API key
+        // is provided. Both settings schema generations are written (legacy
+        // selectedAuthType + current security.auth.selectedType). An existing
+        // settings.json (user-shipped via workspace) is left untouched.
+        // Only the managed HOME (the per-run runtime root) is touched: on
+        // non-managed remote targets remoteHomeDir is the user's real home, where
+        // creating files is out of scope and existing settings remain visible.
+        // Key presence check spans the run env AND the host process env: in the
+        // managed sandbox path the key never enters the adapter's run env -- it
+        // reaches the agent pod via the provider's per-run secret (envKeys
+        // passthrough from the host env), so the host env is the signal here.
+        const hasGeminiApiKey = Boolean(
+          env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
+          process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+        );
+        if (managedRemoteHomeDir && hasGeminiApiKey) {
+          const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
+          const authSettingsJson = JSON.stringify({
+            selectedAuthType: "gemini-api-key",
+            security: { auth: { selectedType: "gemini-api-key" } },
+          });
+          await runAdapterExecutionTargetShellCommand(
+            runId,
+            executionTarget,
+            `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
+            { cwd, env, timeoutSec, graceSec, onLog },
+          );
+        }
+      } catch (error) {
+        await Promise.allSettled([
+          restoreRemoteWorkspace?.(),
+          localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        ]);
+        restoreRemoteWorkspace = null;
+        throw error;
+      }
+    }
+    const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
-        target: executionTarget,
+        target: runtimeExecutionTarget,
+        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
+        runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "gemini",
         timeoutSec,
-        workspaceLocalDir: cwd,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: command,
-        onProgress: (line) => onLog("stdout", line),
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        assets: [{
-          key: "skills",
-          localDir: localSkillsDir,
-          followSymlinks: true,
-        }],
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        onLog,
       });
-      restoreRemoteWorkspace = () =>
-        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
-      refreshPaperclipWorkspaceEnvForExecution({
-        env,
-        envConfig,
-        workspaceCwd: effectiveWorkspaceCwd,
-        workspaceSource,
-        workspaceId,
-        workspaceRepoUrl,
-        workspaceRepoRef,
-        workspaceHints,
-        agentHome,
-        executionTargetIsRemote,
-        executionCwd: effectiveExecutionCwd,
-      });
-      remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
-      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      const managedRemoteHomeDir =
-        managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : null;
-      if (managedRemoteHomeDir) {
-        env.HOME = managedRemoteHomeDir;
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
       }
-      const remoteHomeDir =
-        managedRemoteHomeDir ??
-        (await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
-          cwd,
-          env,
-          timeoutSec,
-          graceSec,
-          onLog,
-        }));
-      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
-        await runAdapterExecutionTargetShellCommand(
-          runId,
-          executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
-          { cwd, env, timeoutSec, graceSec, onLog },
-        );
-      }
-      // Gemini CLI refuses headless runs without an auth selection persisted in
-      // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
-      // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
-      // the runtime root replaces the image home, so any settings baked into the
-      // image are invisible -- pre-select the api-key auth whenever an API key
-      // is provided. Both settings schema generations are written (legacy
-      // selectedAuthType + current security.auth.selectedType). An existing
-      // settings.json (user-shipped via workspace) is left untouched.
-      // Only the managed HOME (the per-run runtime root) is touched: on
-      // non-managed remote targets remoteHomeDir is the user's real home, where
-      // creating files is out of scope and existing settings remain visible.
-      // Key presence check spans the run env AND the host process env: in the
-      // managed sandbox path the key never enters the adapter's run env -- it
-      // reaches the agent pod via the provider's per-run secret (envKeys
-      // passthrough from the host env), so the host env is the signal here.
-      const hasGeminiApiKey = Boolean(
-        env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
-        process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-      );
-      if (managedRemoteHomeDir && hasGeminiApiKey) {
-        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
-        const authSettingsJson = JSON.stringify({
-          selectedAuthType: "gemini-api-key",
-          security: { auth: { selectedType: "gemini-api-key" } },
-        });
-        await runAdapterExecutionTargetShellCommand(
-          runId,
-          executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
-          { cwd, env, timeoutSec, graceSec, onLog },
-        );
-      }
-    } catch (error) {
-      await Promise.allSettled([
-        restoreRemoteWorkspace?.(),
-        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
-      ]);
-      throw error;
     }
-  }
-  const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
-    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId,
-      target: runtimeExecutionTarget,
-      enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
-      duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
-      runtimeRootDir: remoteRuntimeRootDir,
-      adapterKey: "gemini",
-      timeoutSec,
-      hostApiToken: env.PAPERCLIP_API_KEY,
-      onLog,
-    });
-    if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
-    }
-  }
 
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
-    );
-  } else if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
-    );
-  }
-
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  let instructionsPrefix = "";
-  if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    const runtimeSessionParams = parseObject(runtime.sessionParams);
+    const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+    const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const canResumeSession =
+      runtimeSessionId.length > 0 &&
+      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+    const sessionId = canResumeSession ? runtimeSessionId : null;
+    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Gemini session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+      );
+    } else if (runtimeSessionId && !canResumeSession) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-  }
-  const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
-    notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
-    if (executionTargetIsRemote) {
-      notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
+
+    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+    const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+    let instructionsPrefix = "";
+    if (instructionsFilePath) {
+      try {
+        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+        instructionsPrefix =
+          `${instructionsContents}\n\n` +
+          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await onLog(
+          "stdout",
+          `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        );
+      }
     }
-    if (!instructionsFilePath) return notes;
-    if (instructionsPrefix.length > 0) {
+    const commandNotes = (() => {
+      const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+      notes.push("Added --approval-mode yolo for unattended execution.");
+      notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
+      if (executionTargetIsRemote) {
+        notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
+      }
+      if (!instructionsFilePath) return notes;
+      if (instructionsPrefix.length > 0) {
+        notes.push(
+          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+        );
+        return notes;
+      }
       notes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       );
       return notes;
-    }
-    notes.push(
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-    );
-    return notes;
-  })();
+    })();
 
-  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
-  const templateData = {
-    agentId: agent.id,
-    companyId: agent.companyId,
-    runId,
-    company: { id: agent.companyId },
-    agent,
-    run: { id: runId, source: "on_demand" },
-    context,
-  };
-  const buildPrompt = (resumedSession: boolean) => {
-    const renderedBootstrapPrompt =
-      !resumedSession && bootstrapPromptTemplate.trim().length > 0
-        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-        : "";
-    const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
-      resumedSession,
-      includeCommunicationGuidance: false,
-    });
-    const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const paperclipEnvNote = renderPaperclipEnvNote(env);
-    const apiAccessNote = renderApiAccessNote(env);
-    const basePrompt = joinPromptSections([
-      instructionsPrefix,
-      renderedBootstrapPrompt,
-      wakePrompt,
-      taskContextNote,
-      sessionHandoffNote,
-      paperclipEnvNote,
-      apiAccessNote,
-      renderedPrompt,
-    ]);
-    return {
-      basePrompt,
-      promptMetrics: {
-        promptChars: basePrompt.length,
-        instructionsChars: instructionsPrefix.length,
-        bootstrapPromptChars: renderedBootstrapPrompt.length,
-        wakePromptChars: wakePrompt.length,
-        taskContextChars: taskContextNote.length,
-        sessionHandoffChars: sessionHandoffNote.length,
-        runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-        heartbeatPromptChars: renderedPrompt.length,
-      },
+    const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+    const templateData = {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      runId,
+      company: { id: agent.companyId },
+      agent,
+      run: { id: runId, source: "on_demand" },
+      context,
     };
-  };
-
-  const buildArgs = (resumeSessionId: string | null, prompt: string) => {
-    const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
-    args.push("--approval-mode", "yolo");
-    if (sandbox) {
-      args.push("--sandbox");
-    } else {
-      args.push("--sandbox=none");
-    }
-    if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
-    return args;
-  };
-
-  const runAttempt = async (resumeSessionId: string | null) => {
-    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
-    const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
-    const prompt = joinPromptSections([
-      selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-      basePrompt,
-    ]);
-    const args = buildArgs(resumeSessionId, prompt);
-    const invocationEnv = buildGeminiHeadlessEnv(env);
-    const invocationRuntimeEnv = buildGeminiRuntimeEnv(env);
-    const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
-      runtimeEnv: invocationRuntimeEnv,
-      includeRuntimeKeys: ["HOME"],
-      resolvedCommand,
-    });
-    if (onMeta) {
-      await onMeta({
-        adapterType: "gemini_local",
-        command: resolvedCommand,
-        cwd: effectiveExecutionCwd,
-        commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
-        env: loggedEnv,
-        prompt,
-        promptMetrics: { ...promptMetrics, promptChars: prompt.length },
-        context,
+    const buildPrompt = (resumedSession: boolean) => {
+      const renderedBootstrapPrompt =
+        !resumedSession && bootstrapPromptTemplate.trim().length > 0
+          ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+          : "";
+      const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+        resumedSession,
+        includeCommunicationGuidance: false,
       });
-    }
-
-    const consumeAccounting = createGeminiJsonlParser();
-    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
-      const parsed = consumeAccounting(stdout);
-      return { usage: parsed.usage, costUsd: parsed.costUsd, usageBasis: "per_run", provider: "google", biller: "google", billingType, model, complete: parsed.resultEvent !== null };
-    });
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-      onProcessStopped: providerStop.beginInvocation(),
-      cwd,
-      env: invocationEnv,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog: accountingLog,
-      runLogTail: paperclipBridge?.runLogTail,
-      settleRunDisposition: paperclipBridge?.settleRunDisposition,
-    });
-    await accountingLog.flush();
-    return {
-      proc,
-      parsed: parseGeminiJsonl(proc.stdout),
-    };
-  };
-
-  const toResult = (
-    attempt: {
-      proc: {
-        exitCode: number | null;
-        signal: string | null;
-        timedOut: boolean;
-        stdout: string;
-        stderr: string;
-        errorCode?: string | null;
+      const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
+      const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+      const paperclipEnvNote = renderPaperclipEnvNote(env);
+      const apiAccessNote = renderApiAccessNote(env);
+      const basePrompt = joinPromptSections([
+        instructionsPrefix,
+        renderedBootstrapPrompt,
+        wakePrompt,
+        taskContextNote,
+        sessionHandoffNote,
+        paperclipEnvNote,
+        apiAccessNote,
+        renderedPrompt,
+      ]);
+      return {
+        basePrompt,
+        promptMetrics: {
+          promptChars: basePrompt.length,
+          instructionsChars: instructionsPrefix.length,
+          bootstrapPromptChars: renderedBootstrapPrompt.length,
+          wakePromptChars: wakePrompt.length,
+          taskContextChars: taskContextNote.length,
+          sessionHandoffChars: sessionHandoffNote.length,
+          runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+          heartbeatPromptChars: renderedPrompt.length,
+        },
       };
-      parsed: ReturnType<typeof parseGeminiJsonl>;
-    },
-    clearSessionOnMissingSession = false,
-    isRetry = false,
-  ): AdapterExecutionResult => {
-    const authMeta = detectGeminiAuthRequired({
-      parsed: attempt.parsed.resultEvent,
-      stdout: attempt.proc.stdout,
-      stderr: attempt.proc.stderr,
-    });
-    const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+    };
 
-    if (attempt.proc.timedOut) {
+    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+      const args = ["--output-format", "stream-json"];
+      if (resumeSessionId) args.push("--resume", resumeSessionId);
+      if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
+      args.push("--approval-mode", "yolo");
+      if (sandbox) {
+        args.push("--sandbox");
+      } else {
+        args.push("--sandbox=none");
+      }
+      if (extraArgs.length > 0) args.push(...extraArgs);
+      args.push("--prompt", prompt);
+      return args;
+    };
+
+    const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
+      const prompt = joinPromptSections([
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+        basePrompt,
+      ]);
+      const args = buildArgs(resumeSessionId, prompt);
+      const invocationEnv = buildGeminiHeadlessEnv(env);
+      const invocationRuntimeEnv = buildGeminiRuntimeEnv(env);
+      const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
+        runtimeEnv: invocationRuntimeEnv,
+        includeRuntimeKeys: ["HOME"],
+        resolvedCommand,
+      });
+      if (onMeta) {
+        await onMeta({
+          adapterType: "gemini_local",
+          command: resolvedCommand,
+          cwd: effectiveExecutionCwd,
+          commandNotes,
+          commandArgs: args.map((value, index) => (
+            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
+          )),
+          env: loggedEnv,
+          prompt,
+          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
+          context,
+        });
+      }
+
+      const consumeAccounting = createGeminiJsonlParser();
+      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+        const parsed = consumeAccounting(stdout);
+        return { usage: parsed.usage, costUsd: parsed.costUsd, usageBasis: "per_run", provider: "google", biller: "google", billingType, model, complete: parsed.resultEvent !== null };
+      });
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        onProcessStopped: providerStop.beginInvocation(),
+        cwd,
+        env: invocationEnv,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
+        onLog: accountingLog,
+        runLogTail: paperclipBridge?.runLogTail,
+        settleRunDisposition: paperclipBridge?.settleRunDisposition,
+      });
+      await accountingLog.flush();
+      return {
+        proc,
+        parsed: parseGeminiJsonl(proc.stdout),
+      };
+    };
+
+    const toResult = (
+      attempt: {
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          stdout: string;
+          stderr: string;
+          errorCode?: string | null;
+        };
+        parsed: ReturnType<typeof parseGeminiJsonl>;
+      },
+      clearSessionOnMissingSession = false,
+      isRetry = false,
+    ): AdapterExecutionResult => {
+      const authMeta = detectGeminiAuthRequired({
+        parsed: attempt.parsed.resultEvent,
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+      });
+      const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+
+      if (attempt.proc.timedOut) {
+        return {
+          exitCode: attempt.proc.exitCode,
+          signal: attempt.proc.signal,
+          timedOut: true,
+          usageComplete: attempt.parsed.resultEvent !== null,
+            usage: attempt.parsed.usage,
+            usageBasis: "per_run",
+            provider: "google",
+            biller: "google",
+            model,
+            billingType,
+            costUsd: attempt.parsed.costUsd,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: authMeta.requiresAuth
+            ? "gemini_auth_required"
+            : networkUnavailable
+              ? "gemini_network_unavailable"
+              : null,
+          clearSession: clearSessionOnMissingSession,
+        };
+      }
+
+      const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const structuredFailure = attempt.parsed.resultEvent
+        ? describeGeminiFailure(attempt.parsed.resultEvent)
+        : null;
+      const fallbackErrorMessage =
+        parsedError ||
+        structuredFailure ||
+        stderrLine ||
+        `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
+      const failed = (attempt.proc.exitCode ?? 0) !== 0;
+      const clearSessionForTurnLimit = isGeminiTurnLimitResult(
+        attempt.parsed.resultEvent,
+        attempt.proc.exitCode,
+      );
+
+      // On retry, don't fall back to old session ID — the old session was stale
+      const canFallbackToRuntimeSession = !isRetry;
+      const resolvedSessionId = attempt.parsed.sessionId
+        ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
+      const resolvedSessionParams = resolvedSessionId
+        ? ({
+          sessionId: resolvedSessionId,
+          cwd: effectiveExecutionCwd,
+          ...(workspaceId ? { workspaceId } : {}),
+          ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+          ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? {
+                remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+              }
+            : {}),
+        } as Record<string, unknown>)
+        : null;
+      const resultJson: Record<string, unknown> = {
+        ...(attempt.parsed.resultEvent ?? {
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+        }),
+        ...(failed && clearSessionForTurnLimit ? { stopReason: "max_turns_exhausted" } : {}),
+      };
+
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
-        timedOut: true,
+        timedOut: false,
         usageComplete: attempt.parsed.resultEvent !== null,
-          usage: attempt.parsed.usage,
-          usageBasis: "per_run",
-          provider: "google",
-          biller: "google",
-          model,
-          billingType,
-          costUsd: attempt.parsed.costUsd,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth
+        usageBasis: "per_run",
+        errorMessage: failed ? fallbackErrorMessage : null,
+        // Forward the transport-level error code from the run-disposition seam
+        // first. A lost duplex control channel surfaces the typed
+        // `duplex_channel_lost` code before any provider classification.
+        errorCode: attempt.proc.errorCode
+          ? attempt.proc.errorCode
+          : failed && authMeta.requiresAuth
           ? "gemini_auth_required"
-          : networkUnavailable
-            ? "gemini_network_unavailable"
-            : null,
-        clearSession: clearSessionOnMissingSession,
-      };
-    }
-
-    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const structuredFailure = attempt.parsed.resultEvent
-      ? describeGeminiFailure(attempt.parsed.resultEvent)
-      : null;
-    const fallbackErrorMessage =
-      parsedError ||
-      structuredFailure ||
-      stderrLine ||
-      `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
-    const failed = (attempt.proc.exitCode ?? 0) !== 0;
-    const clearSessionForTurnLimit = isGeminiTurnLimitResult(
-      attempt.parsed.resultEvent,
-      attempt.proc.exitCode,
-    );
-
-    // On retry, don't fall back to old session ID — the old session was stale
-    const canFallbackToRuntimeSession = !isRetry;
-    const resolvedSessionId = attempt.parsed.sessionId
-      ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
-    const resolvedSessionParams = resolvedSessionId
-      ? ({
+          : failed && clearSessionForTurnLimit
+          ? "max_turns_exhausted"
+          : failed && networkUnavailable
+          ? "gemini_network_unavailable"
+          : null,
+        usage: attempt.parsed.usage,
         sessionId: resolvedSessionId,
-        cwd: effectiveExecutionCwd,
-        ...(workspaceId ? { workspaceId } : {}),
-        ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-        ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-        ...(executionTargetIsRemote
-          ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-            }
-          : {}),
-      } as Record<string, unknown>)
-      : null;
-    const resultJson: Record<string, unknown> = {
-      ...(attempt.parsed.resultEvent ?? {
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
-      }),
-      ...(failed && clearSessionForTurnLimit ? { stopReason: "max_turns_exhausted" } : {}),
+        sessionParams: resolvedSessionParams,
+        sessionDisplayId: resolvedSessionId,
+        provider: "google",
+        biller: "google",
+        model,
+        billingType,
+        costUsd: attempt.parsed.costUsd,
+        resultJson,
+        summary: attempt.parsed.summary,
+        question: attempt.parsed.question,
+        clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      };
     };
 
-    return {
-      exitCode: attempt.proc.exitCode,
-      signal: attempt.proc.signal,
-      timedOut: false,
-      usageComplete: attempt.parsed.resultEvent !== null,
-      usageBasis: "per_run",
-      errorMessage: failed ? fallbackErrorMessage : null,
-      // Forward the transport-level error code from the run-disposition seam
-      // first. A lost duplex control channel surfaces the typed
-      // `duplex_channel_lost` code before any provider classification.
-      errorCode: attempt.proc.errorCode
-        ? attempt.proc.errorCode
-        : failed && authMeta.requiresAuth
-        ? "gemini_auth_required"
-        : failed && clearSessionForTurnLimit
-        ? "max_turns_exhausted"
-        : failed && networkUnavailable
-        ? "gemini_network_unavailable"
-        : null,
-      usage: attempt.parsed.usage,
-      sessionId: resolvedSessionId,
-      sessionParams: resolvedSessionParams,
-      sessionDisplayId: resolvedSessionId,
-      provider: "google",
-      biller: "google",
-      model,
-      billingType,
-      costUsd: attempt.parsed.costUsd,
-      resultJson,
-      summary: attempt.parsed.summary,
-      question: attempt.parsed.question,
-      clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
-    };
-  };
-
-  try {
     const initial = await runAttempt(sessionId);
     if (
       sessionId &&

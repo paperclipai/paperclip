@@ -1,0 +1,137 @@
+import { grantCaseTaskAssignment } from "./integrator-case-prerequisites.js";
+import type { cases } from "../../../packages/db/src/schema/cases.js";
+import type { CaseHandoff, HandoffCaseResult } from "../../../packages/shared/src/case-handoffs.js";
+import type { Issue, IssueDocument, DocumentRevision, IssueBlockerDiagnosticsResponse } from "../../../packages/shared/src/types/issue.js";
+import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
+import { checks, observation, project, task, type Entity, type InternalObservation } from "./internal-support.js";
+import { fixtureWorker } from "./internal-definition.js";
+import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
+type CaseRecord = typeof cases.$inferSelect;
+interface CloseObservation extends InternalObservation { caseRecord: CaseRecord; handoffs: CaseHandoff[]; finalDocument: IssueDocument; finalRevisions: DocumentRevision[]; negativeCase?: CaseRecord; negativeTask?: Issue; pendingReview?: Issue; blockerEvidence?: IssueBlockerDiagnosticsResponse }
+const settings = new WeakMap<ChatCatalogContext, boolean>();
+async function cleanup(ctx: ChatCatalogContext) { const value = settings.get(ctx); if (value === undefined) return; await ctx.input.api.patch("/api/instance/settings/experimental", { enableCases: value }); settings.delete(ctx); }
+async function observeClose(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<CloseObservation> {
+  const o = await observeInternal(ctx, state); const row = state.case as CaseRecord;
+  return { ...o, caseRecord: await ctx.input.api.get<CaseRecord>(`/api/cases/${row.id}`), handoffs: (await ctx.input.api.get<{ items: CaseHandoff[] }>(`/api/cases/${row.id}/handoffs?limit=100`)).items,
+    finalDocument: await ctx.input.api.get<IssueDocument>(`/api/issues/${row.workIssueId}/documents/review`), finalRevisions: await ctx.input.api.get<DocumentRevision[]>(`/api/issues/${row.workIssueId}/documents/review/revisions`),
+    ...(state.negativeCase ? { negativeCase: await ctx.input.api.get<CaseRecord>(`/api/cases/${(state.negativeCase as CaseRecord).id}`), negativeTask: await ctx.input.api.get<Issue>(`/api/issues/${(state.negativeCase as CaseRecord).workIssueId}`),
+      pendingReview: await ctx.input.api.get<Issue>(`/api/issues/${(state.pendingReview as Entity).id}`), blockerEvidence: await ctx.input.api.get<IssueBlockerDiagnosticsResponse>(`/api/issues/${(state.negativeCase as CaseRecord).workIssueId}/diagnostics/blockers`) } : {}) };
+}
+function closeObservation(value: unknown): CloseObservation | undefined { const o = value as CloseObservation; return observation(value) && !!o.caseRecord && Array.isArray(o.handoffs) && !!o.finalDocument && Array.isArray(o.finalRevisions) ? o : undefined; }
+/** The replies answering the closure-result question: their comments, runs, and whether those runs read the saved case. */
+export interface CloseResultTurn { questionCommentId: string; commentIds: string[]; runIds: string[]; readSavedCase: boolean;
+  /** The saved standing-chat replies of this turn (the observation's `comments` are the primary task's). */
+  replies: Array<{ id: string; authorAgentId?: string | null; createdByRunId?: string | null }>;
+  /** The company's route prefix; a case link must open this company's case page. */
+  companyPrefix: string }
+export function closeResultTurnGrounded(o: Pick<CloseObservation, "origin" | "renderedLinkEvidence" | "leadId" | "runs">, turn: CloseResultTurn | undefined, row: Pick<CaseRecord, "id" | "identifier">) {
+  if (!turn || !turn.commentIds.length || !turn.readSavedCase || !Array.isArray(turn.replies)) return false;
+  const replies = turn.replies.filter(comment => turn.commentIds.includes(comment.id));
+  return replies.length === turn.commentIds.length && replies.every(comment => comment.authorAgentId === o.leadId && turn.runIds.includes(String(comment.createdByRunId)))
+    && turn.runIds.every(id => o.runs.some(run => run.id === id && run.agentId === o.leadId && run.status === "succeeded"))
+    && (o.renderedLinkEvidence ?? []).some(link => !!link.commentId && turn.commentIds.includes(link.commentId) && opensCase(o.origin, link.href, turn.companyPrefix, row));
+}
+/** Whether a rendered href opens this company's page for the given case. */
+function opensCase(origin: string, href: string, companyPrefix: string, row: Pick<CaseRecord, "id" | "identifier">) {
+  try {
+    const url = new URL(href, origin), parts = url.pathname.split("/").filter(Boolean);
+    return url.origin === new URL(origin).origin && parts.length === 3 && !!companyPrefix && parts[0]!.toUpperCase() === companyPrefix.toUpperCase()
+      && parts[1] === "cases" && [row.id, row.identifier].includes(parts[2]!);
+  } catch { return false; }
+}
+async function closeResultTurn(ctx: ChatCatalogContext, question: string, row: CaseRecord): Promise<CloseResultTurn | undefined> {
+  const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
+  const at = comments.map(comment => !comment.authorAgentId && comment.body?.trim() === question).lastIndexOf(true); if (at < 0) return;
+  const next = comments.findIndex((comment, index) => index > at && !comment.authorAgentId);
+  const replies = comments.slice(at + 1, next < 0 ? undefined : next).filter(comment => comment.authorAgentId === ctx.input.fixtures.agent.id && typeof comment.createdByRunId === "string");
+  const runIds = [...new Set(replies.map(comment => String(comment.createdByRunId)))];
+  const events = (await Promise.all(runIds.map(async runId => (await collectRunEvents<Record<string, unknown>>(afterSeq =>
+    ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=1000`))).map(event => ({ ...event, runId: event.runId ?? runId }))))).flat();
+  return { questionCommentId: comments[at]!.id, commentIds: replies.map(comment => comment.id), runIds,
+    replies: replies.map(comment => ({ id: comment.id, authorAgentId: comment.authorAgentId, createdByRunId: comment.createdByRunId })),
+    companyPrefix: String(ctx.input.fixtures.company.issuePrefix ?? ""),
+    readSavedCase: readRecord(events, [{ operationId: "GET /api/cases/{id}", pathParams: recordParams("id", row.id, row.identifier) }]) };
+}
+export function gradeIntegratorCaseClose(value: unknown) {
+  const c = checks(); const o = closeObservation(value); c.add("actual-primary-completion-and-terminal-ledger", !!o, "Requires original ordinary primary, genuine accepted review, terminal handoff and preserved documents."); if (!o) return c.result();
+  const original = o.state.case as CaseRecord; const originalTask = o.state.task as Issue; const owner = o.state.worker as Entity;
+  const terminal = o.handoffs.find(row => row.destinationKind === "done"); const terminalRun = o.runs.find(run => run.id === terminal?.sourceRunId);
+  const primary = o.tasks.find(row => row.id === original.workIssueId);
+  c.add("task-done-was-not-case-closure", originalTask.status === "done" && original.status !== "done" && original.completedAt == null,
+    "The genuine prerequisite review completed the ordinary task while the case remained open; this alone is not a terminal case receipt.");
+  c.add("explicit-terminal-intent-through-real-primary", o.caseRecord.id === original.id && o.caseRecord.workIssueId === original.workIssueId && o.caseRecord.status === "done" && !!o.caseRecord.completedAt && primary?.status === "done"
+    && terminal?.state === "completed" && terminal.issueId === primary.id && terminal.actorType === "agent" && terminal.actorId === owner.id && !!terminal.completedAt
+    && terminalRun?.agentId === owner.id && terminalRun.runtimeMode === "native" && terminalRun.status === "succeeded" && terminalRun.contextSnapshot?.issueId === primary.id
+    && terminalRun.id !== o.state.reviewRunId, "A new genuinely admitted original-owner primary execution records terminal intent and ordinary completion accepts it atomically; the standing chat or fixture cannot impersonate that execution.");
+  const review = o.state.review as IssueDocument;
+  c.add("accepted-review-and-final-documents-retained", o.finalDocument.id === review.id && o.finalDocument.issueId === original.workIssueId
+    && o.finalRevisions.some(revision => revision.id === review.latestRevisionId && revision.body === review.body && revision.createdByAgentId === owner.id && revision.createdByRunId === o.state.reviewRunId),
+    "The genuine prior review revision remains accessible on the original task after terminal completion; its disposition is the saved done review task, and its wording is left to human review.");
+  const first = closeObservation(o.state.initialDirection);
+  const result = closeObservation(o.state.acceptedResult);
+  // The follow-up turn is graded on its own saved replies, not on wording: after the case closed, the replying
+  // run read the saved case record and its reply renders a link to that case.
+  const turn = o.state.resultTurn as CloseResultTurn | undefined;
+  // The first acknowledgement's wording is left to human review.
+  c.add("truthful-actual-close-result", !!first
+    && !!result && result.caseRecord.status === "done" && !!result.caseRecord.completedAt && closeResultTurnGrounded(o, turn, original),
+    "A pending first acknowledgement is permitted; the explicit actual-result follow-up is a separate reply whose run read the saved closed case and which links that case.");
+  // The setup intends this close to be refused: the required review stays unresolved, so the saved case must stay open.
+  // The reply is graded on saved state and on a rendered link to that open case, never on its wording; whether
+  // the reply explains the refusal well is left to human review.
+  const negative = o.negativeCase;
+  c.add("unresolved-required-review-does-not-close", !!negative && !!o.negativeTask && !!o.pendingReview && negative.workIssueId === o.negativeTask.id
+    && negative.status !== "done" && !negative.completedAt && o.negativeTask.status !== "done" && o.pendingReview.status === "backlog"
+    && !!o.blockerEvidence?.blockers.some(blocker => blocker.id === o.pendingReview!.id && blocker.isUnresolved)
+    && (o.renderedLinkEvidence ?? []).some(link => link.source === "reply" && !!link.commentId && !turn?.commentIds.includes(link.commentId) && opensCase(o.origin, link.href, turn?.companyPrefix ?? "", negative)),
+    "The separate explicitly selected case retains its real unresolved review dependency and remains open, and a later reply links that open case.");
+  return c.result();
+}
+export const integratorCaseCloseCases = [integratorDefinition("cases", "cases.close-case", async ctx => {
+  const prior = await ctx.input.api.get<{ enableCases: boolean }>("/api/instance/settings/experimental"); settings.set(ctx, prior.enableCases);
+  try {
+    await ctx.input.api.patch("/api/instance/settings/experimental", { enableCases: true }); const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
+    await grantCaseTaskAssignment(ctx, worker.id);
+    for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, { scopeType: "agent", scopeId: worker.id }]) await ctx.input.api.post(`/api/companies/${ctx.input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
+    const kickoff = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, {
+      idempotencyKey: `close-review-${ctx.input.nonce}`, case: { create: { caseType: "customer", title: "Accepted checkout fix", projectId: p.id, fields: { reviewRequirement: "Verify supplied correction and retain review document" } } }, toAgentId: worker.id, phase: "review",
+      instructions: "Review the supplied synthetic checkout correction against its acceptance criteria. Save a task-owned document with key review, the actual reasoning, and accepted or rejected disposition. If the criteria are met, mark this ordinary review task done. Do not perform a terminal case handoff: the person has not requested case closure.",
+      workflow_document_text: "Morgan owns this same ordinary primary throughout review and final closure. Its saved review and final documents remain task-owned. Finishing review alone leaves the case open. Only a later explicit accepted-fix closure direction permits Morgan's genuine primary execution to record a terminal handoff and complete normally under ordinary gates.",
+      initialDocuments: [{ key: "brief", title: "Synthetic correction acceptance", body: "Controlled checkout patch: before, the Pay control had disabled=true and could not submit. The reviewed correction has disabled=false, one click handler that calls submit once, and the visible accessible name Pay. Accept if activation is permitted, submit occurs exactly once, and the visible name is preserved. No unrelated production payment operation is requested." }],
+    });
+    const prepared = await pollUntil({ label: "genuine completed review without terminal case closure", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
+      load: async () => ({ task: await ctx.input.api.get<Issue>(`/api/issues/${kickoff.taskId}`), runs: await ctx.allRuns(), documents: await ctx.input.api.get<IssueDocument[]>(`/api/issues/${kickoff.taskId}/documents`) }),
+      accept: v => v.task.status === "done" && v.runs.length === 1 && v.runs[0]?.status === "succeeded" && v.documents.some(doc => doc.key === "review") });
+    return { project: p, worker: { id: worker.id }, task: prepared.task, case: await ctx.input.api.get<CaseRecord>(`/api/cases/${kickoff.caseId}`), reviewRunId: prepared.runs[0]!.id,
+      review: await ctx.input.api.get<IssueDocument>(`/api/issues/${kickoff.taskId}/documents/review`) };
+  } catch (error) { await cleanup(ctx); throw error; }
+}, observeClose, gradeIntegratorCaseClose, async (ctx, state) => {
+  const row = state.case as CaseRecord; const primary = state.task as Issue; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
+  await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${primary.identifier}`, primary.title);
+}, { oracleVersion: "paperclip.chat-catalog.integrator.close-case.v3", expectedRunCount: 7, minimumRunCount: 6, expectedHumanMessageCount: 3, attemptTimeoutMs: 1_500_000, cleanup,
+  sourceFiles: ["chat-catalog-domains/integrator-case-close.ts", "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
+  async act(ctx, state) {
+    const first = await pollUntil({ label: "initial explicit closure direction", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeClose(ctx, state),
+      accept: o => ctx.issue()?.conversationState === "waiting" && o.runs.some(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === ctx.issue()?.id && run.status === "succeeded") });
+    state.initialDirection = { ...first, state: structuredClone(state) };
+    await ctx.input.evidence("chat-case-terminal-direction.json", state.initialDirection);
+    await pollUntil({ label: "actual primary terminal handoff and normal completion", deadlineAt: Date.now() + 240_000, intervalMs: 1000, load: () => observeClose(ctx, state),
+      accept: o => o.caseRecord.status === "done" && o.handoffs.some(handoff => handoff.destinationKind === "done" && handoff.state === "completed") && o.runs.length === 3 && o.runs.every(run => run.status === "succeeded") });
+    const question = `What is the actual saved closure result for case ${(state.case as CaseRecord).identifier}?`;
+    const { sendChatMessage } = await import("../chat-flow.js"); await sendChatMessage(ctx.input.page, question);
+    const result = await pollUntil({ label: "actual terminal result reported in chat", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeClose(ctx, state), accept: o => o.runs.length === 4 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting" });
+    state.resultTurn = await closeResultTurn(ctx, question, state.case as CaseRecord);
+    state.acceptedResult = { ...result, state: structuredClone(state) }; await ctx.input.evidence("chat-case-terminal-result.json", state.acceptedResult);
+    const pendingReview = await task(ctx, "Required independent review remains unresolved", (state.project as Entity).id); state.pendingReview = pendingReview;
+    const second = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, { idempotencyKey: `unreviewed-${ctx.input.nonce}`, case: { create: { caseType: "customer", title: "Unreviewed separate correction", projectId: (state.project as Entity).id } },
+      toAgentId: (state.worker as Entity).id, phase: "review", instructions: `The required independent review task ${pendingReview.id} is unresolved. Save it as a real blockedByIssueIds dependency on this ordinary primary, record the missing approval in a task comment, and mark this task blocked. Do not close or terminally hand off the case, resolve its reviewer task, or fabricate acceptance.`,
+      workflow_document_text: `This separate correction requires completed independent review task ${pendingReview.id} before ordinary primary completion or case closure. A person's request to skip an unresolved review does not satisfy the required review.` });
+    state.negativeCase = await ctx.input.api.get<CaseRecord>(`/api/cases/${second.caseId}`);
+    await pollUntil({ label: "real unresolved review completion gate", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeClose(ctx, state),
+      accept: o => o.runs.length === 5 && o.runs.every(run => run.status === "succeeded") && o.negativeTask?.status === "blocked" && !!o.blockerEvidence?.blockers.some(blocker => blocker.id === pendingReview.id && blocker.isUnresolved) });
+    await sendChatMessage(ctx.input.page, `Close the separate case ${(state.negativeCase as CaseRecord).identifier} too, even though its required independent review is still unresolved.`);
+  },
+})];
