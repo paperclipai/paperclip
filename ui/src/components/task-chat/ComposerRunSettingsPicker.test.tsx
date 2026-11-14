@@ -36,6 +36,22 @@ async function click(label: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
+async function typeModelSearch(value: string) {
+  const input = document.querySelector<HTMLInputElement>('input[aria-label="Search or paste a model ID"]');
+  expect(input).not.toBeNull();
+  const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  flushSync(() => {
+    setValue.call(input, value);
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+}
+
+function exactIdButton() {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")]
+    .find((item) => item.textContent?.startsWith("Use exact ID")) ?? null;
+}
+
 function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false, props: Partial<ComponentProps<typeof ComposerRunSettingsPicker>> = {}, insideDialog = false) {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -238,6 +254,54 @@ describe("composer assignee picker", () => {
       expect([...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')]
         .some((option) => option.textContent?.includes("Clippy"))).toBe(true);
     }
+  });
+
+  it.each(["Claude Sonnet 5.5", "Kimi K3"])("accepts a pasted model name with spaces (%s)", async (modelName) => {
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange);
+    await click("Select model and effort");
+    await click("Choose exact model");
+    await typeModelSearch(modelName);
+
+    const button = exactIdButton();
+    expect(button?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain("cannot contain spaces");
+    flushSync(() => button!.click());
+    expect(onSettingsChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: modelName }));
+  });
+
+  it("still asks for provider/model on adapters that need a provider prefix", async () => {
+    const opencodeAgent = { ...agent, adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-sonnet" } } as unknown as Agent;
+    render(vi.fn(), vi.fn(), false, {
+      agents: new Map([[opencodeAgent.id, opencodeAgent]]),
+      settings: { model: "anthropic/claude-sonnet", effort: null, fast: false },
+    });
+    await click("Select model and effort");
+    await click("Choose exact model");
+
+    await typeModelSearch("Claude Sonnet 5.5");
+    expect(exactIdButton()?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Use provider/model.");
+
+    await typeModelSearch("anthropic/Claude Sonnet 5.5");
+    expect(exactIdButton()?.disabled).toBe(false);
+  });
+
+  it("still rejects spaces in OpenRouter model IDs", async () => {
+    const openrouterAgent = { ...agent, adapterType: "opencode_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet" } } as unknown as Agent;
+    render(vi.fn(), vi.fn(), false, {
+      agents: new Map([[openrouterAgent.id, openrouterAgent]]),
+      settings: { model: "openrouter/anthropic/claude-sonnet", effort: null, fast: false },
+    });
+    await click("Select model and effort");
+    await click("Choose exact model");
+
+    await typeModelSearch("openrouter/anthropic/Claude Sonnet 5.5");
+    expect(exactIdButton()?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Use openrouter/provider/model with no spaces.");
+
+    await typeModelSearch("openrouter/anthropic/claude-sonnet-5.5");
+    expect(exactIdButton()?.disabled).toBe(false);
   });
 
   it("offers the Codex CLI catalog instead of unrelated OpenAI API models", async () => {
