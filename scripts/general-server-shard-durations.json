@@ -1346,13 +1346,15 @@
     "server/src/services/workspace-git-operation-scheduler.test.ts": 1674,
     "server/src/services/workspace-git-snapshot-streaming.test.ts": 30880,
     "server/src/services/workspace-recovery-admission.test.ts": 66000,
+    "server/src/services/workspace-recovery-export-worker.test.ts": 48000,
     "server/src/services/workspace-recovery-preparation-dispatch.test.ts": 101000,
     "server/src/services/workspace-recovery-preparation-gates.test.ts": 60000,
     "server/src/services/workspace-recovery-preparation-proof.test.ts": 91000,
     "server/src/services/workspace-recovery-preparation.test.ts": 136000,
     "server/src/services/workspace-recovery-retry-copyback.test.ts": 66000,
+    "server/src/services/workspace-recovery-retry-entry.test.ts": 106000,
     "server/src/services/workspace-recovery-source.test.ts": 7319,
-    "server/src/services/workspace-recovery-warm-handoff.test.ts": 116000,
+    "server/src/services/workspace-recovery-warm-handoff.test.ts": 103000,
     "server/src/services/workspace-restore-reconciliation.test.ts": 5517,
     "server/src/services/workspace-runtime-exposure-backfill.test.ts": 4136,
     "server/src/services/workspace-runtime-exposure.test.ts": 14546,
@@ -1401,6 +1403,16 @@
           "server/src/services/workspace-recovery-preparation.test.ts": 136000,
           "server/src/services/workspace-recovery-retry-copyback.test.ts": 66000,
           "server/src/services/workspace-recovery-warm-handoff.test.ts": 116000
+        }
+      },
+      "server/src/services/workspace-recovery-warm-handoff.test.ts": {
+        "sourceRun": 43544915387,
+        "sourceDurationMs": 240380,
+        "unattributedMsPerFile": 8670,
+        "files": {
+          "server/src/services/workspace-recovery-warm-handoff.test.ts": 103000,
+          "server/src/services/workspace-recovery-retry-entry.test.ts": 106000,
+          "server/src/services/workspace-recovery-export-worker.test.ts": 48000
         }
       }
     }

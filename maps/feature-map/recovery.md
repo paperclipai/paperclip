@@ -311,11 +311,11 @@ gap.
 
 ### `operator-retry`
 
-The [workspace recovery regression](../../server/src/services/workspace-recovery-warm-handoff.test.ts)
+The [workspace recovery Retry regression](../../server/src/services/workspace-recovery-retry-entry.test.ts)
 uses the real Retry producer and a quiet delivery coordinator. It checks that a
-committed request starts one physical source preservation, duplicate Retry keeps
-the active owner's receipt valid, and startup reconstructs a resolved files-only
-obligation without provider replay. The [execution-control lifecycle suite](../../server/src/__tests__/execution-control-work.test.ts)
+committed request starts one physical source preservation and duplicate Retry keeps
+the active owner's receipt valid. The [export worker regression](../../server/src/services/workspace-recovery-export-worker.test.ts)
+checks that startup reconstructs a resolved files-only obligation without provider replay. The [execution-control lifecycle suite](../../server/src/__tests__/execution-control-work.test.ts)
 checks independent finalization, stored deadlines, and a bounded pass through
 completed obligations followed by quiet paused input.
 The physical export regression holds one export while another completes, then

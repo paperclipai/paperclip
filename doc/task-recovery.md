@@ -291,6 +291,8 @@ Run the focused PostgreSQL/filesystem suites from `server/`:
   src/services/workspace-recovery-preparation-dispatch.test.ts \
   src/services/workspace-recovery-preparation-gates.test.ts \
   src/services/workspace-recovery-warm-handoff.test.ts \
+  src/services/workspace-recovery-retry-entry.test.ts \
+  src/services/workspace-recovery-export-worker.test.ts \
   src/services/workspace-recovery-admission.test.ts \
   src/services/explicit-native-continuation.test.ts \
   src/services/heartbeat/workspace-preparation.test.ts \
