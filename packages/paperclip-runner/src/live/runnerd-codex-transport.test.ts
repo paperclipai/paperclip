@@ -7292,6 +7292,7 @@ async function deliverProviderTurnEventsAfterRestart(input: {
   resumeActiveTurnId?: string;
   acknowledged: Array<[string, Record<string, unknown>]>;
   redelivered: Array<[string, Record<string, unknown>]>;
+  removed?: number[];
   finishCall?: boolean;
 }) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-provider-turn-start-"));
@@ -7328,6 +7329,7 @@ async function deliverProviderTurnEventsAfterRestart(input: {
       const at = window.length - input.acknowledged.length + index;
       window[at] = { ...window[at]!, eventType, envelope: envelope(eventType, payload) };
     });
+    for (const at of [...input.removed ?? []].sort((left, right) => right - left)) window.splice(window.length - input.acknowledged.length + at, 1);
     let seq = window.at(-1)!.sourceSeq;
     const commit = (eventType: string, payload: Record<string, unknown>) => {
       seq += 1;
@@ -7361,6 +7363,14 @@ it("gives the driver a provider turn's start before its next event when the star
     redelivered: [["item.completed", providerTurnItem("provider-1")], ["turn.completed", providerTurnTerminal("provider-1")]] });
   expect(notificationTurns(notifications)).toEqual([["turn/started", "provider-1", "provider"], ["item/completed", "provider-1", null], ["turn/completed", "provider-1", null]]);
   expect(notifications[0]!.params).toEqual(rehydrateRunnerdTurnNotification(providerTurnStart("provider-1"), notifications[1]!.params.threadId, "provider-1", "turn/started"));
+}, 20_000);
+
+it("gives the driver a provider turn's start before its next event when the window removed events after the start", async () => {
+  const { notifications } = await deliverProviderTurnEventsAfterRestart({ options: optedInClaude,
+    acknowledged: [["turn.started", providerTurnStart("provider-1")], ["item.completed", providerTurnItem("provider-1")], ["item.completed", providerTurnItem("provider-1")]],
+    removed: [1],
+    redelivered: [["item.completed", providerTurnItem("provider-1")], ["turn.completed", providerTurnTerminal("provider-1")]] });
+  expect(notificationTurns(notifications)).toEqual([["turn/started", "provider-1", "provider"], ["item/completed", "provider-1", null], ["turn/completed", "provider-1", null]]);
 }, 20_000);
 
 it("labels each provider turn's events with that turn when the recovery read names a later turn", async () => {

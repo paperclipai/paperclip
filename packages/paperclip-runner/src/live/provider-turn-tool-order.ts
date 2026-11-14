@@ -15,21 +15,20 @@ export function providerTurnToolCallSourceSeq(
   return null;
 }
 
+const eventPayload = (event: Pick<DurableRecoveryCommittedEvent, "envelope">) => record(record(event.envelope.payload).payload);
+
 const terminalEventTypes = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 
 export function providerTurnStartBefore(
   events: readonly Pick<DurableRecoveryCommittedEvent, "sourceSeq" | "eventType" | "envelope">[],
   sourceSeq: number,
 ): { turnId: string; payload: Record<string, unknown> } | null {
-  let expected = sourceSeq - 1;
-  for (let at = events.length - 1; at >= 0; at -= 1) {
-    const event = events[at]!;
-    if (event.sourceSeq >= sourceSeq) continue;
-    if (event.sourceSeq !== expected-- || terminalEventTypes.has(event.eventType)) return null;
-    if (event.eventType !== "turn.started") continue;
-    const payload = record(record(event.envelope.payload).payload);
-    return payload.origin === "provider" && typeof payload.providerTurnId === "string" && payload.providerTurnId.length > 0
-      ? { turnId: payload.providerTurnId, payload } : null;
-  }
-  return null;
+  const startAt = events.findLastIndex(event => event.sourceSeq < sourceSeq && event.eventType === "turn.started");
+  if (startAt < 0) return null;
+  const payload = eventPayload(events[startAt]!);
+  const turnId = payload.providerTurnId;
+  if (payload.origin !== "provider" || typeof turnId !== "string" || turnId.length === 0) return null;
+  const terminal = events.slice(startAt + 1).find(event => terminalEventTypes.has(event.eventType));
+  if (terminal && (terminal.sourceSeq < sourceSeq || eventPayload(terminal).providerTurnId !== turnId)) return null;
+  return { turnId, payload };
 }
