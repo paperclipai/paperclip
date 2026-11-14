@@ -152,6 +152,8 @@ export type GitHubSkillUpdateDiff = ({ supported: true } & SkillPackageDiff) | {
 
 export async function diffGitHubSkillUpdate(
   input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string;
+    /** The branch the source tracks, so an approval's future-update trust applies as it does on refresh. */
+    trackingRef?: string;
     /** The source's saved approval, so the latest commit compares like the refresh that would publish it. */
     securityOverrides?: SkillScanOptions['securityOverrides'];
     /** The installed version's own approval record, so its admitted files compare as installed. */
@@ -161,7 +163,7 @@ export async function diffGitHubSkillUpdate(
 ): Promise<GitHubSkillUpdateDiff> {
   const snapshotAt = async (commitSha: string, securityOverrides: SkillScanOptions['securityOverrides']) => {
     signal?.throwIfAborted();
-    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides });
+    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, trackingRef: input.trackingRef, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides });
     if (scan.commitSha.toLowerCase() !== commitSha.toLowerCase()) throw unprocessable('The source snapshot did not match the requested revision.');
     return packageSnapshot(scan, input);
   };

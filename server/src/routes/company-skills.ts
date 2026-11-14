@@ -1278,7 +1278,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
         return;
       }
       const diff = await diffGitHubSkillUpdate({
-        repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+        repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, trackingRef: managed.trackingRef, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
         securityOverrides: [await sourceSvc.savedSecurityOverride(companyId, managed.id)],
         installedSecurityOverrides: [skill.currentVersionId ? versionApprovalGrant(await svc.installedSecurityApproval(companyId, skill.id, skill.currentVersionId)) : null],
       }, read, controller.signal);

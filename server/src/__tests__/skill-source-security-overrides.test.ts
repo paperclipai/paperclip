@@ -733,6 +733,23 @@ echo updated`;
     expect(diff.files.find(file => file.path === 'install.sh')).toMatchObject({ change: 'modified' });
   });
 
+  it('compares trusted future updates of a branch other than the default one in update diffs', async () => {
+    const changedHook = `${hook}
+echo release`;
+    const fixtures: Record<string, ReturnType<typeof githubFixture>> = {
+      [first]: githubFixture({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': hook }, {}, first),
+      [second]: githubFixture({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': changedHook }, {}, second),
+    };
+    const reader = (async (url: string, signal?: AbortSignal) => fixtures[url.match(new RegExp('commits/([0-9a-f]{40})'))?.[1] ?? second]!(url, signal)) as ReturnType<typeof githubFixture>;
+    reader.openSnapshot = (input, options) => fixtures[input.commitSha ?? second]!.openSnapshot(input, options);
+    // The repository's default branch is main; the source tracks and was reviewed on release.
+    const grant = { commitSha: first, reviewedRef: 'release', trustFutureUpdates: true, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] };
+    const diff = await diffGitHubSkillUpdate({ repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', trackingRef: 'release',
+      skillPath: 'skills/one/SKILL.md', installedCommitSha: first, latestCommitSha: second, securityOverrides: [grant], installedSecurityOverrides: [grant] }, reader);
+    if (!diff.supported) throw new Error(diff.reason);
+    expect(diff.files.find(file => file.path.endsWith('hooks/install.sh'))).toMatchObject({ change: 'modified' });
+  });
+
   it('does not record a carried approval for a file in a skill that is not installed', async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: 'Deselected', issuePrefix: `S${companyId.slice(0, 6)}` });
