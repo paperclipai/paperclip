@@ -231,4 +231,28 @@ describe("Discord bot validation and inventory", () => {
       }),
     ).rejects.toThrow("Send Messages in Threads");
   });
+
+  it("returns an empty inventory when the caller allows it", async () => {
+    const fetch = fetchFixture({
+      [`/api/v10/guilds/${guildId}`]: { id: guildId, name: "Clawd" },
+      [`/api/v10/guilds/${guildId}/members/${applicationId}`]: {
+        roles: [],
+        user: { id: applicationId },
+      },
+      [`/api/v10/guilds/${guildId}/roles`]: [
+        { id: guildId, permissions: "1024" },
+      ],
+      [`/api/v10/guilds/${guildId}/channels`]: [],
+    });
+
+    await expect(
+      listDiscordBotChannels({
+        botUserId: applicationId,
+        botToken: "discord-secret",
+        fetch,
+        guildId,
+        allowEmpty: true,
+      }),
+    ).resolves.toEqual({ provider: "discord", resources: [] });
+  });
 });

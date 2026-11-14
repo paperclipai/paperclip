@@ -261,6 +261,7 @@ export async function listDiscordBotChannels(input: {
   botToken: string;
   fetch: typeof globalThis.fetch;
   guildId: string;
+  allowEmpty?: boolean;
 }): Promise<ChatProviderInventoryResult> {
   const guildId = snowflake(input.guildId, "Discord Server ID");
   const botUserId = snowflake(input.botUserId, "Discord bot user ID");
@@ -319,7 +320,7 @@ export async function listDiscordBotChannels(input: {
       providerUrl: `https://discord.com/channels/${guildId}/${channel.id}`,
       metadata: { source: "provider_inventory" },
     }));
-  if (resources.length === 0) {
+  if (resources.length === 0 && !input.allowEmpty) {
     throw new Error(
       "Discord bot needs View Channels, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, Add Reactions, Embed Links, and Attach Files in at least one text channel",
     );

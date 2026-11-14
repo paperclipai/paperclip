@@ -11,7 +11,7 @@ import { verifySpekoCredentials } from "./speko/credentials.js";
 import { verifyTeamsCredentials } from "./microsoft-teams/credentials.js";
 import { createPhotonCredentialChecks } from "./imessage-photon/credentials.js";
 
-import type { EndpointRow, DbOrTransaction } from "./runtime-types.js";
+import type { EndpointRow, DbOrTransaction, PrepareProviderInventoryOptions } from "./runtime-types.js";
 
 import { type CredentialMutationLeaseGuard } from "../chat-credential-mutation-lease.js";
 
@@ -545,6 +545,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
   async function prepareProviderInventory(
     endpoint: EndpointRow,
     credentials: Record<string, string>,
+    options: PrepareProviderInventoryOptions = {},
   ): Promise<{
     credentials: Record<string, string>;
     inventory: ChatProviderInventoryResult | null;
@@ -553,7 +554,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
     try {
       if (endpoint.provider === "slack") return await prepareSlackInventory(credentials, fetchImpl);
       if (endpoint.provider === "github") return await prepareGitHubInventory(credentials, fetchImpl);
-      if (endpoint.provider === "discord") return await prepareDiscordInventory(credentials, fetchImpl);
+      if (endpoint.provider === "discord") return await prepareDiscordInventory(credentials, fetchImpl, options);
       return { credentials, inventory: null };
     } catch (error) {
       throw unprocessable(redactError(error), {

@@ -2,9 +2,9 @@ import {
   listDiscordBotChannels,
 } from "../../chat-discord.js";
 
-import type { PreparedProviderInventory } from "../runtime-types.js";
+import type { PrepareProviderInventoryOptions, PreparedProviderInventory } from "../runtime-types.js";
 
-export async function prepareDiscordInventory(credentials: Record<string,string>, fetchImpl: typeof fetch): Promise<PreparedProviderInventory> {
+export async function prepareDiscordInventory(credentials: Record<string,string>, fetchImpl: typeof fetch, options: PrepareProviderInventoryOptions = {}): Promise<PreparedProviderInventory> {
   return {
     credentials,
     inventory: await listDiscordBotChannels({
@@ -12,6 +12,7 @@ export async function prepareDiscordInventory(credentials: Record<string,string>
       botToken: credentials.botToken,
       fetch: fetchImpl,
       guildId: credentials.guildId,
+      allowEmpty: options.allowEmptyInventory,
     }),
   };
 }
