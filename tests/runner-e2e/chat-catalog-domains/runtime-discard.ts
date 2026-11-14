@@ -42,11 +42,15 @@ export function contactSectionLines(body: string, markers: readonly string[]): s
   const count = (rows: string[], line: string) => rows.filter(row => row === line).length;
   return [...new Set(inSection)].filter(line => count(lines, line) === count(inSection, line));
 }
-/** None of the contact section's distinctive lines survives as a whole line in the final revision. */
-export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, markers: readonly string[]) {
-  const section = contactSectionLines(consumedBody, markers);
+/**
+ * None of the contact section's distinctive lines survives as a whole line in the final revision, and the
+ * requested email and phone appear nowhere in it, however reformatted. The label alone may still be quoted.
+ */
+export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, label: string, details: readonly string[]) {
+  const section = contactSectionLines(consumedBody, [label, ...details]);
   const kept = new Set((finalBody ?? "").split("\n").map(row => row.trim()));
-  return finalBody !== undefined && section.length > 0 && !section.some(line => kept.has(line));
+  return finalBody !== undefined && section.length > 0 && !section.some(line => kept.has(line))
+    && !details.some(detail => detail.length > 0 && finalBody.includes(detail));
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -170,7 +174,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
     state.finalPlanWithoutContact = latest.length > 0 && consumed.every(row => {
       const doc = o.documents.find(d => d.id === row.documentId);
-      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, [ctx.input.nonce, contact.email, contact.phone]);
+      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, ctx.input.nonce, [contact.email, contact.phone]);
     });
     return o;
   },
