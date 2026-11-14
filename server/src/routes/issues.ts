@@ -1473,7 +1473,17 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  "agent.not_invokable",
+  "budget.blocked",
+  "company.inactive",
 ]);
+
+const ISSUE_WAKE_DIAGNOSTIC_GATE_NEXT_STEPS: Record<string, string> = {
+  "agent.not_invokable": "An agent admin must resume or repair the target agent.",
+  "budget.blocked": "A budget owner must check Costs, then resolve pending or unpriced usage (or allow unpriced usage in the budget policy), raise the budget, or lift the budget stop.",
+  "company.inactive": "A company admin must reactivate the company.",
+  "heartbeat.wakeOnDemand.disabled": "An agent admin must turn on wake on demand for the target agent.",
+};
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
   "queued",
@@ -1620,6 +1630,11 @@ function wakeDiagnosticReasonPhrase(reason: string | null) {
   return reason ? ` for ${reason}` : "";
 }
 
+function wakeDiagnosticGateNextStep(reason: string | null) {
+  const nextStep = reason ? ISSUE_WAKE_DIAGNOSTIC_GATE_NEXT_STEPS[reason] : undefined;
+  return nextStep ? ` ${nextStep}` : "";
+}
+
 function buildIssueWakeDiagnosis(input: {
   issue: IssueBlockerDiagnosticIssueSummary;
   events: IssueWakeDiagnosticEvent[];
@@ -1668,7 +1683,7 @@ function buildIssueWakeDiagnosis(input: {
           : "";
       return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} was ${latest.status}${wakeDiagnosticReasonPhrase(
         latest.reason,
-      )}${coalesced}.`;
+      )}${coalesced}.${latest.status === "skipped" ? wakeDiagnosticGateNextStep(latest.reason) : ""}`;
     }
     if (latest.status === "queued" || latest.status === "claimed") {
       return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is currently ${latest.status}${wakeDiagnosticReasonPhrase(
