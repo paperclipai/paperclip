@@ -4194,7 +4194,8 @@ uncertain write until the saved task and initialization state are reconciled.
 Task watchdogs treat accepted queued runs and scheduled retries as live work.
 A deferred wake without a run only delays a stopped-work check for one minute
 from its original request time. Queue bookkeeping cannot extend this grace
-period. After it expires, the watchdog can inspect the stopped task; normal
+period. The existing deadline scheduler checks its expiry even without another
+task write. After it expires, the watchdog can inspect the stopped task; normal
 admission, pause and approval checks still control any new execution.
 
 In another terminal:

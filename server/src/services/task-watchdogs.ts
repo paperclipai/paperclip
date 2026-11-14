@@ -294,6 +294,24 @@ function toEpochMs(value: Date | string | null | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function deferredWakeDeadline(path: TaskWatchdogClassifierPath, now: number | null): number | null {
+  if (path.status !== "deferred_issue_execution" || now === null) return null;
+  const acceptedAt = toEpochMs(path.requestedAt);
+  if (acceptedAt === null) return null;
+  const deadline = acceptedAt + TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS;
+  return deadline > now ? deadline : null;
+}
+
+function pendingDeferredWakeDeadlines(input: TaskWatchdogClassifierInput): number[] {
+  const issues = new Set(input.issues.map(issue => issue.id));
+  const now = toEpochMs(input.evaluatedAt);
+  return (input.queuedWakeRequests ?? []).flatMap(path => {
+    if (path.companyId !== input.watchdog.companyId || !path.issueId || !issues.has(path.issueId)) return [];
+    const deadline = deferredWakeDeadline(path, now);
+    return deadline === null ? [] : [deadline];
+  });
+}
+
 function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId: string) {
   return new Set(
     (paths ?? [])
@@ -431,12 +449,8 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const includedIdSet = new Set(includedIds);
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
-    ...pathIssueIds(input.queuedWakeRequests?.filter(path => {
-      if (path.status !== "deferred_issue_execution") return true;
-      const acceptedAt = toEpochMs(path.requestedAt);
-      const now = toEpochMs(input.evaluatedAt);
-      return acceptedAt !== null && now !== null && now - acceptedAt < TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS;
-    }), input.watchdog.companyId),
+    ...pathIssueIds(input.queuedWakeRequests?.filter(path => path.status !== "deferred_issue_execution"
+      || deferredWakeDeadline(path, toEpochMs(input.evaluatedAt)) !== null), input.watchdog.companyId),
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
@@ -1534,6 +1548,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
+    for (const deadline of pendingDeferredWakeDeadlines(input)) opts.onDeferredDeadline?.(deadline);
     if (classification.state === "pending_first_run") {
       const pending = new Set(classification.pendingIssueIds);
       for (const issue of input.issues) if (pending.has(issue.id)) {
@@ -1785,6 +1800,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           state.push({ watchdog: input.watchdog, issueIds: [...includedIds] });
           const classification = classifyTaskWatchdogSubtree(input);
           if (classification.state === "incomplete" || classification.state === "stopped") return blocked();
+          deadlines.push(...pendingDeferredWakeDeadlines(input));
           if (classification.state === "pending_first_run") {
             for (const issue of input.issues) if (classification.pendingIssueIds.includes(issue.id)) {
               const created = toEpochMs(issue.createdAt);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -411,6 +411,28 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(0);
+  });
+
+  it("registers a deferred wake deadline and checks its expiry without another write", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const now = Date.now();
+      const companyId = await seedCompany();
+      const sourceId = await seedIssue(companyId, { status: "in_progress" });
+      const agentId = await seedAgent(companyId);
+      await seedWatchdog(companyId, sourceId, agentId);
+      await db.insert(agentWakeupRequests).values({ companyId, agentId,
+        status: "deferred_issue_execution", source: "assignment", triggerDetail: "system",
+        reason: "issue_assigned", payload: { issueId: sourceId }, requestedAt: new Date(now) });
+      const { service, wakes } = createService();
+      const deadlines: number[] = [];
+      expect(await service.reconcileTaskWatchdogs({ companyId,
+        onDeferredDeadline: at => deadlines.push(at) })).toMatchObject({ triggered: 0, live: 1 });
+      expect(deadlines).toEqual([now + 60_000]);
+      vi.setSystemTime(now + 60_001);
+      expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({ triggered: 1, live: 0 });
+      expect(wakes).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("starts a watchdog after a deferred wake has stopped making progress", async () => {
