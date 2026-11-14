@@ -4994,6 +4994,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     });
     server = await startSandboxCallbackBridgeServer({
       runner,
+      runId: input.runId,
       remoteCwd: target.remoteCwd,
       assetRemoteDir,
       queueDir,
