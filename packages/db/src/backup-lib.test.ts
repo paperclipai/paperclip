@@ -76,11 +76,101 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it("refuses to start when free space is below the configured reserve", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-db-preflight-");
+
+    await expect(runDatabaseBackup({
+      connectionString,
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+      freeSpaceBytes: async () => 1024,
+    })).rejects.toThrow(/Refusing to start backup/);
+    expect(fs.readdirSync(backupDir)).toEqual([]);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("streams JavaScript backups through gzip without a plain SQL file", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-db-streaming-");
+    const source = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await source.unsafe(`
+        CREATE TABLE streaming_fixture (id integer PRIMARY KEY, payload text NOT NULL);
+        INSERT INTO streaming_fixture VALUES (1, repeat('x', 65536));
+      `);
+    } finally {
+      await source.end();
+    }
+
+    const result = await runDatabaseBackup({
+      connectionString,
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+      freeSpaceBytes: async () => 10 * 1024 * 1024 * 1024,
+    });
+
+    const names = fs.readdirSync(backupDir);
+    expect(names).toEqual([path.basename(result.backupFile)]);
+    expect(names.some((name) => name.endsWith(".sql"))).toBe(false);
+    const sqlText = gunzipSync(fs.readFileSync(result.backupFile)).toString("utf8");
+    expect(sqlText).toContain("streaming_fixture");
+    expect(sqlText.trimEnd().endsWith("-- Paperclip database backup complete")).toBe(true);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("rejects a pg_dump archive without a completion trailer and keeps no partial file", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-db-trailer-");
+    const executable = path.join(backupDir, "pg-dump-fixture");
+    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n'\n", { mode: 0o700 });
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    try {
+      await expect(runDatabaseBackup({
+        connectionString,
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        backupEngine: "pg_dump",
+        freeSpaceBytes: async () => 10 * 1024 * 1024 * 1024,
+      })).rejects.toThrow(/completion trailer is missing/);
+      expect(fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-"))).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("aborts a JavaScript backup when the archive exceeds maxOutputBytes", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-db-size-guard-");
+    const source = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await source.unsafe(`
+        CREATE TABLE size_guard_fixture (id integer PRIMARY KEY, payload text NOT NULL);
+        INSERT INTO size_guard_fixture SELECT g, repeat('x', 8192) FROM generate_series(1, 400) g;
+      `);
+    } finally {
+      await source.end();
+    }
+
+    await expect(runDatabaseBackup({
+      connectionString,
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupEngine: "javascript",
+      maxOutputBytes: 0,
+      guardCheckIntervalMs: 5,
+      freeSpaceBytes: async () => 10 * 1024 * 1024 * 1024,
+    })).rejects.toThrow(/Database backup aborted/);
+    expect(fs.readdirSync(backupDir).filter((name) => name.startsWith("paperclip-"))).toEqual([]);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("preserves a post-pg_dump verification error without falling back or pruning", async () => {
     const connectionString = await createTempDatabase();
     const backupDir = createTempDir("checkpoint-pg-dump-");
     const executable = path.join(backupDir, "pg-dump-fixture");
-    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n'\n", { mode: 0o700 });
+    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n-- PostgreSQL database dump complete\\n'\n", { mode: 0o700 });
     const history = path.join(backupDir, "paperclip-history.sql.gz");
     const historyBytes = gzipSync("SELECT 'history';");
     fs.writeFileSync(history, historyBytes);
@@ -95,7 +185,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
         verifyBeforePrune: async archive => {
           verified++;
-          expect(gunzipSync(fs.readFileSync(archive)).toString()).toBe("SELECT 1;\n");
+          expect(gunzipSync(fs.readFileSync(archive)).toString()).toBe("SELECT 1;\n-- PostgreSQL database dump complete\n");
           throw failure;
         },
       })).rejects.toBe(failure);
