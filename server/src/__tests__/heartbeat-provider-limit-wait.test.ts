@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, aiProviderDefaults, authUsers, companies, companyMemberships, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createProviderLimitWait } from "../services/heartbeat/provider-limit-wait.js";
@@ -156,6 +156,44 @@ describePostgres("heartbeat provider usage limit wait", () => {
     deps.releaseIssueExecutionAndPromote.mockClear();
     await expect(deferRunForProviderLimit(run, agent, { resumingAdmittedRun: false, conversation: false })).resolves.toBe(true);
     expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
+
+  it("ignores limit evidence from an account the agent no longer uses", async () => {
+    const f = await seed([]);
+    const userId = `limit-user-${f.companyId}`;
+    const grantFor = async (name: string) => {
+      const [app] = await db.insert(toolApplications).values({ companyId: f.companyId, applicationKey: `limit-anthropic-${name}`, name, type: "mcp_http", metadata: { sourceTemplateKey: "anthropic" } }).returning();
+      const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: app!.id, name, uid: randomUUID(), connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "anthropic", ai: { provider: "anthropic", method: "subscription" } } }).returning();
+      const [grant] = await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: connection!.id, kind: "user", subjectUserId: userId, createdByUserId: userId }).returning();
+      return { connectionId: connection!.id, grantId: grant!.id };
+    };
+    const exhausted = await grantFor("Exhausted"), fresh = await grantFor("Fresh");
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation", triggerDetail: "system",
+      ...rateLimited(16), responsibleUserId: userId,
+      contextSnapshot: { aiConnection: { mode: "responsible_user", provider: "anthropic", method: "subscription", grantId: exhausted.grantId } } });
+    await db.insert(aiProviderDefaults).values({ companyId: f.companyId, userId, provider: "anthropic", grantId: exhausted.grantId });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+      invocationSource: "automation", triggerDetail: "system", contextSnapshot: { issueId: f.issueId } }).returning();
+    const { deferRunForProviderLimit } = createProviderLimitWait(db, {
+      setRunStatusIfRunning: vi.fn(async () => ({ updated: true, run })),
+      setWakeupStatus: vi.fn(async () => undefined),
+      appendRunEvent: vi.fn(async () => undefined),
+      scheduleBoundedRetryForRun: vi.fn(async () => ({ outcome: "scheduled" })),
+      releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
+      finalizeAgentStatus: vi.fn(async () => undefined),
+    } as never);
+    const defer = (aiConnection: Record<string, unknown>) =>
+      deferRunForProviderLimit(run, { ...agent, runtimeConfig: { aiConnection } }, { resumingAdmittedRun: false, conversation: false });
+    const responsible = { mode: "responsible_user", provider: "anthropic", method: "subscription" };
+    const delegated = (grant: typeof fresh) => ({ mode: "delegated", provider: "anthropic", method: "subscription", ...grant });
+
+    await expect(defer(responsible)).resolves.toBe(true);
+    await expect(defer(delegated(exhausted))).resolves.toBe(true);
+    await expect(defer(delegated(fresh))).resolves.toBe(false);
+
+    await db.update(aiProviderDefaults).set({ grantId: fresh.grantId }).where(eq(aiProviderDefaults.companyId, f.companyId));
+    await expect(defer(responsible)).resolves.toBe(false);
   });
 
   it("recovers a wait whose retry was lost to a crash after its cancellation committed", async () => {
