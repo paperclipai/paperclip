@@ -13,6 +13,7 @@ import { taskAutomaticAttempts } from "../services/recovery/task-automatic-attem
 import { CONTINUATION_CAP } from "../services/recovery/assigned-work-invariant.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { continueHeldExecutions, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -364,6 +365,44 @@ suite("automatic-run brake in the recovery passes", () => {
     await deliverReconciledExecutions(db, wake as never);
     expect(wake).not.toHaveBeenCalled();
     expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).toBeNull();
+    await recover(failures);
+    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+  }, 120_000);
+
+  it("the sweep's continuation behind a run refused at dispatch only records, and its delivery creates the run only after the pause", async () => {
+    await seedCompany();
+    const issueId = randomUUID();
+    const blockedAt = ago(20 * MINUTE);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Finish the report", status: "blocked", assigneeAgentId: agentId,
+      statusVersion: 3, blockedTransitionAt: blockedAt, updatedAt: ago(2 * HOUR), createdAt: ago(5 * HOUR) });
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", status: "failed",
+      runtimeMode: "legacy", errorCode: "adapter_failed", error: "native_instruction_materialization_handoff_unavailable",
+      startedAt: new Date(blockedAt.getTime() - MINUTE), finishedAt: new Date(blockedAt.getTime() - 500),
+      createdAt: new Date(blockedAt.getTime() - 2 * MINUTE), livenessState: "failed",
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } }, resultJson: { workspaceRestoreFailure: "restore_failed" },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_children_completed" } }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", returnOwnerAgentId: agentId, cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${source!.id}`, nextAction: "Held.", createdAt: blockedAt,
+      evidence: { runId: source!.id, originalFailureCode: "adapter_failed", workspaceRestoreFailure: "restore_failed",
+        systemRecovery: { ...createSystemRecovery(source!.id), state: "complete" } } });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", status: "cancelled",
+      errorCode: "execution_reconciliation_required", startedAt: null, retryOfRunId: source!.id, runtimeMode: "legacy",
+      finishedAt: new Date(blockedAt.getTime() + 1_000), createdAt: new Date(blockedAt.getTime() - 100), resultJson: {},
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_continuation_needed", retryReason: "issue_continuation_needed" } });
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null } as never);
+    const runsBefore = (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).length;
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId })).toMatchObject({ outcome: "repaired" });
+    expect((await continuationRecords(source!.id))[0]?.evidence).toMatchObject({ continuationDelivery: "pending" });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect((await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).length).toBe(runsBefore);
+    const failures = await openBrake();
+    const wake = runWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
     await recover(failures);
     await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
     await deliverReconciledExecutions(db, wake as never);

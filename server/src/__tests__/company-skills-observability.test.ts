@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
-import { companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb,
+import { closeDedicatedDbConnections, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { createRunPreparationTiming, withRunExecutionTiming } from "../services/execution-preparation-timing.js";
@@ -133,6 +133,7 @@ describeDatabase("runtime skill observability", () => {
     const name = new URL(database.connectionString).pathname.slice(1);
     assert.match(name, /^[a-zA-Z0-9_-]+$/);
     await db.$client.unsafe(`ALTER DATABASE "${name}" SET lock_timeout TO '100ms'`);
+    await closeDedicatedDbConnections(db, 1);
     const entered = deferred(), release = deferred();
     const holder = withSkillVersionCacheLock(db, f.companyId, async () => { entered.resolve(); await release.promise; });
     try {
