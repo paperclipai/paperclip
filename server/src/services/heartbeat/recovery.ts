@@ -1399,6 +1399,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           });
         }
         if (running && !control) {
+          running.markStopRequested?.();
           await terminateHeartbeatRunProcess({
             pid: running.child.pid,
             processGroupId: running.processGroupId,
