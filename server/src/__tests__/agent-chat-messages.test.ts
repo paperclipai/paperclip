@@ -196,6 +196,8 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const [a, b] = await Promise.all([send(f), send(f)]);
     expect(a!.commentId).toBe(b!.commentId);
     expect((await f.snapshot()).comments).toHaveLength(1);
+    // A chat the agent opens keeps a provisional title, so the person's first reply and the agent can name it.
+    expect((await f.snapshot()).issues.find(i => i.conversationAgentId)).toMatchObject({ titleNeedsGeneration: true });
     const other = await send(f, { ...input, idempotencyKey: "second" });
     expect(other!.commentId).not.toBe(a!.commentId);
     await expect(send(f, { ...input, body: "Different digest" })).rejects.toThrow(/different content/);

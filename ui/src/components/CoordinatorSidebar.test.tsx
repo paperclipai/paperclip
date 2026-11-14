@@ -8,13 +8,13 @@ import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSid
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
+import { formatDateTime } from "@/lib/utils";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
-vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
-}) }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), openNewChat: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", agents: [] as any[], chats: [] as any[], recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
+vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({ companyId: "company", userId: fixture.userId, enabled: true, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true } }), useOpenAgentChat: () => fixture.openNewChat }));
+vi.mock("./AgentChatPicker", () => ({ AgentChatPicker: ({ open, onSelect, agents }: any) => open ? <button onClick={() => onSelect(agents[0])}>Choose agent</button> : null }));
+vi.mock("./AgentConversationsSidebar", () => ({ AgentConversationsSidebar: ({ onConversationOpened }: { onConversationOpened?: () => void }) => <><a href="/chats/alex/old">Old conversation</a><button onClick={onConversationOpened}>Create from history</button></> }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -51,13 +51,31 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
+  fixture.chats = []; fixture.agents = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("starts a new chat and links recent conversations by their own id", async () => {
+    fixture.agents = [{ id: "agent", companyId: "company", name: "Alex", urlKey: "alex", status: "idle" }];
+    fixture.chats = [{ id: "chat-one", title: "First chat", conversationAgentId: "agent", updatedAt: "2026-10-20T12:00:00Z" }, { id: "chat-two", title: "Second chat", conversationAgentId: "agent", updatedAt: "2026-10-21T12:00:00Z" }];
+    await renderSidebar();
+    expect(container.querySelector('a[href="/chats/alex/chat-one"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/chats/alex/chat-two"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/chats/alex/chat-one"]')?.textContent).toContain("First chat");
+    const date = container.querySelector('a[href="/chats/alex/chat-one"] [data-slot="chat-recent-date"]');
+    expect(date?.className).toContain("font-mono");
+    expect(date?.textContent).toBe(formatDateTime("2026-10-20T12:00:00Z"));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="All conversations"]')!.click());
+    expect(document.querySelector('a[href="/chats/alex/old"]')).not.toBeNull();
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "Create from history")!.click());
+    expect(document.querySelector('a[href="/chats/alex/old"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Choose agent")!.click());
+    expect(fixture.openNewChat).toHaveBeenCalledWith(fixture.agents[0]);
+  });
   it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
     fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
       id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
@@ -97,14 +115,14 @@ describe("Coordinator task creation", () => {
 describe("Coordinator pinned pages", () => {
   it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
-    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
+    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", title: "CTO chat", createdAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
     fixture.chats = [chat];
     fixture.recentTasks = [{ id: "task", companyId: "company", identifier: "TASK-1", title: "Recent task", status: "todo", recordedAt: 1 }];
     localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["agent-chat:company:cto"]));
 
     await renderSidebar();
 
-    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img')];
+    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img, a[href="/chats/cto/chat-cto"] [data-slot="agent-avatar"] img')];
     const taskIcon = container.querySelector('a[href="/issues/TASK-1"] [data-slot="sidebar-nav-icon"] svg');
     expect(avatars).toHaveLength(2);
     expect(taskIcon).not.toBeNull();

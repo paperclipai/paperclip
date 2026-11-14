@@ -1,6 +1,6 @@
 ---
 title: Issues
-summary: Issue CRUD, checkout/release, comments, documents, interactions, and attachments
+summary: Issue CRUD, checkout/release, comments, documents, interactions, attachments, and agent chats
 ---
 
 Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
@@ -373,6 +373,66 @@ GET /api/attachments/{attachmentId}/content
 ```
 DELETE /api/attachments/{attachmentId}
 ```
+
+## Agent Chats
+
+A chat is a task-backed conversation between one board user and one agent. These
+endpoints require a signed-in board user and the Agent Chat experimental setting.
+`{agentRef}` is the agent ID or URL key; an ambiguous reference returns `409`,
+an unknown one `404`. Every chat is an issue, so messages use the comment
+endpoints above, with a `clientRequestId` for safe retries.
+
+### List Chats
+
+```
+GET /api/companies/{companyId}/chats
+```
+
+Returns your chats in the company, each with its read state.
+
+### Get Or Open The Default Chat
+
+```
+GET /api/companies/{companyId}/chats/{agentRef}
+POST /api/companies/{companyId}/chats/{agentRef}
+```
+
+Each user has one default chat per agent (`conversationDefault: true`). `GET`
+returns it, or `null` when it does not exist yet, and never creates anything.
+`POST` returns the default chat and creates it first when it is missing.
+
+### Start Another Chat
+
+```
+POST /api/companies/{companyId}/chats/{agentRef}?new=true
+{ "clientRequestId": "4f6c1a52-8d0e-4c4b-9a43-2f1d5b7e9c10" }
+```
+
+Always creates an additional chat with the agent (`conversationDefault: false`)
+and leaves the default chat unchanged. `clientRequestId` is required and must be a
+UUID; without it the request returns `422`. Retrying with the same
+`clientRequestId` returns the chat the first request created, without creating a
+second chat or another activity entry. Open a specific chat in the board at
+`/chats/{agentRef}/{chatId}`.
+
+### Chat Titles
+
+A new chat starts with a provisional title (`titleNeedsGeneration: true`). When the
+person sends the first message, the server names the chat after it: the first line
+without Markdown, cut at a word boundary to about 50 characters. On its first turn
+the chat's agent is asked to replace that with a short descriptive title in the
+person's language:
+
+```
+PUT /api/issues/{chatId}/title
+{ "title": "Password reset help", "onlyIfProvisional": true }
+```
+
+Only the chat's own agent, during its active run in that chat, can set the title,
+and only while it is provisional; the agent tool for this is `set_task_title`. Renaming
+the chat (`PATCH /api/issues/{chatId}` with a `title`) makes the title final, so neither
+the first message nor the agent changes it afterwards. Each title change is written to
+the activity log. Chats created before this feature keep their titles.
 
 ## Tool Call Progress
 

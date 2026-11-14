@@ -14,7 +14,7 @@ import { TaskDetailSurface } from "./IssueDetail";
 import { isUuidLike, type Issue } from "@paperclipai/shared";
 
 export function AgentChat() {
-  const { agentRef = "" } = useParams<{ agentRef: string }>();
+  const { agentRef = "", chatId } = useParams<{ agentRef: string; chatId?: string }>();
   const { selectedCompanyId } = useCompany();
   const { enabled, loaded } = useAgentChatEnabled();
   const client = useQueryClient();
@@ -40,13 +40,13 @@ export function AgentChat() {
       && !rosterAgent && isUuidLike(agentRef),
   });
   const agent = rosterAgent ?? (historyAgent.data?.companyId === selectedCompanyId ? historyAgent.data : undefined);
-  const chatKey = queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id);
+  const chatKey = chatId ? [...queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id), chatId] : queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id);
   const chat = useQuery({
     queryKey: chatKey,
-    queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
+    queryFn: async () => chatId ? (await agentChatsApi.list(selectedCompanyId!)).find(item => item.id === chatId && item.conversationAgentId === agent!.id) ?? null : agentChatsApi.get(selectedCompanyId!, agent!.id),
     initialData: () => enabled && agent && session.isSuccess
       ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
-        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)
+        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id && (chatId ? issue.id === chatId : issue.conversationDefault === true))
       : undefined,
     initialDataUpdatedAt: () => {
       const state = client.getQueryState(queryKeys.agentChats.list(selectedCompanyId, userId));
@@ -60,11 +60,12 @@ export function AgentChat() {
   const creating = useRef<Promise<Issue> | null>(null);
   useEffect(() => {
     creating.current = null;
-  }, [selectedCompanyId, userId, agent?.id]);
+  }, [selectedCompanyId, userId, agent?.id, chatId]);
   useEffect(() => {
-    if (enabled && agent && session.isSuccess && chat.isSuccess)
+    // A named chat that no longer exists must not replace the last chat this person opened with the agent.
+    if (enabled && agent && session.isSuccess && chat.isSuccess && !(chatId && !chat.data))
       recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
-  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id]);
+  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id, chatId]);
   const ensureIssue = useCallback(async () => {
     if (!agent || !selectedCompanyId) throw new Error("Agent not found");
     if (chat.data) return chat.data;
@@ -112,13 +113,15 @@ export function AgentChat() {
     );
   if (!agent)
     return <p className="text-sm text-destructive">Agent not found.</p>;
+  if (chatId && chat.isSuccess && !chat.data)
+    return <p className="text-sm text-destructive">Conversation not found.</p>;
   if (chat.isPending)
     return (
       <p className="text-sm text-muted-foreground">Loading conversation…</p>
     );
   return (
     <TaskDetailSurface
-      key={`${agent.id}:${userId}`}
+      key={`${agent.id}:${userId}:${chatId ?? "default"}`}
       conversation={{ agent, issue: chat.data ?? null, ensureIssue }}
     />
   );

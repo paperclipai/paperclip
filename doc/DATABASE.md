@@ -1897,6 +1897,10 @@ current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
+Migration `0488` (`0488_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
+
+Rolling deploys: the previous release looks up a person's chat with an agent by company, agent and user only. While servers of both releases run against the new schema, a previous-release server can therefore open or deliver into any one of that person's chats with the agent once a secondary chat exists, instead of the default one. Single-server and local installs are not affected, because they never run two releases at once. The window ends when no previous-release server remains.
+
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
 ## Resource lifecycle events

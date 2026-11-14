@@ -5,6 +5,7 @@ import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-uti
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
 import { chatCompletionInstruction } from "../chat-completion-delivery.js";
+import { chatAwaitsFirstAgentTurn } from "../chat-titles.js";
 import { getConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { getIssueContinuationSummaryDocument } from "../issue-continuation-summary.js";
@@ -253,6 +254,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   if (personTimeZone) context.paperclipConversationTimeZone = personTimeZone;
   else delete context.paperclipConversationTimeZone;
   const taskMarkdownInput = {
+    chatTitleRequested: Boolean(issueRef && isConversation(issueContext) && issueContext?.titleNeedsGeneration
+      && await chatAwaitsFirstAgentTurn(db, agent.companyId, issueRef.id)),
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
     personTimeZone,
     conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,

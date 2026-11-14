@@ -13,7 +13,9 @@ function ActiveChatReferences({ children }: { children: ReactNode }) {
     for (const chat of chats.data ?? []) {
       const agent = agents.data?.find(candidate => candidate.id === chat.conversationAgentId);
       if (!agent) continue;
-      const reference = { label: `Chat with ${agent.name}`, href: `/chats/${encodeURIComponent(agentRouteRef(agent))}` };
+      // A secondary chat has its own route; the agent route opens the default chat.
+      const href = `/chats/${encodeURIComponent(agentRouteRef(agent))}${chat.conversationDefault === false ? `/${encodeURIComponent(chat.id)}` : ""}`;
+      const reference = { label: `Chat with ${agent.name}`, href };
       result.set(chat.id.toLowerCase(), reference);
       if (chat.identifier) result.set(chat.identifier.toLowerCase(), reference);
     }

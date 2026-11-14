@@ -1,17 +1,21 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Plus, Search, Users, X } from "lucide-react";
+import { Pencil, Plus, Search, Users, X } from "lucide-react";
 import { SortablePinnedList, SortablePinnedRow } from "./PinnedNavigationList";
 import { Badge } from "./ui/badge";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Issue } from "@paperclipai/shared";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Link, useNavigate } from "@/lib/router";
-import { agentRouteRef, cn } from "@/lib/utils";
+import { agentRouteRef, cn, formatDateTime } from "@/lib/utils";
 
 export interface AgentConversationSidebarProps {
   agents: Agent[];
+  chats?: { chat: Issue; agent: Agent }[];
+  onSelectHistory?: () => void;
+  /** Renames a chat; a manual title stops the agent from naming it. */
+  onRenameChat?: (chat: Issue, title: string) => Promise<void>;
   /** Agents with a saved conversation; defaults to every listed agent. */
   existingChatAgentIds?: readonly string[];
   availableAgents?: Agent[];
@@ -38,8 +42,8 @@ export interface AgentConversationSidebarProps {
 const NO_PINNED_AGENTS: readonly string[] = [];
 const contactRowClassName = "agent-pin-row agent-contact-pin-row group/agent-pin relative rounded-md";
 
-/** Searchable navigation for one conversation per agent. */
-export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
+/** Searchable navigation for conversations and available agents. */
+export function AgentConversationSidebar({ agents, chats, onSelectHistory, onRenameChat, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -70,8 +74,17 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           className="h-9 pl-8 pr-8 text-xs md:text-xs" />
         {search && <Button variant="ghost" size="icon-xs" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={focusSearch}><X className="size-3" /></Button>}
       </div>
+      {onAddChat && <Button variant="ghost" size="icon-sm" aria-label="Add chat" onClick={() => setPickerOpen(true)}><Plus className="size-4" /></Button>}
     </div>
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3 scrollbar-auto-hide">
+      {!!chats?.length && <nav aria-label="Chat history" className="flex flex-col gap-1">
+        <p className="px-2 text-xs font-medium text-muted-foreground">Conversations</p>
+        {chats.filter(({ agent, chat }) => `${agent.name} ${chat.title}`.toLocaleLowerCase().includes(query)).map(({ agent, chat }) =>
+          <ChatHistoryRow key={chat.id} agent={agent} chat={chat} onSelect={onSelectHistory} onRename={onRenameChat} />)}
+      </nav>}
+      <p className="px-2 text-(length:--text-micro) font-medium uppercase tracking-widest text-muted-foreground">
+        {query ? "Search results" : "Teammates"}
+      </p>
       <span role="status" className="sr-only">{loading ? "Loading agents" : `${visible.length} ${visible.length === 1 ? "agent" : "agents"}`}</span>
       {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading chat history…</p>}
       {historyError && <div role="alert" className="flex flex-col items-start gap-2 px-2 py-3">
@@ -126,7 +139,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
     </div>}
     <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}
       unreadMessageCounts={unreadMessageCounts}
-      existingChatAgentIds={existingChatAgentIds ?? agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
+      existingChatAgentIds={onAddChat ? [] : existingChatAgentIds ?? agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
       renderAgentIcon={agent => <AgentAvatar agent={agent} size={32} />}
       onSelect={async (agent, signal) => {
         if (onAddChat) await onAddChat(agent, signal);
@@ -135,4 +148,46 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
         if (!signal?.aborted) setSearch("");
       }} />
   </aside>;
+}
+
+/** One chat in the history list, with an inline rename for its owner. */
+function ChatHistoryRow({ agent, chat, onSelect, onRename }: { agent: Agent; chat: Issue; onSelect?: () => void; onRename?: (chat: Issue, title: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(chat.title);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancel = () => { setEditing(false); setError(null); };
+  // Pressing Enter on an unchanged provisional title confirms it, so the agent no longer renames the chat;
+  // leaving the field without a change keeps the title provisional.
+  const save = async (confirm = false) => {
+    const title = draft.trim();
+    if (!title || (title === chat.title && !(confirm && chat.titleNeedsGeneration))) { cancel(); return; }
+    setSaving(true);
+    try {
+      await onRename!(chat, title);
+      cancel();
+    } catch (failure) {
+      setError(failure instanceof Error && failure.message ? failure.message : "Couldn’t rename this chat. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (editing) return <form className="flex flex-col gap-1 px-2 py-1" onSubmit={event => { event.preventDefault(); void save(true); }}>
+    <Input aria-label="Chat title" autoFocus value={draft} maxLength={240} disabled={saving} className="h-8 md:text-sm"
+      onChange={event => setDraft(event.target.value)} onBlur={() => { if (!error) void save(); }}
+      onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); cancel(); } }} />
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </form>;
+  return <div className="group/chat relative">
+    <Link to={`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}/${chat.id}`} onClick={onSelect}
+      className={cn("flex flex-col rounded-md px-2 py-2 text-sm hover:bg-accent", onRename && "pr-9")}>
+      <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate">{chat.title}</span>
+        {(chat.unreadMessageCount ?? 0) > 0 ? <Badge variant="ghost" aria-label={`${chat.unreadMessageCount} unread ${chat.unreadMessageCount === 1 ? "message" : "messages"} in ${chat.title}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{chat.unreadMessageCount}</Badge>
+          : chat.isUnreadForMe && <span role="img" aria-label={`Unread messages in ${chat.title}`} className="size-2 shrink-0 rounded-full bg-primary" />}
+      </span><span className="text-xs text-muted-foreground">{agent.name} · <span className="font-mono">{formatDateTime(chat.createdAt)}</span></span>
+    </Link>
+    {onRename && <Button type="button" variant="ghost" size="icon-xs" aria-label={`Rename ${chat.title}`}
+      className="absolute right-1.5 top-2 opacity-0 focus-visible:opacity-100 group-hover/chat:opacity-100 group-focus-within/chat:opacity-100"
+      onClick={() => { setDraft(chat.title); setError(null); setEditing(true); }}><Pencil className="size-3" /></Button>}
+  </div>;
 }

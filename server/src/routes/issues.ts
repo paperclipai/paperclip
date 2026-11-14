@@ -29,8 +29,9 @@ import { recordChildTaskRead } from "../services/native-runtime/native-child-com
 import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
-import { markIssueReadSchema } from "@paperclipai/shared";
+import { markIssueReadSchema, createAgentConversationSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
+import { setProvisionalChatTitle } from "../services/chat-titles.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/native-runtime/native-workspace-finalization-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
@@ -19855,7 +19856,7 @@ export function issueRoutes(
     res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
 
-  // GET stays read-only. POST resolves the single chat on explicit add or first send/upload.
+  // GET stays read-only. POST resolves the default chat or creates an explicitly requested chat.
   for (const method of ["get", "post"] as const) {
     router[method]("/companies/:companyId/chats/:agentRef", async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -19866,20 +19867,49 @@ export function issueRoutes(
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
       const agent = resolved.agent;
-      const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
+      const userId = req.actor.userId;
+      const newChat = method === "post" && req.query.new === "true";
+      const creationRequest = newChat ? createAgentConversationSchema.safeParse(req.body) : null;
+      if (creationRequest && !creationRequest.success) throw unprocessable("New conversations require a UUID clientRequestId for safe retries");
+      const requestId = creationRequest?.success ? creationRequest.data.clientRequestId.toLowerCase() : null;
+      const idempotencyKey = requestId
+        ? `agent-conversation:create:${JSON.stringify([agent.companyId, userId, agent.id, requestId])}`
+        : null;
+      const existing = await svc.getConversation(companyId, agent.id, userId);
       if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
-      if (existing || method === "get") {
+      if ((existing && !newChat) || method === "get") {
         res.json(existing ? (await withConversationReadState(db, companyId, req.actor.userId, [existing]))[0] : null);
         return;
       }
-      const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
-        conversationAgentId: agent.id, conversationUserId: req.actor.userId,
-        conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
-      });
-      await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
-        action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
-        details: { agentId: agent.id } });
+      const publications: ActivityPublication[] = [];
+      const createConversation = async (targetDb: Db) => {
+        let deduplicated = false;
+        const issue = await (newChat ? issueService(targetDb) : svc).create(companyId, {
+          title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+          conversationAgentId: agent.id, conversationUserId: userId,
+          conversationDefault: !newChat, titleIsProvisional: true,
+          conversationState: "waiting", status: "in_review", createdByUserId: userId,
+          ...(idempotencyKey ? {
+            idempotencyKey,
+            assertCanReuseIssue: async (candidate: typeof issueRows.$inferSelect) => {
+              if (candidate.companyId !== agent.companyId || candidate.conversationAgentId !== agent.id
+                || candidate.conversationUserId !== userId || candidate.conversationDefault !== false) {
+                throw conflict("Conversation creation request does not match this conversation");
+              }
+              if (!(await decideIssueAccess(req, candidate, "issue:read")).allowed) throw notFound("Issue not found");
+            },
+            onDeduplicated: () => { deduplicated = true; },
+          } : {}),
+        });
+        if (!deduplicated) await logActivity(targetDb, { companyId, actorType: "user", actorId: userId,
+          action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
+          details: { agentId: agent.id } }, publications);
+        return issue;
+      };
+      const issue = newChat
+        ? await db.transaction(tx => createConversation(tx as unknown as Db))
+        : await createConversation(db);
+      for (const publication of publications) publishActivity(publication);
       res.json((await withConversationReadState(db, companyId, req.actor.userId, [issue]))[0]);
     });
   }
@@ -19922,6 +19952,9 @@ export function issueRoutes(
             action: "issue.comment_added", entityType: "issue", entityId: issue.id,
             details: { commentId: saved.id, identifier: issue.identifier },
           }, publications);
+          if (!existing && req.body.body.trim() !== "/new") await setProvisionalChatTitle(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
+            // The saved body, so a title keeps the comment's masking of the server's username and home path.
+            commentId: saved.id, body: saved.body, actor }, publications);
           if (!existing) await enqueueFastResponse(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
             responsibleUserId: userId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt), sessionGeneration: issue.conversationSessionGeneration });
           return saved;

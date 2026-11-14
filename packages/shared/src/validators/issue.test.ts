@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createAgentConversationSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
   createIssueSchema,
@@ -16,6 +17,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("requires an explicit UUID and rejects extra fields when creating another conversation", () => {
+    const clientRequestId = "52C2E236-132C-4F72-BBC8-DB9F704A134B";
+    expect(createAgentConversationSchema.parse({ clientRequestId })).toEqual({ clientRequestId });
+    for (const body of [{}, { clientRequestId: null }, { clientRequestId: "invalid" }, { clientRequestId, conversationUserId: "spoof" }]) {
+      expect(createAgentConversationSchema.safeParse(body).success).toBe(false);
+    }
+  });
   it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
     for (const name of [key, key.toLowerCase()]) {
       const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
