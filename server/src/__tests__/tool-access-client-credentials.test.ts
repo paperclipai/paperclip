@@ -87,6 +87,8 @@ function fakeProvider() {
     tokenClients: new Map<string, string>(),
     /** Serve protected-resource metadata only at the address the challenge names. */
     metadataOnlyAtHint: false,
+    /** Runs once when the server first receives a signed-in request (to stage races). */
+    onAuthorizedMcpRequest: null as null | (() => Promise<void>),
   };
   const metadata = (issuer: string) => ({
     issuer,
@@ -155,6 +157,11 @@ function fakeProvider() {
           status: 401,
           headers: { "www-authenticate": `Bearer resource_metadata="${new URL(MCP_URL).origin}${state.metadataOnlyAtHint ? "/meta/custom-resource" : "/.well-known/oauth-protected-resource/mcp"}"` },
         });
+      }
+      if (state.onAuthorizedMcpRequest) {
+        const hook = state.onAuthorizedMcpRequest;
+        state.onAuthorizedMcpRequest = null;
+        await hook();
       }
       if (body.method === "server/discover") {
         return json({ jsonrpc: "2.0", id: body.id, result: { supportedVersions: ["2026-07-28"], capabilities: {} } });
@@ -561,6 +568,38 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
     const retested = await organizationGrant(created.connectionId);
     expect(Date.parse(String((retested.providerTenant?.oauth as Record<string, unknown>).accessTokenExpiresAt))).toBeGreaterThan(Date.now() + 3_000_000);
+  });
+
+  it("never reactivates a removed connection", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    await svc.archiveConnection(created.connectionId, company.id, actor);
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientSecret: CLIENT_SECRET }, actor))
+      .rejects.toMatchObject({ details: expect.objectContaining({ code: "client_credentials_connection_removed" }) });
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    expect(row!.status).toBe("archived");
+  });
+
+  it("does not undo a rotation that lands while a test is running", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    provider.state.clientSecret = "switched-secret";
+    // While the test talks to the server, an admin switches to a client secret.
+    provider.state.onAuthorizedMcpRequest = async () => {
+      await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "client_secret", clientSecret: "switched-secret" }, actor);
+    };
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, {}, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
+    const status = await svc.getMachineSignIn(company.id, created.connectionId);
+    expect(status.method).toBe("client_secret");
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    expect(row!.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.client_private_key");
+    // The next token request uses the secret, not the deleted key.
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:switched-secret`).toString("base64")}`);
   });
 
   it("tries a new client secret before replacing the old one", async () => {

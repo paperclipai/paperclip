@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolApplications, toolConnections } from "@paperclipai/db";
 import type {
@@ -100,6 +100,12 @@ function issuerChangedError(advertised: string[]) {
     `This server now sends sign-in to a different service${hosts.length ? ` (${hosts.join(", ")})` : ""}. Paperclip won't send this connection's credentials there. Set up machine sign-in again to trust the new service.`,
     { code: "client_credentials_issuer_changed" },
   );
+}
+
+function machineSignInChangedError() {
+  return conflict("This connection's machine sign-in changed or was removed while this was running. Reload it and try again.", {
+    code: "client_credentials_changed",
+  });
 }
 
 function rotationChangedError() {
@@ -352,6 +358,11 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
 
   async function machineSignInConnection(companyId: string, connectionId: string) {
     const connection = await getConnectionRow(connectionId, companyId);
+    if (connection.status === "archived") {
+      throw unprocessable("This connection was removed. Set up machine sign-in again to reconnect.", {
+        code: "client_credentials_connection_removed",
+      });
+    }
     assertOrganizationConnection(connection);
     if (!clientCredentialsSettings(connection)) {
       throw unprocessable("This connection doesn't use machine sign-in", { code: "client_credentials_not_configured" });
@@ -383,11 +394,20 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     previous: typeof toolConnections.$inferSelect,
     patch: Partial<typeof toolConnections.$inferInsert>,
   ) {
+    // Commit only if nothing that decides how this connection signs in changed
+    // since it was read (a rotation or another test), and it was not removed.
+    const clientAuth = asRecord(oauthConfig(previous).clientAuth);
     const [updated] = await db.update(toolConnections)
       .set({ ...patch, ...(patch.config ? { transportConfig: patch.config } : {}), updatedAt: now() })
-      .where(and(eq(toolConnections.id, previous.id), eq(toolConnections.companyId, previous.companyId)))
+      .where(and(
+        eq(toolConnections.id, previous.id),
+        eq(toolConnections.companyId, previous.companyId),
+        ne(toolConnections.status, "archived"),
+        sql`coalesce(${toolConnections.config} -> 'oauth' -> 'clientAuth', '{}'::jsonb) = ${JSON.stringify(clientAuth)}::jsonb`,
+        sql`${toolConnections.credentialSecretRefs} = ${JSON.stringify(previous.credentialSecretRefs)}::jsonb`,
+      ))
       .returning();
-    if (!updated) throw conflict("This connection changed during setup. Please try again.");
+    if (!updated) throw machineSignInChangedError();
     await store.syncCredentialBindings(updated);
     if (updated.status === "active") await deps.ensureDefaultOrganizationGrant(updated);
     emitConnectionUpdated(updated, previous, "gallery");
@@ -582,8 +602,10 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       await notifyToolConnectionHealth(tx, before);
       const [active] = await tx.update(toolConnections)
         .set({ status: "active", enabled: true, updatedAt: now() })
-        .where(and(eq(toolConnections.id, before.id), eq(toolConnections.companyId, companyId)))
+        .where(and(eq(toolConnections.id, before.id), eq(toolConnections.companyId, companyId), ne(toolConnections.status, "archived")))
         .returning();
+      // Removed while the test ran: never bring it back.
+      if (!active) throw machineSignInChangedError();
       await tx.update(toolApplications)
         .set({ status: "active", updatedAt: now() })
         .where(and(eq(toolApplications.id, before.applicationId), eq(toolApplications.companyId, companyId)));
