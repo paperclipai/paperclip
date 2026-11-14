@@ -16,7 +16,10 @@ export function sharedDeliveryRead<T>(reads: LiveDeliveryReads | undefined, key:
   pending.catch(() => { if (reads.get(key) === pending) reads.delete(key); });
   return pending;
 }
-const transcript = (event: LiveEvent) => event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log";
+// Per-run streams: sent only to clients that asked for the run. Tool progress
+// follows its run's transcript, since only an open transcript shows it.
+const transcript = (event: LiveEvent) => event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log"
+  || event.type === "heartbeat.run.tool_progress";
 const runId = (event: LiveEvent) => typeof event.payload.runId === "string" ? event.payload.runId : null;
 interface Socket {
   readyState: number;

@@ -1639,6 +1639,14 @@ the configured interval until the provider confirms the new one. An explicit `0`
 (auto-stop disabled), a longer configured interval, per-turn, and non-reusable
 sandboxes are unchanged by the warm floor, and idle sandboxes still auto-stop.
 
+The host's own warm-window stop of a retained sandbox waits 2 minutes past the
+warm window, so the host's idle close of the warm runner (suspend and its proof
+read) finishes before the sandbox stops. When an idle close still fails and every
+lease row for that sandbox is no longer active or retained, the host has given the
+sandbox up: the warm owner is released and the next run on the task prepares its
+instructions fresh. A follow-up whose predecessor's warm instruction copy cannot be
+handed off retires that owner and prepares fresh instead of failing.
+
 A remote runner also keeps working while its controller is offline, and the host
 reattaches it within the remote runner reconnect grace (7 minutes). Daytona counts
 only SDK and lifecycle calls as activity, so with no controller its idle auto-stop
@@ -1859,6 +1867,22 @@ the launch closed when it cannot prove them gone. A Runner that already exited
 mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
 the saved work.
+
+A slow answer is not a dead Runner. After a release swap the new server can reach
+a live Runner late, while the Runner is still replaying the events it saved with
+no controller attached; its first command then times out although the Runner is
+working. So a `replaceUnansweredRunner` attempt first checks whether the live
+Runner is making progress. It adopts the Runner, launching no second one and
+signalling nothing, when the Runner's saved event sequence is past the
+controller's last acknowledgement, or when its saved state (event and command
+sequences, generation, lifecycle) changes within a bounded wait of about ten
+seconds. Only a Runner that made no progress in that wait is replaced as above:
+the relaunch's launch fence stops it and its process lineage with proof, and the
+new Runner restores its own journal. This replacement also proceeds on a resumed
+sandbox lease, where the in-place reuse check would otherwise refuse the live
+Runner's unsuspended state (`runner_harness_state_mismatch: resumed_not_suspended`)
+and leave it running. A Runner that exits during the wait follows the exited-Runner
+rules: a settled suspension restores, a mid-turn exit stays fail-closed. A state read that fails is no evidence either way: the first successful read sets the baseline, and a Runner whose state could not be read at all during the wait is adopted, not replaced. A Runner whose identity changes during the wait fails closed. A settled exit during the wait restores on every attempt that admitted the replacement, including the extra fourth attempt.
 
 On every `reattach_remote_runner` attempt, a turn the Runner reports as
 `provider_turn_lost_on_restore` with `recoverable: true` continues once in the same

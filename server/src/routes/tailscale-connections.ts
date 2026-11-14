@@ -2,13 +2,10 @@ import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { companies, type Db } from "@paperclipai/db";
 import { z } from "zod";
-import { loadConfig } from "../config.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { tailscaleConnectionService } from "../services/connectors/tailscale/connections.js";
-import { paperclipCloudConnectorConfigFromEnv } from "../services/paperclip-cloud-connector.js";
-import { startPaperclipCloudConnectorEnrollment } from "../services/paperclip-cloud-connector-enrollment.js";
-import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";
+import { tailscaleDeviceLoginService } from "../services/connectors/tailscale/device-login.js";
 import { logActivity } from "../services/activity-log.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -21,6 +18,7 @@ function operator(req: Request) {
 export function tailscaleConnectionRoutes(db: Db) {
   const router = Router();
   const service = tailscaleConnectionService(db);
+  const deviceLogin = tailscaleDeviceLoginService(db);
   router.get("/companies/:companyId/tailscale-connections", async (req, res) => {
     operator(req);
     assertCompanyAccess(req, z.string().uuid().parse(req.params.companyId));
@@ -30,24 +28,20 @@ export function tailscaleConnectionRoutes(db: Db) {
     const userId = operator(req);
     const companyId = z.string().uuid().parse(req.params.companyId);
     assertCompanyAccess(req, companyId);
-    const origin = loadConfig().authPublicBaseUrl;
-    if (!origin) throw unprocessable("Set this instance's public URL before connecting Tailscale.");
-    if (!paperclipCloudConnectorConfigFromEnv()) {
-      const enrollment = await startPaperclipCloudConnectorEnrollment({ origin, companyId, initiatedBy: paperclipCloudEnrollmentPrincipal(req.actor),
-        returnTo: "/apps/tailscale",
-      });
-      await logActivity(db, {
-        companyId, actorType: "user", actorId: userId,
-        action: "paperclip_cloud_connector.enrollment_started",
-        entityType: "connector_instance", entityId: enrollment.instanceId ?? "pending",
-        details: { environment: enrollment.environment, status: enrollment.status },
-      });
-      res.status(201).json({ authorizationUrl: enrollment.verificationUrl, expiresAt: enrollment.expiresAt });
-      return;
-    }
-    const result = await service.start({ companyId, userId, ...req.body, returnUri: new URL("/api/tools/oauth/tailscale/callback", origin).toString() });
+    const result = await deviceLogin.start({ companyId, userId, ...req.body });
     await logActivity(db, { companyId, actorType: "user", actorId: userId, action: "tailscale.authorization_started", entityType: "tailscale_connection", entityId: result.connection.id });
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
     res.status(201).json(result);
+  });
+  router.post("/companies/:companyId/tailscale-connections/:connectionId/device-login", async (req, res) => {
+    const userId = operator(req);
+    const companyId = z.string().uuid().parse(req.params.companyId);
+    assertCompanyAccess(req, companyId);
+    const result = await deviceLogin.resume(companyId, z.string().uuid().parse(req.params.connectionId), userId);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.json(result);
   });
   router.get("/companies/:companyId/tailscale-connections/:connectionId/devices", async (req, res) => {
     operator(req);

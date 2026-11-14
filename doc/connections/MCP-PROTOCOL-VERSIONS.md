@@ -102,10 +102,15 @@ stateless MCP) is probed again once.
     agent, tool, and arguments) with a new JSON-RPC id. It survives an attempt
     the server rejected (for example a `401` before a token refresh). The call
     stops with `provider_retry_requested` so the agent retries.
-  - Form, sampling, or roots requests, or more than 8 links: the call stops
-    with `provider_input_required` and the message "This app needs information
-    Paperclip can't collect yet." Paperclip does not declare form, sampling,
-    or roots, so compliant servers should not send them.
+  - Form requests only, on a call that belongs to a task: a question card in
+    the task chat; the repeated call sends `inputResponses` and the exact
+    `requestState`. See [MCP-ELICITATION.md](./MCP-ELICITATION.md). Form
+    beside a URL request: the link goes first.
+  - Sampling or roots requests, form requests outside a task, or more than 8
+    links: the call stops with `provider_input_required` and the message
+    "This app needs information Paperclip can't collect yet." Paperclip
+    declares form only on task calls and never declares sampling or roots,
+    so compliant servers should not send them.
 - `"input_required"` on a context read (`resources/read`, `prompts/get`) or a
   stdio call stops with `provider_input_required`.
 - Resource not found is `-32602` from modern servers and `-32002` from legacy
@@ -160,11 +165,9 @@ Tracked as follow-ups:
 
 - Recording that a person finished a provider URL step, so Paperclip can
   answer it with `accept` and the provider's `requestState`.
-- Collecting form input requests (MRTR form elicitation) in the task chat and
-  answering them on the retry.
 - Retrying a `requestState`-only result automatically instead of asking the
   agent to retry.
 - `subscriptions/listen` change notifications (cache invalidation relies on
   `ttlMs`).
-- The Tasks extension, Skills over MCP, progress and cancellation, icons, and
-  enterprise-managed authorization.
+- Cancellation, icons, and enterprise-managed authorization. (Progress is
+  supported: see [MCP-PROGRESS.md](MCP-PROGRESS.md).)
