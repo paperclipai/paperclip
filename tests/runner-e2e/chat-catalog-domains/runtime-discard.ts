@@ -27,11 +27,26 @@ export function contactDetails(nonce: string) {
   return { email: `contact-${nonce}@acorn-notes.example`, phone: `+1-555-${nonce.replace(/\D/g, "").slice(-4).padStart(4, "0")}` };
 }
 /**
- * The final revision keeps none of the requested contact details. The label and generic lines (for example a
- * shared "use visible labels" bullet) may remain; the plan's layout is not graded.
+ * Whole trimmed lines that belong only to the contact section of the revision that saved it: the body of a
+ * Markdown section whose heading carries a setup marker (label, email or phone), plus lines that carry a
+ * marker. Lines that also appear elsewhere in that revision, such as `---` or a shared bullet, are excluded.
  */
-export function documentContactRemoved(finalBody: string | undefined, details: readonly string[]) {
-  return finalBody !== undefined && details.length > 0 && details.every(detail => detail.length > 0 && !finalBody.includes(detail));
+export function contactSectionLines(body: string, markers: readonly string[]): string[] {
+  const lines = body.split("\n").map(row => row.trim()), marked = (line: string) => markers.some(m => m.length > 0 && line.includes(m));
+  const inSection: string[] = []; let level = 0;
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s/.exec(line)?.[1]?.length;
+    if (heading) level = marked(line) ? heading : heading <= level ? 0 : level;
+    if (line && (level > 0 || marked(line))) inSection.push(line);
+  }
+  const count = (rows: string[], line: string) => rows.filter(row => row === line).length;
+  return [...new Set(inSection)].filter(line => count(lines, line) === count(inSection, line));
+}
+/** None of the contact section's distinctive lines survives as a whole line in the final revision. */
+export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, markers: readonly string[]) {
+  const section = contactSectionLines(consumedBody, markers);
+  const kept = new Set((finalBody ?? "").split("\n").map(row => row.trim()));
+  return finalBody !== undefined && section.length > 0 && !section.some(line => kept.has(line));
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -147,7 +162,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     const o = await observeRuntime(ctx, state);
     state.initialRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id);
     // The consumed request asked for a contact section with the setup's email and phone. Its consuming run
-    // must have saved the email, and the cancellation run's latest plan must keep neither detail.
+    // must have saved the email, and the cancellation run's latest plan must drop that section's distinctive lines.
     const contact = contactDetails(ctx.input.nonce), worker = (state.worker as Entity).id;
     const consumed = o.revisions.filter(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(contact.email));
     state.consumedLabelSaved = consumed.length > 0;
@@ -155,7 +170,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
     state.finalPlanWithoutContact = latest.length > 0 && consumed.every(row => {
       const doc = o.documents.find(d => d.id === row.documentId);
-      return documentContactRemoved(o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, [contact.email, contact.phone]);
+      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, [ctx.input.nonce, contact.email, contact.phone]);
     });
     return o;
   },
