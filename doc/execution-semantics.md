@@ -753,6 +753,52 @@ initial verification. For a routed agent, repair uses the account already pinned
 to that lifecycle operation; it never allocates a task route, advances the pool
 cursor, or replaces the agent's pool. Legacy direct-account setup cards remain
 readable without an operation ID.
+
+#### Provider authentication failures and edge rejections
+
+A network edge can reject a Claude request before the provider checks the
+credential. Examples are a CDN challenge page or a 403 response without an
+authentication body. The Claude CLI can show this as "Failed to authenticate".
+Paperclip does not treat this as a credential failure. The run fails with
+`claude_edge_rejected` in the `transient_upstream` family, and the bounded
+transient retry continues it. That retry uses exponential backoff with jitter,
+honours a provider `Retry-After` hint, and does not replay a run whose provider
+work already started. The run keeps only sanitised evidence: the HTTP status,
+the content type, a challenge flag, the edge request id and a short excerpt
+without markup. The CLI lane, the ACP lane and the hello probes use the same
+classifier. A 401 response, or a structured `authentication_error` or invalid,
+expired or revoked credential message, stays a credential failure.
+
+One credential failure does not mark a shared AI connection for sign-in.
+Paperclip marks the connection `needs_reauthorization` only after two distinct
+runs, or a run and a probe, fail with the same credential generation and no
+successful run in between. An explicit Test or save probe, which has no run, is
+the exception: one genuine rejection marks the connection, so testing a
+connection can stop its agents at once. A successful run resets the count. A failure of an
+older generation never marks a refreshed or reconnected connection, and it
+does not create a reconnect card. Below the threshold, Paperclip records
+`ai_connection.authentication_failure_observed` and the run keeps its ordinary
+failure recovery.
+
+A latched AI connection raises one reconnect card for each recipient,
+provider and connection. Runs on other tasks that fail on the same connection
+do not raise more cards. Paperclip adds each such task to the card's linked
+tasks, and the run waits on that card. When the person completes or declines
+the card, Paperclip wakes each linked task once, under its own idempotency key.
+
+When the connection is healthy again (a reconnect, or any later check that the
+requesting agent can use it), Paperclip completes the still-pending AI repair
+cards for that recipient, provider and connection as a system reconciliation.
+It records the card as `expired` with the restored connection. It does not
+record a human answer, and the addressed-user check on the human route does not
+change. A card that names its connection is satisfied only by that connection.
+Agent setup cards, other recipients' and other providers' cards, and answered
+cards do not change. This also clears older cards that were raised once per
+task. Paperclip then wakes each affected task at most once, and only when the
+task still waits on that card: the task is `in_progress` (or blocked by the AI
+configuration recovery, which Paperclip restores), its latest run is the failed
+source run, and its dependencies are resolved. Done, review-held and
+dependency-blocked tasks are not woken.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until

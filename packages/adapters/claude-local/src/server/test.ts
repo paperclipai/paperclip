@@ -20,6 +20,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  detectClaudeEdgeFailure,
   detectClaudeLoginRequired,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
@@ -485,7 +486,12 @@ export async function testEnvironment(
           // separately from generic transient upstream errors: auth works, the
           // subscription's usage window is just spent. Surface it as its own
           // warning instead of a hard probe failure.
-          const usageLimited = isClaudeProviderQuotaError({
+          const edgeRejected = detectClaudeEdgeFailure({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          });
+          const usageLimited = !edgeRejected && isClaudeProviderQuotaError({
             parsed,
             stdout: probe.stdout,
             stderr: probe.stderr,
@@ -496,7 +502,14 @@ export async function testEnvironment(
             stderr: probe.stderr,
           });
           checks.push(
-            usageLimited
+            edgeRejected
+              ? {
+                  code: "claude_hello_probe_edge_rejected",
+                  level: "warn",
+                  message: "Claude hello probe was rejected by a network edge before authentication.",
+                  hint: `The provider edge returned ${edgeRejected.status ? `HTTP ${edgeRejected.status}` : "an HTML page"}${edgeRejected.challenge ? " with a challenge page" : ""}${edgeRejected.requestId ? ` (request id ${edgeRejected.requestId})` : ""}. This is not a credential failure. Wait a moment and re-run Test.`,
+                }
+              : usageLimited
               ? {
                   code: "claude_hello_probe_usage_limited",
                   level: "warn",

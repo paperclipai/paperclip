@@ -3049,7 +3049,9 @@ export function issueThreadInteractionService(
         ));
         const reusable = pending.find((candidate) =>
           (!payload.agentSetup || candidate.sourceRunId === input.sourceRunId)
-          && connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
+          && connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose
+          && (connectionIntentPayloadSchema.parse(candidate.payload).repairConnectionId ?? null) === (payload.repairConnectionId ?? null)
+          && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
         if (reusable) {
           await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(reusable));
           return reusable;
@@ -3117,6 +3119,7 @@ export function issueThreadInteractionService(
             return (
               candidatePayload.success &&
               candidatePayload.data.serviceSlug === payload.serviceSlug && candidatePayload.data.purpose === payload.purpose
+              && (candidatePayload.data.repairConnectionId ?? null) === (payload.repairConnectionId ?? null)
             );
           })
           .map((candidate) => candidate.id);

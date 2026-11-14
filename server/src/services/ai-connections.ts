@@ -3,6 +3,8 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
+import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -14,6 +16,7 @@ import {
   aiProviderDefaults,
   agents,
   heartbeatRuns,
+  activityLog,
   companyMemberships,
   companySecrets,
   userSecretDefinitions,
@@ -63,6 +66,16 @@ function canUseCredential(
     audience.length === 0 || audience.some((member) => member.subjectType === "user" && member.subjectId === userId)
   );
 }
+
+export const AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD = 2;
+const AI_AUTHENTICATION_FAILURE_SCAN_LIMIT = 50;
+export type AiAuthenticationFailureOutcome =
+  | "latched"
+  | "below_threshold"
+  | "already_unhealthy"
+  | "stale_generation"
+  | "recovered"
+  | "not_applicable";
 
 export function aiConnectionService(db: Db) {
   const secrets = secretService(db);
@@ -730,6 +743,7 @@ export function aiConnectionService(db: Db) {
         )
           throw unprocessable("The connection changed. Start reconnect again.");
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       let secretId = reconnect?.grant.credentialSecretRefs.find(
         (r) => r.configPath === "ai.credential",
       )?.secretId;
@@ -1100,16 +1114,16 @@ export function aiConnectionService(db: Db) {
     });
   }
 
-  /** A late failure must never invalidate credentials that were refreshed or reconnected meanwhile. */
   async function markAuthenticationFailed(input: {
     companyId: string;
     runId?: string;
     agentId?: string;
     runStartedAt: Date;
     attribution: AiConnectionAttribution & { identity: string };
-  }) {
+  }): Promise<AiAuthenticationFailureOutcome> {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
+      let outcome: AiAuthenticationFailureOutcome = "not_applicable";
       await db.transaction(async (tx) => {
         const { attribution } = input;
         const [grant] = await tx.select().from(connectionGrants).where(and(
@@ -1117,7 +1131,15 @@ export function aiConnectionService(db: Db) {
           eq(connectionGrants.id, attribution.grantId),
           eq(connectionGrants.connectionId, attribution.connectionId),
         )).for("update");
-        if (!grant || grant.status !== "active" || grant.updatedAt > input.runStartedAt) return;
+        if (!grant) return;
+        if (grant.status !== "active") {
+          outcome = grant.status === "needs_reauthorization" ? "already_unhealthy" : "not_applicable";
+          return;
+        }
+        if (grant.updatedAt > input.runStartedAt) {
+          outcome = "stale_generation";
+          return;
+        }
         const [connection] = await tx.select().from(toolConnections).where(and(
           eq(toolConnections.companyId, input.companyId),
           eq(toolConnections.id, attribution.connectionId),
@@ -1133,11 +1155,51 @@ export function aiConnectionService(db: Db) {
         )).for("update");
         const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
         const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
-        if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
+        if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) {
+          outcome = "stale_generation";
+          return;
+        }
         // A quota exchange may have consumed this run's token before a failed
         // database commit. Save its working replacement instead of revoking it.
         recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
-        if (recovered) return;
+        if (recovered) {
+          outcome = "recovered";
+          return;
+        }
+        const threshold = input.runId ? AI_AUTHENTICATION_FAILURE_LATCH_THRESHOLD : 1;
+        const sameGeneration = and(
+          sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`${grant.id}:%`}`,
+          sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'identity' like ${`%:${generation}`}`,
+        );
+        const [lastSuccess] = await tx.select({ at: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt})` })
+          .from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"), sameGeneration,
+            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${grant.updatedAt.toISOString()}::timestamptz`,
+          ))
+          .orderBy(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) desc`).limit(1);
+        const since = lastSuccess?.at ? new Date(Math.max(new Date(lastSuccess.at).getTime(), grant.updatedAt.getTime())) : grant.updatedAt;
+        const failedRuns = await tx.select({ id: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "failed"), sameGeneration,
+          or(
+            sql`${heartbeatRuns.errorCode} ~* ${AI_AUTHENTICATION_FAILURE_CODE_PATTERN}`,
+            inArray(heartbeatRuns.errorCode, AI_AUTHENTICATION_FAILURE_CODES),
+          ),
+          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
+        )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
+        const observed = new Set<string>(input.runId ? [] : ["probe:current"]);
+        for (const run of failedRuns) if (isAiAuthenticationFailure(run.errorCode)) observed.add(run.id);
+        if (observed.size < threshold) {
+          outcome = "below_threshold";
+          await logActivity(tx as unknown as Db, {
+            companyId: input.companyId, actorType: "system", actorId: "heartbeat",
+            agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failure_observed",
+            entityType: "tool_connection", entityId: connection.id,
+            details: { provider: attribution.provider, grantId: grant.id, generation, source: "run",
+              observedFailures: observed.size, threshold },
+          });
+          return;
+        }
+        outcome = "latched";
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
         await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
@@ -1151,6 +1213,7 @@ export function aiConnectionService(db: Db) {
       });
       if (recovered) await quotaCredentialRecovery(input.companyId, input.attribution.grantId).clear()
         .catch(error => logger.warn({ err: error, grantId: input.attribution.grantId }, "Saved failed-run credential recovery cleanup pending"));
+      return outcome;
     });
   }
   /** Refresh only the selected vaulted identity, serializing rotation and reconnect. */
