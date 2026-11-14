@@ -2131,6 +2131,8 @@ function StreamlinedIssuesList({
         <KanbanBoard
           issues={filtered}
           agents={agents}
+          projectById={projectById}
+          showProjects={visibleIssueColumnSet.has("project")}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
           collapsedStatuses={boardCollapsedStatuses}
