@@ -82,6 +82,7 @@ import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
 import { GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS, githubReviewCheckService } from "../services/chat-github-checks.js";
+import { GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS } from "../services/chat-channels/github/review-check-work.js";
 import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession, syncGitHubBotTools } from "../services/chat-github-tools.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat/run-preparation.js";
@@ -7774,12 +7775,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
       const window = async (seconds: number) => {
         const before = { statements: queries.length, pulls: pulls(),
-          states: queries.filter(query => query.includes('from "chat_github_reviews"')).length };
+          states: queries.filter(query => query.includes('from "chat_github_reviews" where')).length };
         for (let second = 0; second < seconds; second++) await pass();
         return { statements: queries.length - before.statements, pulls: pulls() - before.pulls,
-          states: queries.filter(query => query.includes('from "chat_github_reviews"')).length - before.states };
+          states: queries.filter(query => query.includes('from "chat_github_reviews" where')).length - before.states };
       };
-      return { ...f, pass, window, pulls, restart: () => { task = register(); }, now: () => clock };
+      const states = () => queries.filter(query => query.includes('from "chat_github_reviews" where')).length;
+      return { ...f, pass, window, pulls, states, restart: () => { task = register(); }, now: () => clock };
     }
 
     it("backs off remote head polls while an unresolved GitHub review check cannot change", async () => {
@@ -7813,6 +7815,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await f.window(GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS / 1000 + 1);
       expect((await f.action()).status).toBe("cancelled");
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
+    }, 120_000);
+
+    it("rebuilds GitHub review checks for company-wide hints at most once per interval", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.window(400);
+      const reads = async (hint: string) => {
+        const before = f.states();
+        await f.pass(hint);
+        return f.states() - before;
+      };
+      const company = JSON.stringify({ companyId: f.companyId });
+      const repeated = [];
+      for (let index = 0; index < 10; index++) repeated.push(await reads(company));
+      expect(repeated).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      for (let index = 0; index < GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS / 1000 - 10; index++) await f.pass();
+      expect(await reads(company)).toBe(1);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: randomUUID() }))).toBe(0);
+      expect(await reads(JSON.stringify({ companyId: randomUUID() }))).toBe(0);
+    }, 120_000);
+
+    it("publishes a run change for a GitHub review check at once from its issue milestone", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.window(400);
+      await f.pass(JSON.stringify({ companyId: f.companyId }));
+      const hints: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatGitHubReviewChecks, (event, settled) => {
+        if (event === "settled") hints.push(...(settled ?? []));
+      });
+      onTestFinished(unsubscribe);
+      await db.transaction(async tx => {
+        await tx.update(chatGitHubReviews).set({ runId: f.run.id }).where(eq(chatGitHubReviews.id, f.review.id));
+        await notifyChatRunMilestones(tx, { companyId: f.companyId, issueId: f.review.issueId, runId: f.run.id });
+      });
+      await expect.poll(() => hints.length, { timeout: 5000 }).toBeGreaterThan(0);
+      expect(hints.map(hint => JSON.parse(hint))).toContainEqual({ companyId: f.companyId, issueId: f.review.issueId });
+      const writes = f.writes.length;
+      for (const hint of hints) await f.pass(hint);
+      expect(f.writes).toHaveLength(writes + 1);
+      expect(f.writes.at(-1)).toMatchObject({ status: "in_progress" });
+      expect(await f.action()).toMatchObject({ status: "received", result: { state: "running", unchangedPolls: 0 } });
     }, 120_000);
 
     async function reviewProjectionFixture(cancelFirst = true) {
