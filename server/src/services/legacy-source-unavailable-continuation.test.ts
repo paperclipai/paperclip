@@ -36,7 +36,7 @@ describe("a legacy run whose saved files are gone", () => {
   });
   afterEach(() => { vi.unstubAllEnvs(); });
 
-  async function sourceGone() {
+  async function sourceGone(withheldRetry = true) {
     const f = await failedRemotePreparation();
     // The staging run was itself a person's Retry, so it is not an automatic
     // recovery run, and the failure (setup_failed) is not a restart.
@@ -55,6 +55,7 @@ describe("a legacy run whose saved files are gone", () => {
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted",
       failure: { code: "source_unavailable", retryClass: "use_alternative_strategy" } });
     // The hold withheld the scheduled retry that came after it.
+    if (!withheldRetry) return f;
     const withheld = await withheldPreparationRetry(f);
     await db.update(heartbeatRuns).set({ createdAt: new Date(finishedAt.getTime() + 60_000),
       finishedAt: new Date(finishedAt.getTime() + 2 * 60_000) }).where(eq(heartbeatRuns.id, withheld.id));
@@ -113,7 +114,8 @@ describe("a legacy run whose saved files are gone", () => {
   }, 90_000);
 
   it("counts the continuation as started when its worker delivers it before the sweep looks", async () => {
-    const f = await sourceGone();
+    // No withheld retry: the sweep's own wake reaches the fallback in admission.
+    const f = await sourceGone(false);
     const heartbeat = heartbeatService(db);
     // The continuation worker delivers the run between admission and the sweep's read.
     const sweep = assignedWorkSweep(db, { enqueueWakeup: async (agentId, opts) => {

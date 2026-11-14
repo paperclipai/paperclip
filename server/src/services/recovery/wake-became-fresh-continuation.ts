@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { logger } from "../../middleware/logger.js";
 import { hasPendingFreshContinuation } from "../fresh-continuation-fallback.js";
 
 /**
@@ -20,5 +21,8 @@ export async function wakeBecameFreshContinuation(db: Db, companyId: string, iss
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered'`,
         inArray(heartbeatRuns.status, ["queued", "running"]))).limit(1);
     return Boolean(delivered);
+  }).catch(error => {
+    logger.warn({ err: error, companyId, issueId }, "assigned-work sweep could not read the task's continuation");
+    return false;
   });
 }
