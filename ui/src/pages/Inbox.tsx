@@ -1021,19 +1021,30 @@ function StreamlinedInbox({
   const approvals = approvalsFromSaved ? savedRevealSources!.approvals : serverApprovals;
   const joinRequests = serverJoinRequests ?? (joinRequestsFromSaved ? savedRevealSources!.joinRequests : NO_JOIN_REQUESTS);
 
-  // Save what Mine shows once every source has a server answer, for the next visit.
+  // Save what Mine shows for the next visit. A complete record needs a server
+  // answer from every source. Once one exists, each answer replaces its part at
+  // once, and a refusal (401/403/404) empties it, so a reload never shows what
+  // the server has since refused while another read is still pending.
   useEffect(() => {
     if (tab !== "mine" || !selectedCompanyId || !currentUserId || !mineSnapshot) return;
-    if (serverApprovals === undefined || serverJoinRequests === undefined || !hasServerDismissals) return;
-    const next = buildMineRevealSources({
-      userId: currentUserId, companyId: selectedCompanyId, approvals: serverApprovals, joinRequests: serverJoinRequests,
-      dismissals: inboxDismissals, failedRunIds: mineSnapshot.failureRuns.map((run) => run.id),
-    });
     const key = mineRevealSourcesQueryKey(selectedCompanyId, currentUserId);
+    const saved = readMineRevealSources(queryClient.getQueryData(key), currentUserId, selectedCompanyId);
+    const refused = (error: unknown) => !!error && !isTransientError(error);
+    const part = <T,>(server: T[] | undefined, error: unknown, previous: T[] | undefined) =>
+      server ?? (refused(error) ? [] : previous);
+    const nextApprovals = part(serverApprovals, approvalsError, saved?.approvals);
+    const nextJoinRequests = part(serverJoinRequests, joinRequestsError, saved?.joinRequests);
+    const nextDismissals = part(hasServerDismissals ? inboxDismissals : undefined, dismissalsError, saved?.dismissals);
+    if (!nextApprovals || !nextJoinRequests || !nextDismissals) return;
+    const next = buildMineRevealSources({
+      userId: currentUserId, companyId: selectedCompanyId, approvals: nextApprovals, joinRequests: nextJoinRequests,
+      dismissals: nextDismissals, failedRunIds: mineSnapshot.failureRuns.map((run) => run.id),
+    });
     // Each write schedules a save of the query cache; skip unchanged values.
     if (JSON.stringify(queryClient.getQueryData(key)) === JSON.stringify(next)) return;
     queryClient.setQueryData(key, next);
-  }, [tab, selectedCompanyId, currentUserId, mineSnapshot, serverApprovals, serverJoinRequests, hasServerDismissals, inboxDismissals, queryClient]);
+  }, [tab, selectedCompanyId, currentUserId, mineSnapshot, serverApprovals, approvalsError, serverJoinRequests, joinRequestsError,
+    hasServerDismissals, inboxDismissals, dismissalsError, queryClient]);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -2313,12 +2324,19 @@ function StreamlinedInbox({
       return keyIndex >= 0 ? keyIndex : resolveInboxSelectionIndex(prev, flatNavItems.length);
     });
   }, [flatNavItems]);
-  // Record the key only when the selection itself moves. Recording on a list
-  // change too would store the row now at the old index (one a refresh inserted
-  // above the selection) before the re-anchor above runs, and move the selection.
+  // Record the selected row's key when the selection moves, or when the
+  // recorded row has left the list (the re-anchor then falls back to the row now
+  // at that index, often without changing it). Recording on every list change
+  // would store the row a refresh inserted above the selection before the
+  // re-anchor runs, and move the selection onto it.
+  const recordedSelectedIndexRef = useRef(selectedIndex);
   useEffect(() => {
-    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItemsRef.current[selectedIndex]) : null;
-  }, [selectedIndex]);
+    const recordedKey = selectedNavKeyRef.current;
+    const recordedRowListed = recordedKey !== null && flatNavItems.some((entry) => navEntryKey(entry) === recordedKey);
+    if (selectedIndex === recordedSelectedIndexRef.current && recordedRowListed) return;
+    recordedSelectedIndexRef.current = selectedIndex;
+    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
+  }, [flatNavItems, selectedIndex]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds((prev) =>

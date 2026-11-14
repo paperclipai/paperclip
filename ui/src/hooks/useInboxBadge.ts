@@ -74,7 +74,10 @@ export function useInboxDismissals(
     onMutate: async ({ itemKey, fingerprint }) => {
       if (!companyId) return { previous: [] as typeof dismissals };
       await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<typeof dismissals>(queryKey) ?? [];
+      // Start from what the page shows: saved dismissals stand in until the
+      // first read answers, and must not be dropped by this write or its rollback.
+      const previous = queryClient.getQueryData<typeof dismissals>(queryKey)
+        ?? (usesFallback ? options.fallback! : NO_DISMISSALS);
       const now = new Date();
       queryClient.setQueryData(queryKey, [
         {

@@ -2104,6 +2104,36 @@ describe("Inbox toolbar", () => {
         } finally { await act(() => root.unmount()); queryClient.clear(); }
       });
 
+      it.each([
+        ["join requests", "joinRequests"],
+        ["approvals", "approvals"],
+      ] as const)("purges saved %s from the record as soon as their read is refused, while other reads are pending", async (_label, refusedPart) => {
+        routerMock.location.pathname = "/inbox/mine";
+        twoRows();
+        apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest({ id: "join-saved" })]);
+        const queryClient = client();
+        let root = createRoot(container);
+        const record = () => queryClient.getQueryData<MineRevealSources>(mineRevealSourcesQueryKey("company-1", "local-board"));
+        try {
+          await visitThenReturn(queryClient, root);
+          await vi.waitFor(() => expect(record()?.joinRequests.map((request) => request.id)).toEqual(["join-saved"]));
+          const refusal = new ApiError("No access", 403, null);
+          if (refusedPart === "joinRequests") {
+            // The join-request read turns 401/403 into an empty list.
+            apiMocks.joinRequestsList.mockRejectedValue(refusal);
+            apiMocks.approvalsList.mockReturnValue(new Promise(() => {}));
+          } else {
+            apiMocks.approvalsList.mockRejectedValue(refusal);
+            apiMocks.joinRequestsList.mockReturnValue(new Promise(() => {}));
+          }
+          root = createRoot(container);
+          await renderInbox(queryClient, root);
+          await vi.waitFor(() => expect(record()?.[refusedPart]).toEqual([]));
+          const other = refusedPart === "joinRequests" ? "approvals" : "joinRequests";
+          expect(record()?.[other]).toHaveLength(1);
+        } finally { await act(() => root.unmount()); queryClient.clear(); }
+      });
+
       it("ignores saved sources stamped for another user or company and waits as a first visit does", async () => {
         routerMock.location.pathname = "/inbox/mine";
         twoRows();
@@ -2206,6 +2236,38 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps selection on the successor of a removed row when a new item then arrives above it", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issueA = createIssue({ id: "issue-a", identifier: "PAP-5001", title: "Removed row A", lastActivityAt: new Date(base + 3000) });
+    const issueB = createIssue({ id: "issue-b", identifier: "PAP-5002", title: "Successor row B", lastActivityAt: new Date(base + 2000) });
+    setIssueRows([issueA, issueB]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } } });
+    const root = createRoot(container);
+    const selectedText = () => [...container.querySelectorAll("[data-inbox-item]")]
+      .filter((row) => row.querySelector('[class~="bg-accent/50"]') || row.className.split(/\s+/).includes("bg-accent/50"))
+      .map((row) => row.textContent ?? "").join(" | ");
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Successor row B"));
+      await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true })); });
+      expect(selectedText()).toContain("Removed row A");
+      // Row A leaves; the selection falls back to B at the same index.
+      setIssueRows([issueB]);
+      await act(async () => { await queryClient.invalidateQueries(); });
+      await vi.waitFor(() => expect(container.textContent).not.toContain("Removed row A"));
+      expect(selectedText()).toContain("Successor row B");
+      // A newer approval arrives above B; the selection stays on B.
+      apiMocks.approvalsList.mockResolvedValue([createApproval({ id: "approval-late", payload: { name: "Late approval" }, updatedAt: new Date(base + 9000) })]);
+      await act(async () => { await queryClient.invalidateQueries(); });
+      await vi.waitFor(() => expect(container.querySelectorAll('a[href="/approvals/approval-late"]').length).toBe(1));
+      expect(selectedText()).toContain("Successor row B");
+      expect(selectedText()).not.toContain("Late approval");
+    } finally {
+      act(() => { root.unmount(); });
+    }
   });
 
   it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {

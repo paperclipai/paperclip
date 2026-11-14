@@ -5,8 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { InboxDismissal } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { list } = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock("../api/inboxDismissals", () => ({ inboxDismissalsApi: { list, dismiss: vi.fn(), snooze: vi.fn(), restore: vi.fn() } }));
+const { list, dismiss } = vi.hoisted(() => ({ list: vi.fn(), dismiss: vi.fn() }));
+vi.mock("../api/inboxDismissals", () => ({ inboxDismissalsApi: { list, dismiss, snooze: vi.fn(), restore: vi.fn() } }));
 import { ApiError } from "../api/client";
 import { useInboxDismissals } from "./useInboxBadge";
 
@@ -21,6 +21,7 @@ describe("useInboxDismissals fallback", () => {
   let latest: Result | null = null;
   beforeEach(() => {
     list.mockReset();
+    dismiss.mockReset();
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(document.createElement("div"));
   });
@@ -50,6 +51,19 @@ describe("useInboxDismissals fallback", () => {
     list.mockRejectedValue(new ApiError("No access", 403, null));
     await act(async () => { await client.refetchQueries(); });
     await vi.waitFor(() => expect(latest!.dismissedAtByKey.size).toBe(0));
+  });
+
+  it("keeps the other saved dismissals when one item is dismissed before the read answers, and after a failed dismissal", async () => {
+    list.mockReturnValue(new Promise(() => {}));
+    let fail!: (error: unknown) => void;
+    dismiss.mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    await render(saved);
+    await act(async () => { latest!.dismiss("join:j-1"); });
+    await vi.waitFor(() => expect(latest!.dismissedAtByKey.has("join:j-1")).toBe(true));
+    expect(latest!.dismissedAtByKey.get("approval:a-1")).toBe(1_000);
+    await act(async () => fail(new ApiError("Busy", 503, null)));
+    await vi.waitFor(() => expect(latest!.dismissedAtByKey.has("join:j-1")).toBe(false));
+    expect(latest!.dismissedAtByKey.get("approval:a-1")).toBe(1_000);
   });
 
   it("waits as before without a saved list", async () => {
