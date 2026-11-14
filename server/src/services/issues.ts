@@ -12802,6 +12802,24 @@ export function issueService(db: Db) {
         });
       }
 
+      const pendingStageIssue = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, id),
+            eq(issues.assigneeAgentId, agentId),
+            inArray(issues.status, expectedStatuses),
+            ne(issues.status, "in_progress"),
+            sql`${issues.executionState}->>'status' = 'pending'`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (pendingStageIssue) {
+        const [enriched] = await withIssueLabels(db, [pendingStageIssue]);
+        return enriched;
+      }
+
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
             eq(issues.assigneeAgentId, agentId),
