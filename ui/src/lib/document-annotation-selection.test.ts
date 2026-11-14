@@ -56,6 +56,24 @@ function selectText(container: HTMLElement, needle: string): Range {
 }
 
 describe("buildAnchorFromContainerSelection", () => {
+  it.each([
+    ["````markdown", "```", "````"],
+    ["```text", "~~~", "```"],
+    ["```text", "", "```"],
+  ])("anchors visible code inside %s fences", (opening, inner, closing) => {
+    const markdown = [opening, inner, "# literal", inner, closing].join("\n");
+    const container = document.createElement("div");
+    const code = document.createElement("code");
+    code.textContent = [inner, "# literal", inner].join("\n");
+    container.appendChild(code);
+    const offset = getContainerTextOffset(container, selectText(container, "# literal"));
+    expect(offset).not.toBeNull();
+    const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset: offset! });
+    expect(anchor).not.toBeNull();
+    expect(anchor!.range.markdownStart).toBe(markdown.indexOf("# literal"));
+    expect(verifyDocumentAnchorSelector({ markdown, selector: anchor!.selector }).ok).toBe(true);
+  });
+
   it("produces a selector that verifies against the same markdown", () => {
     const container = makeContainer();
     const range = selectText(container, "current markdown stack");
