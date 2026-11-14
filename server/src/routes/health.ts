@@ -1,4 +1,5 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
+import { resolveGenericOidcProviderStatus } from "../auth/better-auth.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
@@ -241,6 +242,10 @@ export function healthRoutes(
     const healthStatus =
       startupRecovery.phase === "ready" ? "ok" : "starting";
     const cloud = getCloudHealthStatus(runtimeEnv);
+    // Lets an anonymous caller (the sign-in page, before any session) decide
+    // whether to show an OIDC button, without ever exposing the client secret.
+    const oidcProvider = resolveGenericOidcProviderStatus(runtimeEnv);
+    const oidc = oidcProvider ? { enabled: true as const, ...oidcProvider } : undefined;
     // Operator-hidden settings ride every response (like `cloud`): the list
     // holds UI surface names only, and the settings nav needs it before any
     // fuller-detail fetch. Omitted entirely when nothing is hidden, so
@@ -422,6 +427,7 @@ export function healthRoutes(
         // this instance becomes visible.
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
+        ...(oidc ? { oidc } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
       });
       return;
@@ -449,6 +455,7 @@ export function healthRoutes(
       ...(devServer ? { devServer } : {}),
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
+      ...(oidc ? { oidc } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
     });
   });

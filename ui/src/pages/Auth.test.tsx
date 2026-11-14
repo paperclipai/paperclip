@@ -14,6 +14,7 @@ import { ApiError } from "../api/client";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const signInSocialMock = vi.hoisted(() => vi.fn());
 const healthMock = vi.hoisted(() => vi.fn());
 const beginCloudSignInMock = vi.hoisted(() => vi.fn());
 
@@ -28,6 +29,7 @@ vi.mock("../api/auth", () => ({
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signInSocial: (input: unknown) => signInSocialMock(input),
   },
 }));
 
@@ -229,6 +231,45 @@ describe("AuthPage", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("hides the OIDC button when the server reports it as unconfigured", async () => {
+    const { root } = await mount();
+    const buttons = Array.from(container.querySelectorAll("button")).map((button) => button.textContent);
+    expect(buttons.some((text) => text?.startsWith("Continue with"))).toBe(false);
+    await act(() => root.unmount());
+  });
+
+  it("shows and drives the OIDC button when the server reports it as configured", async () => {
+    healthMock.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      oidc: { enabled: true, providerId: "acme-oidc", displayName: "Acme" },
+    });
+    signInSocialMock.mockResolvedValue({ url: "https://issuer.example.com/authorize?state=abc" });
+    const originalLocation = window.location;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (window as any).location;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).location = { ...originalLocation, href: "" };
+
+    const { root } = await mount();
+    const button = Array.from(container.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent === "Continue with Acme",
+    );
+    expect(button).not.toBeUndefined();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(signInSocialMock).toHaveBeenCalledWith({ provider: "acme-oidc", callbackURL: "/" });
+    expect(window.location.href).toBe("https://issuer.example.com/authorize?state=abc");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).location = originalLocation;
+    await act(() => root.unmount());
   });
 
   it("renders auth errors in an assertive alert region referenced by the inputs", async () => {

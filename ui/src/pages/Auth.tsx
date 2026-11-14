@@ -27,6 +27,7 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [socialSignInPending, setSocialSignInPending] = useState(false);
   const errorId = "auth-error";
 
   const nextPath = useMemo(
@@ -222,6 +223,32 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {healthQuery.data?.oidc?.enabled && (
+            <div className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={socialSignInPending}
+                onClick={async () => {
+                  const provider = healthQuery.data!.oidc!.providerId;
+                  setSocialSignInPending(true);
+                  try {
+                    const { url } = await authApi.signInSocial({ provider, callbackURL: nextPath });
+                    if (url) window.location.href = url;
+                    else setError("Unable to start sign-in. Please try again.");
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Authentication failed");
+                  } finally {
+                    setSocialSignInPending(false);
+                  }
+                }}
+              >
+                {socialSignInPending ? "Working…" : `Continue with ${healthQuery.data.oidc.displayName}`}
+              </Button>
+            </div>
+          )}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
