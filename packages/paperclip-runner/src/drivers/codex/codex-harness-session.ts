@@ -83,7 +83,7 @@ export class CodexHarnessSession
         "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
       ));
     }
-    if (this.terminal) {
+    if (this.terminal && !this.awaitingProviderTurn) {
       this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {

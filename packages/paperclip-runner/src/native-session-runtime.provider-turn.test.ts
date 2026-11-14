@@ -646,6 +646,41 @@ describe("the controller consumer with provider-started turn sequences", () => {
     expect(second.returned).toMatchObject({ result, turnId: "provider-1" });
   });
 
+  it.each([true, false])("resumes a restored wait whose disposition marker is consumed instead of settling on that turn's earlier terminal (provider turn arrives: %s)", async (arrives) => {
+    const awaitedTurn = [
+      event("turn-disposition", "turn.started", { status: "inProgress" }),
+      event("turn-disposition", "item.completed", usage),
+      event("turn-disposition", "turn.completed", { status: "completed", error: null, awaitingProviderTurn: true }),
+    ];
+    const terminalTurns = [completedTerminal("turn-1"), completedTerminal("turn-disposition")];
+    const waiting = { terminalTurns, semanticResult: null, awaitingProviderTurn: true, dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-disposition" };
+    const recovery = { checkpoint: { ...restartCheckpoint, ...waiting }, snapshot: waiting, replay: [...turnOne(false), ...awaitedTurn] };
+    const turn = providerTurn("provider-1", { result: true });
+    const outcome = await run({
+      stream: [], restart: { recovery }, turnTimeoutMs: 10_000,
+      providerTurnWait: { startedAtMs: Date.now() - (arrives ? 599_000 : 599_700) },
+      after: async (control) => {
+        if (!arrives) return;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        control.push(...turn);
+      },
+    });
+    expect(outcome.startTurn).not.toHaveBeenCalled();
+    if (arrives) {
+      expect(outcome.outcome).toBe("finalized");
+      expect(outcome.returned).toMatchObject({ result, turnId: "provider-1" });
+      expect(outcome.resolveMissingResult).not.toHaveBeenCalled();
+      expect(outcome.interrupt).not.toHaveBeenCalled();
+      expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
+    } else {
+      expect(outcome.outcome).toContain("native_finalization_missing");
+      expect(outcome.interrupt).toHaveBeenCalledOnce();
+      expect(outcome.resolveMissingResult).toHaveBeenCalledOnce();
+      expect(outcome.resolveMissingResult).toHaveBeenCalledWith(expect.objectContaining({ turnId: "turn-disposition",
+        terminalEvent: expect.objectContaining({ eventType: "turn.completed", payload: expect.objectContaining({ awaitingProviderTurn: true }) }) }));
+    }
+  });
+
   it("fails the run as today when the Runner's stream ends during the wait", async () => {
     const outcome = await run({
       stream: turnOne(true), providerTurnWait: { capMs: 60_000 },

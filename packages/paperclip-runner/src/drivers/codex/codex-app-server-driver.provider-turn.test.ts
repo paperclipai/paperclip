@@ -482,6 +482,40 @@ describe("Codex app-server driver after a controller restart during a wait for t
   });
 });
 
+describe("Codex app-server driver after a restart during a wait whose disposition marker is consumed", () => {
+  it("keeps reading notifications, admits the provider's own turn and still refuses a controller turn", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Start a background install." } });
+    first.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] }, awaitingProviderTurn: true });
+    await collectUntilTerminal(original.events());
+    const checkpoint = { ...await original.snapshot(), dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-1" };
+    expect(checkpoint).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, semanticResult: null });
+    await original.close({ reason: "controller restarted" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true }] } };
+    const recovery = await driver.recoverSession!(checkpoint);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, dispositionOnlyRecoveryConsumed: true });
+    await expect(session.startTurn({ message: { role: "user", text: "Report the disposition." } })).rejects.toThrow("session cannot start another turn");
+    expect(second.calls.filter(call => call.method === "turn/start")).toEqual([]);
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    releaseProviderTurn(second, "provider-1", { complete: true, withResult: true });
+    const seen = await streamUntil(events, completedTurn("provider-1"));
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }]);
+    expect(itemTurns(seen)).toEqual(["provider-1"]);
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+});
+
 describe("Codex app-server driver boundary snapshots for provider-started turns", () => {
   const sourceSeq = (value: unknown) => (value as { sourceSeq: number }).sourceSeq;
 
