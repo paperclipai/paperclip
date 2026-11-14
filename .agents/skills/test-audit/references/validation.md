@@ -79,9 +79,11 @@ do not weaken assertions, increase budgets, skip suites, or erase a failing
 baseline to obtain a green audit. Retry a demonstrated transient problem within
 a stated bound; a recurring failure needs investigation.
 
-Use PR notes for small changes. For a campaign, keep a compact dated receipt
-with revisions, decisions, keepers, commands, results, controls, measurements,
-and limitations. Link accessible CI runs/artifacts when they support claims.
-Temporary paths and hashes alone do not make evidence durably inspectable.
-Do not generate large evidence dossiers for trivial deletions or store raw
-logs containing secrets. State precisely which broad checks remain unrun.
+Use concise task and PR notes for revisions, decisions, keepers, commands,
+results, controls, measurements, and limitations. Keep campaign ledgers and
+plans in the task too; do not commit audit documentation or receipts to the
+repository. Documentation changes require an explicit human request. Link
+accessible CI runs/artifacts when they support claims. Temporary paths and
+hashes alone do not make evidence durably inspectable. Do not generate large
+evidence dossiers for trivial deletions or store raw logs containing secrets.
+State precisely which broad checks remain unrun.

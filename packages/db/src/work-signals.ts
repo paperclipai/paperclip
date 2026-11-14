@@ -1,12 +1,13 @@
 import { sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 
-// Process-local hints about existing durable queues. No SQL triggers, tables,
-// background timers, or driver query replay. Only opted-in transactions fetch
-// an XID, so unrelated transactions keep their existing SQL behavior.
+// Hints about existing durable queues; process-local by default, with optional
+// commit-bound PostgreSQL notifications during controller replacement. No SQL
+// triggers, tables, timers, or query replay. Only registered work fetches an XID.
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
-type Scope = { listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection };
-type Context = { scope: Scope; transaction?: Transaction };
+type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
+type Context = { scope: Scope; transaction?: Transaction; pending?: Map<string, string>; settled?: Array<[string, string | undefined]>; ended?: boolean };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
 
@@ -19,7 +20,7 @@ function publish(scope: Scope, topic: string, event: "intent" | "settled" = "set
 
 /** Installed once by createDb; dedicated child pools share their owner's scope. */
 export function installDatabaseWorkSignals<T extends Connection>(db: T, owner?: object): T {
-  const scope = (owner && contexts.get(owner)?.scope) || { listeners: new Map(), transactions: new Set(), root: db };
+  const scope = (owner && contexts.get(owner)?.scope) || { key: {}, listeners: new Map(), transactions: new Set(), root: db, notificationOrigin: randomUUID(), notify: false };
   install(db, { scope });
   return db;
 }
@@ -32,10 +33,23 @@ function install(connection: Connection, context: Context) {
     // savepoint must not wake a consumer before its parent commits.
     const state = context.transaction ?? { topics: new Set<string>(), hints: new Map<string, Set<string>>(), uncertain: false };
     try {
+      let level: Context | undefined;
       const result = await transaction.call(this, async (tx: Connection) => {
-        install(tx, { scope: context.scope, transaction: state });
-        return callback(tx);
+        const current: Context = { scope: context.scope, transaction: state, pending: new Map(), settled: [] };
+        level = current;
+        install(tx, current);
+        try {
+          const value = await callback(tx);
+          current.ended = true;
+          if (!context.transaction) await flushNotifications(tx, current.pending!);
+          return value;
+        } finally { current.ended = true; }
       }, ...options);
+      if (context.pending && level?.pending) {
+        for (const [key, payload] of level.pending) if (!context.pending.has(key)) context.pending.set(key, payload);
+      }
+      if (context.transaction) context.settled?.push(...level?.settled ?? []);
+      else for (const [topic, hint] of level?.settled ?? []) publish(context.scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
       if (!context.transaction) context.scope.transactions.delete(state);
       return result;
     } catch (error) {
@@ -73,6 +87,84 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   // Keep a failed acquisition distinguishable from an uncertain queue write.
   try { await state.xid; }
   catch (error) { state.xid = undefined; throw error; }
+  if (context.scope.notify) notifyAtCommit(context, notification(context.scope, topic));
+}
+
+export function primeDatabaseWorkTransactionId(connection: object, xid: string): void {
+  const state = contexts.get(connection)?.transaction;
+  if (state && !state.xid) state.xid = Promise.resolve(xid);
+}
+
+function notifyAtCommit(context: Context, payload: string): void {
+  if (context.ended) throw new Error("Database work was signalled after its transaction or savepoint ended");
+  const key = `${DATABASE_WORK_CHANNEL}\u0000${payload}`;
+  if (!context.pending!.has(key)) context.pending!.set(key, payload);
+}
+
+async function flushNotifications(connection: Connection, pending: Map<string, string>): Promise<void> {
+  if (pending.size === 0) return;
+  await connection.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, payload)
+    from jsonb_array_elements_text(${JSON.stringify([...pending.values()])}::jsonb) as notification(payload)`);
+}
+
+export const DATABASE_WORK_CHANNEL = "paperclip_work_v1";
+const validTopic = (topic: string) => /^[a-zA-Z0-9:_-]{1,200}$/.test(topic);
+function notification(scope: Scope, topic: string) {
+  if (!validTopic(topic)) throw new Error("Invalid database work topic");
+  return JSON.stringify({ version: 1, origin: scope.notificationOrigin, topic });
+}
+export function enableDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope) throw new Error("Database work notifications require createDb");
+  scope.notify = true;
+}
+/**
+ * A commit-bound hint to other server processes, sent on the transaction's own connection. Unlike
+ * signalDatabaseWork it registers no local intent, so a failed transaction leaves nothing to reconcile
+ * on another pool. For writers whose correctness never depends on this hint (best-effort wakes).
+ */
+export async function notifyDatabaseWorkOnCommit(connection: object, topic: string): Promise<void> {
+  const context = contexts.get(connection);
+  if (!context?.scope.notify) return;
+  if (!context.transaction) throw new Error("Database work must be registered inside a transaction");
+  notifyAtCommit(context, notification(context.scope, topic));
+}
+
+export function databaseWorkCommitNotification(owner: object, topic: string): string | null {
+  const scope = contexts.get(owner)?.scope;
+  return scope?.notify ? notification(scope, topic) : null;
+}
+
+export function publishDatabaseWorkSettled(owner: object, topic: string, hint?: string): void {
+  const context = contexts.get(owner);
+  if (!context) return;
+  if (!context.transaction) {
+    publish(context.scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
+    return;
+  }
+  if (context.ended) throw new Error("Database work was signalled after its transaction or savepoint ended");
+  context.settled!.push([topic, hint]);
+  if (context.scope.notify) notifyAtCommit(context, notification(context.scope, topic));
+}
+
+/** A post-commit invalidation hint, for already-persisted live UI state. */
+export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
+  const scope = contexts.get(owner)?.scope;
+  if (scope?.notify) await scope.root.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(scope, topic)})`);
+}
+export function receiveDatabaseWorkNotification(owner: object, payload: string): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope || payload.length > 1024) return;
+  let value: { version?: unknown; origin?: unknown; topic?: unknown };
+  try { value = JSON.parse(payload); } catch { return; }
+  if (!value || value.version !== 1 || typeof value.origin !== "string" || value.origin === scope.notificationOrigin
+    || typeof value.topic !== "string" || !validTopic(value.topic)) return;
+  publish(scope, value.topic);
+}
+/** Reconnect can lose hints. Reconstruct existing durable queues once; no poll. */
+export function reconcileDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (scope) for (const topic of scope.listeners.keys()) publish(scope, topic);
 }
 
 export function databaseWorkPending(owner: object, topic: string): boolean {
@@ -111,4 +203,8 @@ export function subscribeDatabaseWork(owner: object, topic: string, listener: Li
     try { listener("intent"); } catch (error) { process.emitWarning(`Database work listener failed: ${String(error)}`); }
   }
   return () => { listeners.delete(listener); };
+}
+
+export function databaseWorkScopeKey(connection: object): object {
+  return contexts.get(connection)?.scope.key ?? connection;
 }

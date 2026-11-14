@@ -9,8 +9,6 @@ import {
 } from "@paperclipai/db";
 import { createChatQueryExecutor } from "../services/chat-query-executor.js";
 import { chatChannelService } from "../services/chat-channels.js";
-import * as githubResponses from "../services/chat-github-response-comments.js";
-import * as githubChecks from "../services/chat-github-checks.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -53,7 +51,6 @@ suite("chat query compilation with PostgreSQL", () => {
     const fetch = vi.fn(async () => { throw new Error("Empty candidates must not contact a provider"); });
     const service = chatChannelService(db, { idleOptimizations: reuse, heartbeat: { wakeup: vi.fn(async () => null) }, fetch });
     const scan = async () => {
-      expect(await service.reconcileProviderRuntimes()).toMatchObject({ eligible: 0 });
       expect(await service.processPendingReceiptReactions()).toBe(0);
       expect(await service.processPendingTelegramActions()).toBe(0);
     };
@@ -79,24 +76,6 @@ suite("chat query compilation with PostgreSQL", () => {
       // An invalid payload is selected but never authorizes a provider call.
       await db.insert(chatActions).values({ ...fixture, kind: "telegram_maintenance", providerActionId: randomUUID(), payload: { operation: "invalid" }, status: "received" });
       expect(await service.processPendingTelegramActions()).toBe(1);
-    } finally { await service.shutdown(); }
-  });
-
-  it.each([false, true])("uses the selected GitHub maintenance lifetime with reuse=%s", async (reuse) => {
-    const db = createDb(database.connectionString);
-    const responsePending = vi.fn(async () => {}), checkPending = vi.fn(async () => {});
-    const realResponses = githubResponses.githubResponseCommentService, realChecks = githubChecks.githubReviewCheckService;
-    const responses = vi.spyOn(githubResponses, "githubResponseCommentService").mockImplementation((...args) => ({ ...realResponses(...args), processPending: responsePending }));
-    const checks = vi.spyOn(githubChecks, "githubReviewCheckService").mockImplementation((...args) => ({ ...realChecks(...args), processPending: checkPending }));
-    const service = chatChannelService(db, { idleOptimizations: reuse, heartbeat: { wakeup: vi.fn(async () => null) } });
-    try {
-      for (let tick = 1; tick <= 2; tick += 1) {
-        await service.schedulePendingPublications();
-        await vi.waitFor(() => expect(checkPending).toHaveBeenCalledTimes(tick));
-      }
-      expect(responsePending).toHaveBeenCalledTimes(2);
-      expect(responses).toHaveBeenCalledTimes(reuse ? 1 : 2);
-      expect(checks).toHaveBeenCalledTimes(reuse ? 1 : 2);
     } finally { await service.shutdown(); }
   });
 

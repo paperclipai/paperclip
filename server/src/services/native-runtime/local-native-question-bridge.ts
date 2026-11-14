@@ -12,6 +12,7 @@ export function createLocalNativeQuestionBridge(input: {
   resolve: (input: {
     runId: string; requestId: string; turnId: string;
     resolution: HarnessRuntimeRequestResolution;
+    commandId?: string;
     authorizeBeforeDispatch: () => Promise<void>;
   }) => Promise<{ commandId: string }>;
 }) {
@@ -23,13 +24,13 @@ export function createLocalNativeQuestionBridge(input: {
       close();
       release = registerNativeQuestionCommandTarget({
         binding: input.binding,
-        queueCommand: async (type, payload) => {
+        queueCommand: async (type, payload, commandId) => {
           if (type !== "request.resolve" || typeof payload?.requestId !== "string") throw new Error("native_question_command_invalid");
           const requestId = payload.requestId;
           const pending = await readPendingNativeRuntimeRequest(input.db, { ...input.binding, requestId });
           if (!pending || pending.requestKind !== "runtime") throw new Error("native_question_not_pending");
           const result = await input.resolve({
-            runId: input.binding.runId, requestId, turnId: pending.turnId,
+            runId: input.binding.runId, requestId, turnId: pending.turnId, commandId,
             resolution: { action: "submit", response: payload.response as never },
             authorizeBeforeDispatch: async () => {
               const current = await readPendingNativeRuntimeRequest(input.db, { ...input.binding, requestId });

@@ -18,7 +18,6 @@ test("installed controller serves health and UI without creating provider work",
   expect(before.ok()).toBe(true); expect(await before.json()).toEqual([]);
   const response = await page.goto(baseURL!);
   expect(response?.ok()).toBe(true);
-  await expect(page.locator("#root")).not.toBeEmpty();
   await expect(page.getByRole("heading", { name: "What is the name of your organization?", exact: true })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Name", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();

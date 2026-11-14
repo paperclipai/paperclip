@@ -126,7 +126,7 @@ describeEmbeddedPostgres("secretService dangling user_secret_ref resolution", ()
     // The message must name the env variable, the agent id, and the definition key.
     const error = await svc
       .syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: agentId }, envValue)
-      .catch((caught: unknown) => caught as Error);
+      .catch((caught: unknown) => caught as Error) as Error;
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain('environment variable "GH_TOKEN"');
     expect(error.message).toContain(`agent ${agentId}`);
@@ -163,7 +163,7 @@ describeEmbeddedPostgres("secretService dangling user_secret_ref resolution", ()
           responsibleUserId: "user-1",
         },
       )
-      .catch((caught: unknown) => caught as Error);
+      .catch((caught: unknown) => caught as Error) as Error;
 
     expect(error).toBeInstanceOf(Error);
     expect((error as { status?: number }).status).toBe(404);

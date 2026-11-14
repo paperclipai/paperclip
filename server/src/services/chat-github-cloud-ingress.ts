@@ -7,6 +7,18 @@ type Event = SealedConnectorEvents["events"][number];
 type Endpoint = typeof chatEndpoints.$inferSelect;
 type Handler = (endpoint: Endpoint, request: Request) => Promise<void>;
 const handlers = new WeakMap<Db, Handler>();
+const setupPollers = new WeakMap<Db, () => Promise<void>>();
+
+/** The active wizard reuses the server-owned, serialized event drain. */
+export function registerGitHubBotCloudSetupPoller(db: Db, poll: () => Promise<void>) {
+  setupPollers.set(db, poll);
+  return () => { if (setupPollers.get(db) === poll) setupPollers.delete(db); };
+}
+
+export async function pollGitHubBotCloudSetupEvents(db: Db): Promise<void> {
+  await setupPollers.get(db)?.();
+}
+
 export function registerGitHubBotCloudIngress(db: Db, handler: Handler) {
   handlers.set(db, handler);
   return () => {

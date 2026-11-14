@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { admitAcpxSessionContext } from "./session-context-admission.js";
 
 const SCHEMA = "paperclip.cursor.instructions.v1";
 const MAX_BYTES = 32 * 1024;
@@ -77,11 +78,5 @@ export async function admitCursorInstructions(
   admission: ReturnType<typeof createCursorInstructionAdmission>,
   input: { providerSpawned: boolean; load: () => Promise<void>; refreshCommand: () => Promise<void> },
 ): Promise<void> {
-  if (!input.providerSpawned) {
-    await input.load();
-    admission.assertReady();
-    // ACPX control calls close their temporary native connection. A subsequent
-    // prompt needs a fresh verified command lease, never a consumed snapshot.
-    await input.refreshCommand();
-  } else admission.assertReady();
+  await admitAcpxSessionContext(admission, input);
 }

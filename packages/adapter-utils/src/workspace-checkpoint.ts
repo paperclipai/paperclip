@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WorkspaceManifestWriter, WorkspaceManifestMap, workspacePaths, workspacePathMatcher } from "./workspace-manifest.js";
-import { shouldExcludePath, excludePatternMatches, isRelativePathOrDescendant } from "./exclude-patterns.js";
+import { shouldExcludePath, excludePatternMatches, isRelativePathOrDescendant, isSandboxTransferScratchPath } from "./exclude-patterns.js";
 import { openDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 
 export async function writeCheckpointBaseline(snapshot: DirectorySnapshot, filePath: string): Promise<void> {
@@ -20,6 +20,7 @@ async function checkpointMain(
   createHash: typeof import("node:crypto").createHash,
   createReadStream: typeof import("node:fs").createReadStream,
   shouldExcludePath: (relative: string, exclude: readonly string[]) => boolean,
+  isSandboxTransferScratchPath: (relative: string) => boolean,
 ) {
   const [rootArg, baselinePath, outputDir, exclusions] = process.argv.slice(2);
   const root = await fs.realpath(rootArg!);
@@ -48,28 +49,25 @@ async function checkpointMain(
   const walk = async (relative = "") => {
     const directory = path.join(root, relative);
     if (await fs.realpath(directory) !== directory) throw new Error("Workspace directory changed during checkpoint capture");
-    for await (const child of await fs.opendir(directory)) {
-      const name = relative ? `${relative}/${child.name}` : child.name;
-      if (Buffer.byteLength(name) > 65536) throw new Error("Invalid workspace manifest path");
-      let ignoredPath = false;
-      for (let p = name; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") {
-        if (ignored.get(p)) { ignoredPath = true; break; }
-      }
-      if (ignoredPath || shouldExcludePath(name, exclude)) continue;
+    const pending: Promise<{ ok: true } | { ok: false; error: unknown }>[] = [];
+    const flush = async () => {
+      const results = await Promise.all(pending.splice(0));
+      for (const result of results) if (!result.ok) throw result.error;
+    };
+    const capture = async (name: string, before: import("node:fs").Stats) => {
       const source = path.join(root, name);
-      const before = await fs.lstat(source);
-      scanned++;
       let entry: { kind: string; hash?: string; mode?: number; target?: string };
       if (before.isDirectory()) entry = { kind: "dir" };
       else if (before.isFile()) entry = { kind: "file", mode: before.mode, hash: await hash(source) };
       else if (before.isSymbolicLink()) {
         const target = await fs.readlink(source);
         const resolved = path.resolve(path.dirname(source), target);
-        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) continue;
+        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) return;
         entry = { kind: "symlink", target };
-      } else continue;
+      } else return;
       if (fingerprint(before) !== fingerprint(await fs.lstat(source))) throw new Error("Workspace changed during checkpoint capture");
       const encoded = JSON.stringify(entry);
+      if (!result.isTransaction) throw new Error("Workspace checkpoint transaction ended during capture");
       insert.run(name, encoded);
       if (lookup.get(name)?.value !== encoded) {
         const destination = path.join(payload, name);
@@ -83,7 +81,32 @@ async function checkpointMain(
           files++; bytes += before.size;
         }
       }
-      if (before.isDirectory()) await walk(name);
+    };
+    try {
+      for await (const child of await fs.opendir(directory)) {
+        const name = relative ? `${relative}/${child.name}` : child.name;
+        if (Buffer.byteLength(name) > 65536) throw new Error("Invalid workspace manifest path");
+        let ignoredPath = false;
+        for (let p = name; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") {
+          if (ignored.get(p)) { ignoredPath = true; break; }
+        }
+        // Provider transfer scratch is never exported, so capturing it makes
+        // every later validation fail (RC-50b).
+        if (ignoredPath || shouldExcludePath(name, exclude) || isSandboxTransferScratchPath(name)) continue;
+        const before = await fs.lstat(path.join(root, name));
+        scanned++;
+        if (before.isFile()) {
+          pending.push(capture(name, before).then(() => ({ ok: true as const }), error => ({ ok: false as const, error })));
+          if (pending.length === 8) await flush();
+        } else {
+          await flush();
+          await capture(name, before);
+          if (before.isDirectory()) await walk(name);
+        }
+      }
+      await flush();
+    } finally {
+      await Promise.all(pending);
     }
   };
   try {
@@ -94,7 +117,7 @@ async function checkpointMain(
 }
 
 export function workspaceCheckpointScript(): string {
-  return `import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport { DatabaseSync } from 'node:sqlite';\nimport { createHash } from 'node:crypto';\nimport { createReadStream } from 'node:fs';\nconst __name = (fn) => fn;\n${isRelativePathOrDescendant.toString()}\nfunction pathContainsSegmentOrDescendant(relative, segment) { return relative === segment || relative.startsWith(segment + '/') || relative.endsWith('/' + segment) || relative.includes('/' + segment + '/'); }\n${excludePatternMatches.toString()}\n${shouldExcludePath.toString()}\nawait (${checkpointMain.toString()})(fs, path, DatabaseSync, createHash, createReadStream, shouldExcludePath);\n`;
+  return `import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport { DatabaseSync } from 'node:sqlite';\nimport { createHash } from 'node:crypto';\nimport { createReadStream } from 'node:fs';\nconst __name = (fn) => fn;\n${isRelativePathOrDescendant.toString()}\nfunction pathContainsSegmentOrDescendant(relative, segment) { return relative === segment || relative.startsWith(segment + '/') || relative.endsWith('/' + segment) || relative.includes('/' + segment + '/'); }\n${excludePatternMatches.toString()}\n${shouldExcludePath.toString()}\n${isSandboxTransferScratchPath.toString()}\nawait (${checkpointMain.toString()})(fs, path, DatabaseSync, createHash, createReadStream, shouldExcludePath, isSandboxTransferScratchPath);\n`;
 }
 
 export function readCheckpointSnapshot(filePath: string, baseline: DirectorySnapshot): DirectorySnapshot {
@@ -109,6 +132,21 @@ export function readCheckpointSnapshot(filePath: string, baseline: DirectorySnap
   try { for (const _entry of snapshot.entries) {   } }
   catch (error) { (snapshot.entries as WorkspaceManifestMap<unknown>).close(); throw error; }
   return snapshot;
+}
+
+type CheckpointEntryLike = { kind: string; mode?: number; hash?: string; target?: string } | undefined;
+
+/** Names which entry disagreed and how, so a deterministic mismatch is diagnosable.
+ * Modes are octal permission bits; hashes are shortened. File contents never appear. */
+function checkpointPayloadMismatch(relative: string, recorded: CheckpointEntryLike, baseline: CheckpointEntryLike, received: CheckpointEntryLike) {
+  const describe = (entry: CheckpointEntryLike) => !entry ? "absent"
+    : entry.kind === "file" ? `file mode=${((entry.mode ?? 0) & 0o7777).toString(8)} sha256=${String(entry.hash).slice(0, 12)}`
+      : entry.kind === "symlink" ? "symlink" : entry.kind;
+  const shownPath = relative.length > 240 ? `${relative.slice(0, 240)}…` : relative;
+  return Object.assign(new Error(`Workspace checkpoint payload mismatch at ${JSON.stringify(shownPath)}: `
+    + `sandbox recorded ${describe(recorded)}; baseline ${describe(baseline)}; received ${describe(received)}`), {
+    checkpointMismatch: { path: relative, recorded, baseline, received },
+  });
 }
 
 export async function validateCheckpointPayload(input: { baseline: DirectorySnapshot; snapshot: DirectorySnapshot; payload: string }): Promise<WorkspaceCheckpointMetrics> {
@@ -136,7 +174,9 @@ export async function validateCheckpointPayload(input: { baseline: DirectorySnap
           throw Object.assign(new Error("Unsafe workspace checkpoint symlink"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" });
         }
       }
-      if (!equal(entry, input.baseline.entries.get(relative)) && !equal(entry, actual.entries.get(relative))) throw new Error("Workspace checkpoint payload mismatch");
+      if (!equal(entry, input.baseline.entries.get(relative)) && !equal(entry, actual.entries.get(relative))) {
+        throw checkpointPayloadMismatch(relative, entry, input.baseline.entries.get(relative), actual.entries.get(relative));
+      }
     }
     for (const [relative, entry] of actual.entries) {
       assertIncluded(relative);

@@ -1,0 +1,185 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: connection-setup
+status: planned
+scenarios:
+  - id: connection-setup.notion-connected
+    capabilities:
+      - connection-setup/catalog
+      - app-permissions/agent-access
+    context: >-
+      One intended Notion account is healthy, assigned to the CEO and permits reading the
+      synthetic Launch workspace. Recent pages and older distractor pages exist.
+    query: >-
+      Read my Notion and tell me the latest on the launch.
+    expected_outcome: >-
+      The agent discovers and uses the existing authorized connection, reads current relevant
+      pages and summarizes updates with source links and dates. It distinguishes newly updated
+      material from older background and does not ask the person to reconnect an already usable
+      account or invent content from page titles alone.
+  - id: connection-setup.notion-missing
+    capabilities:
+      - connection-setup/catalog
+      - connection-setup/task-request
+      - connection-setup/credentials
+      - connection-setup/handoff
+    context: >-
+      No Notion connection exists. The person is eligible to connect it; the task has an
+      addressed connection-request path.
+    query: >-
+      Read my Notion and tell me the latest on the launch.
+    expected_outcome: >-
+      The agent finds the supported Notion setup method and presents a connection request in the
+      conversation. After the addressed person completes sign-in and grants usable access, the
+      original request continues and reads the intended workspace. Setup state and pending
+      intent survive the handoff, with one connection and no premature summary.
+  - id: connection-setup.notion-declined
+    capabilities:
+      - connection-setup/task-request
+      - questions-and-approvals/continuation
+    context: >-
+      No Notion connection exists. After the request card appears, the addressed person chooses
+      Not now.
+    query: >-
+      Read my Notion and tell me the latest on the launch.
+    expected_outcome: >-
+      The decline is retained and no provider read or repeated setup request occurs. The agent
+      explains that it could not read Notion and offers an appropriate alternative such as a
+      supplied excerpt. It does not mark the requested research as completed or treat declining
+      setup as authorization.
+  - id: connection-setup.notion-wrong-account
+    capabilities:
+      - connection-setup/identity-and-access
+      - app-permissions/agent-access
+    context: >-
+      A shared Notion connection exists but the requested pages belong to the person's
+      unconnected personal workspace.
+    query: >-
+      Summarize the launch notes in my personal Notion workspace.
+    expected_outcome: >-
+      The agent identifies the account or workspace mismatch and requests the appropriate
+      personal setup or access. It does not silently substitute shared-company notes or expand
+      another account's audience. The eventual answer is grounded in the explicitly selected
+      workspace.
+  - id: connection-setup.notion-agent-unassigned
+    capabilities:
+      - connection-setup/identity-and-access
+      - connection-setup/task-request
+    context: >-
+      The person has a usable Notion account, but it is assigned only to Morgan and not to the
+      CEO.
+    query: >-
+      Read my Notion and tell me the latest on the launch.
+    expected_outcome: >-
+      The agent treats the missing assignment as an access prerequisite and offers the supported
+      request or management step. It does not borrow Morgan's credential, create a needless
+      duplicate account or report unseen pages. After the authorized assignment, the same
+      request can continue with current effective access.
+  - id: connection-setup.notion-expired
+    capabilities:
+      - connection-setup/failure
+      - app-permissions/account-maintenance
+    context: >-
+      The assigned Notion connection's authorization has expired and its next read returns an
+      authentication error.
+    query: >-
+      Read my Notion and tell me the latest on the launch.
+    expected_outcome: >-
+      Chat names the account needing repair and presents the supported reconnect path while
+      preserving the original request. It does not substitute cached content as fresh research
+      or retry indefinitely. A successful human reconnection leads to a new verified read;
+      cancellation leaves a truthful incomplete outcome.
+  - id: connection-setup.choose-provider
+    capabilities:
+      - connection-setup/catalog
+    context: >-
+      The person wants a knowledge app; the catalog lists supported Notion setup methods and an
+      unavailable method with a prerequisite.
+    query: >-
+      What is the easiest way to connect Notion here?
+    expected_outcome: >-
+      The answer uses the current catalog and explains the offered setup choices in user terms.
+      It identifies the prerequisite for an unavailable method rather than silently switching
+      protocols. Choosing a method leads into the supported setup surface with the original
+      intent retained.
+  - id: connection-setup.secure-api-key
+    capabilities:
+      - connection-setup/credentials
+    context: >-
+      The requested provider uses an API key and has an existing secure setup field. No
+      credential has been supplied.
+    query: >-
+      Connect my account using an API key.
+    expected_outcome: >-
+      The agent opens or links the provider's secure credential entry step and requests only the
+      missing account choice if necessary. It never asks for the key in ordinary chat. Finishing
+      setup stores a secret reference and verifies connectivity without placing the value in
+      conversation history or browser drafts.
+  - id: connection-setup.return-from-login
+    capabilities:
+      - connection-setup/handoff
+      - connection-setup/task-request
+    context: >-
+      A Notion connection request originated in this conversation; the provider uses a full-page
+      authorization redirect.
+    query: >-
+      Connect Notion, then continue the launch summary here.
+    expected_outcome: >-
+      The authorization callback returns to the correct setup host and original conversation
+      with the same personal/shared choice. The pending request resolves only when usable access
+      exists. The launch summary continues in its original work context rather than being lost
+      in a new conversation or sent to another user.
+  - id: connection-setup.save-and-resume
+    capabilities:
+      - connection-setup/draft-recovery
+    context: >-
+      A setup draft has a selected provider and personal identity but no submitted credential.
+      The human saves and exits, then returns after a reload.
+    query: >-
+      Finish the Notion connection I started earlier.
+    expected_outcome: >-
+      The existing setup draft reopens with its nonsecret choices intact. The person supplies
+      any remaining secure inputs, and completion creates at most one connection. Chat preserves
+      the waiting task's intent and does not treat an unfinished draft as a live account.
+  - id: connection-setup.wrong-person-resolves
+    capabilities:
+      - connection-setup/task-request
+      - questions-and-approvals/audience
+    context: >-
+      A connection card is addressed to Alex; another member can see a related task but is not
+      its resolver.
+    query: >-
+      I will finish Alex's connection request for them.
+    expected_outcome: >-
+      The system keeps the request bound to its intended resolver and prevents the other member
+      from completing it as Alex. Chat explains whose action is required without exposing
+      private credentials or account details. No pending task is released by an unauthorized
+      response.
+  - id: connection-setup.channel-prerequisites
+    capabilities:
+      - connection-setup/channel-setup
+      - chat-channels/identity
+    context: >-
+      Slack is available but no endpoint, represented agent or linked sender has been
+      configured.
+    query: >-
+      Let me talk to Morgan from Slack.
+    expected_outcome: >-
+      The request leads through supported Slack setup, selecting Morgan and linking the intended
+      human identity before accepting a conversation. Chat reports the incomplete prerequisites
+      clearly. A successful journey verifies an inbound message and reply in the correct thread
+      instead of treating account connection alone as working chat.
+  - id: connection-setup.unreachable-mcp
+    capabilities:
+      - connection-setup/failure
+    context: >-
+      The person supplies a synthetic generic MCP URL that is unreachable or rejected by
+      destination policy.
+    query: >-
+      Connect this MCP server so you can use its tools.
+    expected_outcome: >-
+      The supported setup path surfaces a useful connectivity or destination-policy error and
+      preserves safe editable choices. No connection is reported healthy and no prohibited
+      internal destination is contacted as a workaround. The user can correct the URL or abandon
+      the draft without leaving a usable phantom connection.

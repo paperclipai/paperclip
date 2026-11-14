@@ -42,6 +42,20 @@ import {
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
+async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
 
@@ -786,11 +800,11 @@ describe("ACPX installation integrity", () => {
     expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").agentServerPackage).toBe("builtin:grok-acp");
   });
 
-  it("reports a missing environment prerequisite before launching Grok", async () => {
+  it("reports a missing environment prerequisite before launching Grok", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
     await expect(verifyProvisionedGrokExecutable(join(fixture.commandDirectory, "missing")))
       .rejects.toThrow(/Grok Build 1.0.13 prerequisite missing/);
-  });
+  }));
 
   it("resolves a controller-owned builtin root for descriptor-loaded sidecars and rejects relative roots", () => {
     vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "/verified/dist/providers");
@@ -801,7 +815,7 @@ describe("ACPX installation integrity", () => {
     finally { vi.unstubAllEnvs(); }
   });
 
-  it("rejects a tampered native Grok executable and symlink substitution", async () => {
+  it("rejects a tampered native Grok executable and symlink substitution", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
 
     const native = join(fixture.commandDirectory, "grok");
@@ -810,7 +824,7 @@ describe("ACPX installation integrity", () => {
     await rm(native);
     await symlink(fixture.commandPath, native);
     await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/regular file|symlink|no-follow/);
-  });
+  }));
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();

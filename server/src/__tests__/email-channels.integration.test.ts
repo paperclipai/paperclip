@@ -1,3 +1,5 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { fastResponseService } from "../services/fast-responses.js";
 import { fastResponseReceipt } from "../services/fast-response-provider.js";
@@ -33,8 +35,11 @@ import {
 } from "vitest";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
+  applyPendingMigrations,
   createDb,
   companies,
+  budgetPolicies,
+  costEvents,
   agents,
   chatEndpoints,
   chatConversations,
@@ -72,6 +77,8 @@ import { toolAccessService } from "../services/tool-access.js";
 import { emailSendSchema } from "@paperclipai/shared";
 import { chatChannelService } from "../services/chat-channels.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EMAIL_TEST_DATABASE_URL");
+
 describe("AgentMail durable email pipeline", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -83,8 +90,9 @@ describe("AgentMail durable email pipeline", () => {
       folder,
       "master.key",
     );
-    database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
-    db = createDb(database.connectionString);
+    if (!externalTestDatabaseUrl) database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? database!.connectionString);
     await instanceSettingsService(db).updateExperimental({
       enableChatConnectors: false,
     });
@@ -111,6 +119,7 @@ describe("AgentMail durable email pipeline", () => {
       );
   });
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (previous === undefined)
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
@@ -210,7 +219,7 @@ describe("AgentMail durable email pipeline", () => {
   });
 
   async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
-    beforeSetup?: (input: { fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+    beforeSetup?: (input: { companyId: string; fetcher: typeof fetch; wakeup: Parameters<typeof emailChannelService>[1]["heartbeat"]["wakeup"] }) => Promise<void>,
   ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
@@ -324,7 +333,7 @@ describe("AgentMail durable email pipeline", () => {
       storage,
     });
     services.push(service);
-    await beforeSetup?.({ fetcher, wakeup });
+    await beforeSetup?.({ companyId, fetcher, wakeup });
     await service.setup(
       companyId,
       {
@@ -337,8 +346,8 @@ describe("AgentMail durable email pipeline", () => {
       { userId: "email-board" },
     );
     function message(
-      id = randomUUID(),
-      thread = randomUUID(),
+      id: string = randomUUID(),
+      thread: string = randomUUID(),
       extra: Partial<AgentmailMessage> = {},
     ) {
       return agentmailMessageSchema.parse({
@@ -387,6 +396,28 @@ describe("AgentMail durable email pipeline", () => {
       setWebhookError: (status: number) => { webhookError = status; },
     };
   }
+  it("schedules health after AgentMail activation and disarms it on pause", async () => {
+    let health: Awaited<ReturnType<typeof startToolHealthWorker>> | undefined;
+    try {
+      const f = await fixture("webhook", undefined, async ({ companyId, fetcher }) => {
+        vi.spyOn(globalThis, "fetch").mockImplementation(fetcher);
+        health = await startToolHealthWorker(db, companyId, new Date(), toolAccessService(db).checkHealth);
+        await health.expectDeadline(null);
+        await health.expectQuiet();
+      });
+      const endpoint = await f.service.getEndpoint(f.endpointId);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(health!.checkHealth).toHaveBeenCalledTimes(1);
+        expect(health!.checkHealth.mock.settledResults[0]?.type).toBe("fulfilled");
+      }, { timeout: 5_000 });
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+      await health!.expectDeadline(connection.healthCheckedAt!.getTime() + 900_000);
+      await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+      await health!.expectDeadline(null);
+      await health!.expectQuiet();
+    } finally { await health?.stop(); }
+  });
   it("activates an empty running worker from another service and drains committed inbound and outbound work", async () => {
     // Connector setup and tool calls construct short-lived service objects.
     // Their committed writes must wake the app-owned worker sharing this DB.
@@ -1098,10 +1129,10 @@ describe("AgentMail durable email pipeline", () => {
       chat.publishComment(f.endpointId, conversation.id, comment.id),
     ).rejects.toThrow(/explicit email/);
     await chat.shutdown();
-    await db
-      .update(agents)
-      .set({ budgetMonthlyCents: 100, spentMonthlyCents: 100 })
-      .where(eq(agents.id, f.agentId));
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "agent", scopeId: f.agentId,
+      windowKind: "calendar_month_utc", amount: 100 });
+    await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      provider: "test", model: "test", costCents: 100, occurredAt: new Date() });
     await f.service.tick();
     expect(f.sends).toHaveLength(0);
     expect((await f.service.publication(queued.id, f.companyId)).outcome).toBe(
@@ -1289,7 +1320,7 @@ describe("AgentMail durable email pipeline", () => {
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user",
       principalId: actor.userId, permissionKey: "tools:manage_connections" });
     expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "tools:manage_connections")).toBe(true);
-    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "agent_config:update")).toBe(false);
+    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "agents:configure")).toBe(false);
     const requestId = randomUUID();
     const svc = emailConnectionService(db, f.fetcher);
     const connection = await svc.connect(f.companyId, { apiKey: "test-key", grantKind: "organization",

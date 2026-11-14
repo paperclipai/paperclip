@@ -1,0 +1,730 @@
+name: Runner image
+
+# Builds the Runner once for each distinct set of its inputs and publishes it
+# as ghcr.io/paperclipai/paperclip-runner, a multi-platform image that other
+# image builds copy from, in two variants: `inputs-<digest>` (full) and
+# `inputs-<digest>-slim` (without the pack's transport archives).
+# doc/runner-image-contract.md is the contract.
+#
+# Every master push computes the digest from the commit's own build context,
+# with the committed pnpm-lock.yaml. The build runs only when no image has
+# that digest yet. When the committed lockfile is behind the manifests the
+# Runner build reads, the run says so, publishes nothing and stays green: the
+# repository's lockfile refresh brings the commit that publishes.
+#
+# Pull requests that touch the Runner's inputs, its recipe or this pipeline,
+# and manual runs, always build and check the image and never publish it.
+# They resolve the lockfile first, because a contributor cannot edit it.
+#
+# This is a workflow of its own, not a job in docker.yml: docker.yml has no
+# pull-request trigger and holds one concurrency slot per ref, and the Runner
+# image needs its own signer identity so its attestation cannot stand in for
+# the application image's.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    # Every input of scripts/runner-image-identity.mjs, .dockerignore (it
+    # decides which of those files the build receives), and the pipeline's
+    # own files. A test checks that every identity input is covered.
+    paths:
+      - .github/workflows/runner-image.yml
+      - Dockerfile
+      - .dockerignore
+      - .npmrc
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - patches/**
+      - packages/paperclip-runner/**
+      - packages/paperclip-eval-kernel/**
+      - packages/shared/src/provider-failure.generated.ts
+      - scripts/create-provider-pack-archive.mjs
+      - scripts/link-plugin-dev-sdk.mjs
+      - scripts/runner-image-identity.mjs
+      - scripts/runner-image-layout.mjs
+      - scripts/runner-image-oci.mjs
+      - scripts/runner-image-publish.mjs
+      - scripts/standard-image-contract.mjs
+      - docker/runner-image/**
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 3"
+
+# Least privilege: nothing at the workflow level. Only the publish job, which
+# runs no build, can write images to the registry or sign.
+permissions: {}
+
+# A newer push to a pull request replaces its older run. A master run has a
+# group of its own, so no other run cancels it here. The publish job has a
+# second group, one for each digest; see there for what that group can cancel.
+concurrency:
+  group: runner-image-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/paperclipai/paperclip-runner
+  BUILD_CACHE: ghcr.io/paperclipai/paperclip-runner-buildcache
+
+jobs:
+  identity:
+    name: Resolve the Runner image identity
+    # A fork's own pushes do not run this workflow. Pull requests and manual
+    # runs are not affected.
+    if: (github.event_name != 'push' && github.event_name != 'schedule') || (github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      lock: ${{ steps.lock.outputs.state }}
+      digest: ${{ steps.identity.outputs.digest }}
+      exists: ${{ steps.lookup.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      # No dependency cache: the Actions cache must not reach a published image.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # A contributor cannot edit pnpm-lock.yaml, so a pull request that
+      # changes the Runner's dependencies is built against a lockfile resolved
+      # here. The image build installs from it frozen.
+      #
+      # Never on a master push. The lockfile refresh owns pnpm-lock.yaml on
+      # master and holds new package versions until they are old enough, so
+      # the published image installs from the committed file and its digest
+      # is a function of the commit alone.
+      - name: Resolve the lockfile
+        if: github.event_name != 'push'
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile resolution:"
+            echo "$changed"
+            exit 1
+          fi
+          {
+            echo "This run built from a \`pnpm-lock.yaml\` resolved for it${changed:+ (it differs from the committed file)}."
+            echo "A master push publishes only from the committed lockfile."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # The files the Runner build receives, after .dockerignore: the root
+      # manifest and the manifests of the Runner and the eval kernel are the
+      # only ones in it.
+      - name: Export the Runner build context
+        timeout-minutes: 10
+        run: docker buildx build --target runner-artifacts-context --output "type=local,dest=$RUNNER_TEMP/runner-image-context" .
+
+      # The image build installs with a frozen lockfile. This asks the same
+      # question first, offline and without installing, so that a lockfile
+      # that is merely behind is told apart from a broken build. pnpm can
+      # rewrite the lockfile it checks. It checks the exported copy above,
+      # which no build reads: the builds read the checkout.
+      - name: Check the lockfile against the Runner's manifests
+        id: lock
+        run: node scripts/runner-image-publish.mjs lock-state --context "$RUNNER_TEMP/runner-image-context"
+
+      # On master this is expected between a dependency change and the next
+      # lockfile refresh. It is not a failure, and there is nothing to build.
+      - name: Report a lockfile that is behind the Runner's manifests
+        if: steps.lock.outputs.state == 'behind'
+        run: |
+          set -euo pipefail
+          message="pnpm-lock.yaml is behind the Runner's manifests at $GITHUB_SHA; no Runner image for this commit; the next lockfile refresh will publish one."
+          echo "::notice title=No Runner image for this commit::$message"
+          echo "$message" >> "$GITHUB_STEP_SUMMARY"
+          # A run that resolved its own lockfile cannot be behind it.
+          test "$GITHUB_EVENT_NAME" = "push"
+
+      # Computed inside the build, from the files the build context supplies
+      # after .dockerignore. A digest computed from the checkout would cover
+      # files the image build never receives.
+      - name: Compute the identity in the build context
+        id: identity
+        if: steps.lock.outputs.state == 'current'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/runner-image-identity"
+          docker buildx build --target runner-artifacts-identity --output "type=local,dest=$out" .
+          digest="$(jq -er .digest "$out/runner-image-identity.json")"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "Runner image inputs digest: \`$digest\`"
+            echo
+            echo '```json'
+            cat "$out/runner-image-identity.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The legs must build from the file the identity was computed from, not
+      # from a second resolution. Only for runs that resolved one: a master
+      # push builds from the committed file, which every job checks out.
+      - name: Keep the resolved lockfile for the build legs
+        if: steps.lock.outputs.state == 'current' && github.event_name != 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-image-lockfile
+          path: pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 1
+
+      # An image that exists is never rebuilt on master. It exists when its
+      # full tag does: that tag is written last. An inconclusive answer
+      # builds: the publish job decides again, strictly, before it writes a
+      # tag. Other events build whether or not the image exists.
+      - name: Look for the published image
+        id: lookup
+        if: steps.lock.outputs.state == 'current' && github.event_name == 'push'
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+          DIGEST: ${{ steps.identity.outputs.digest }}
+        run: node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST"
+
+  # Multi-arch by native runner, not QEMU, as in docker.yml. GitHub-hosted
+  # runners: the protected release fleets admit only docker.yml on master.
+  #
+  # These legs cannot write to the registry on any event, and they
+  # write no registry build cache. The install runs dependency lifecycle
+  # scripts; the only token in the job can read packages, and only the lookup
+  # step receives it.
+  #
+  # A master push builds only when the image does not exist. A pull request
+  # and a manual run always build, so a change to the smoke matrix or to the
+  # pipeline is exercised even when the Runner's inputs did not change.
+  build:
+    name: Build and check (${{ matrix.arch }})
+    needs: identity
+    if: needs.identity.outputs.lock == 'current' && (github.event_name != 'push' || (github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && needs.identity.outputs.exists != 'true'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # Only a canonical master push keeps its image for publication.
+      KEEP_IMAGE: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      DIGEST: ${{ needs.identity.outputs.digest }}
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Another master run can have published these inputs since the identity
+      # job looked, most often the run of the push just before this one. Then
+      # this leg has nothing to do. Master only: other events always build.
+      # An inconclusive answer builds.
+      - name: Look again for the published image
+        id: published
+        if: github.event_name == 'push'
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST"
+
+      - name: Download the resolved lockfile
+        if: github.event_name != 'push'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-image-lockfile
+          path: ${{ runner.temp }}/runner-image-lockfile
+
+      # Build from the lockfile the identity was computed from, not from a
+      # second resolution that a registry change could make different.
+      - name: Use the resolved lockfile
+        if: github.event_name != 'push'
+        run: cp "$RUNNER_TEMP/runner-image-lockfile/pnpm-lock.yaml" pnpm-lock.yaml
+
+      - name: Free runner disk
+        if: steps.published.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get clean || true
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /usr/local/share/boost \
+            /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set up Docker Buildx
+        if: steps.published.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # The build itself runs the frozen install, the Runner's own build, the
+      # provider pack integrity check and the layout check.
+      #
+      # Both variants come from one build: the second command only reads the
+      # cache of the first. Each is exported once, as an OCI archive and
+      # nothing else. A command with two exports, an archive and a tree,
+      # stalled on these runners when every stage came from the cache, so a
+      # command has one export, and the step has a time limit: a cold build
+      # takes about ten minutes.
+      #
+      # This is the publication form of the build, the only one whose pack
+      # names the image (`runnerInputsDigest`), so the check below can bind
+      # the tree to the digest the identity job resolved. This job cannot
+      # publish it. On a canonical master push the archives are the images
+      # the publish job pushes, byte for byte.
+      - name: Build both variants of the Runner image
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          cache=(--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH")
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then cache=(--no-cache); fi
+          for variant in full slim; do
+            target=runner-artifacts
+            if [ "$variant" = slim ]; then target=runner-artifacts-slim; fi
+            docker buildx build \
+              --target "$target" \
+              --platform "$PLATFORM" \
+              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA" \
+              --build-arg PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1 \
+              --provenance=false --sbom=false \
+              --output "type=oci,dest=$RUNNER_TEMP/runner-image/$variant.oci.tar" \
+              --metadata-file "$RUNNER_TEMP/runner-image/$variant.metadata.json" \
+              "${cache[@]}" \
+              .
+            cache=()
+          done
+
+      # The trees the checks below read are the layers of those archives,
+      # written out in order. They are the bytes of the images themselves,
+      # not a second export of the build, and each blob is checked against
+      # its digest as it is read.
+      - name: Unpack both images
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          for variant in full slim; do
+            node scripts/runner-image-oci.mjs unpack "$RUNNER_TEMP/runner-image/$variant.oci.tar" \
+              --out "$RUNNER_TEMP/runner-image/$variant"
+          done
+
+      # Against each unpacked tree, bound to this run: the digest the identity
+      # job resolved, this commit and this leg's architecture. Checks every
+      # documented path, the build stamp, and every pack artifact and tree
+      # digest in provider-pack.json. A slim tree must not hold the transport
+      # archives. A full tree must: the check verifies each one, extracts
+      # them as a sandbox does and compares the result with the pack; that
+      # needs about as much free disk as the pack is large.
+      - name: Check the layout contract and pack integrity
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          for variant in full slim; do
+            node scripts/runner-image-layout.mjs check "$RUNNER_TEMP/runner-image/$variant" \
+              --variant "$variant" \
+              --expect-inputs-digest "$DIGEST" \
+              --expect-source-revision "$GITHUB_SHA" \
+              --expect-architecture "$ARCH"
+          done
+
+      # The full image must be the slim image's layers, as the same blobs,
+      # then the transport layers, with nothing else in them. No file may be
+      # in two layers.
+      - name: Check the layers of both variants
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          {
+            echo '```'
+            node scripts/runner-image-oci.mjs check-layers \
+              --slim "$RUNNER_TEMP/runner-image/slim.oci.tar" \
+              --full "$RUNNER_TEMP/runner-image/full.oci.tar"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # On the slim tree: the daemon is in a layer both variants share, so
+      # one run covers both, and the slim tree is the smaller one to load.
+      # This command has one export, a few small files.
+      - name: Run the daemon on every consumer base image
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 20
+        run: |
+          docker buildx build \
+            --file docker/runner-image/Dockerfile.smoke \
+            --platform "$PLATFORM" \
+            --build-context "runner-artifacts=$RUNNER_TEMP/runner-image/slim" \
+            --output "type=local,dest=$RUNNER_TEMP/runner-image/smoke" \
+            docker/runner-image
+          ls -l "$RUNNER_TEMP/runner-image/smoke"
+
+      # Written only after every check passed. The publish job accepts nothing
+      # without it. The two archives become one OCI layout that holds both
+      # variants and stores the layers they share once, so the upload is the
+      # size of the full image, not of both. The command reads the layout
+      # back and checks every blob against its digest.
+      #
+      # On every event, so that a pull request exercises the hand-off on
+      # real build output. Only the upload below is for a master push.
+      - name: Record the verified images
+        if: steps.published.outputs.exists != 'true'
+        timeout-minutes: 10
+        run: |
+          node scripts/runner-image-publish.mjs record \
+            --arch "$ARCH" \
+            --slim-archive "$RUNNER_TEMP/runner-image/slim.oci.tar" \
+            --slim-metadata "$RUNNER_TEMP/runner-image/slim.metadata.json" \
+            --full-archive "$RUNNER_TEMP/runner-image/full.oci.tar" \
+            --full-metadata "$RUNNER_TEMP/runner-image/full.metadata.json" \
+            --tree "$RUNNER_TEMP/runner-image/full" \
+            --layout "$RUNNER_TEMP/runner-image/images.oci.tar" \
+            --out "$RUNNER_TEMP/runner-image/record.json"
+
+      - name: Upload the verified images
+        if: env.KEEP_IMAGE == 'true' && steps.published.outputs.exists != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-image-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/runner-image/images.oci.tar
+            ${{ runner.temp }}/runner-image/record.json
+          if-no-files-found: error
+          # Layers are already compressed.
+          compression-level: 0
+          retention-days: 1
+
+      - name: Report an image another run published first
+        if: steps.published.outputs.exists == 'true'
+        run: echo "\`$IMAGE:inputs-$DIGEST\` and its slim variant already exist. This leg built nothing." >> "$GITHUB_STEP_SUMMARY"
+
+  # Pushes the verified bytes, names them and attests them. Only a master push
+  # in the canonical repository reaches this job; it builds nothing and runs no
+  # dependency code.
+  #
+  # It writes two tags, `inputs-<digest>-slim` and then `inputs-<digest>`. The
+  # full tag is last, so it marks a complete publication: when it exists, both
+  # exist, and the full index names its slim index by digest. A run that stops
+  # between the two tags leaves a slim tag alone. The inputs are then not
+  # published; the next run for them builds again, replaces that slim tag with
+  # its own, and writes the full tag. It never keeps another run's slim image.
+  publish:
+    name: Publish and attest
+    needs: [identity, build]
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.identity.outputs.lock == 'current' && needs.identity.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    # One publication per digest at a time, so the strict check below and the
+    # tag writes cannot interleave with another run for the same inputs.
+    # GitHub keeps one waiting job for a group. When three runs for one digest
+    # reach this job, the second is cancelled as the third arrives. That does
+    # no harm: the third publishes the digest if the first did not.
+    concurrency:
+      group: runner-image-publish-${{ needs.identity.outputs.digest }}
+      cancel-in-progress: false
+    env:
+      DIGEST: ${{ needs.identity.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # A build leg that found the image published uploaded nothing. Ask
+      # before the downloads, so that run ends here and not on a missing
+      # artifact.
+      - name: Look for an image another run published
+        id: early
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST"
+
+      - name: Download the verified amd64 images
+        if: steps.early.outputs.exists != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-image-amd64
+          path: ${{ runner.temp }}/runner-image/amd64
+
+      - name: Download the verified arm64 images
+        if: steps.early.outputs.exists != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-image-arm64
+          path: ${{ runner.temp }}/runner-image/arm64
+
+      - name: Accept only this run's verified images
+        id: legs
+        if: steps.early.outputs.exists != 'true'
+        run: |
+          node scripts/runner-image-publish.mjs verify-legs \
+            --dir "$RUNNER_TEMP/runner-image" \
+            --inputs-digest "$DIGEST" \
+            --source-revision "$GITHUB_SHA"
+
+      - name: Login to GitHub Container Registry
+        if: steps.early.outputs.exists != 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.early.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # The downloads take a while. Ask once more immediately before the
+      # pushes, so that a run that lost the race does not upload its images.
+      - name: Look again immediately before pushing
+        id: prepush
+        if: steps.early.outputs.exists != 'true'
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST"
+
+      # By digest and untagged. --preserve-digests fails rather than re-encode,
+      # so the registry holds exactly the images the build legs verified. Each
+      # leg's layout names its two images `slim` and `full`.
+      - name: Push the verified images by digest
+        if: steps.prepush.outputs.exists == 'false'
+        timeout-minutes: 15
+        env:
+          SLIM_AMD64: ${{ steps.legs.outputs.slim_amd64 }}
+          SLIM_ARM64: ${{ steps.legs.outputs.slim_arm64 }}
+          FULL_AMD64: ${{ steps.legs.outputs.full_amd64 }}
+          FULL_ARM64: ${{ steps.legs.outputs.full_arm64 }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { echo "skopeo is not installed on this runner"; exit 1; }
+          echo "Pushing with $(skopeo --version)"
+          layout="$RUNNER_TEMP/runner-image"
+          skopeo copy --preserve-digests "oci-archive:$layout/amd64/images.oci.tar:slim" "docker://$IMAGE@$SLIM_AMD64"
+          skopeo copy --preserve-digests "oci-archive:$layout/arm64/images.oci.tar:slim" "docker://$IMAGE@$SLIM_ARM64"
+          skopeo copy --preserve-digests "oci-archive:$layout/amd64/images.oci.tar:full" "docker://$IMAGE@$FULL_AMD64"
+          skopeo copy --preserve-digests "oci-archive:$layout/arm64/images.oci.tar:full" "docker://$IMAGE@$FULL_ARM64"
+
+      # The tags are create-only. Another run can have published these inputs
+      # since the lookups above. Only a clear answer goes on: `absent`, or
+      # `incomplete` (a slim tag alone, which this run replaces). `published`
+      # skips the rest. An inconclusive answer fails, and so does a full tag
+      # whose slim image is missing or is another image.
+      - name: Confirm the images are not published
+        id: gate
+        if: steps.prepush.outputs.exists == 'false'
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST" --strict
+
+      # Candidate tags first, so a final tag appears only after its digest is
+      # attested. Candidate tags are internal and may be overwritten.
+      - name: Create the slim multi-platform candidate
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          AMD64: ${{ steps.legs.outputs.slim_amd64 }}
+          ARM64: ${{ steps.legs.outputs.slim_arm64 }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=https://github.com/paperclipai/paperclip" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:io.paperclip.runner.inputs-digest=$DIGEST" \
+            --annotation "index:io.paperclip.runner.variant=slim" \
+            -t "$IMAGE:candidate-$DIGEST-slim" \
+            "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+
+      - name: Verify the slim candidate names exactly the verified images
+        id: slim
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: node scripts/runner-image-publish.mjs verify-index "candidate-$DIGEST-slim" --variant slim --dir "$RUNNER_TEMP/runner-image"
+
+      # The full index names the slim index of this same run by digest, so a
+      # consumer can tell that the two belong together.
+      - name: Create the full multi-platform candidate
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          AMD64: ${{ steps.legs.outputs.full_amd64 }}
+          ARM64: ${{ steps.legs.outputs.full_arm64 }}
+          SLIM_INDEX: ${{ steps.slim.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=https://github.com/paperclipai/paperclip" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:io.paperclip.runner.inputs-digest=$DIGEST" \
+            --annotation "index:io.paperclip.runner.variant=full" \
+            --annotation "index:io.paperclip.runner.slim-digest=$SLIM_INDEX" \
+            -t "$IMAGE:candidate-$DIGEST" \
+            "$IMAGE@$AMD64" "$IMAGE@$ARM64"
+
+      - name: Verify the full candidate names exactly the verified images and its slim index
+        id: full
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          SLIM_INDEX: ${{ steps.slim.outputs.digest }}
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          node scripts/runner-image-publish.mjs verify-index "candidate-$DIGEST" --variant full \
+            --slim-digest "$SLIM_INDEX" --dir "$RUNNER_TEMP/runner-image"
+
+      - name: Attest the slim Runner image
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/paperclipai/paperclip-runner
+          subject-digest: ${{ steps.slim.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest the full Runner image
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ghcr.io/paperclipai/paperclip-runner
+          subject-digest: ${{ steps.full.outputs.digest }}
+          push-to-registry: true
+
+      # Slim first, full last. Writing the slim tag replaces the one a run
+      # that stopped here left behind. The last command checks the pair as
+      # every later run will see it.
+      - name: Publish the tags
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          SLIM_INDEX: ${{ steps.slim.outputs.digest }}
+          FULL_INDEX: ${{ steps.full.outputs.digest }}
+          RUNNER_IMAGE_REGISTRY_USERNAME: ${{ github.actor }}
+          RUNNER_IMAGE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          layout="$RUNNER_TEMP/runner-image"
+          docker buildx imagetools create -t "$IMAGE:inputs-$DIGEST-slim" "$IMAGE@$SLIM_INDEX"
+          node scripts/runner-image-publish.mjs verify-index "inputs-$DIGEST-slim" --variant slim --dir "$layout" --expect "$SLIM_INDEX"
+          docker buildx imagetools create -t "$IMAGE:inputs-$DIGEST" "$IMAGE@$FULL_INDEX"
+          node scripts/runner-image-publish.mjs verify-index "inputs-$DIGEST" --variant full --slim-digest "$SLIM_INDEX" --dir "$layout" --expect "$FULL_INDEX"
+          node scripts/runner-image-publish.mjs publication-state --inputs-digest "$DIGEST" --strict | grep -Fx "state=published"
+          {
+            echo "Published from \`$GITHUB_SHA\`:"
+            echo "- full: \`$IMAGE:inputs-$DIGEST\` at \`$IMAGE@$FULL_INDEX\`"
+            echo "- slim: \`$IMAGE:inputs-$DIGEST-slim\` at \`$IMAGE@$SLIM_INDEX\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report images another run published first
+        if: steps.early.outputs.exists == 'true' || steps.prepush.outputs.exists == 'true' || steps.gate.outputs.state == 'published'
+        run: echo "\`$IMAGE:inputs-$DIGEST\` and its slim variant already exist. Another run published first; this run published nothing." >> "$GITHUB_STEP_SUMMARY"
+
+  cache:
+    name: Write the build cache (${{ matrix.arch }})
+    needs: [identity, publish]
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.identity.outputs.lock == 'current' && needs.identity.outputs.exists != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: runner-image-buildcache-${{ matrix.arch }}
+      cancel-in-progress: false
+    env:
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Build the cached stages and write the cache
+        timeout-minutes: 20
+        run: |
+          docker buildx build \
+            --target runner-artifacts-runnerd \
+            --platform "$PLATFORM" \
+            --cache-from "type=registry,ref=$BUILD_CACHE:$ARCH" \
+            --cache-to "type=registry,ref=$BUILD_CACHE:$ARCH,mode=max" \
+            --output type=cacheonly \
+            .

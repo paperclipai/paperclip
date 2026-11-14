@@ -2,15 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/runtime";
+import { stockAcpRuntimeOptions } from "./stock-runtime-options.js";
 
-const runnerRuntimePath = createRequire(new URL("../../../paperclip-runner/package.json", import.meta.url)).resolve("acpx/runtime");
-const nativeRuntime = await import(runnerRuntimePath) as typeof import("acpx/runtime");
 const runtimes = [
-  { version: "0.12.0", api: { createAcpRuntime, createAgentRegistry, createRuntimeStore } },
-  { version: "0.13.1", api: nativeRuntime },
+  { version: "0.22.0", api: { createAcpRuntime, createAgentRegistry, createRuntimeStore } },
 ];
 const roots: string[] = [];
 const fixture = fileURLToPath(new URL("../../../../scripts/mcp-fixtures/servers/acp-filesystem-agent.mjs", import.meta.url));
@@ -33,15 +30,15 @@ async function drive(api: (typeof runtimes)[number]["api"], input: {
   operations: Array<{ method: string; path: string; content?: string }>;
 }) {
   let stderr = "";
-  const runtime = api.createAcpRuntime({
+  const runtime = api.createAcpRuntime(stockAcpRuntimeOptions({
     cwd: input.cwd,
     sessionStore: api.createRuntimeStore({ stateDir: path.join(input.root, "state") }),
     agentRegistry: api.createAgentRegistry({ overrides: { custom: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixture.replaceAll("\\", "/"))}` } }),
     permissionMode: input.permissionMode ?? "approve-all",
     nonInteractivePermissions: "deny",
-    inheritProcessEnv: false,
+    agentEnvironment: () => ({}),
     onAgentStderr: (chunk: string) => { stderr += chunk; },
-  });
+  }));
   const handle = await runtime.ensureSession({
     sessionKey: "filesystem-protocol", agent: "custom", mode: "oneshot",
     cwd: input.cwd, sessionOptions: { env: {} },

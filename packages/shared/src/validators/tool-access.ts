@@ -191,7 +191,8 @@ export const createToolConnectionSchema = z.object({
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
   config: toolTransportConfigSchema.optional(),
-  transportConfig: toolTransportConfigSchema.default({}),
+  // No default: when the caller omits it, the service stores `config` here.
+  transportConfig: toolTransportConfigSchema.optional(),
   credentialRefs: z.array(mcpConnectionCredentialRefSchema).optional(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema).default([]),
   enabled: z.boolean().optional(),
@@ -240,6 +241,8 @@ export const connectionGrantSchema = z.object({
       managementUrl: z.string().url().max(2000).optional(),
       appSlug: z.string().regex(/^[a-z0-9-]{1,100}$/).optional(),
       lastAccessRefreshAt: z.string().datetime().optional(),
+      bindingSync: z.object({ id: z.string().uuid(), removeInstallationIds: z.array(z.string().regex(/^[1-9][0-9]{0,30}$/)).max(100) }).optional(),
+      continuityRetry: z.object({ at: z.string().datetime(), attempts: z.number().int().min(1).max(16), revision: z.string().max(2000) }).optional(),
       lastWebhookAt: z.string().datetime().optional(),
       webhookHealth: z.enum(["pending", "healthy", "unhealthy"]).optional(),
     }).optional(),
@@ -349,7 +352,7 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
  *
  * `auto` is the default and the only value the simple path sends: Paperclip
  * probes the endpoint and branches on what it finds. The rest are the explicit
- * choices behind "Advanced authentication", where the operator already knows.
+ * choices behind the sign-in Change control, where the operator already knows.
  */
 export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
 
@@ -368,6 +371,45 @@ export const genericMcpOAuthClientSchema = z.object({
 }).strict();
 
 export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
+
+/**
+ * Machine sign-in (MCP OAuth client credentials) for organization-owned
+ * connections. "paperclip_key" means Paperclip holds a signing key and the admin
+ * registers its public half with the provider; "client_secret" stores a secret
+ * the provider issued. Secret values are write-only.
+ */
+export const MACHINE_SIGN_IN_METHODS = ["paperclip_key", "client_secret"] as const;
+export const machineSignInMethodSchema = z.enum(MACHINE_SIGN_IN_METHODS);
+export type MachineSignInMethod = z.infer<typeof machineSignInMethodSchema>;
+
+const machineSignInScopesSchema = z.string().trim().max(2048)
+  .refine((value) => !/[\u0000-\u001f"\\]/.test(value), "Scopes can only contain letters, numbers and punctuation, separated by spaces.");
+
+export const createMachineSignInSchema = z.object({
+  link: z.string().trim().url("Enter the server's full address, starting with https://").max(4096),
+  name: z.string().trim().min(1).max(160).optional(),
+  /** The sign-in service's address, or its token URL. Omitted means "find it from the server". */
+  authorizationServer: z.string().trim().url("Enter the sign-in service's full address, starting with https://").max(4096).optional(),
+  method: machineSignInMethodSchema,
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+  applicationId: z.string().uuid().optional(),
+}).strict();
+export type CreateMachineSignIn = z.infer<typeof createMachineSignInSchema>;
+
+export const testMachineSignInSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+}).strict();
+export type TestMachineSignIn = z.infer<typeof testMachineSignInSchema>;
+
+export const rotateMachineSignInSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("paperclip_key") }).strict(),
+  z.object({ method: z.literal("client_secret"), clientSecret: z.string().min(1).max(16384) }).strict(),
+]);
+export type RotateMachineSignIn = z.infer<typeof rotateMachineSignInSchema>;
 
 /**
  * Reject `headers.*` credential paths whose header name Paperclip refuses to
@@ -411,7 +453,14 @@ function rejectUnsafeHeaderCredentials(
   }
 }
 
+export const googleWorkspaceServiceSelectionSchema = z.object({
+  gmail: z.enum(["read", "write"]).optional(),
+  drive: z.enum(["read", "write"]).optional(),
+  calendar: z.enum(["read", "write"]).optional(),
+}).strict().refine(value => Object.keys(value).length > 0, "Select at least one Google service");
+
 export const connectToolAppSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(120).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
@@ -441,6 +490,9 @@ export const connectToolAppSchema = z.object({
   /** Same-company agent that owns a dedicated provider identity. */
   subjectAgentId: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
+  if (value.workspaceServices && value.galleryKey !== "google-workspace") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceServices"], message: "Service selection requires Google Workspace" });
+  }
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
@@ -521,6 +573,7 @@ export const finalizeOAuthAccessSchema = z.object({
 export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
 
 export const startToolOAuthSchema = z.object({
+  workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   asCurrentUser: z.boolean().optional(),
   asAgentId: z.string().uuid().optional(),
   interactionId: z.string().uuid().optional(),

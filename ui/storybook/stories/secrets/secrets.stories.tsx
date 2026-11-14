@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound } from "lucide-react";
 import type {
@@ -15,7 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { storybookCompanies, storybookSecrets } from "../../fixtures/paperclipData";
+import { storybookAgents, storybookCompanies, storybookSecrets } from "../../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
 
@@ -77,6 +78,28 @@ const storybookUserSecretCoverage: Record<string, UserSecretCoverageSummary> = {
   },
 };
 
+const baseSecret = storybookSecrets[0]!;
+
+// Secrets Paperclip saved on someone's behalf, plus team secrets inside a folder.
+const storybookSecretInventory: CompanySecret[] = [
+  ...storybookSecrets,
+  { ...baseSecret, id: "secret-staging-db", key: "staging-database-url", name: "staging/DATABASE_URL", description: null, referenceCount: 0 },
+  { ...baseSecret, id: "secret-staging-stripe", key: "staging-stripe-key", name: "staging/STRIPE_TEST_KEY", description: null, referenceCount: 2 },
+  { ...baseSecret, id: "secret-neon-access", key: "tool_app.500df1ea-4b23-4c24-93a4-c9802c893448.oauth_access_token", name: "Neon for the organization OAuth access token 80255b18", description: null, referenceCount: 1 },
+  { ...baseSecret, id: "secret-neon-refresh", key: "tool_app.afbdf0fb-70df-490b-9364-e919dedcbafa.oauth_refresh_token", name: "Neon for the organization OAuth refresh token cfdb9070", description: null, referenceCount: 1 },
+  { ...baseSecret, id: "secret-slack-bot", key: "chat_slack_5c860bfd_bottoken_565d9081", name: "chat.slack.5c860bfd.botToken.565d9081", description: null, referenceCount: 1 },
+  { ...baseSecret, id: "secret-slack-signing", key: "chat_slack_5c860bfd_signingsecret_2ab031a0", name: "chat.slack.5c860bfd.signingSecret.2ab031a0", description: null, referenceCount: 1 },
+  { ...baseSecret, id: "secret-model-key", key: "ai-01d0de1a-ac24-461a-b229-989d2937a4e1", name: "ai-01d0de1a-ac24-461a-b229-989d2937a4e1", description: null, referenceCount: 1 },
+  { ...baseSecret, id: "secret-routine", key: "routine-604ffeed-2bba-4ade-b87d-3db79f481370-99f65874bf29", name: "routine-604ffeed-2bba-4ade-b87d-3db79f481370-99f65874bf29", description: null, referenceCount: 1 },
+];
+
+// Two agents hold the first secret, so the list and details show who uses it.
+const storybookSecretAgents = storybookAgents.map((agent, index) =>
+  index < 2
+    ? { ...agent, adapterConfig: { ...agent.adapterConfig, env: { OPENAI_API_KEY: { type: "secret_ref", secretId: baseSecret.id, version: "latest" } } } }
+    : agent,
+);
+
 // Seed localStorage before CompanyContext mounts so its `useState` initializer reads the right id.
 if (typeof window !== "undefined") {
   window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
@@ -85,7 +108,8 @@ if (typeof window !== "undefined") {
 function StorybookSecretsFixtures({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   // Seed query caches synchronously so children hydrate from cache on first render.
-  queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecrets);
+  queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecretInventory);
+  queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookSecretAgents);
   queryClient.setQueryData(
     queryKeys.secrets.userDefinitions(COMPANY_ID),
     storybookUserSecretDefinitions,
@@ -131,7 +155,8 @@ const meta: Meta = {
         "secrets/vault-import"
       ],
       "implementation": "production",
-      "boundary": "fixtures"
+      "boundary": "fixtures",
+      "notes": "The shipped Secrets page on fixture data: team secrets with who provides and who uses them, folders, the collapsed Managed by Paperclip section, the New secret dialog, the details panel and the Vaults tab. Nothing is stored, encrypted or delivered; agent access, vault health and import are covered by tests and need a live instance to prove."
     },
   },
 };
@@ -160,6 +185,80 @@ export const SecretsInventory: Story = {
       </div>
     </StorybookSecretsFixtures>
   ),
+};
+
+function SecretsPage() {
+  return (
+    <StorybookSecretsFixtures>
+      <div className="h-screen w-full bg-background p-6">
+        <Secrets />
+      </div>
+    </StorybookSecretsFixtures>
+  );
+}
+
+export const ManagedByPaperclip: Story = {
+  render: () => <SecretsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const section = within(await canvas.findByTestId("managed-secrets"));
+    await expect(canvas.queryByText("Slack bot token")).not.toBeInTheDocument();
+    await userEvent.click(section.getByRole("button", { name: /Managed by Paperclip/ }));
+    await userEvent.click(section.getByRole("button", { name: /Chat channels/ }));
+    await expect((await section.findAllByText("Slack bot token")).length).toBeGreaterThan(0);
+  },
+};
+
+export const InsideFolder: Story = {
+  parameters: { initialEntries: ["/PAP/company/settings/secrets?path=staging"] },
+  render: () => <SecretsPage />,
+};
+
+export const NewSecret: Story = {
+  render: () => <SecretsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement), body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole("button", { name: "New secret" }));
+    const dialog = within(await body.findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: "Create secret" }));
+    await expect(await dialog.findByText("Give the secret a name.")).toBeVisible();
+    await expect(dialog.getByRole("radio", { name: /Organization/ })).toHaveAttribute("aria-checked", "true");
+  },
+};
+
+export const NewSecretEachUser: Story = {
+  render: () => <SecretsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement), body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole("button", { name: "New secret" }));
+    const dialog = within(await body.findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("radio", { name: /Each user/ }));
+    await expect(dialog.queryByRole("textbox", { name: "Value" })).not.toBeInTheDocument();
+    await expect(dialog.getByLabelText(/Instructions for members/)).toBeVisible();
+  },
+};
+
+export const SecretDetails: Story = {
+  parameters: { initialEntries: ["/PAP/company/settings/secrets?secret=secret-openai"] },
+  render: () => <SecretsPage />,
+  play: async ({ canvasElement }) => {
+    const panel = within(await within(canvasElement.ownerDocument.body).findByTestId("secret-details"));
+    await expect(await panel.findByRole("button", { name: `Remove access for ${storybookSecretAgents[0]!.name}` })).toBeVisible();
+  },
+};
+
+export const EachUserSecretDetails: Story = {
+  parameters: { initialEntries: ["/PAP/company/settings/secrets?definition=def-storybook-github"] },
+  render: () => <SecretsPage />,
+};
+
+export const Vaults: Story = {
+  render: () => <SecretsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Vaults" }));
+    await expect(await canvas.findByTestId("provider-vault-built-in")).toBeVisible();
+  },
 };
 
 function BindingPickerSurface({

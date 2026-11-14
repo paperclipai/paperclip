@@ -7,7 +7,7 @@ import { type ChatEndpoint } from "@/api/chatEndpoints";
 import { storybookAgents, storybookAuthSession } from "./paperclipData";
 import { defaultSlackAppConfiguration } from "@paperclipai/shared";
 
-export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
+export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "manager_reauthorize" | "manager_authorization_failed" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success" | "complete";
 
 /** Production wizard over a local provider fixture. No requests go to Slack. */
 export function SlackSetupFixture({ scenario = "create", managed = false, managedAvailable = true, workspaceCount = 1, optionsDelayMs = 0, optionsError = false }: { scenario?: SlackSetupScenario; managed?: boolean; managedAvailable?: boolean; workspaceCount?: number; optionsDelayMs?: number; optionsError?: boolean }) {
@@ -27,7 +27,10 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
       },
     };
     const grantId = "11111111-1111-4111-8111-111111111111";
-    let authorized = workspaceCount > 0 || new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    const authorizationReturned = new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    let authorized = workspaceCount > 0 || authorizationReturned;
+    let authorizationFailed = false;
+    if (scenario === "manager_reauthorize" && !authorizationReturned) endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
     const created = () => {
       endpoint.setup!.slackRegistration = { status: "install", ...(managed ? { managerGrantId: grantId } : {}), appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" };
       endpoint.setup!.slackAvatar = scenario === "avatar_failed" ? { status: "failed", errorCode: "slack_avatar_upload_failed" } : { status: "uploaded", uploadedAt: new Date().toISOString() };
@@ -45,12 +48,13 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
     if (scenario === "approval_denied") endpoint.setup!.slackRegistration!.errorCode = "slack_approval_denied";
     if (scenario === "recovery") endpoint.setup!.slackRegistration = { ...endpoint.setup!.slackRegistration!, status: "credentials_saved", errorCode: "slack_configuration_incomplete" };
     if (scenario === "uncertain") endpoint.setup!.slackRegistration = { status: "uncertain", ...(managed ? { managerGrantId: grantId } : {}), errorCode: "slack_creation_uncertain", managementUrl: "https://api.slack.com/apps" };
-    if (["verify", "avatar_failed", "welcome_failed", "success"].includes(scenario)) installed();
-    if (["avatar_failed", "welcome_failed", "success"].includes(scenario)) {
+    if (["verify", "avatar_failed", "welcome_failed", "success", "complete"].includes(scenario)) installed();
+    if (["avatar_failed", "welcome_failed", "success", "complete"].includes(scenario)) {
       endpoint.setup!.webhookVerifiedAt = new Date().toISOString();
       endpoint.setup!.step = "test";
       endpoint.setup!.testStartedAt = new Date().toISOString();
     }
+    if (scenario === "complete") { endpoint.status = "active"; endpoint.setup!.step = "complete"; }
     setSignalVerification(() => () => { endpoint.setup!.webhookVerifiedAt = new Date().toISOString(); });
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
@@ -61,6 +65,10 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
         return Response.json({ managedAvailable: managed && managedAvailable, defaultMethod: managed ? "managed" : "automatic", workspaces: managed && authorized ? Array.from({ length: Math.max(1, workspaceCount) }, (_, i) => ({ grantId: i ? "22222222-2222-4222-8222-222222222222" : grantId, workspaceId: `TSTORY${i}`, workspaceName: i ? "Research workspace" : "Paperclip", userId: "UPERSON" })) : [] });
       }
       if (path === "/api/chat-endpoints/slack-story/slack/managed/authorize") {
+        if (scenario === "manager_authorization_failed" && !authorizationReturned && !authorizationFailed) {
+          authorizationFailed = true;
+          return Response.json({ error: "Reconnect your Slack workspace to continue setting up this agent." }, { status: 422 });
+        }
         authorized = true;
         const returnUrl = new URL(window.location.href);
         returnUrl.hash = "";
@@ -106,7 +114,10 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
       if (path.endsWith("/slack-person/link-intent")) return Response.json({ confirmationUrl: "https://board.example/confirm?token=fixture" });
       if (path === "/api/chat-identity-links/confirm") { linked = true; return Response.json({ ok: true }); }
       if (path.endsWith("/test-status")) return Response.json({ messageReceivedAt: null });
-      if (path.endsWith("/finish")) { endpoint.status = "active"; endpoint.setup!.step = "complete"; return Response.json(endpoint); }
+      if (path.endsWith("/finish")) {
+        if (endpoint.status !== "verifying" || endpoint.setup!.step !== "test") return Response.json({ error: "This connection is not waiting for a setup test" }, { status: 409 });
+        endpoint.status = "active"; endpoint.setup!.step = "complete"; return Response.json(endpoint);
+      }
       return original(input, init);
     };
     setReady(true);

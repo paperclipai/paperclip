@@ -130,6 +130,8 @@ export function providerDisplayName(provider: string): string {
     aws_bedrock: "AWS Bedrock",
     openai: "OpenAI",
     openrouter: "OpenRouter",
+    ollama: "Ollama",
+    "ollama-cloud": "Ollama Cloud",
     chatgpt: "ChatGPT",
     google: "Google",
     cursor: "Cursor",
@@ -211,6 +213,17 @@ export function visibleRunTokenTotal(usage: Record<string, unknown> | null | und
     || qualifiedModel
     || (typeof usage?.accountingReceiptId === "string" && usage.accountingReceiptId.length > 0);
   return input + output + (inputExcludesCached ? cached : 0);
+}
+
+/** Muse exposes Paperclip bridge events, not raw private provider traffic. */
+export function supportsRawProviderTrace(adapterType: string, adapterConfig: Record<string, unknown> | null | undefined): boolean {
+  return adapterType !== "paperclip_runner" || adapterConfig?.provider !== "muse";
+}
+
+/** Persisted accounting facts belong to this run, even after its agent changes provider. */
+export function hasUnavailableProviderAccounting(result: Record<string, unknown> | null | undefined): boolean {
+  const accounting = asObject(result?.providerAccounting);
+  return accounting.externallyBilled === true && accounting.usage === null && accounting.cost === null;
 }
 
 export function visibleRunCostUsd(
