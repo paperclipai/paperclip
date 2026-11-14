@@ -515,6 +515,30 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     } finally { unsubscribe(); }
   });
 
+  it("keeps a progress-only event inside a caller's transaction on the locked path, and settles its wake only when that transaction ends", async () => {
+    const runId = await nativeTaskRun("Progress in a caller transaction");
+    const wakes: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, event => { wakes.push(event); });
+    try {
+      const committed = await sentStatements(db.$client, () => db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 1, "tool.execution.progressed"));
+        expect(wakes).not.toContain("settled");
+      }));
+      expect(committed.statements[0]).toMatch(/^begin/i);
+      expect(committed.statements.some(text => text.startsWith("with snapshot_run as"))).toBe(false);
+      expect(wakes).toEqual(["intent", "settled"]);
+      wakes.length = 0;
+      await expect(db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 2, "tool.execution.progressed"));
+        expect(wakes).not.toContain("settled");
+        throw new Error("caller rollback");
+      })).rejects.toThrow("caller rollback");
+      expect((await readEvents(runId)).map(row => row.sourceSeq)).toEqual([1]);
+      await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.chatNativeProgress)).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
   it("sends the progress wake to other server processes with the one statement's commit", async () => {
     const runId = await nativeTaskRun("Cross-process progress");
     const notifying = createDb(externalTestDatabaseUrl ?? temporary!.connectionString);
