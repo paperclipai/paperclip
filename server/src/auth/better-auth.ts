@@ -1,6 +1,7 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
+import { genericOAuth } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
@@ -254,6 +255,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
+  const oidc = config.authOidc;
+  const oidcSecret = process.env.PAPERCLIP_AUTH_OIDC_CLIENT_SECRET;
+  if (oidc && !oidcSecret) {
+    throw new Error("OIDC login requires a client secret in PAPERCLIP_AUTH_OIDC_CLIENT_SECRET");
+  }
   const disableSecureCookies = shouldDisableSecureAuthCookies({
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
@@ -294,6 +300,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    ...(oidc ? { account: { accountLinking: { enabled: true } } } : {}),
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -323,6 +330,27 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         }
       : {}),
   };
+
+  if (oidc) {
+    const oidcPlugin = genericOAuth({
+      config: [
+        {
+          providerId: oidc.providerId,
+          discoveryUrl: oidc.discoveryUrl,
+          accountIssuer: oidc.discoveryUrl.replace(/\/\.well-known\/openid-configuration$/, ""),
+          ...(oidc.authorizationUrl ? { authorizationUrl: oidc.authorizationUrl } : {}),
+          ...(oidc.tokenUrl ? { tokenUrl: oidc.tokenUrl } : {}),
+          ...(oidc.userInfoUrl ? { userInfoUrl: oidc.userInfoUrl } : {}),
+          clientId: oidc.clientId,
+          clientSecret: oidcSecret,
+          scopes: ["openid", "email", "profile"],
+          pkce: true,
+          disableSignUp: true,
+        },
+      ],
+    });
+    (authConfig as { plugins?: unknown[] }).plugins = [...(authConfig.plugins ?? []), oidcPlugin];
+  }
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;

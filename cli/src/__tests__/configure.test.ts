@@ -1,9 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { configure } from "../commands/configure.js";
+import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
+
+vi.mock("../prompts/server.js", () => ({
+  promptServer: vi.fn(async ({ currentServer }) => ({
+    server: currentServer,
+    auth: { baseUrlMode: "auto", disableSignUp: false },
+  })),
+}));
 
 const ORIGINAL_EXIT_CODE = process.exitCode;
 
@@ -11,7 +19,14 @@ afterEach(() => {
   process.exitCode = ORIGINAL_EXIT_CODE;
 });
 
-function writeBaseConfig(configPath: string) {
+const oidc = {
+  providerId: "idp",
+  displayName: "Company sign-in",
+  discoveryUrl: "https://idp.example.test/.well-known/openid-configuration",
+  clientId: "paperclip",
+};
+
+function writeBaseConfig(configPath: string, auth: PaperclipConfig["auth"] = { baseUrlMode: "auto", disableSignUp: false }) {
   const base: PaperclipConfig = {
     $meta: {
       version: 1,
@@ -42,10 +57,7 @@ function writeBaseConfig(configPath: string) {
       allowedHostnames: [],
       serveUi: true,
     },
-    auth: {
-      baseUrlMode: "auto",
-      disableSignUp: false,
-    },
+    auth,
     telemetry: {
       enabled: true,
     },
@@ -118,6 +130,20 @@ describe("configure command", () => {
       } else {
         delete (process.stdin as { isTTY?: boolean }).isTTY;
       }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the OpenID Connect provider when server settings change", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-configure-oidc-"));
+    const configPath = path.join(root, "config.json");
+    writeBaseConfig(configPath, { baseUrlMode: "auto", disableSignUp: false, oidc });
+
+    try {
+      await configure({ config: configPath, section: "server" });
+
+      expect(readConfig(configPath)?.auth.oidc).toEqual(oidc);
+    } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
