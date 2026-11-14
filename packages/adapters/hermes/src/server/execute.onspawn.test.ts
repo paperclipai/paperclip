@@ -32,6 +32,7 @@ vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(async () => ""),
   writeFile: vi.fn(async () => undefined),
   mkdir: vi.fn(async () => undefined),
+  chmod: vi.fn(async () => undefined),
   rm: vi.fn(async () => undefined),
   access: vi.fn(async () => undefined),
   readdir: vi.fn(async () => []),
