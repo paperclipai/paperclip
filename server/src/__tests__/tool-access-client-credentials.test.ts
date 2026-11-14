@@ -619,10 +619,53 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor))
       .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
     expect((await svc.getMachineSignIn(company.id, created.connectionId)).clientId).toBe(CLIENT_ID);
+    // A normal call (no forced refresh) still runs as the original client: the
+    // refused test did not swap in its own token.
+    await svc.checkHealth(created.connectionId, actor);
+    const used = provider.state.mcpRequests.at(-1)!.authorization!.replace("Bearer ", "");
+    expect(provider.state.tokenClients.get(used)).toBe(CLIENT_ID);
     // The refused test wrote nothing: the saved ID and secret still belong together.
     const grant = await organizationGrant(created.connectionId);
     await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
     expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64")}`);
+  });
+
+  it("refuses an older retest after another retest replaced both the client ID and secret", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    provider.state.extraClients.set("other-client", "other-secret");
+    // While one admin re-tests the original client, another replaces both the ID and secret.
+    provider.state.onAuthorizedMcpRequest = async () => {
+      await svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor);
+    };
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
+    expect((await svc.getMachineSignIn(company.id, created.connectionId)).clientId).toBe("other-client");
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from("other-client:other-secret").toString("base64")}`);
+  });
+
+  it("reloads accepted key types for a connection saved before they were recorded", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    provider.state.signingAlgorithms = ["ES256"];
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    const { tokenEndpointAuthSigningAlgValuesSupported: _dropped, ...olderOauth } = row!.config.oauth as Record<string, unknown>;
+    const olderConfig = { ...row!.config, oauth: olderOauth };
+    await db.update(toolConnections).set({ config: olderConfig, transportConfig: olderConfig }).where(eq(toolConnections.id, row!.id));
+    const started = await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    expect(started.machineSignIn.pendingPublicKey?.algorithm).toBe("ES256");
   });
 
   it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
