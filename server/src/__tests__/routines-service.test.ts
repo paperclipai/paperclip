@@ -1852,6 +1852,34 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
+  it("dispatches an agent-run routine with a parent task without deadlocking the pool", async () => {
+    const { agentId, companyId, routine, svc, wakeups } = await seedFixture();
+    const [parent] = await db.insert(issues).values({ companyId, title: "Parent context", status: "todo",
+      assigneeAgentId: agentId }).returning();
+    await db.update(routines).set({ parentIssueId: parent.id }).where(eq(routines.id, routine.id));
+    const within = <T,>(work: Promise<T>, ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([work, new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), ms); })])
+        .finally(() => clearTimeout(timer));
+    };
+    const dispatch = svc.runRoutine(routine.id, { source: "manual" }, { agentId });
+    const outcome = await within(dispatch, 5_000);
+    if (outcome === "timeout") {
+      const rescue = createDb(externalUrl ?? tempDb!.connectionString);
+      await rescue.execute(sql`select pg_terminate_backend(pid) from pg_stat_activity
+        where datname = current_database() and pid <> pg_backend_pid()`);
+      await rescue.$client.end({ timeout: 1 });
+      await dispatch.catch(() => undefined);
+    }
+    expect(outcome).not.toBe("timeout");
+    expect(outcome).toMatchObject({ status: "issue_created" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(child).toMatchObject({ assigneeAgentId: agentId });
+    expect(wakeups.map(wakeup => wakeup.agentId)).toEqual([agentId]);
+    expect(await within(db.update(issues).set({ title: "Parent still writable" }).where(eq(issues.id, parent.id))
+      .returning({ id: issues.id }), 2_000)).toEqual([{ id: parent.id }]);
+  }, 20_000);
+
   it("coalesces only when the existing routine issue has a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();

@@ -1820,12 +1820,6 @@ export function routineService(
           : input.routine.updatedByAgentId ?? (input.routine.updatedByUserId ? null : input.routine.createdByAgentId));
       const interactionActorCompanyId = interactionActorAgentId ? await tx.select({ companyId: agents.companyId }).from(agents)
         .where(eq(agents.id, interactionActorAgentId)).then(rows => rows[0]?.companyId) : undefined;
-      // Check without row locks. This transaction stays open while issueSvc.create
-      // and the assignment wakeup run on other pool connections; a FOR UPDATE on the
-      // parent task blocks the child insert's foreign-key check, and a FOR SHARE on
-      // the agents blocks their row updates, so either lock deadlocks the dispatch
-      // outside Postgres' detection and drains the pool. Agent-created issues are
-      // re-checked under lock inside issueSvc.create.
       await assertAgentInteraction(tx, { companyId: input.routine.companyId, actorAgentId: interactionActorAgentId,
         actorCompanyId: interactionActorCompanyId,
         operation: "assign", targetAgentId: assigneeAgentId, parentIssueId: input.routine.parentIssueId,
