@@ -3525,6 +3525,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,
     persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory,
+    prepareResume: photonExternalRuntimeOwner.prepareResume,
     prepareCredentialRemoval: async (endpointId, authority) => {
       const record = await endpointRecord(endpointId);
       if (record?.endpoint.provider !== "imessage-photon") return "unhandled";

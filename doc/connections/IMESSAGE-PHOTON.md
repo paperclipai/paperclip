@@ -182,7 +182,11 @@ checkpoint but do not create old tasks automatically.
 Pause stops execution and external publication while retaining already accepted
 pending work. Another authorized operator can resume an existing handoff without
 replacing its original ownership. Connection-management permissions are checked
-for each configuration change. Resume establishes a new intake cutoff, so messages deliberately
+for each configuration change. If the original Cloud owner is still retiring,
+Resume first reconciles that same retirement and keeps the connection paused
+until it settles. A later Resume retries the retained duty; credentials and
+bindings remain intact, and current management authority is checked again after
+the wait. Resume establishes a new intake cutoff, so messages deliberately
 suppressed during pause do not become work. Outage recovery catches up eligible
 missed messages. Disconnect archives the endpoint, stops streams, invalidates
 interaction authority, and removes owned secret bindings. It does not delete the

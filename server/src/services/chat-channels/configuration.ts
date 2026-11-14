@@ -82,6 +82,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
   /** Provider-owned durable/resource settlement before destroying credentials. */
   prepareCredentialRemoval?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<"settled" | "unhandled">;
+  prepareResume?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<void>;
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   reconcileDiscordCommands: ReturnType<typeof createDiscordCommands>["reconcileDiscordCommands"];
   runtimeFor: (endpoint: EndpointRow, input?: { requireDiscordOwnership?: boolean; waitForDiscordOwnership?: boolean }) => Promise<ChatEndpointRuntime>;
@@ -265,6 +266,13 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           },
         );
       }
+      await credentialLease.assertOwned();
+      await options.prepareResume?.(endpoint.id, {
+        responsibleUserId: managementContext?.responsibleUserId ?? actorUserId,
+        reauthorize: async () => { await managementContext?.reauthorize(); await credentialLease.assertOwned(); },
+      });
+      await managementContext?.reauthorize();
+      await credentialLease.assertOwned();
       let credentials = await resolveCredentials(endpoint).catch(() => {
         throw conflict("Reconnect the provider credentials before resuming", {
           code: "chat_endpoint_credentials_missing",

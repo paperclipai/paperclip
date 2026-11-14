@@ -1030,7 +1030,7 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(false, true), 30_000);
   it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
     () => onlinePhotonEnrollment(false, false, true), 30_000);
-  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false) {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
@@ -1069,13 +1069,28 @@ describe("iMessage Photon channel control plane", () => {
     const requests: Record<string, unknown>[] = [];
     const requestSubjects: string[] = [];
     let endpointId: string | undefined, companyId: string | undefined;
+    let retirementComplete = false, retiredReplyIssued = false;
+    let revokeDuringRetirement: (() => Promise<void>) | undefined;
     vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation, subject }) => {
       requestSubjects.push(subject);
       requests.push(structuredClone(operation));
-      if (!endpointId || !companyId || operation.kind !== "enroll") throw new Error("Unexpected controlled broker operation");
+      if (!endpointId || !companyId) throw new Error("Unexpected controlled broker operation");
       const retained = readPhotonExternalState(await photonStateFor(db, { companyId, endpointId }).read(PHOTON_EXTERNAL_STATE));
       if (!retained) throw new Error("Normal staged enrollment absent");
-      return { binding: retained.binding };
+      expect(subject).toBe(retained.identity.subject);
+      if (operation.kind === "enroll") {
+        if (retirementResume && requests.filter(value => value.kind === "enroll").length > 1)
+          expect(retiredReplyIssued, "replacement enrollment must follow the exact retired receipt").toBe(true);
+        return { binding: retained.binding };
+      }
+      if (retirementResume && (operation.kind === "retire" || operation.kind === "status")) {
+        expect(operation.binding).toEqual(retained.binding);
+        if (operation.kind === "retire") return { binding: retained.binding };
+        await revokeDuringRetirement?.();
+        if (retirementComplete) retiredReplyIssued = true;
+        return { binding: retained.binding, handoffId: retained.handoffId, phase: retirementComplete ? "retired" : "retiring" };
+      }
+      throw new Error("Unexpected controlled broker operation");
     });
     const t = await setup(false, { renewDiscordGatewayLease: renew }); endpointId = t.endpoint.id; companyId = t.companyId;
     await t.start(); await t.qualify();
@@ -1101,8 +1116,9 @@ describe("iMessage Photon channel control plane", () => {
       vi.spyOn(local, "shutdown").mockRejectedValueOnce(new Error("Controlled original local join pending"));
       await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled original local join pending");
     }
+    if (retirementResume) await owner.reconcile(t.endpoint.id);
     const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
-    expect(original?.phase).toBe(phase);
+    expect(original?.phase).toBe(retirementResume ? "external" : phase);
     if (!original) throw new Error("Normal unfinished handoff absent");
     const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
@@ -1117,21 +1133,70 @@ describe("iMessage Photon channel control plane", () => {
       await db.insert(principalPermissionGrants).values({ companyId: t.companyId, principalType: "user", principalId: operatorUserId,
         permissionKey: "tools:manage_connections", grantedByUserId: t.userId });
     }
-    const management = otherAuthorizedOperator ? await connectionManagementService(db).authorize(
+    const management = otherAuthorizedOperator || retirementResume ? await connectionManagementService(db).authorize(
       { type: "board", userId: operatorUserId, source: "session" }, "connections:configure",
       { type: "connection_management", companyId: t.companyId, connectionId: t.endpoint.connectionId,
         provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/configure" }, { mutation: true }) : undefined;
     if (management) {
       expect(management.responsibleUserId).toBe(operatorUserId);
       expect(management.decision).toMatchObject({ allowed: true, action: "connections:configure" });
-      expect(operatorUserId).not.toBe(original.identity.subject);
+      if (otherAuthorizedOperator) expect(operatorUserId).not.toBe(original.identity.subject);
     }
     await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
     const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     expect(paused.status).toBe("paused");
     expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
     expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
-      .toMatchObject({ phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+      .toMatchObject({ phase: retirementResume ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+    if (retirementResume) {
+      await expect(owner.retire(t.endpoint.id, management!)).rejects.toThrow("Photon original physical close or queue drain remains outstanding");
+      const retiring = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(retiring).toMatchObject({ phase: "retiring", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
+      const [pausedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      const deliveriesBefore = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id));
+      const enrollmentsBefore = requests.filter(value => value.kind === "enroll").length;
+      if (retirementResume === "revoked") {
+        retirementComplete = true;
+        revokeDuringRetirement = async () => {
+          await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(
+            eq(companyMemberships.companyId, t.companyId), eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, operatorUserId)));
+        };
+      }
+      const pending = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
+        .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+      const [stillPaused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [stillPausedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(stillPaused.status, "unsettled or unauthorized retirement must not activate or degrade paused configuration").toBe("paused");
+      expect(stillPaused.setup).toEqual(paused.setup);
+      expect(stillPausedConnection).toEqual(pausedConnection);
+      expect(pending.error).not.toBeNull();
+      expect(pending.snapshot).toBeNull();
+      expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+      expect(requests.filter(value => value.kind === "enroll")).toHaveLength(enrollmentsBefore);
+      expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveriesBefore);
+      const afterPending = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(afterPending).toMatchObject({ phase: retirementResume === "revoked" ? "retired" : "retiring",
+        identity: original.identity, binding: original.binding, handoffId: original.handoffId, initialSequence: retiring?.initialSequence, joinedSequence: retiring?.joinedSequence,
+        acceptedSequence: retiring?.acceptedSequence, pending: retiring?.pending, acceptedRetirement: retiring?.acceptedRetirement });
+      if (retirementResume === "revoked") {
+        await expect(management!.reauthorize()).rejects.toThrow();
+        return;
+      }
+      expect(String(pending.error)).toContain("Photon original physical close or queue drain remains outstanding");
+      retirementComplete = true;
+      const resumed = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management);
+      expect(resumed.status).toBe("active");
+      expect(retiredReplyIssued).toBe(true);
+      await owner.reconcile(t.endpoint.id);
+      const replacement = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(replacement?.phase).toBe("external");
+      expect(replacement?.handoffId).not.toBe(original.handoffId);
+      expect(requests.filter(value => value.kind === "enroll")).toHaveLength(enrollmentsBefore + 1);
+      expect(requestSubjects.every(subject => subject === original.identity.subject)).toBe(true);
+      await management!.reauthorize();
+      return;
+    }
     const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
       .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
     const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
@@ -1289,6 +1354,10 @@ describe("iMessage Photon channel control plane", () => {
     () => resumeOriginalHandoff("enrolling", true), 30_000);
   it.each(["enrolling", "joining"] as const)("preserves original Photon %s custody when another authorized operator pauses and resumes",
     phase => resumeOriginalHandoff(phase, false, true), 30_000);
+  it("keeps normal Photon resume paused until original retirement settles before replacement intake",
+    () => resumeOriginalHandoff("enrolling", false, false, "pending"), 30_000);
+  it("reauthorizes normal Photon resume after awaited retirement without activating revoked configuration",
+    () => resumeOriginalHandoff("enrolling", false, false, "revoked"), 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
     await t.start();

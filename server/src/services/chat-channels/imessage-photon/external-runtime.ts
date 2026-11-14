@@ -571,6 +571,25 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     }
     await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(retained, cleanup);
   }
+  async function prepareResume(id: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) {
+    const record = await options.endpointRecord(id);
+    if (!record || record.endpoint.provider !== "imessage-photon") return;
+    const prior = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+    if (!prior || prior.phase !== "retiring") return;
+    if (record.endpoint.status !== "paused" || prior.identity.companyId !== record.endpoint.companyId
+      || prior.identity.endpointId !== id || prior.identity.connectionId !== record.endpoint.connectionId
+      || prior.identity.subject !== (record.endpoint.setup as InternalSetupState).photonExternalSubject
+      || prior.identity.runtimeGeneration !== Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0)
+      || prior.identity.credentialReferences !== credentialFingerprint(record.credentialSecretRefs))
+      throw conflict("Photon original retirement requires its unchanged configuration");
+    await authority.reauthorize();
+    await retire(id, authority);
+    await authority.reauthorize();
+    const settled = await store.read(prior.identity);
+    if (!settled || settled.phase !== "retired" || settled.handoffId !== prior.handoffId
+      || !isDeepStrictEqual(settled.identity, prior.identity) || !isDeepStrictEqual(settled.binding, prior.binding))
+      throw conflict("Photon original retirement remains pending before resume");
+  }
   async function retained(scope?: { kind: "endpoint" | "connection" | "company"; id: string }) {
     const values = [];
     for await (const row of photonExternalRows(db, scope)) {
@@ -688,7 +707,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return !state.senderResource || resources.owns(state.senderResource.id, runtime);
   } };
   ingress.set(db, registration);
-  return { configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, intakePlacement, senderDebt, retire, retained, cleanupFailure, retry, async close() { if (ingress.get(db) === registration) ingress.delete(db); const joined = await Promise.allSettled([...active.values()]);
+  return { prepareResume, configurationRuntimeFor, reserveLocalRuntime, attachLocalRuntime, reserveSenderRuntime, attachSenderRuntime, senderRuntimeClosed, runtimeConstructionAborted, reconcile, placement, intakePlacement, senderDebt, retire, retained, cleanupFailure, retry, async close() { if (ingress.get(db) === registration) ingress.delete(db); const joined = await Promise.allSettled([...active.values()]);
     const errors = joined.flatMap(result => result.status === "rejected" ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, "Photon retained handoff work failed after every owned task joined"); } };
 }
