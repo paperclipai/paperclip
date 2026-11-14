@@ -394,6 +394,9 @@ reports only for pull requests.
 both names on each merge-group commit so the queue does not stall. It runs no
 tests: a pull request enters the queue only after both checks pass on it, and
 the exact-source gate still tests every `master` commit before publication.
+The queue can therefore land a commit while its image is still building. The
+`master` push waits up to 15 minutes for that build before it builds from
+source. Publication waits for the exact-source gate in any case.
 
 To turn the queue on, add **Require merge queue** to the `master` ruleset with
 merge method Squash, build concurrency 5, group size 1 to 5 and a 60 minute
