@@ -54,7 +54,7 @@ import type { ResourceLifecycleEvent } from "./types.js";
 import fs from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { createJsonlLineReader, type JsonlLineReader } from "@paperclipai/shared/jsonl-line-reader";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -2493,10 +2493,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   // Bootstrap: wire up stdin readline
   // -----------------------------------------------------------------------
 
-  let readline: ReadlineInterface | null = createInterface({
-    input: stdinStream as NodeJS.ReadableStream,
-    crlfDelay: Infinity,
-  });
+  let readline: JsonlLineReader | null = createJsonlLineReader({ input: stdinStream });
 
   readline.on("line", handleLine);
 
