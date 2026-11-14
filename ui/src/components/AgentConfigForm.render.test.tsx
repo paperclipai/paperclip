@@ -1046,6 +1046,71 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onChange).toHaveBeenLastCalledWith({ defaultEnvironmentId: "" });
   });
 
+  it.each(["paperclip_runner", "codex_local"])("restores the saved %s Codex draft after a harness round trip", async adapterType => {
+    const dirty = vi.fn();
+    const adapterConfig = adapterType === "paperclip_runner"
+      ? {provider:"codex",model:"saved-codex-model",reasoningEffort:"high",timeoutSec:37}
+      : {engine:"cli",model:"saved-codex-model",search:true,fastMode:true,timeoutSec:37};
+    const result = await renderForm([], {adapterType,adapterConfig,runtimeConfig:{aiConnection:{mode:"responsible_user",provider:"openai",method:"subscription"}}}, {showAdapterTypeField:true,onDirtyChange:dirty}); roots.push(result.root);
+    const modelBefore = result.container.querySelector('[aria-label="Model"]')!.textContent;
+    const hasEngineBefore = Boolean(result.container.querySelector('[aria-label="Execution engine"]'));
+    for (const choice of ["claude_local","codex_local"]) {
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      const option = document.querySelector(`[role="option"][data-value="${choice}"]`);expect(option).toBeTruthy();
+      await clickElement(option);await flushReact();
+    }
+    expect(result.container.querySelector('[aria-label="Model"]')!.textContent).toBe(modelBefore);
+    expect(Boolean(result.container.querySelector('[aria-label="Execution engine"]'))).toBe(hasEngineBefore);
+    expect(dirty).toHaveBeenLastCalledWith(false);
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps an edited Codex draft and account when returning from another harness", async () => {
+    let save: (() => void) | null = null;
+    const binding = {mode:"responsible_user",provider:"openai",method:"subscription"} as const;
+    const result = await renderForm([], {adapterType:"codex_local",adapterConfig:{engine:"cli",model:DEFAULT_CODEX_LOCAL_MODEL,modelReasoningEffort:"high"},runtimeConfig:{aiConnection:binding}}, {showAdapterTypeField:true,onSaveActionChange:action=>{save=action;}}); roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Thinking effort"]'));
+    const low=document.querySelector('[role="option"][data-value="low"]');expect(low).toBeTruthy();await clickElement(low);
+    for (const choice of ["claude_local","codex_local"]) {
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      const option=document.querySelector(`[role="option"][data-value="${choice}"]`);expect(option).toBeTruthy();await clickElement(option);
+    }
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')?.textContent).toContain("Low");
+    expect(save).toBeTypeOf("function");await act(async()=>save!());
+    expect(result.onSave).toHaveBeenCalledWith({replaceAdapterConfig:true,adapterConfig:expect.objectContaining({engine:"cli",model:DEFAULT_CODEX_LOCAL_MODEL,modelReasoningEffort:"low"})});
+  });
+
+  it.each(["grok_local", "cursor_cloud"])("preserves the native runner when switching Codex to %s", async target => {
+    mockAdaptersApi.list.mockResolvedValue([
+      {type:"codex_local",supportedRunners:["legacy","paperclip"],defaultRunner:"legacy"},
+      {type:target,supportedRunners:["legacy","paperclip"],defaultRunner:"legacy"},
+    ]);
+    const result=await renderForm([], {adapterType:"paperclip_runner",adapterConfig:{provider:"codex",model:DEFAULT_CODEX_LOCAL_MODEL}}, {showAdapterTypeField:true});roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    const option=document.querySelector(`[role="option"][data-value="${target}"]`);expect(option).toBeTruthy();await clickElement(option);
+    await clickByText(result.container,"Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({adapterType:target,runner:"paperclip"}));
+  });
+
+
+  it("drops cached harness drafts when the operator discards changes", async () => {
+    let discard: (() => void) | null = null;
+    const result = await renderForm([], {adapterType:"codex_local",adapterConfig:{engine:"cli",model:"saved-codex-model"}}, {showAdapterTypeField:true,onCancelActionChange:action=>{discard=action;}});roots.push(result.root);
+    const choose = async (choice:string) => {
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      await clickElement(document.querySelector(`[role="option"][data-value="${choice}"]`));
+    };
+    await choose("claude_local");
+    const permission = () => result.container.querySelector('[aria-label="Skip permissions"]')!;
+    expect(permission().getAttribute("aria-checked")).toBe("true");await clickElement(permission());
+    expect(permission().getAttribute("aria-checked")).toBe("false");
+    await choose("codex_local");await choose("claude_local");
+    expect(permission().getAttribute("aria-checked")).toBe("false");
+    await act(async()=>discard!());await flushReact();
+    await choose("claude_local");expect(permission().getAttribute("aria-checked")).toBe("true");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
   it.each(["codex", "claude"])("hides empty Advanced settings for the saved native %s harness", async harness => {
     const profile = harness === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" };
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, model: "saved-model" } });
@@ -1317,7 +1382,7 @@ describe("AgentConfigForm environment selector", () => {
   it.each([
     ["Codex", "codex_local"],
     ["Claude Code", "claude_local"],
-  ])("clears OpenCode model settings when choosing %s so the server can apply its default", async (_label, adapterType) => {
+  ])("clears OpenCode model settings when choosing %s while preserving the Paperclip runner", async (_label, adapterType) => {
     const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
       currentUserId: "you",
       canManageConnections: true,
@@ -1339,7 +1404,7 @@ describe("AgentConfigForm environment selector", () => {
       await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
         adapterType,
-        runner: "auto",
+        runner: "paperclip",
         replaceAdapterConfig: true,
         adapterConfig: expect.objectContaining({ model: "" }),
       }));
