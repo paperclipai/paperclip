@@ -4,7 +4,7 @@ import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, pruneOldBackups, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
@@ -72,6 +72,29 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("pruneOldBackups", () => {
+  it("keeps an unreadable backup instead of deleting it, and still deletes invalid ones", () => {
+    const dir = createTempDir("paperclip-db-backup-prune-");
+    const mtime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const unreadablePath = path.join(dir, "paperclip-20261025.sql.gz");
+    fs.mkdirSync(unreadablePath);
+    fs.utimesSync(unreadablePath, mtime, mtime);
+    const validPath = path.join(dir, "paperclip-20261025-valid.sql.gz");
+    fs.writeFileSync(validPath, gzipSync("-- Paperclip database backup\nBEGIN;\nCOMMIT;\n"));
+    fs.utimesSync(validPath, mtime, mtime);
+    const invalidPath = path.join(dir, "paperclip-20261025-invalid.sql.gz");
+    fs.writeFileSync(invalidPath, Buffer.from("this is not a gzip stream, it is plain text padding........"));
+    fs.utimesSync(invalidPath, mtime, mtime);
+
+    const prunedCount = pruneOldBackups(dir, { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 }, "paperclip");
+
+    expect(prunedCount).toBe(1);
+    expect(fs.existsSync(unreadablePath)).toBe(true);
+    expect(fs.existsSync(validPath)).toBe(true);
+    expect(fs.existsSync(invalidPath)).toBe(false);
   });
 });
 
@@ -149,9 +172,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
 
       try {
-        fs.writeFileSync(janNewest, "jan-newest");
-        fs.writeFileSync(janOlder, "jan-older");
-        fs.writeFileSync(decOld, "dec-old");
+        // Real gzip content: retention only treats plausible gzip backups
+        // as tier representatives (see #15351).
+        fs.writeFileSync(janNewest, gzipSync("jan-newest"));
+        fs.writeFileSync(janOlder, gzipSync("jan-older"));
+        fs.writeFileSync(decOld, gzipSync("dec-old"));
 
         fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
         fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
@@ -168,6 +193,48 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(fs.existsSync(janNewest)).toBe(true);
         expect(fs.existsSync(janOlder)).toBe(false);
         expect(fs.existsSync(decOld)).toBe(false);
+      } finally {
+        Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "does not let an unverified orphan claim a monthly tier bucket over a real backup",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-orphan-");
+      const realDateNow = Date.now;
+      Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
+
+      const realBackup = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
+      const tinyGzipOrphan = path.join(backupDir, "paperclip-test-2026-01-20T12-00-00.sql.gz");
+      const bareSqlOrphan = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql");
+
+      try {
+        fs.writeFileSync(realBackup, gzipSync("-- real dump content --\n".repeat(50)));
+        // A gzip stream of empty input (20 bytes): a stream created for a
+        // backup that crashed before any dump data was written.
+        fs.writeFileSync(tinyGzipOrphan, gzipSync(""));
+        // The writer's pre-compression intermediate, never compressed.
+        fs.writeFileSync(bareSqlOrphan, "-- orphan dump that was never compressed --\n".repeat(50));
+
+        fs.utimesSync(realBackup, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
+        fs.utimesSync(tinyGzipOrphan, new Date("2026-01-20T12:00:00Z"), new Date("2026-01-20T12:00:00Z"));
+        fs.utimesSync(bareSqlOrphan, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-test",
+        });
+
+        expect(result.prunedCount).toBe(2);
+        expect(fs.existsSync(realBackup)).toBe(true);
+        expect(fs.existsSync(tinyGzipOrphan)).toBe(false);
+        expect(fs.existsSync(bareSqlOrphan)).toBe(false);
       } finally {
         Date.now = realDateNow;
       }
