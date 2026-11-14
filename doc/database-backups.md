@@ -51,7 +51,7 @@ Environment overrides:
   back to the default.
 - `PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS=<hours>` sets how long the reaper
   waits after an issue tree becomes terminal before it removes regenerable files
-  from the workspace (see "Terminal workspace compaction" below). The default is
+  from the workspace (see [Terminal workspace compaction](workspace-repositories.md#terminal-workspace-compaction)). The default is
   `1`. A value of `0` compacts on the next sweep. A negative, empty, or
   non-numeric value falls back to the default.
 - `PAPERCLIP_WORKSPACE_COMPACTION_ENABLED=false` turns compaction off. Any other
@@ -62,8 +62,8 @@ Environment overrides:
   Existing external packages remain readable with the override. See
   [package storage and acquisition](skill-package-storage.md).
 - `PAPERCLIP_SKILL_VERSION_RETENTION_KEEP=<count>` sets how many of the newest
-  materialized versions of each skill stay on disk (see "Skill Version Snapshot
-  Retention" above). The default is `0`. A negative, empty, or non-numeric value
+  materialized versions of each skill stay on disk (see
+  [Skill Version Snapshot Retention](skills-and-teams-catalog.md#skill-version-snapshot-retention)). The default is `0`. A negative, empty, or non-numeric value
   falls back to the default.
 - `PAPERCLIP_SKILL_VERSION_RETENTION_GRACE_MINUTES=<minutes>` sets how long a
   materialized skill version stays after its last use. The default is `60`. A
