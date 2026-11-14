@@ -1,3 +1,4 @@
+import { pendingNativeCheckpointRetry } from "../native-runtime/native-session-resumption-admission.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
@@ -3527,6 +3528,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                     origin.identityContextId !== retry.boardMessageOrigin.identityContextId)
                   return declineRetry("retry_source_changed", "The saved message this Retry continues has changed.");
               }
+              if (await pendingNativeCheckpointRetry(tx as unknown as Db, {
+                companyId: agent.companyId, issueId, agentId, runId: retry.sourceRunId,
+              })) return declineRetry("native_checkpoint_recovery_pending",
+                "The original saved execution is still recovering. Retry is saved and will continue when its owner settles.");
             }
             if (opts.queuedCommentRequestId) {
               const ids = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
