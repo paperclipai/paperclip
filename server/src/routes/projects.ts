@@ -857,7 +857,6 @@ export function projectRoutes(db: Db) {
       serviceIndex: selectedServiceIndex,
       runtimeServices: workspace.runtimeServices,
       workspaceCwd,
-      // Resolve each service cwd with the same inputs the start below uses.
       resolveServiceCwd: (command, runtimeService) => resolveRuntimeServiceCwdForControl({
         service: command.rawConfig,
         runningPort: runtimeService.port ?? null,
@@ -947,8 +946,6 @@ export function projectRoutes(db: Db) {
           else stderr = appendWithCap(stderr, chunk, WORKSPACE_CONTROL_OUTPUT_MAX_CHARS);
         };
 
-        // A targeted stop or restart must leave the other services running. When
-        // the target has no running instance there is nothing to stop.
         if ((action === "stop" || action === "restart") && (stopTarget.scope === "all" || stopTarget.runtimeServiceId)) {
           await stopRuntimeServicesForProjectWorkspace({
             db,

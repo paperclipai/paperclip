@@ -5288,21 +5288,12 @@ function resolveRuntimeServiceCwd(
   return resolveConfiguredPath(renderTemplate(asString(service.cwd, "."), templateData), workspaceCwd);
 }
 
-/**
- * Resolves the cwd a runtime service runs in, exactly as starting it with the
- * same workspace, agent, and issue would. Workspace runtime control uses it to
- * tell apart running services that share a name before a targeted stop.
- */
 export function resolveRuntimeServiceCwdForControl(input: {
   service: Record<string, unknown>;
   workspace: Pick<RealizedExecutionWorkspace, "cwd" | "branchName" | "worktreePath" | "repoUrl" | "repoRef">;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv?: Record<string, string>;
-  /**
-   * The port recorded on the running instance. The start path renders the cwd
-   * with the port it assigned, so pass it when comparing with that instance.
-   */
   runningPort?: number | null;
 }) {
   const portConfig = parseObject(input.service.port);

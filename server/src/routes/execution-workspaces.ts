@@ -511,9 +511,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       serviceIndex: selectedServiceIndex,
       runtimeServices: existing.runtimeServices,
       workspaceCwd,
-      // Resolve each service cwd with the same inputs the start below uses,
-      // matching the workspace that ensurePersistedExecutionWorkspaceAvailable
-      // realizes, without provisioning it.
       resolveServiceCwd: (command, runtimeService) => resolveRuntimeServiceCwdForControl({
         service: command.rawConfig,
         runningPort: runtimeService.port ?? null,
@@ -960,8 +957,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             throw error;
           }
         } else if ((action === "stop" || action === "restart") && (stopTarget.scope === "all" || stopTarget.runtimeServiceId)) {
-          // A targeted stop or restart must leave the other services running.
-          // When the target has no running instance there is nothing to stop.
           await stopRuntimeServicesForExecutionWorkspace({
             db,
             executionWorkspaceId: existing.id,

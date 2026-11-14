@@ -6,9 +6,6 @@ import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { selectConfiguredRuntimeServiceRows } from "../services/workspace-runtime-read-model.js";
 
-// A restart or stop that names one service must stop only that service. These
-// tests drive the project and execution workspace routes with two configured
-// services, both running, and check which runtime service the stop call targets.
 
 vi.mock("../services/authorization.js", async () => ({
   ...(await vi.importActual<typeof import("../services/authorization.js")>("../services/authorization.js")),
@@ -28,7 +25,8 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({
   createRecorder: vi.fn(() => ({
     attachExecutionWorkspaceId: vi.fn(),
-    recordOperation: async (input: { run: () => Promise<unknown> }) => {
+    recordOperation: async (input: { admit?: (publish: () => Promise<void>) => Promise<void>; run: () => Promise<unknown> }) => {
+      if (input.admit) await input.admit(async () => undefined);
       await input.run();
       return { id: "operation-1", status: "succeeded" };
     },
@@ -51,6 +49,10 @@ const mockStopExecutionRuntimeServices = vi.hoisted(() => vi.fn(async () => unde
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: vi.fn() }));
+
+vi.mock("../services/execution-workspace-lifecycle-lock.js", () => ({
+  withExecutionWorkspaceLifecycleLock: async (_db: unknown, _id: string, run: (tx: unknown) => Promise<unknown>) => run({}),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -194,7 +196,6 @@ async function createApp() {
 describe("targeted runtime service stop and restart", () => {
   let app: express.Express;
 
-  // Importing the route modules is slow, so build the app once.
   beforeAll(async () => {
     app = await createApp();
   }, 60_000);
@@ -388,6 +389,26 @@ describe("targeted runtime service stop and restart", () => {
       expect(mockStopProjectRuntimeServices).not.toHaveBeenCalled();
     });
 
+    it("stops a service that HTTPS exposure runs on another port than its fixed one", async () => {
+      useProjectWithSharedName(
+        [
+          { name: "web", command: "pnpm dev", port: 45439, expose: { provider: "tailscale_https" } },
+          { name: "worker", command: "pnpm worker" },
+        ],
+        [
+          { ...buildRuntimeService("runtime-web", "web", "pnpm dev"), port: 50123 },
+          buildRuntimeService("runtime-worker", "worker", "pnpm worker"),
+        ],
+      );
+
+      const res = await request(app).post(`${url}/stop`).send({ serviceIndex: 0 });
+      expect(res.status).toBe(200);
+      expect(mockStopProjectRuntimeServices).toHaveBeenCalledTimes(1);
+      expect(mockStopProjectRuntimeServices).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeServiceId: "runtime-web" }),
+      );
+    });
+
     it("counts only the services still running after a targeted stop", async () => {
       useProject([...runningServices, { ...buildRuntimeService("runtime-old", "old", "pnpm old"), status: "stopped" }]);
       const res = await request(app).post(`${url}/stop`).send({ serviceIndex: 0 });
@@ -483,8 +504,6 @@ describe("targeted runtime service stop and restart", () => {
           { name: "admin", command: "node server.js" },
         ],
       };
-      // Only `admin` runs. The read model matches it to `api` by command alone
-      // and gives it config index 0.
       const runtimeServices = selectConfiguredRuntimeServiceRows(
         [{
           ...buildRuntimeService("runtime-admin", "admin", "node server.js"),

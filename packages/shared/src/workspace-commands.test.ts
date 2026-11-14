@@ -323,6 +323,46 @@ describe("resolveRuntimeServiceStopTarget", () => {
     }
   });
 
+  it("stops a service that runs on another port than its fixed one", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { name: "web", command: "pnpm dev", port: 45439 },
+          { name: "worker", command: "pnpm worker" },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        { id: "runtime-web", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: 50123 },
+        { id: "runtime-worker", serviceName: "worker", command: "pnpm worker", cwd: "/repo", port: null },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-web" });
+  });
+
+  it("tells apart services that share a name by a matching fixed port", () => {
+    const workspaceRuntime = {
+      services: [
+        { name: "web", command: "pnpm dev", port: 3000 },
+        { name: "web", command: "pnpm dev", port: 3001 },
+      ],
+    };
+    const runtimeServices = [
+      { id: "runtime-3001", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: 3001 },
+    ];
+    const target = (serviceIndex: number) => resolveRuntimeServiceStopTarget({
+      workspaceRuntime,
+      runtimeServiceId: null,
+      serviceIndex,
+      runtimeServices,
+      workspaceCwd: "/repo",
+    });
+
+    expect(target(0)).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(target(1)).toEqual({ scope: "one", runtimeServiceId: "runtime-3001" });
+  });
+
   it("stops a lone unnamed service without needing the workspace cwd", () => {
     expect(resolveRuntimeServiceStopTarget({
       workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }, { command: "pnpm worker" }] },
@@ -407,8 +447,6 @@ describe("resolveRuntimeServiceStopTarget", () => {
   });
 
   it("does not trust an inferred config index that names another service", () => {
-    // Read models infer configIndex with a matcher that accepts a shared
-    // command, so the running `admin` instance can carry the index of `api`.
     const sharedCommandRuntime = {
       services: [
         { name: "api", command: "node server.js" },
