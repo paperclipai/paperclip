@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
+import { contactDetails, documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -72,53 +72,37 @@ it("rejects an unbound later worker in the grade when its prompt lacks the direc
   const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
   expect(gradeDiscard(o).passed).toBe(false);
 });
-const label = "e972d9c1aa95-1";
-const initialPlan = "# Website Plan (Initial)\n\n## Accessible Font Guidance\n\n- Readable base size.\n\n## Proposed Pages\n1. Home\n2. Contact\n";
-// Full cohort 11: the consuming run saved the label as a plain line under a "## Contact" heading.
-const consumedPlan = `# Website Plan (Initial)\n\n## Accessible Font Guidance\n\n- Readable base size.\n\n## Contact\nSection label: \`${label}\`\n\n- Add a contact form.\n\n## Proposed Pages\n1. Home\n2. Contact\n`;
-const finalPlan = "# Website Plan (Initial)\n\n## Accessible Font Guidance\n\n- Readable base size.\n\n## Proposed Pages\n1. Home\n";
-it("full cohort 11: passes when the final revision drops the labelled contact lines, whatever form the label was saved in", () => {
-  expect(documentContactRemoved(consumedPlan, finalPlan, label)).toBe(true);
-  for (const form of [`## Contact section (label: ${label})`, `### Reach us (${label})`, `Contact - ${label}`]) {
-    const consumed = consumedPlan.replace(`## Contact\nSection label: \`${label}\``, form);
-    expect(documentContactRemoved(consumed, finalPlan, label), form).toBe(true);
-  }
-  expect(initialPlan.includes(label)).toBe(false);
-});
-// Full cohort 14 (OpenCode + DeepSeek), abridged from the retained revisions: the consuming run added a
-// labelled structure entry and a labelled section; the final revision removed both but cites the label in
-// a "Latest direction" note that records the removal.
-const label14 = "108262186bce-1";
-const consumed14 = [
-  "# Initial Website Plan", "", `Latest direction: add a contact section labelled \`${label14}\`, keep the accessible-font requirement.`, "",
-  "## Proposed Structure", "", "1. **Home** — purpose statement.", `4. **Contact — \`${label14}\`** — accessible contact form with visible labels.`, "5. **Legal / Policy** — privacy.", "",
-  `## Contact Section — \`${label14}\``, "", "- **Purpose:** give visitors a clear, low-friction way to get in touch.",
-  "- **Form fields:** Name, Email, Message — each with a persistent visible `<label>`.", "",
-  "## Accessible Font Guidance (retained)", "", "- Minimum body size of **16px** (`1rem`).", "",
-  "## Open Questions", "", `- Which contact methods and routing should the \`${label14}\` section use?`, "",
+const contact = contactDetails("108262186bce-1"), details = [contact.email, contact.phone];
+// Shaped on full cohort 14: the consuming run added a labelled structure entry and a contact section; the final
+// revision removed them but cites the label in a removal note and keeps generic lines the section also had.
+const consumedPlan = [
+  "# Initial Website Plan", "", "Latest direction: add a contact section labelled `108262186bce-1`.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Contact — `108262186bce-1`** — contact form.", "", "---", "",
+  "## Contact Section — `108262186bce-1`", "", `- Email: ${contact.email}`, `- Phone: ${contact.phone}`, "- Use visible labels.", "", "---", "",
+  "## Accessibility Baseline", "", "- Use visible labels.", "",
 ].join("\n");
-const final14 = [
-  "# Initial Website Plan", "", `Latest direction: remove the contact section (label \`${label14}\`) from the plan; keep the rest of the plan unchanged.`, "",
-  "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Legal / Policy** — privacy.", "",
-  "## Accessible Font Guidance (retained)", "", "- Minimum body size of **16px** (`1rem`).", "",
-  "## Open Questions", "", "- Which pages and content are required at launch?", "",
+const finalPlan = [
+  "# Initial Website Plan", "", "Latest direction: remove the contact section (label `108262186bce-1`) from the plan.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "", "---", "",
+  "## Accessibility Baseline", "", "- Use visible labels.", "",
 ].join("\n");
-it("full cohort 14: passes when the contact section is gone even though a removal note still cites the label", () => {
-  expect(final14.includes(label14)).toBe(true);
-  expect(documentContactRemoved(consumed14, final14, label14)).toBe(true);
+it("passes when the contact details are gone, though the label and lines shared with the section remain", () => {
+  expect(consumedPlan.includes(contact.email) && consumedPlan.includes(contact.phone)).toBe(true);
+  expect(documentContactRemoved(finalPlan, details)).toBe(true);
 });
-it("fails while the final revision keeps any line of the labelled contact section", () => {
-  expect(documentContactRemoved(consumedPlan, consumedPlan, label)).toBe(false);
-  expect(documentContactRemoved(consumed14, consumed14, label14)).toBe(false);
-  // Heading dropped but the section body kept.
-  expect(documentContactRemoved(consumed14, `${final14}\n- **Purpose:** give visitors a clear, low-friction way to get in touch.\n`, label14)).toBe(false);
-  // Section removed but the labelled structure entry kept.
-  expect(documentContactRemoved(consumed14, `${final14}\n4. **Contact — \`${label14}\`** — accessible contact form with visible labels.\n`, label14)).toBe(false);
+it("fails while the final revision keeps any requested contact detail", () => {
+  expect(documentContactRemoved(consumedPlan, details)).toBe(false);
+  expect(documentContactRemoved(`${finalPlan}\nReach us at ${contact.email}.\n`, details)).toBe(false);
+  expect(documentContactRemoved(`${finalPlan}\nCall ${contact.phone}.\n`, details)).toBe(false);
 });
-it("fails when the final revision is missing, the label is empty, or the consumed revision never carried it", () => {
-  expect(documentContactRemoved(consumedPlan, undefined, label)).toBe(false);
-  expect(documentContactRemoved(consumedPlan, finalPlan, "")).toBe(false);
-  expect(documentContactRemoved(initialPlan, finalPlan, label)).toBe(false);
+it("fails when the final revision is missing or no contact detail is given", () => {
+  expect(documentContactRemoved(undefined, details)).toBe(false);
+  expect(documentContactRemoved(finalPlan, [])).toBe(false);
+  expect(documentContactRemoved(finalPlan, [""])).toBe(false);
+});
+it("derives distinct, attempt-specific contact details", () => {
+  expect(contact).toEqual({ email: "contact-108262186bce-1@acorn-notes.example", phone: "+1-555-1861" });
+  expect(contactDetails("e972d9c1aa95-1").email).not.toBe(contact.email);
 });
 
 function citedInTurn() {

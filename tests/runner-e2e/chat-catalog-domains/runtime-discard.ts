@@ -22,27 +22,16 @@ export function promptCarries(prompt: string | undefined, body: string) {
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
-/**
- * The contact section the consumed request added, located by the setup label: every saved line that carries
- * the label, plus the body of any Markdown section whose heading carries it.
- */
-export function labelledContactLines(body: string, label: string): string[] {
-  const lines: string[] = []; let sectionLevel = 0;
-  for (const line of body.split("\n").map(row => row.trim())) {
-    const heading = /^(#{1,6})\s/.exec(line)?.[1]?.length;
-    if (heading) sectionLevel = line.includes(label) ? heading : heading <= sectionLevel ? 0 : sectionLevel;
-    if (line && (sectionLevel > 0 || line.includes(label))) lines.push(line);
-  }
-  return lines;
+/** Contact details the later request asks for. Only these setup literals identify the contact section. */
+export function contactDetails(nonce: string) {
+  return { email: `contact-${nonce}@acorn-notes.example`, phone: `+1-555-${nonce.replace(/\D/g, "").slice(-4).padStart(4, "0")}` };
 }
 /**
- * None of the contact-section lines the consuming run saved survives in the final revision. The label may
- * still be cited elsewhere, for example in a note that records the removal; the plan's layout is not graded.
+ * The final revision keeps none of the requested contact details. The label and generic lines (for example a
+ * shared "use visible labels" bullet) may remain; the plan's layout is not graded.
  */
-export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, label: string) {
-  const added = label.length > 0 ? labelledContactLines(consumedBody, label) : [];
-  const kept = new Set((finalBody ?? "").split("\n").map(row => row.trim()));
-  return finalBody !== undefined && added.length > 0 && !added.some(line => kept.has(line));
+export function documentContactRemoved(finalBody: string | undefined, details: readonly string[]) {
+  return finalBody !== undefined && details.length > 0 && details.every(detail => detail.length > 0 && !finalBody.includes(detail));
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -104,7 +93,8 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     await ctx.input.capture("actual-human-contact-discard", "Only the eligible contact request has left the real task queue", "runtime-discard.png");
     // This new, explicit human request is a distinct later instruction. It
     // deliberately reaches delivery before its cancellation.
-    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. Keep the accessible-font requirement and finish this task.`;
+    const contact = contactDetails(ctx.input.nonce);
+    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}, listing the email ${contact.email} and the phone ${contact.phone}. Keep the accessible-font requirement and finish this task.`;
     await submitTaskReply(ctx.input.page, secondText);
     const secondQueue = await pollUntil({ label: "Distinct human contact request genuinely queued", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), accept: q => q.entries.length === 2 && q.entries.some(row => row.comment.body === secondText) });
@@ -156,16 +146,16 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
     state.initialRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id);
-    // The consumed request asked for a contact section labelled with the attempt nonce. Its consuming run
-    // must have saved that label, and the cancellation run's latest plan must drop the section it added.
-    const label = ctx.input.nonce, worker = (state.worker as Entity).id;
-    const consumed = o.revisions.filter(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
+    // The consumed request asked for a contact section with the setup's email and phone. Its consuming run
+    // must have saved the email, and the cancellation run's latest plan must keep neither detail.
+    const contact = contactDetails(ctx.input.nonce), worker = (state.worker as Entity).id;
+    const consumed = o.revisions.filter(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(contact.email));
     state.consumedLabelSaved = consumed.length > 0;
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
     state.finalPlanWithoutContact = latest.length > 0 && consumed.every(row => {
       const doc = o.documents.find(d => d.id === row.documentId);
-      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, label);
+      return documentContactRemoved(o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, [contact.email, contact.phone]);
     });
     return o;
   },
