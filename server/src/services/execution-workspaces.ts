@@ -1864,6 +1864,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function prepareTaskWorkspaceUpdate(input: {
     companyId: string; issueId: string; patch: TaskWorkspaceBindingPatch;
+    stoppedRun?: { runId: string; stopId: string };
   }, tx: DbTransaction) {
     const [task] = await measureRunPhase("workspace.row_lock", () => tx.select().from(issues).where(and(
       eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
@@ -1881,7 +1882,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`,
         task.executionRunId ? eq(heartbeatRuns.id, task.executionRunId) : undefined),
     )).limit(1);
-    const unsettled = await hasPendingTaskWorkspaceRecovery(tx, input);
+    const keepsBinding = (["executionWorkspaceId", "projectWorkspaceId"] as const)
+      .every(field => input.patch[field] === undefined || input.patch[field] === task[field]);
+    const [stoppedByThisUpdate] = input.stoppedRun && keepsBinding
+      ? await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.stoppedRun.runId),
+        eq(heartbeatRuns.status, "cancelled"),
+        sql`${heartbeatRuns.resultJson}->>'issueMutationStopId' = ${input.stoppedRun.stopId}`,
+      )).limit(1)
+      : [];
+    const unsettled = await hasPendingTaskWorkspaceRecovery(tx, {
+      companyId: input.companyId, issueId: input.issueId, excludeRunId: stoppedByThisUpdate?.id,
+    });
     if (holder || unsettled) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
     const [selectedWorkspace] = input.patch.executionWorkspaceId
       ? await tx.select({ projectWorkspaceId: executionWorkspaces.projectWorkspaceId }).from(executionWorkspaces).where(and(

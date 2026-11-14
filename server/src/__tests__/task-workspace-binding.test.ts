@@ -715,6 +715,65 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 
+  describe("workspace settings in the update that stops the caller's run", () => {
+    let isolatedWorkspacesEnabled: boolean;
+    beforeAll(async () => {
+      isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    });
+    afterAll(async () => { await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: isolatedWorkspacesEnabled }); });
+    const nextSettings = { mode: "isolated_workspace" as const,
+      workspaceStrategy: { type: "git_worktree" as const, baseRef: "origin/feature/x" } };
+    async function finalizingRun(f: Awaited<ReturnType<typeof fixture>>, agentId: string, resultJson: Record<string, unknown>) {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId,
+        nativeIssueId: f.issueId, runtimeMode: "native", status: "cancelled", resultJson,
+        contextSnapshot: { issueId: f.issueId }, finishedAt: new Date() }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId: run.id,
+        phase: "applied", leaseOwner: "controller" });
+      await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: run.id, executionWorkspaceId: f.workspaceId, status: "active" });
+      return run;
+    }
+    async function handOver() {
+      const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+      await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Repository" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issueId));
+      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Outgoing worker" }).returning();
+      const [nextAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Incoming worker" }).returning();
+      const stopId = randomUUID();
+      const run = await finalizingRun(f, agent.id, { reassignmentStopConfirmed: true, issueMutationStopId: stopId });
+      const caller = { actorAgentId: agent.id, actorRunId: run.id, actorRunStopId: stopId };
+      return { ...f, svc, tasks, agent, nextAgent, run, caller };
+    }
+
+    it("stores the settings with the reassignment while the stopped run still finalizes", async () => {
+      const f = await handOver();
+      await f.tasks.update(f.issueId, { assigneeAgentId: f.nextAgent.id, executionWorkspaceSettings: nextSettings, ...f.caller });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({
+        assigneeAgentId: f.nextAgent.id, executionWorkspaceSettings: nextSettings,
+        executionWorkspaceId: f.workspaceId, workspaceBindingRevision: 2,
+      });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
+        .toMatchObject({ phase: "applied", leaseOwner: "controller" });
+    });
+
+    it.each(["another actor", "a different stop", "another finalizing run", "another running run", "a binding change"] as const)(
+      "keeps the conflict for %s", async (reason) => {
+        const f = await handOver();
+        if (reason === "another finalizing run") await finalizingRun(f, f.nextAgent.id, {});
+        if (reason === "another running run") await db.insert(heartbeatRuns).values({ companyId: f.companyId,
+          agentId: f.nextAgent.id, status: "running", nativeIssueId: f.issueId, contextSnapshot: { issueId: f.issueId } });
+        const caller = reason === "another actor" ? {}
+          : reason === "a different stop" ? { ...f.caller, actorRunStopId: randomUUID() } : f.caller;
+        const patch = reason === "a binding change" ? { executionWorkspaceId: null } : { executionWorkspaceSettings: nextSettings };
+        await expect(f.tasks.update(f.issueId, { ...patch, ...caller })).rejects.toThrow("still owns its workspace");
+        expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({
+          executionWorkspaceSettings: null, executionWorkspaceId: f.workspaceId, workspaceBindingRevision: 1,
+        });
+      });
+  });
+
   it("defaults app and chat tasks to independent directories without hydrating legacy agent files", async () => {
     const f = await fixture();
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "task-workspace-default-"));
