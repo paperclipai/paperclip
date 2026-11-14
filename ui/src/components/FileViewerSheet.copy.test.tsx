@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,11 +127,9 @@ describe("FileViewerSheet copy actions", () => {
   async function click(label: string) {
     const button = document.body.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement | null;
     expect(button).not.toBeNull();
-    flushSync(() => {
+    await act(async () => {
       button!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
   it("copies file contents and shows confirmation", async () => {
