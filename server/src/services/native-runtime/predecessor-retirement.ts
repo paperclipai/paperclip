@@ -56,6 +56,7 @@ export type PredecessorRetirementFallback = {
   providerWorkStarted: false;
   predecessorRunId: string | null;
   replacedProviderLeaseIds: string[];
+  issueStatusAtFailure?: string;
 };
 
 export function readPredecessorRetirementFallback(resultJson: unknown): PredecessorRetirementFallback | null {

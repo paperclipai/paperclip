@@ -513,7 +513,7 @@ dispatch finds the person wakes that joined or were adopted by each queued run
 through it, so the read is bounded by the queue size, not by the agent's wake
 history.
 
-Migration 0486 builds `company_skill_versions_security_approval_idx` concurrently.
+Migration 0487 builds `company_skill_versions_security_approval_idx` concurrently.
 It keys skill versions by `security_approval_id`, partial on a non-null approval.
 Deleting a skill removes the approval records its versions used once no other
 version uses them, and that check reads the index instead of every version.

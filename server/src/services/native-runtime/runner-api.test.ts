@@ -7,6 +7,7 @@ import {
 import {
   executeRunnerApi,
   readBoundedResponse,
+  RUNNER_API_CALL_HEADER,
   runnerApiUrl,
   validateRunnerApiCall,
   type RunnerApiCall,
@@ -76,6 +77,15 @@ describe("capped list pagination", () => {
   it("adds nothing for routes that do not page", async () => {
     const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
     expect(result).not.toHaveProperty("pagination");
+  });
+});
+
+describe("runner call identity", () => {
+  it.each([[createProject, "call-key-a"], [projects, null]] as const)("sends the call key only with mutations: %s", async (operationId, expected) => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response("{}", { headers: { "content-type": "application/json" } }));
+    await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Keyed" } } : {}) }, context,
+      { ...io(fetcher as unknown as typeof fetch), callKey: "call-key-a" });
+    expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get(RUNNER_API_CALL_HEADER)).toBe(expected);
   });
 });
 

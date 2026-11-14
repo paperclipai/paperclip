@@ -8,6 +8,7 @@ import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/
 import {
   nextWarmSandboxStopAt,
   stopWarmSandboxesPastWindow,
+  WARM_SANDBOX_IDLE_CLOSE_MARGIN_MS,
   WARM_SANDBOX_IDLE_TIMEOUT_KEY,
   warmSandboxWindowMetadata,
 } from "../services/warm-sandbox-expiry.js";
@@ -81,14 +82,14 @@ suite("warm sandbox expiry", () => {
     expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 0 });
     expect(await row(leaseId)).toEqual(before);
 
-    const windowEnd = before.lastUsedAt.getTime() + 5 * MINUTE;
+    const windowEnd = before.lastUsedAt.getTime() + 5 * MINUTE + WARM_SANDBOX_IDLE_CLOSE_MARGIN_MS;
     expect(await nextWarmSandboxStopAt(db)).toBe(windowEnd);
     // The cleanup worker sleeps until exactly that deadline: no interval scan.
     expect(await nextEnvironmentCleanupAt(db)).toBe(windowEnd);
   });
 
   it("stops a sandbox once its warm window has passed and keeps it for the next turn", async () => {
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE, windowMs: 5 * MINUTE });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE, windowMs: 5 * MINUTE });
 
     expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 1 });
     const stopping = await row(leaseId);
@@ -99,8 +100,21 @@ suite("warm sandbox expiry", () => {
     expect(await nextWarmSandboxStopAt(db)).toBeNull();
   });
 
+  it("leaves the host's idle close of the warm runner time to finish before stopping its sandbox", async () => {
+    const closing = await warmRetained({ releasedAgoMs: 5 * MINUTE + 3_000, windowMs: 5 * MINUTE });
+    const before = await row(closing);
+
+    expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 0 });
+    expect(await row(closing)).toEqual(before);
+    expect(await nextWarmSandboxStopAt(db)).toBeGreaterThanOrEqual(before.lastUsedAt.getTime() + 5 * MINUTE + 90_000);
+
+    await db.update(environmentLeases).set({ lastUsedAt: new Date(Date.now() - 5 * MINUTE - WARM_SANDBOX_IDLE_CLOSE_MARGIN_MS - 1_000) })
+      .where(eq(environmentLeases.id, closing));
+    expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 1 });
+  });
+
   it("stops the sandbox at the provider through the cleanup sweep", async () => {
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE, windowMs: 5 * MINUTE });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE, windowMs: 5 * MINUTE });
     const teardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>
       ({ providerLeaseId: lease.providerLeaseId, state: "stopped" }));
 
@@ -118,7 +132,7 @@ suite("warm sandbox expiry", () => {
 
   it("keeps a sandbox past its window while a live run holds it", async () => {
     const providerLeaseId = `sandbox://fake/${randomUUID()}`;
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE, providerLeaseId });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE, providerLeaseId });
     const liveRun = await run("running");
     await db.insert(environmentLeases).values({ companyId, environmentId, issueId, heartbeatRunId: liveRun,
       status: "active", leasePolicy: "reuse_by_environment", provider: "fake", providerLeaseId,
@@ -132,7 +146,7 @@ suite("warm sandbox expiry", () => {
   });
 
   it("keeps a sandbox past its window while a run on the task is starting", async () => {
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE });
     await run("running");
     const before = await row(leaseId);
 
@@ -141,7 +155,7 @@ suite("warm sandbox expiry", () => {
   });
 
   it("keeps a sandbox whose own run has not ended", async () => {
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE, runStatus: "running" });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE, runStatus: "running" });
 
     expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 0 });
     expect((await row(leaseId)).status).toBe("retained");
@@ -150,7 +164,7 @@ suite("warm sandbox expiry", () => {
   it("leaves a plugin Runner task lease to its own cleanup", async () => {
     // Its release path does not use the stop-only contract, so expiry must not
     // hand it over: the plugin could free the allocation and the task's files.
-    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE });
+    const leaseId = await warmRetained({ releasedAgoMs: 8 * MINUTE });
     await db.update(environmentLeases).set({ metadata: { driver: "plugin", pluginId: "fake-plugin",
       runnerTaskLease: true, [WARM_SANDBOX_IDLE_TIMEOUT_KEY]: 5 * MINUTE } }).where(eq(environmentLeases.id, leaseId));
     const before = await row(leaseId);
@@ -178,7 +192,7 @@ suite("warm sandbox expiry", () => {
     expect(await row(leaked)).toMatchObject({ status: "released", cleanupStatus: "success" });
     expect((await row(recent)).status).toBe("retained");
     const recentRow = await row(recent);
-    expect(await nextWarmSandboxStopAt(db)).toBe(recentRow.lastUsedAt.getTime() + 24 * HOUR);
+    expect(await nextWarmSandboxStopAt(db)).toBe(recentRow.lastUsedAt.getTime() + 24 * HOUR + WARM_SANDBOX_IDLE_CLOSE_MARGIN_MS);
   });
 
   it("records the run's warm window on the lease only for a warm run", () => {

@@ -40,3 +40,7 @@ export { createKvDemoHttpServer } from "./http.js";
 export type { KvDemoHttpServer, KvDemoHttpOptions } from "./http.js";
 export { readConfigFromEnv } from "./config.js";
 export type { KvDemoConfig } from "./config.js";
+export { createTasksDemoHttpServer, handleTasksDemoRpc, PROTOCOL_VERSION as TASKS_DEMO_PROTOCOL_VERSION, TASKS_EXTENSION_ID } from "./tasks/http.js";
+export type { TasksDemoHttpServer, TasksDemoHttpOptions } from "./tasks/http.js";
+export { DemoTaskStore } from "./tasks/store.js";
+export type { DemoTask, DemoTaskStatus, DemoState } from "./tasks/store.js";

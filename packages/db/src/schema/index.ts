@@ -194,6 +194,7 @@ export {
   toolMcpSkills,
   toolMcpSkillFiles,
   toolMcpTasks,
+  toolMcpElicitations,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,
