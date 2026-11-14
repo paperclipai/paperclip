@@ -3,7 +3,7 @@ import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
-import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -1209,8 +1209,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
-        await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: run.companyId, runId: run.id });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -2068,7 +2068,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
 
     const updated = await db.transaction(async (tx) => {
-      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId, runId: scheduled.run.id });
       const row = await tx
         .update(heartbeatRuns)
         .set({
