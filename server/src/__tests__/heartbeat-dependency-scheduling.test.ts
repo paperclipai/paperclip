@@ -1704,4 +1704,119 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  it("admits and claims a pending review stage participant past open blockers while keeping non-participants blocked", async () => {
+    const companyId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const stageId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values([
+      {
+        id: reviewerAgentId,
+        companyId,
+        name: "Reviewer",
+        role: "qa",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Builder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Merge gate",
+        status: "todo",
+        issueNumber: 1,
+        identifier: "REV-1",
+      },
+      {
+        id: reviewIssueId,
+        companyId,
+        title: "Review PR",
+        status: "in_review",
+        assigneeAgentId: reviewerAgentId,
+        issueNumber: 2,
+        identifier: "REV-2",
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: otherAgentId, userId: null },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: reviewIssueId,
+      type: "blocks",
+    });
+
+    const nonParticipantWake = await heartbeat.wakeup(otherAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId: reviewIssueId },
+      contextSnapshot: { issueId: reviewIssueId, wakeReason: "issue_continuation_needed" },
+    });
+    expect(nonParticipantWake).toBeNull();
+
+    const [blockedWake] = await db
+      .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, otherAgentId)));
+    expect(blockedWake).toMatchObject({ reason: "issue_dependencies_blocked", status: "skipped" });
+
+    mockAdapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Review completed.",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    const reviewerWake = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "execution_review_requested",
+      payload: { issueId: reviewIssueId },
+      contextSnapshot: { issueId: reviewIssueId, wakeReason: "execution_review_requested" },
+    });
+    expect(reviewerWake).not.toBeNull();
+
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => {
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, reviewerWake!.id));
+      return run?.status === "succeeded";
+    }, 30_000)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+  }, 40_000);
 });

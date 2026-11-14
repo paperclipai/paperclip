@@ -3749,6 +3749,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              executionState: issues.executionState,
               createdAt: issues.createdAt,
             })
             .from(issues)

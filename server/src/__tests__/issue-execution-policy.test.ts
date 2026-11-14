@@ -2325,7 +2325,7 @@ describe("review round circuit breaker", () => {
   it("identifies the active pending stage agent participant only while in_review", () => {
     const state: IssueExecutionState = {
       status: "pending",
-      currentStageId: "stage-1",
+      currentStageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       currentStageIndex: 0,
       currentStageType: "review",
       currentParticipant: { type: "agent", agentId: qaAgentId, userId: null },
