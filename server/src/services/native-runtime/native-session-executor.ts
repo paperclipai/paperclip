@@ -41,6 +41,7 @@ import { notifyExternalAgentSettlement } from "../../modules/external-agents/ind
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
+import { isLeavingRunStartsToReplacement, subscribeRunStartHandoverChanges } from "../run-start-handover.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -929,6 +930,21 @@ export function readNativeSessionIdleWork(): IdleLocalWork {
     ? "present" : "none";
 }
 registerIdleLocalWorkProbe(readNativeSessionIdleWork);
+
+export const WARM_HANDOFF_CLOSE_DELAY_MS = 1_000;
+
+function warmIdleCloseDelay(idleTimeoutMs: number): number {
+  return isLeavingRunStartsToReplacement() ? Math.min(idleTimeoutMs, WARM_HANDOFF_CLOSE_DELAY_MS) : idleTimeoutMs;
+}
+
+subscribeRunStartHandoverChanges(() => {
+  if (!isLeavingRunStartsToReplacement()) return;
+  for (const [sessionId, entry] of warmNativeSessions) {
+    if (entry.busy || entry.idleTimer === null) continue;
+    clearTimeout(entry.idleTimer);
+    armWarmNativeSessionIdleTimer(sessionId, entry, WARM_HANDOFF_CLOSE_DELAY_MS);
+  }
+});
 
 /**
  * How long a new run's admission waits for the warm session to stop being busy.
@@ -8775,7 +8791,7 @@ async function releaseWarmNativeSession(
     } finally { entry.busy = false; }
     return;
   }
-  armWarmNativeSessionIdleTimer(sessionId, entry, idleTimeoutMs);
+  armWarmNativeSessionIdleTimer(sessionId, entry, warmIdleCloseDelay(idleTimeoutMs));
 }
 
 function armWarmNativeSessionIdleTimer(
@@ -13774,7 +13790,7 @@ async function executePaperclipNativeSessionAttempt(
             if (current()) {
               delete entry.finishRelease;
               entry.busy = false;
-              armWarmNativeSessionIdleTimer(scope, entry, lifecyclePolicy.idleTimeoutMs);
+              armWarmNativeSessionIdleTimer(scope, entry, warmIdleCloseDelay(lifecyclePolicy.idleTimeoutMs));
             }
           }
         };
