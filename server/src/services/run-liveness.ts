@@ -37,6 +37,7 @@ export interface RunLivenessClassificationInput {
   error?: string | null;
   errorCode?: string | null;
   continuationAttempt?: number | null;
+  contextSnapshot?: Record<string, unknown> | null;
   evidence?: Partial<RunLivenessEvidenceInput> | null;
   /** Set by the controller only after creating a durable connection card. */
   authenticationRepairRequested?: boolean;
@@ -340,6 +341,13 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (declaredBlocker(input)) {
     return output("blocked", issueStatus === "blocked" ? "Issue status is blocked" : "Run output declared a concrete blocker", nextAction);
+  }
+
+  if (
+    (issueStatus === "todo" || issueStatus === "in_progress") &&
+    input.contextSnapshot?.source === "issue.deliberate_wait_disposition_repair"
+  ) {
+    return output("needs_followup", "Disposition repair left source work open; control-plane activity does not prove deliverable progress", nextAction);
   }
 
   if (!usefulOutput && !concreteEvidence) {

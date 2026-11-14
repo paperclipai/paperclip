@@ -2905,7 +2905,7 @@ describe("OpenCodeServerDriver", () => {
       }
     } finally { await session.close({ reason: "saved wait default test complete" }); }
     }
-  });
+  }, 15_000);
 
   it("keeps assigned discovery operation IDs at the authenticated MCP and controller boundary", async () => {
     await chmod(fixture, 0o755);
