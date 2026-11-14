@@ -8,6 +8,8 @@ import {
 } from "@paperclipai/shared/telemetry";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { isCloudManagedInstance } from "./cloud-instance.js";
+import { recordConnectorUsedCloudProductEvent } from "./cloud-product-events.js";
 
 type ToolConnectionRow = typeof toolConnections.$inferSelect;
 type ToolInvocationRow = typeof toolInvocations.$inferSelect;
@@ -181,9 +183,9 @@ export async function emitConnectionInvoked(
   invocationId: string,
 ): Promise<void> {
   try {
-    const client = getTelemetryClient();
-    if (!client) return;
-    if (!client.isRegisteredEventName("connection.invoked")) return;
+    const telemetryClient = getTelemetryClient();
+    const client = telemetryClient?.isRegisteredEventName("connection.invoked") ? telemetryClient : null;
+    if (!client && !isCloudManagedInstance()) return;
 
     const joined = await db
       .select({ invocation: toolInvocations, connection: toolConnections })
@@ -198,6 +200,18 @@ export async function emitConnectionInvoked(
     const { invocation, connection } = joined;
     if (!TERMINAL_INVOCATION_STATUSES.has(invocation.status)) return;
     if (!isToolPurpose(connection)) return;
+
+    void recordConnectorUsedCloudProductEvent(db, {
+      companyId: invocation.companyId,
+      connectionId: connection.id,
+      connectorKey: connectorKeyForConnection(connection),
+      status: invocation.status,
+      actorType: invocation.actorType,
+      actorId: invocation.actorId ?? invocation.agentId,
+      runId: invocation.runId,
+      issueId: invocation.issueId,
+    });
+    if (!client) return;
 
     const startedAtMs = invocation.startedAt
       ? new Date(invocation.startedAt).getTime()

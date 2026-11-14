@@ -121,6 +121,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { recordDirectCloudProductEvent } from "./cloud-product-events.js";
 import { resolveDeploymentMode } from "../config-file.js";
 import {
   logActivity,
@@ -2764,9 +2765,26 @@ export function issueThreadInteractionService(
         continuationIssue,
       };
     });
+    const approvedPlan = result.interaction.kind === "request_confirmation"
+      ? readAcceptedPlanConfirmationTarget(result.interaction.payload, args.issue.id)
+      : null;
+    const planApproverUserId = approvedPlan?.key === "plan" && approvedPlan.issueId === args.issue.id && !args.actor.systemId
+      ? (args.actor.agentId ? args.actor.relayedHumanUserId : args.actor.userId) ?? null
+      : null;
     const publish = async (committedDb: Db) => {
       for (const publication of postCommitActivityPublications) publishActivity(publication);
       await emitInteractionResolvedTelemetry(committedDb, result.interaction);
+      if (planApproverUserId) {
+        void recordDirectCloudProductEvent(committedDb, {
+          name: "plan.approved",
+          companyId: args.issue.companyId,
+          actorType: "user",
+          actorId: planApproverUserId,
+          responsibleUserId: planApproverUserId,
+          entityType: "issue",
+          entityId: args.issue.id,
+        });
+      }
     };
     if (args.mutationOptions?.deferConfirmationCommitEffects) args.mutationOptions.deferConfirmationCommitEffects(publish);
     else await publish(db);

@@ -456,6 +456,7 @@ export const CLOUD_CONTROL_ACTIONS = [
   "lifecycle:read",
   "lifecycle:unarchive-primary",
   "connector-events:wake",
+  "product-events:read",
   "mcp-device:mint",
   "mcp-dot:principal",
 ] as const;

@@ -1,5 +1,5 @@
 import { toolConnections, toolInvocations, type Db } from "@paperclipai/db";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const track = vi.fn();
 const isRegisteredEventName = vi.fn(() => true);
@@ -10,6 +10,12 @@ let telemetryClient: {
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => telemetryClient,
+}));
+
+const recordConnectorUsedCloudProductEvent = vi.fn(async () => true);
+
+vi.mock("./cloud-product-events.js", () => ({
+  recordConnectorUsedCloudProductEvent,
 }));
 
 const {
@@ -39,6 +45,9 @@ function connectionRow(overrides: Record<string, unknown> = {}): ToolConnectionR
 function invocationRow(overrides: Record<string, unknown> = {}): ToolInvocationRow {
   return {
     id: "inv-1",
+    companyId: "company-1",
+    actorId: null,
+    agentId: "agent-1",
     connectionId: "conn-1",
     status: "succeeded",
     actorType: "agent",
@@ -83,6 +92,11 @@ beforeEach(() => {
   isRegisteredEventName.mockReset();
   isRegisteredEventName.mockReturnValue(true);
   telemetryClient = { track, isRegisteredEventName };
+  recordConnectorUsedCloudProductEvent.mockClear();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("connectorKeyForConnection", () => {
@@ -265,5 +279,52 @@ describe("emitConnectionInvoked", () => {
     await emitConnectionInvoked(db, "inv-1");
     expect(db.selectCalls()).toBe(1);
     expect(track).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a finished tool connection use to the Cloud product event record on a Cloud-managed instance", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    const db = fakeDb(invocationRow({ status: "failed" }), connectionRow({ name: "Private connection name" }));
+    await emitConnectionInvoked(db, "inv-1");
+    expect(db.selectCalls()).toBe(1);
+    expect(track).toHaveBeenCalledTimes(1);
+    expect(recordConnectorUsedCloudProductEvent).toHaveBeenCalledExactlyOnceWith(db, {
+      companyId: "company-1",
+      connectionId: "conn-1",
+      connectorKey: "github",
+      status: "failed",
+      actorType: "agent",
+      actorId: "agent-1",
+      runId: "run-1",
+      issueId: "issue-1",
+    });
+  });
+
+  it("hands the use to the Cloud product event record when telemetry is off or the event name is unregistered", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    isRegisteredEventName.mockReturnValue(false);
+    await emitConnectionInvoked(fakeDb(invocationRow(), connectionRow({ config: { sourceTemplateKey: "my-internal-server" } })), "inv-1");
+    telemetryClient = null;
+    await emitConnectionInvoked(fakeDb(invocationRow(), connectionRow()), "inv-1");
+    expect(track).not.toHaveBeenCalled();
+    expect(recordConnectorUsedCloudProductEvent.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+      expect.objectContaining({ connectorKey: "custom" }),
+      expect.objectContaining({ connectorKey: "github" }),
+    ]);
+  });
+
+  it("hands no in-flight, missing, or non-tool use to the Cloud product event record", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    await emitConnectionInvoked(fakeDb(invocationRow({ status: "awaiting_approval" }), connectionRow()), "inv-1");
+    await emitConnectionInvoked(fakeDb(invocationRow(), connectionRow({ connectionPurpose: "channel" })), "inv-1");
+    await emitConnectionInvoked(fakeDb(null, null), "inv-missing");
+    expect(recordConnectorUsedCloudProductEvent).not.toHaveBeenCalled();
+  });
+
+  it("reads nothing for the Cloud product event record on a self-hosted instance", async () => {
+    telemetryClient = null;
+    const db = fakeDb(invocationRow(), connectionRow());
+    await emitConnectionInvoked(db, "inv-1");
+    expect(db.selectCalls()).toBe(0);
+    expect(recordConnectorUsedCloudProductEvent).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { recordRunFinishedCloudProductEvent } from "./cloud-product-events.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type TelemetryRun = Pick<HeartbeatRun,
@@ -55,6 +56,7 @@ function resolveDurationSeconds(
  * remove the delay.
  */
 export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void> {
+  void recordRunFinishedCloudProductEvent(db, run.id);
   try {
     const client = getTelemetryClient();
     if (!client) return;

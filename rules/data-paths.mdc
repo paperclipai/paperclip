@@ -1,20 +1,21 @@
 ---
-description: Keep Telemetry, Observability, and the run log distinct, and apply the review level that matches the path a change touches.
-globs: "packages/shared/src/telemetry/**,server/src/instrumentation.ts,doc/observability.md,packages/adapter-utils/src/duplex-observability.ts,server/src/services/duplex-observability-recorder.ts,packages/adapter-utils/src/acpx-engine/startup-timing.ts,doc/run-log-events.md,packages/db/src/schema/heartbeat_run_events.ts,server/src/services/heartbeat.ts"
+description: Keep Telemetry, Observability, the run log, and Cloud product events distinct, and apply the review level that matches the path a change touches.
+globs: "packages/shared/src/telemetry/**,server/src/instrumentation.ts,doc/observability.md,packages/adapter-utils/src/duplex-observability.ts,server/src/services/duplex-observability-recorder.ts,packages/adapter-utils/src/acpx-engine/startup-timing.ts,doc/run-log-events.md,packages/db/src/schema/heartbeat_run_events.ts,server/src/services/heartbeat.ts,doc/cloud-product-events.md,packages/db/src/schema/cloud_product_events.ts,server/src/services/cloud-product-events.ts,server/src/routes/cloud-product-events.ts"
 alwaysApply: false
 ---
 
-# Three data paths
+# Four data paths
 
 ## Scope and purpose
 
-This repo has three separate data paths. Do not confuse them. Match a change to
+This repo has four separate data paths. Do not confuse them. Match a change to
 a path by its file path, not by the word "observability" or "telemetry" alone.
 
 This rule also applies to any file that adds or changes a caller of
 `packages/shared/src/telemetry/events.ts` or
 `packages/shared/src/telemetry/client.ts`, even when that file is outside the
-globs above.
+globs above. It also applies to any file that adds or changes a caller of a
+direct record function in `server/src/services/cloud-product-events.ts`.
 
 ## The paths
 
@@ -36,6 +37,14 @@ globs above.
   - `doc/run-log-events.md`
   - `packages/db/src/schema/heartbeat_run_events.ts`
   - the append path `appendRunEvent` in `server/src/services/heartbeat.ts`
+- **Cloud product events** are rows in the local `cloud_product_events` table.
+  Only a Paperclip Cloud instance writes them, and only Paperclip Cloud can read
+  them, through a signed Cloud control request. Its paths are:
+  - `doc/cloud-product-events.md`
+  - `packages/db/src/schema/cloud_product_events.ts`
+  - `server/src/services/cloud-product-events.ts`
+  - `server/src/routes/cloud-product-events.ts`
+  - each caller of a direct record function in `server/src/services/cloud-product-events.ts`
 
 ## Requirements
 
@@ -53,6 +62,13 @@ Apply a review level that matches the path:
 - **Run-log change (no extra review).** A run-log change needs neither review
   level above, because the data stays in the instance database. Update
   `doc/run-log-events.md` when an event is added or changed.
+- **Cloud product event change (strict review).** The Cloud-managed instance
+  gate stays in place. The read endpoint stays behind the
+  `product-events:read` Cloud control action. An event holds fixed values and
+  identifiers only, never free text. The author updates the closed event list
+  and `doc/cloud-product-events.md` in the same pull request. The author
+  requests a privacy review. Reason: Paperclip Cloud reads these events and
+  links them to an organization.
 
 ## Exclusion
 
@@ -67,4 +83,7 @@ lacks the generated-contract update, the README update, or a privacy review
 request. Flag an Observability change that emits without the operator endpoint
 or adds a span attribute outside the allowlist. Flag data described as
 "telemetry" or "observability" that is actually written to a different path. Do
-not request a privacy review for a run-log-only change.
+not request a privacy review for a run-log-only change. Flag a Cloud product
+event change that writes on a self-hosted instance, stores free text, opens the
+read endpoint to another actor, or lacks the document update or a privacy
+review request.

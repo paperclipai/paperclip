@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
-  activityLog, agentInstructionWorkingCopies, agents, agentWakeupRequests, companies,
+  activityLog, agentInstructionWorkingCopies, agents, agentWakeupRequests, cloudProductEvents, companies,
   createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, heartbeatRuns,
   issues, nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createHeartbeatAgentStatus, settledAgentWorkCondition } from "./agent-status.js";
@@ -44,6 +44,7 @@ describePostgres("heartbeat agent status", () => {
     await db.delete(agents);
     await db.delete(companies);
   });
+  afterEach(() => { vi.unstubAllEnvs(); });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   async function seed(status = "interrupted") {
@@ -322,5 +323,31 @@ describePostgres("heartbeat agent status", () => {
     const { agentId } = await seed("failed");
     await service.finalizeAgentStatus(agentId, "failed", "Retrying", { keepIdleOnFailure: true });
     expect(await agent(agentId)).toMatchObject({ status: "idle", errorReason: null });
+  });
+
+  it("records an agent.first_run Cloud product event one time, on a Cloud-managed instance only", async () => {
+    const selfHosted = await seed("succeeded");
+    await service.finalizeAgentStatus(selfHosted.agentId, "succeeded");
+
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    const { agentId, companyId, runId } = await seed("succeeded");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "user-owner" }).where(eq(heartbeatRuns.id, runId));
+    await service.finalizeAgentStatus(agentId, "succeeded");
+    await vi.waitFor(async () => {
+      expect(await db.select().from(cloudProductEvents)).toHaveLength(1);
+    });
+    await service.finalizeAgentStatus(agentId, "succeeded");
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    expect(await db.select().from(cloudProductEvents)).toEqual([expect.objectContaining({
+      companyId,
+      name: "agent.first_run",
+      actorType: "agent",
+      actorId: agentId,
+      responsibleUserId: "user-owner",
+      entityType: "agent",
+      entityId: agentId,
+      properties: { role: "engineer", adapterType: "process" },
+    })]);
   });
 });
