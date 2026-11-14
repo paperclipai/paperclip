@@ -6,6 +6,7 @@ import {
   type DiscoveryCategory,
   type DiscoveryTab,
 } from "@/pages/CompanySkills";
+import type { SkillsLayout } from "@/pages/skills/skills-layout";
 
 type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
 const STORY_NOW = new Date("2026-08-31T12:00:00Z").getTime();
@@ -239,12 +240,15 @@ function cardsForTab(cards: DiscoveryCard[], tab: DiscoveryTab): DiscoveryCard[]
 
 function DiscoveryGridHarness({
   initialTab = "installed",
+  initialLayout = "cards",
   cards = MOCK_CARDS,
 }: {
   initialTab?: DiscoveryTab;
+  initialLayout?: SkillsLayout;
   cards?: DiscoveryCard[];
 }) {
   const [tab, setTab] = useState<DiscoveryTab>(initialTab);
+  const [layout, setLayout] = useState<SkillsLayout>(initialLayout);
   const [sort, setSort] = useState<DiscoverySort>("agents");
   const [category, setCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -286,6 +290,8 @@ function DiscoveryGridHarness({
       onSearchChange={setSearch}
       sort={sort}
       onSortChange={setSort}
+      layout={layout}
+      onLayoutChange={setLayout}
       cards={visible}
       onOpenCard={() => {}}
       loading={false}
@@ -326,4 +332,6 @@ type Story = StoryObj<typeof DiscoveryGridHarness>;
 
 export const Installed: Story = { args: { initialTab: "installed" } };
 export const Discover: Story = { args: { initialTab: "discover" } };
+export const InstalledListLayout: Story = { args: { initialTab: "installed", initialLayout: "list" } };
+export const DiscoverListLayout: Story = { args: { initialTab: "discover", initialLayout: "list" } };
 export const EmptyInstalledLibrary: Story = { args: { initialTab: "installed", cards: [] } };

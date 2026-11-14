@@ -2,6 +2,8 @@ import { ToolbarSearch } from "@/components/ToolbarSearch";
 import type { ReactNode } from "react";
 import { ChevronDown, Compass, FolderSearch, Globe, Pencil, Plus, RefreshCw } from "lucide-react";
 import { Link } from "@/lib/router";
+import type { SkillsLayout } from "@/pages/skills/skills-layout";
+import { SkillsLayoutToggle } from "./SkillsLayoutToggle";
 import { cn } from "@/lib/utils";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { Button } from "@/components/ui/button";
@@ -27,6 +29,8 @@ export interface SkillsToolbarProps {
   onSearchChange: (value: string) => void;
   sort: DiscoverySort;
   onSortChange: (value: DiscoverySort) => void;
+  layout?: SkillsLayout;
+  onLayoutChange?: (layout: SkillsLayout) => void;
   availableSources: { value: string; label: string }[];
   sourceBadgeFilter: string;
   setSourceBadgeFilter: (value: string) => void;
@@ -44,7 +48,7 @@ export interface SkillsToolbarProps {
 }
 
 /** Shared shipped Skills controls. Canonical proposal: Components / Toolbars / Skills. */
-export function SkillsToolbar({ viewTitle, viewDescription, searchLabel, search, onSearchChange, sort, onSortChange, availableSources, sourceBadgeFilter, setSourceBadgeFilter, onScan, scanPending, onCreate, onBrowseDiscover, onImport, onImportFromProject, folderControl, onCreateFolder, selectMode, onToggleSelectMode, navigation }: SkillsToolbarProps) {
+export function SkillsToolbar({ viewTitle, viewDescription, searchLabel, search, onSearchChange, sort, onSortChange, layout, onLayoutChange, availableSources, sourceBadgeFilter, setSourceBadgeFilter, onScan, scanPending, onCreate, onBrowseDiscover, onImport, onImportFromProject, folderControl, onCreateFolder, selectMode, onToggleSelectMode, navigation }: SkillsToolbarProps) {
   return (
     <div data-canonical-toolbar="skills" role="toolbar" aria-label="Skills controls" className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
       <div className="w-full">
@@ -70,6 +74,7 @@ export function SkillsToolbar({ viewTitle, viewDescription, searchLabel, search,
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      {layout && onLayoutChange ? <SkillsLayoutToggle layout={layout} onLayoutChange={onLayoutChange} /> : null}
       {availableSources.length > 1 ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
