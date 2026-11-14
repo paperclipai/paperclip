@@ -21,6 +21,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { withRequestActor } from "../services/request-actor-context.js";
 
 type TableRows = Map<unknown, Array<Record<string, unknown>>>;
 
@@ -170,7 +171,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
+describeEmbeddedPostgres("logActivity attribution stamping", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -236,11 +237,53 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
     });
 
     const row = await db
-      .select({ responsibleUserId: activityLog.responsibleUserId })
+      .select({ responsibleUserId: activityLog.responsibleUserId, apiKeyId: activityLog.apiKeyId })
       .from(activityLog)
       .where(eq(activityLog.companyId, companyId))
       .then((rows) => rows[0]);
 
     expect(row?.responsibleUserId).toBe("key-user");
+    expect(row?.apiKeyId).toBe(agentApiKeyId);
+  });
+
+  it("stores a Board API key id and leaves session activity unkeyed", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Board",
+      issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await withRequestActor({ type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "user",
+        actorId: "board-key-user",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
+    await withRequestActor({ type: "board", userId: "session-user", source: "session" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "user",
+        actorId: "session-user",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { actorId: "board-key-user", apiKeyId: boardApiKeyId },
+      { actorId: "session-user", apiKeyId: null },
+    ]));
   });
 });

@@ -191,6 +191,31 @@ describeEmbeddedPostgres("cases routes", () => {
     isInstanceAdmin: true,
   };
 
+  it("stamps Board API key IDs on case change events", async () => {
+    await enableCases();
+    const company = await seedCompany("KEYED");
+    const created = await request(app(boardActor))
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "bug", title: "Credential telemetry" })
+      .expect(201);
+    const apiKeyId = randomUUID();
+    const keyedBoard: Express.Request["actor"] = {
+      ...boardActor,
+      source: "board_key",
+      keyId: apiKeyId,
+      companyIds: [company.id],
+    };
+
+    await request(app(keyedBoard))
+      .patch(`/api/cases/${created.body.id}`)
+      .send({ status: "in_progress" })
+      .expect(200);
+
+    const [event] = await db.select({ apiKeyId: caseEvents.apiKeyId }).from(caseEvents)
+      .where(eq(caseEvents.kind, "status_changed"));
+    expect(event?.apiKeyId).toBe(apiKeyId);
+  });
+
   it("gates every case route when enableCases is off", async () => {
     const company = await seedCompany("OFF");
     const [caseRow] = await db.insert(cases).values({
