@@ -20,6 +20,12 @@ export type PendingNativeReviewDecision =
 /** Decides the next step for a completion review that is still pending while
  * its reviewer agent has no live review run. Every recovery wake counts as an
  * attempt, also when dispatch refuses it and no run starts. */
+/** A deferred review wake waits for the run that holds its task. Without such
+ * a run, nothing releases the wake, so it does not count as live. */
+export function isLiveNativeReviewWake(input: { status: string; issueExecutionHeld: boolean }) {
+  return input.status !== "deferred_issue_execution" || input.issueExecutionHeld;
+}
+
 export function decidePendingNativeReview(input: {
   interactionCreatedAt: Date;
   reviewRuns: Array<{ status: string; finishedAt: Date | null; createdAt: Date }>;
@@ -70,9 +76,15 @@ export async function reconcilePendingNativeReviews(db: Db, scope: {
   onDeferredDeadline?: (at: number) => void;
 }, now = new Date()) {
   const result = { rewoken: 0, escalated: 0 };
-  const [issue] = await db.select({ id: issues.id, status: issues.status }).from(issues)
+  const [issue] = await db.select({ id: issues.id, status: issues.status, executionRunId: issues.executionRunId }).from(issues)
     .where(and(eq(issues.companyId, scope.companyId), eq(issues.id, scope.issueId)));
   if (!issue || issue.status !== "in_review") return result;
+  const [activeIssueRun] = issue.executionRunId ? [] : await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, scope.companyId),
+    eq(heartbeatRuns.issueId, scope.issueId),
+    inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
+  )).limit(1);
+  const issueExecutionHeld = Boolean(issue.executionRunId || activeIssueRun);
   const pending = await db.select().from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, scope.companyId),
     eq(issueThreadInteractions.issueId, scope.issueId),
@@ -91,12 +103,24 @@ export async function reconcilePendingNativeReviews(db: Db, scope: {
         eq(heartbeatRuns.agentId, reviewerId),
         sql`${heartbeatRuns.contextSnapshot}->>'nativeReviewInteractionId' = ${interaction.id}`,
       ));
-    const [pendingWake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    const pendingWakes = await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, scope.companyId),
       eq(agentWakeupRequests.agentId, reviewerId),
       inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
       sql`${agentWakeupRequests.payload}->>'nativeReviewInteractionId' = ${interaction.id}`,
-    )).limit(1);
+    ));
+    const pendingWake = pendingWakes.find(wake => isLiveNativeReviewWake({ status: wake.status, issueExecutionHeld }));
+    const strandedWakeIds = pendingWake ? [] : pendingWakes.map(wake => wake.id);
+    if (strandedWakeIds.length) {
+      await db.update(agentWakeupRequests).set({
+        status: "skipped", finishedAt: now, updatedAt: now,
+        error: "No run holds this task, so the deferred review wake was never released. Review recovery wakes the reviewer again.",
+      }).where(and(
+        eq(agentWakeupRequests.companyId, scope.companyId),
+        inArray(agentWakeupRequests.id, strandedWakeIds),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
+    }
     const recoveryWakes = await db.select({ createdAt: agentWakeupRequests.createdAt }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, scope.companyId),
       eq(agentWakeupRequests.agentId, reviewerId),

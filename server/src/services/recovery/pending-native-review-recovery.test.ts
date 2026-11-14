@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decidePendingNativeReview,
+  isLiveNativeReviewWake,
   NATIVE_REVIEW_IDLE_GRACE_MS,
   pendingNativeReviewEscalationBody,
 } from "./pending-native-review-recovery.js";
@@ -54,6 +55,18 @@ describe("decidePendingNativeReview", () => {
   it("escalates at once when the reviewer can no longer resolve the review", () => {
     expect(decidePendingNativeReview({ ...base, now: at(minute), reviewerCanResolve: false, reviewRuns: [] }))
       .toEqual({ kind: "escalate", attempts: 1, reason: "reviewer_unavailable" });
+  });
+});
+
+describe("isLiveNativeReviewWake", () => {
+  it("counts a queued or claimed review wake as live", () => {
+    expect(isLiveNativeReviewWake({ status: "queued", issueExecutionHeld: false })).toBe(true);
+    expect(isLiveNativeReviewWake({ status: "claimed", issueExecutionHeld: false })).toBe(true);
+  });
+
+  it("counts a deferred review wake as live only while a run holds the task", () => {
+    expect(isLiveNativeReviewWake({ status: "deferred_issue_execution", issueExecutionHeld: true })).toBe(true);
+    expect(isLiveNativeReviewWake({ status: "deferred_issue_execution", issueExecutionHeld: false })).toBe(false);
   });
 });
 
