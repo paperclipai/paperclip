@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { enableReattachPhase, joinReattachPhase, resetReattachPhaseForTests, settleReattachRun } from "../services/heartbeat/run-admission.js";
 import {
   activityLog, agents, agentTaskSessions, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueApprovals,
   issueRecoveryActions, issueRelations, issues, issueThreadInteractions, nativeRunFinalizations,
@@ -365,6 +366,33 @@ describePostgres("assigned-work invariant sweep", () => {
       .toMatchObject({ outcome: "settled_lost_run", verdict: { reason: "run_owner_gone" } });
     expect(settle).toHaveBeenCalledTimes(1);
     expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+
+  it("takes no action while handed-over live runs are being reached, and acts once the phase ends", async () => {
+    const f = await seedCompany();
+    const otherBoot = randomUUID();
+    const controllerProcess = { bootId: otherBoot, pid: 4242, hostHash: "host-b", processStartedAt: new Date(Date.now() - HOUR).toISOString() };
+    const lapsed = await f.issue();
+    await f.run(lapsed, { status: "running", errorCode: null, finishedAt: null, controllerBootId: otherBoot, controllerProcess,
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000) });
+    const queue = wakeQueue();
+    const settle = vi.fn(async () => undefined);
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, settleLostRunProcess: settle,
+      proveOwner: async () => ({ verdict: "gone", reason: "controller_stopped" }) });
+    try {
+      enableReattachPhase(180_000);
+      joinReattachPhase([{ runId: "handed-over-live-run", reason: "handed_over", claimableAt: Date.now() }]);
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId: lapsed }))
+        .toMatchObject({ outcome: "deferred_reattach_phase", verdict: { reason: "run_owner_gone" } });
+      expect(settle).not.toHaveBeenCalled();
+      expect(queue.calls).toHaveLength(0);
+      settleReattachRun("handed-over-live-run", "reached");
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId: lapsed }))
+        .toMatchObject({ outcome: "settled_lost_run", verdict: { reason: "run_owner_gone" } });
+      expect(settle).toHaveBeenCalledTimes(1);
+    } finally {
+      resetReattachPhaseForTests();
+    }
   }, 60_000);
 
   it("leaves tasks waiting on an approval, a question, a dependency or a declared unblock action", async () => {

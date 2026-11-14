@@ -1,0 +1,41 @@
+name: Merge queue checks
+
+# The master ruleset requires `ci / verify` and `ci / e2e`. pr.yml reports them
+# for a pull request, and a pull request enters the merge queue only after both
+# pass there. The queue then waits for the same two names on its merge-group
+# commit, which no pull_request workflow can report. These jobs report them, so
+# the queue does not stall.
+#
+# They run no tests on purpose: a queued merge gets the protection a direct
+# merge has today, and the exact-source gate still tests every master commit
+# before its image is published. To test the combined tree before it lands,
+# replace these jobs with real ones that keep the same names.
+#
+# Nothing here reads the merge-group commit: no checkout, no secrets, no token
+# permissions, GitHub-hosted runners.
+#
+# Inert until the merge queue is enabled for master: no merge_group event fires
+# before then.
+on:
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: merge-queue-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: ci / verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "ci / verify passed on every pull request in this merge group before it was queued."
+
+  e2e:
+    name: ci / e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo "ci / e2e passed on every pull request in this merge group before it was queued."

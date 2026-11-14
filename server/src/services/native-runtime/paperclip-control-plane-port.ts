@@ -128,6 +128,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #streamingBatch: PendingStreamingEvent[] = [];
   #streamingTimer: ReturnType<typeof setTimeout> | null = null;
   #streamingTail: Promise<void> = Promise.resolve();
+  #streamingFlushQueued = false;
   /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
   #streamingEventsPending = 0;
   /**
@@ -463,8 +464,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         protocolSchemaVersion: event.schemaVersion,
         canonicalPayload: event as unknown as Record<string, unknown>,
       },
-      // The append has no publication side effects. Revocation rolls back
-      // its event and sequence allocation before the append commits.
       assertWritable: () => this.#assertActive(options),
     };
     if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
@@ -560,14 +559,18 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #flushStreamingEvents(): Promise<void> {
     if (this.#streamingTimer !== null) clearTimeout(this.#streamingTimer);
     this.#streamingTimer = null;
-    const batch = this.#streamingBatch;
-    if (batch.length > 0) {
-      this.#streamingBatch = [];
-      if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
-        this.#streamedSinceBoundary = true;
-      }
-      this.#streamingTail = this.#streamingTail.then(() => this.#commitStreamingEvents(batch))
-        .finally(() => { this.#streamingEventsPending -= batch.length; });
+    if (this.#streamingBatch.length > 0 && !this.#streamingFlushQueued) {
+      this.#streamingFlushQueued = true;
+      this.#streamingTail = this.#streamingTail.then(async () => {
+        this.#streamingFlushQueued = false;
+        const batch = this.#streamingBatch;
+        this.#streamingBatch = [];
+        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
+          this.#streamedSinceBoundary = true;
+        }
+        try { await this.#commitStreamingEvents(batch); }
+        finally { this.#streamingEventsPending -= batch.length; }
+      });
     }
     return this.#streamingTail;
   }

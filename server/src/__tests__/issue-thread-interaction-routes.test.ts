@@ -1124,6 +1124,34 @@ describe("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["an app's question (MCP elicitation)", "mcp-elicit:round-1:abc", 1],
+    ["an ordinary question", "agent-question-1", 0],
+  ] as const)("wakes the assignee when a person skips %s, so the app receives the decline", async (_name, idempotencyKey, wakes) => {
+    mockInteractionService.skipInteraction.mockResolvedValue({
+      id: "interaction-skip",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey,
+      sourceCommentId: null,
+      sourceRunId: RUN_2,
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [], outcome: "skipped" },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-skip/skip")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(wakes);
+    if (wakes) expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.anything());
+  });
+
   it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
     const app = await createApp();
 

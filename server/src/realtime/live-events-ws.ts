@@ -315,7 +315,7 @@ export function setupLiveEventsWebSocketServer(
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
-      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
+      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log" || event.type === "heartbeat.run.tool_progress") {
         const allowed = await sharedDeliveryRead(reads, "transcript-scope", async () => (await access.decide({
           actor: context!.actor, action: "company_scope:read",
           resource: { type: "company", companyId: event.companyId } })).allowed);

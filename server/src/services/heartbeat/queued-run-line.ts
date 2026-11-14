@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import { agentWakeupRequests, agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { ExecutionAgentQueue } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
@@ -6,10 +6,8 @@ import {
   OLDEST_DISPATCH_SHARE,
   PERSON_WAKE_REASONS,
   RECOVERY_DISPATCH_SHARE,
-  hasQueuedRunAged,
-  isRecoveryWakeReason,
-  isSystemRecoveryRun,
-  oldestReadyQueuedRun,
+  dispatchCountersFromStarts,
+  dispatchHistoryStart,
   queuedRunDispatchLine,
   type QueuedRunDispatchFacts,
   type QueuedRunDispatchInput,
@@ -40,7 +38,34 @@ export function issueRunPriorityRank(priority: string | null | undefined) {
   }
 }
 
-async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
+/**
+ * SQL: whether the run `runId` was asked for by a person, itself or through
+ * its source chain (`previousRunId`, else `retryOfRunId`), the same rule as
+ * {@link listPersonOriginSourceRunIds}. For use inside another query.
+ */
+export function personOriginRunSql(companyId: SQL, runId: SQL) {
+  const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+  return sql`exists (
+    with recursive origin_chain(run_id, depth) as (
+      select ${runId}, 0
+      union all
+      select parent.id, origin_chain.depth + 1
+      from origin_chain
+      join heartbeat_runs origin_child on origin_child.id = origin_chain.run_id
+      join heartbeat_runs parent on parent.company_id = ${companyId} and parent.id = coalesce(
+        case when origin_child.context_snapshot->>'previousRunId' ~* ${uuidPattern}
+          then (origin_child.context_snapshot->>'previousRunId')::uuid end,
+        origin_child.retry_of_run_id)
+      where origin_chain.depth < ${PERSON_ORIGIN_CHAIN_DEPTH}
+    )
+    select 1 from origin_chain join heartbeat_runs origin_run on origin_run.id = origin_chain.run_id
+    where origin_run.context_snapshot->>'wakeReason' in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
+      or origin_run.context_snapshot->>'taskRetryRequestId' is not null
+      or exists (select 1 from agent_wakeup_requests origin_wake where origin_wake.company_id = ${companyId}
+        and origin_wake.requested_by_actor_type = 'user' and (origin_wake.run_id = origin_run.id or origin_wake.id = origin_run.wakeup_request_id)))`;
+}
+
+export async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
   const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
   const result = await db.execute<{ root_id: string }>(sql`
     with recursive chain(root_id, run_id, depth) as (
@@ -77,21 +102,22 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     agent: Pick<Agent, "id" | "companyId">;
     queuedRuns: R[];
     dependencyReadiness: Map<string, { isDependencyReady: boolean }>;
-    issueById: Map<string, { status: string; priority: string | null }>;
+    issueById: Map<string, { status: string; priority: string | null; createdByUserId?: string | null }>;
     shareDeferred?: (runId: string) => boolean;
     now: Date;
   },
-): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput }> {
+): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput; personOriginChecked: boolean }> {
   const { agent, queuedRuns, dependencyReadiness, issueById, now } = input;
   const wakeReasonOf = (run: R) => readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+  const personOriginChecked = queuedRuns.length > 1;
   const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
-  const userRequests = queuedRuns.length > 1 && requestIds.length
+  const userRequests = personOriginChecked && requestIds.length
     ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
       eq(agentWakeupRequests.requestedByActorType, "user")))
     : [];
   const userRequestIds = new Set(userRequests.map(row => row.id));
-  const joinedUserRequests = queuedRuns.length > 1
+  const joinedUserRequests = personOriginChecked
     ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
       eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
@@ -101,7 +127,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
   const sourceRunIdOf = (run: R) =>
     readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
-  const sourceRunIds = queuedRuns.length > 1
+  const sourceRunIds = personOriginChecked
     ? [...new Set(queuedRuns.flatMap(run => {
       const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
       return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
@@ -135,40 +161,31 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
+      personTask: Boolean(issue?.createdByUserId),
     };
   });
-  const recoveryRuns = facts.filter(entry => isSystemRecoveryRun(entry));
-  const oldestReady = oldestReadyQueuedRun(facts);
-  const agedOldest = oldestReady && hasQueuedRunAged(oldestReady, now) ? oldestReady : null;
-  const countsRecovery = recoveryRuns.length > 0 && recoveryRuns.length < facts.length;
-  let startsSinceRecovery = 0;
-  let startsSinceOldest = 0;
-  if (countsRecovery || (agedOldest && facts.length > 1)) {
-    const oldestRecoveryAt = countsRecovery ? Math.min(...recoveryRuns.map(entry => entry.createdAt.getTime())) : Infinity;
-    const since = new Date(Math.min(oldestRecoveryAt, agedOldest?.createdAt.getTime() ?? Infinity));
-    const recentStarts = await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
-      startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-        isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
-      .orderBy(desc(heartbeatRuns.startedAt))
-      .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE));
-    const startsSince = (at: number) => recentStarts.filter(row => row.startedAt && row.startedAt.getTime() >= at);
-    if (countsRecovery) {
-      const starts = startsSince(oldestRecoveryAt).slice(0, RECOVERY_DISPATCH_SHARE);
-      const recoveryStartIds = starts.flatMap(row => isRecoveryWakeReason(row.wakeReason) ? [row.id] : []);
-      const personStarts = new Set(recoveryStartIds.length
-        ? await listPersonOriginSourceRunIds(db, agent.companyId, recoveryStartIds) : []);
-      const lastRecovery = starts.findIndex(row => isRecoveryWakeReason(row.wakeReason) && !personStarts.has(row.id));
-      startsSinceRecovery = lastRecovery < 0 ? starts.length : lastRecovery;
-    }
-    if (agedOldest && facts.length > 1) {
-      const starts = startsSince(agedOldest.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
-      const lastOldest = starts.findIndex(row => row.createdAt.getTime() <= agedOldest.createdAt.getTime());
-      startsSinceOldest = lastOldest < 0 ? starts.length : lastOldest;
-    }
-  }
-  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
+  const since = dispatchHistoryStart(facts, now);
+  const startRows = since ? await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
+    startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+    issueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+      isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
+    .orderBy(desc(heartbeatRuns.startedAt))
+    .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE)) : [];
+  // A person's recovery restart is person work, so it does not use up system recovery's share;
+  // only a start people wait on uses up their oldest-run turn.
+  const personStarts = new Set(startRows.length
+    ? await listPersonOriginSourceRunIds(db, agent.companyId, startRows.map(row => row.id)) : []);
+  const startedTaskIds = [...new Set(startRows.flatMap(row => row.issueId && RUN_ID_PATTERN.test(row.issueId) ? [row.issueId] : []))];
+  const personTaskIds = new Set(startedTaskIds.length
+    ? (await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, agent.companyId),
+      inArray(issues.id, startedTaskIds), isNotNull(issues.createdByUserId)))).map(row => row.id)
+    : []);
+  const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id),
+    personWaiting: personStarts.has(row.id) || Boolean(row.issueId && personTaskIds.has(row.issueId)) }));
+  const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
+  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest }, personOriginChecked };
 }
 
 /** At most this many agents' lines are computed for one projection read. */
@@ -255,7 +272,7 @@ export async function agentQueuedRunLine(
   const [dependencyReadiness, issueRows] = issueIds.length
     ? await Promise.all([
       issuesSvc.listDependencyReadiness(agent.companyId, issueIds),
-      db.select({ id: issues.id, status: issues.status, priority: issues.priority }).from(issues)
+      db.select({ id: issues.id, status: issues.status, priority: issues.priority, createdByUserId: issues.createdByUserId }).from(issues)
         .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, issueIds))),
     ])
     : [new Map<string, { isDependencyReady: boolean }>(), []];

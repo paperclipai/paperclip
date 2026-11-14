@@ -176,6 +176,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
+  withoutRetryInstruction,
   buildNoRunningExecutionNoticeSeed,
   RETRY_FROM_SAVED_WORK_NEXT_ACTION,
   type StrandedRecoveryNoticeSeed,
@@ -185,6 +186,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
@@ -1016,6 +1018,7 @@ export function recoveryService(
     settleLostRunProcess?: (scope: { companyId: string; runId: string; onDeferredDeadline?: (at: number) => void }) => Promise<unknown>;
     /** Starts a saved-work recovery the recovery queue has not reached in time. */
     startSavedWorkRecovery?: AssignedWorkDeps["startSavedWorkRecovery"];
+    cancelStalledQueuedRun?: AssignedWorkDeps["cancelStalledQueuedRun"];
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     beforeStaleLockClear?: (issueId: string) => Promise<void>;
     afterStrandedLatestRunRead?: (input: { issueId: string; runId: string | null }) => Promise<void>;
@@ -2829,7 +2832,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
     return database.transaction(async (tx) => {
-      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -3426,7 +3429,7 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
-            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({
@@ -4250,6 +4253,13 @@ export function recoveryService(
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     }, tx);
+    const executionBlocker = await getExecutionBlocker(tx as unknown as Db, input.issue.companyId, input.issue.id);
+    const retryOffered = !(executionBlocker && executionBlocker.canRetry === false);
+    if (!retryOffered && /\bretry\b/i.test(recoveryAction.nextAction ?? "")) {
+      recoveryAction.nextAction = withoutRetryInstruction(recoveryAction.nextAction!);
+      await tx.update(issueRecoveryActions).set({ nextAction: recoveryAction.nextAction })
+        .where(and(eq(issueRecoveryActions.companyId, input.issue.companyId), eq(issueRecoveryActions.id, recoveryAction.id)));
+    }
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4333,6 +4343,7 @@ export function recoveryService(
       fallbackBody: input.comment,
       recoveryCause,
       recoveryActionId: recoveryAction.id,
+      retryOffered,
       continuesAutomatically: Boolean(input.latestRun) && recoveryAction.kind === STRANDED_KIND
         && recoveryAction.ownerType === "board" && input.latestRun?.agentId === input.issue.assigneeAgentId
         && strandedRunCauseIsTemporary({
@@ -6902,6 +6913,7 @@ export function recoveryService(
     liveRunExecutions: deps.liveRunExecutions,
     settleLostRunProcess: deps.settleLostRunProcess,
     startSavedWorkRecovery: deps.startSavedWorkRecovery,
+    cancelStalledQueuedRun: deps.cancelStalledQueuedRun,
   });
 
   return {

@@ -4,7 +4,7 @@ import { expect, within } from "storybook/test";
 import { AgentQueueWait } from "@/components/AgentQueueWait";
 import { InboxIssueMetaLeading } from "@/components/IssueColumns";
 import { TaskChatLiveRunPill } from "@/components/task-chat/TaskChatLiveRunPill";
-import { TaskChatRunnerHeader } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 
 const codieQueue: ExecutionAgentQueue = {
   agentId: "8f14e45f-ceea-467a-9575-6f1d0b2c9a01",
@@ -103,3 +103,25 @@ export const SingleSlot: Story = {
 };
 
 export const Mobile: Story = { globals: { viewport: { value: "mobile", isRotated: false } } };
+
+/** A queued turn with no named hold, past the 30-second startup feedback. */
+export const WaitingToStart: Story = {
+  render: () => <TaskChatLiveRunPill status="queued" execution={{ ...waitingExecution, cause: null, label: "Queued", agentQueue: null }}
+    startedAtMs={Date.now() - 15 * 60_000} toolSummary={null} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Waiting to start")).toBeVisible();
+    await expect(canvas.queryByText("Working")).not.toBeInTheDocument();
+  },
+};
+
+/** A routine task that waits for the routine's open execution. */
+export const WaitingForRoutine: Story = {
+  render: () => <TaskChatRunnerTurn agentName="Test Gardener" status="queued" startedAtMs={Date.now() - 8 * 60_000} runId="run-1" items={[]}
+    execution={{ ...waitingExecution, cause: "routine_execution_in_progress", label: "Waiting for PAP-3093 to finish", agentQueue: null }} />,
+  play: async ({ canvasElement }) => {
+    const holds = within(canvasElement).getAllByText(/Waiting for PAP-3093 to finish/);
+    await expect(holds).toHaveLength(1);
+    await expect(holds[0]).toBeVisible();
+  },
+};

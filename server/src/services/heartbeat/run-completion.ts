@@ -113,6 +113,7 @@ interface RunCompletionOutput {
   handle: RunLogHandle | null;
   outputProgressState: { pending: { bytes: number } | null };
   flushOutputProgress: (options?: { force?: boolean }) => Promise<void>;
+  settleDeferredLogRecovery?: () => Promise<void>;
   // Getters in the executor retain output that arrives while finalization awaits I/O.
   readonly stdoutExcerpt: string;
   readonly stderrExcerpt: string;
@@ -574,6 +575,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       compressed: boolean;
     } | null = null;
     if (handle) {
+      await output.settleDeferredLogRecovery?.();
       logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
     }
     const finalLogBytes = logSummary?.bytes;
@@ -1347,6 +1349,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     } | null = null;
     if (handle) {
       try {
+        await output.settleDeferredLogRecovery?.();
         logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
       } catch (finalizeErr) {
         logger.warn(

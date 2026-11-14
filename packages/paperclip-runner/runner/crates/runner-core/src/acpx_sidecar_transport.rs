@@ -484,6 +484,22 @@ impl AcpxSidecarTransport {
         }
     }
 
+    pub(crate) fn request_by(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Result<Value, LocalRunnerError>, LocalRunnerError> {
+        let bound = self.request_deadline;
+        self.request_deadline = Some(bound.map_or(deadline, |bound| bound.min(deadline)));
+        let outcome = self.request_outcome(command, params);
+        self.request_deadline = bound;
+        match outcome? {
+            CommandOutcome::Success(value) => Ok(Ok(value)),
+            CommandOutcome::Rejected { error, .. } => Ok(Err(error)),
+        }
+    }
+
     pub(crate) fn request_turn_start(
         &mut self,
         params: Value,
@@ -941,6 +957,17 @@ impl AcpxSidecarTransport {
         ))
     }
 
+    pub(crate) fn exited_error(&mut self, stage: &str) -> Option<LocalRunnerError> {
+        match self.process.try_wait() {
+            Ok(None) => None,
+            Ok(Some(_)) | Err(_) => {
+                let error = self.closed_error(stage);
+                self.poison();
+                Some(error)
+            }
+        }
+    }
+
     fn closed_error(&mut self, stage: &str) -> LocalRunnerError {
         self.drain_diagnostics(Duration::from_millis(20));
         let suffix = self.diagnostic_suffix();
@@ -1270,6 +1297,7 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
         "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
         "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
+        "ACPX_ADMISSION_INSTRUCTIONS" => return "admission_instructions",
         "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
@@ -1638,6 +1666,7 @@ mod tests {
             ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
             ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
             ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            ("ACPX_ADMISSION_INSTRUCTIONS", "admission_instructions"),
             (
                 "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
                 "grok_effort_acknowledgement_missing",

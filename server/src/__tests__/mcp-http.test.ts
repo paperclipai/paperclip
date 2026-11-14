@@ -119,3 +119,93 @@ describe("parseMcpHttpResponseBody", () => {
     expect(() => parseMcpHttpResponseBody("event: ping\n\n", "text/event-stream")).toThrow();
   });
 });
+
+describe("MCP progress notifications", () => {
+  it("sends the progress token in the request's _meta and keeps other metadata", async () => {
+    const { mcpHttpRequestInit } = await import("../services/mcp-http.js");
+    const init = mcpHttpRequestInit({ "MCP-Protocol-Version": "2026-07-28" }, {
+      id: "call-1", method: "tools/call", params: { name: "export", arguments: {}, _meta: { other: true } },
+    }, { progressToken: "token-1" });
+    const meta = JSON.parse(init.body).params._meta;
+    expect(meta.progressToken).toBe("token-1");
+    expect(meta.other).toBe(true);
+    expect(meta["io.modelcontextprotocol/protocolVersion"]).toBe("2026-07-28");
+    const without = mcpHttpRequestInit(undefined, { id: "call-2", method: "tools/call", params: { name: "export" } });
+    expect(JSON.parse(without.body).params._meta?.progressToken).toBeUndefined();
+  });
+
+  it("reads progress interleaved with the result on one SSE stream, before the result", async () => {
+    const { mcpProgressNotificationOf } = await import("../services/mcp-http.js");
+    const frames = [
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "token-1", progress: 1, total: 3, message: "Exporting rows" } },
+      { jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "unrelated" } },
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "someone-else", progress: 9 } },
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "token-1", progress: 2, total: 3 } },
+      { jsonrpc: "2.0", id: "call-1", result: { content: [{ type: "text", text: "done" }] } },
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "token-1", progress: 3, total: 3 } },
+    ];
+    // Split mid-event so frames cross chunk boundaries.
+    const text = frames.map((frame) => `event: message\r\ndata: ${JSON.stringify(frame)}\r\n\r\n`).join("");
+    const encoded = new TextEncoder().encode(text);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < encoded.length; i += 37) controller.enqueue(encoded.slice(i, i + 37));
+        controller.close();
+      },
+    });
+    const seen: unknown[] = [];
+    let resultSeenBeforeProgress = false;
+    const result = await readMcpHttpResponse(new Response(body, { headers: { "content-type": "text/event-stream" } }), "call-1", {
+      onNotification: (message) => {
+        const update = mcpProgressNotificationOf(message, "token-1");
+        if (update) seen.push(update);
+      },
+      onProgress: (progress) => { if (progress.matchedResponse && seen.length === 0) resultSeenBeforeProgress = true; },
+    });
+    expect(result).toMatchObject({ id: "call-1", result: { content: [{ text: "done" }] } });
+    expect(resultSeenBeforeProgress).toBe(false);
+    expect(seen).toEqual([
+      { progress: 1, total: 3, message: "Exporting rows" },
+      { progress: 2, total: 3, message: undefined },
+    ]);
+  });
+
+  it("never lets a failing progress observer fail the call", async () => {
+    const text = [
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "t", progress: 1 } },
+      { jsonrpc: "2.0", id: 7, result: { ok: true } },
+    ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
+    const result = await readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 7, {
+      onNotification: () => { throw new Error("observer broke"); },
+    });
+    expect(result).toMatchObject({ result: { ok: true } });
+  });
+
+  it("ignores requests, responses and other tokens", async () => {
+    const { mcpProgressNotificationOf } = await import("../services/mcp-http.js");
+    expect(mcpProgressNotificationOf({ method: "notifications/progress", params: { progressToken: "t", progress: 1 } }, undefined)).toBeNull();
+    expect(mcpProgressNotificationOf({ id: 1, method: "notifications/progress", params: { progressToken: "t", progress: 1 } }, "t")).toBeNull();
+    expect(mcpProgressNotificationOf({ method: "notifications/progress", params: { progressToken: "x", progress: 1 } }, "t")).toBeNull();
+    expect(mcpProgressNotificationOf({ method: "notifications/progress", params: { progressToken: "t", progress: 1 } }, "t")).toEqual({ progress: 1, total: undefined, message: undefined });
+  });
+
+  it("does not count handled progress against the result's size limit", async () => {
+    const note = `data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: "t", progress: 1, message: "x".repeat(200) } })}\n\n`;
+    const text = note.repeat(50) + `data: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } })}\n\n`;
+    expect(Buffer.byteLength(text)).toBeGreaterThan(5_000);
+    const result = await readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000, limitPerMessage: true });
+    expect(result).toMatchObject({ result: { ok: true } });
+    // Callers without an overall deadline (catalog discovery) keep the total limit,
+    // so a stream of small notifications cannot keep them waiting forever.
+    await expect(readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000 }))
+      .rejects.toMatchObject({ reason: "too_large" });
+  });
+
+  it("still rejects one SSE message over the limit, complete or not", async () => {
+    const big = `data: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { text: "x".repeat(2_000) } })}`;
+    for (const text of [`${big}\n\n`, big]) {
+      await expect(readMcpHttpResponse(new Response(text, { headers: { "content-type": "text/event-stream" } }), 1, { maxBytes: 1_000, limitPerMessage: true }))
+        .rejects.toMatchObject({ reason: "too_large" });
+    }
+  });
+});

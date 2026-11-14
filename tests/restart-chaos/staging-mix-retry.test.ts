@@ -9,6 +9,7 @@ import {
   retryAfterSettleStage, runsAfterDone, shouldClickRetryAfterSettle, stagingMixHeadline, summarizeStagingMix, type RetryStageObserver, type WakeEvidenceFile,
 } from "./staging-mix-retry.js";
 import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
+import { completionEvidence } from "./wake-evidence.js";
 
 const wave = (argv: string[]) => {
   const command = parseCommand(argv);
@@ -261,6 +262,93 @@ describe("staging-mix runs after the task completed", () => {
       { issueStatus: "done", documents: { ledger: ledger("c9b1da0f", 10) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
         stagingMix: { followUp: null, followUpErrors: [], retries: [], comments: posted, completion: completion! } });
     expect(grade.checks.find(check => check.name === "completion_once")).toMatchObject({ ok: true, detail: "runs=1" });
+  });
+});
+
+describe("a done the server rejected as incomplete", () => {
+  const nonce = "8c82aea3";
+  const rejected = "d80d3ab3-e4ea-4959-b65b-329632dfd684", finisher = "a777038c-095d-438d-96fc-e341efd3d23d";
+  const incomplete = { continuationKind: "same_agent", continuationIdempotencyKey: "native-completion-incomplete" };
+  const t005 = (): WakeEvidenceFile => ({
+    completedAt: 1_794_646_221_835,
+    runs: [{ runId: rejected, createdAt: 1_794_644_311_531, startedAt: 1_794_644_311_621, invocationSource: "assignment", triggerDetail: "system",
+      wakeupRequestId: "be501b49", acceptedDisposition: "done", acceptedAt: 1_794_646_168_026 },
+    { runId: finisher, createdAt: 1_794_646_171_317, startedAt: 1_794_646_171_426, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "68fde0a3", acceptedDisposition: "done", acceptedAt: 1_794_646_218_506 }],
+    wakes: [{ id: "be501b49", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_644_311_531 },
+    { id: "3f3716f3", reason: "issue_status_changed", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+      createdAt: 1_794_646_171_247, payload: incomplete },
+    { id: "68fde0a3", reason: "issue_status_changed", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+      createdAt: 1_794_646_171_317, payload: incomplete }],
+  });
+  const posted = commentEvidence([
+    { body: "All 17 rounds are complete and verified.", authorAgentId: "a", createdByRunId: finisher, createdAt: "2026-11-14T08:50:22.890Z" },
+    { body: doneMarker(nonce), authorAgentId: "a", createdByRunId: finisher, createdAt: "2026-11-14T08:49:58.554Z" },
+    { body: "Completed and verified all 17 rounds exactly once in `ledger`.", authorAgentId: "a", createdByRunId: rejected, createdAt: "2026-11-14T08:49:32.345Z" }]);
+  const completionOnce = (comments: typeof posted, completion: CompletionEvidence) => gradeStagingMix(nonce,
+    { turnMinutes: 15, rounds: 4, subtasks: 0, followUpAfterMs: null, arriveAtMs: 0, holdMs: 0 },
+    { issueStatus: "done", documents: { ledger: ledger(nonce, 4) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stagingMix: { followUp: null, followUpErrors: [], retries: [], comments, completion } }).checks.find(check => check.name === "completion_once")!;
+
+  it("anchors on the run that finished the work, with one completer and no extra turn (w-20261114T081656-s7105 t005)", () => {
+    const evidence = t005();
+    for (const completion of [evidenceCompletion(evidence)!, completionEvidence({ completedAt: evidence.completedAt!, wakes: evidence.wakes, runs: evidence.runs!.map(run =>
+      ({ ...run, acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null })) })]) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(anchor).toEqual({ at: 1_794_646_218_506, source: "accepted_result" });
+      expect(completionRunIds(posted, nonce, completion)).toEqual([finisher]);
+      expect(runsAfterDone("t005", evidence, anchor).started).toEqual([]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still counts a rejected run that posted the DONE comment itself", () => {
+    const evidence = t005();
+    const comments = [...posted, { body: doneMarker(nonce), runId: rejected, createdAt: 1_794_646_160_000 }];
+    expect(completionRunIds(comments, nonce, evidenceCompletion(evidence))).toEqual([rejected, finisher]);
+  });
+
+  it("keeps a run woken by recovery after a real completion as an extra turn and a duplicate completion (G5c t004)", () => {
+    const done = "4a4a4a4a-done", woken = "5b5b5b5b-woken";
+    const evidence: WakeEvidenceFile = {
+      completedAt: 10_000,
+      runs: [{ runId: done, createdAt: 1_000, startedAt: 1_100, invocationSource: "automation", triggerDetail: null, wakeupRequestId: "w1", acceptedDisposition: "done", acceptedAt: 9_900 },
+      { runId: woken, createdAt: 20_000, startedAt: 20_100, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w2", acceptedDisposition: "done", acceptedAt: 21_000 }],
+      wakes: [{ id: "w1", reason: "issue_status_changed", source: "automation", triggerDetail: null, requestedByActorType: "system", requestedByActorId: null, createdAt: 1_000,
+          payload: incomplete },
+        { id: "w2", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: "sweep",
+          createdAt: 20_000 }],
+    };
+    const comments = [{ body: doneMarker(nonce), runId: done, createdAt: 9_800 }];
+    const completion = evidenceCompletion(evidence)!;
+    const anchor = completedAtAnchor(completion, comments, nonce);
+    expect(anchor).toEqual({ at: 9_900, source: "accepted_result" });
+    expect(runsAfterDone("t004", evidence, anchor).started.map(turn => [turn.runId, turn.wakeReason])).toEqual([[woken, "issue_recovery_action_restored"]]);
+    expect(completionOnce(comments, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 4a4a4a4a, 5b5b5b5b each reported completion" });
+  });
+
+  it("keeps a real done when a later recovery run yields with an incomplete wake, and still fails the extra run", () => {
+    const done = "4a4a4a4a-done", yielded = "6c6c6c6c-yield", extra = "7d7d7d7d-extra";
+    const evidence: WakeEvidenceFile = {
+      completedAt: 10_000,
+      runs: [{ runId: done, createdAt: 1_000, startedAt: 1_100, invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "w1", acceptedDisposition: "done", acceptedAt: 9_900 },
+        { runId: yielded, createdAt: 20_000, startedAt: 20_100, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w2",
+          acceptedDisposition: "yielded", acceptedAt: 21_000 },
+        { runId: extra, createdAt: 21_100, startedAt: 21_200, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w3",
+          acceptedDisposition: "done", acceptedAt: 22_000 }],
+      wakes: [{ id: "w1", reason: "issue_assigned", source: "assignment", triggerDetail: null, requestedByActorType: "user", requestedByActorId: "u1", createdAt: 1_000 },
+        { id: "w2", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: "sweep",
+          createdAt: 20_000 },
+        { id: "w3", reason: "issue_status_changed", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+          createdAt: 21_050, payload: incomplete }],
+    };
+    const comments: typeof posted = [];
+    const completion = evidenceCompletion(evidence)!;
+    const anchor = completedAtAnchor(completion, comments, nonce);
+    expect(anchor).toEqual({ at: 9_900, source: "accepted_result" });
+    expect(runsAfterDone("t004", evidence, anchor).started.map(turn => turn.runId)).toEqual([yielded, extra]);
+    expect(completionOnce(comments, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 4a4a4a4a, 7d7d7d7d each reported completion" });
   });
 });
 

@@ -2155,6 +2155,9 @@ function handleLiveEvent(
 
   const nameOf = (id: string) =>
     resolveAgentName(queryClient, expectedCompanyId, id);
+  // Tool call progress is read by the tool row itself (useToolCallProgress); it
+  // changes no cached run state and must not invalidate queries several times a second.
+  if (event.type === "heartbeat.run.tool_progress") return;
   const payload = event.payload ?? {};
   // Resolve membership before terminal lifecycle patches remove live-run rows.
   const suppressRunToast =

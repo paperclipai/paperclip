@@ -6,6 +6,36 @@ import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, reco
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { readyPortableTaskSource } from "../plugin-task-ownership.js";
+import { PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS } from "@paperclipai/adapter-utils";
+import { currentControllerBootId } from "../controller-process-identity.js";
+import { currentProcessProbe, proveOwnerGone } from "../owner-proof.js";
+
+export const WARM_OWNER_RECHECK_MS = 5_000;
+const WARM_OWNER_CLOSE_MARGIN_MS = 2 * 60_000;
+
+export async function liveWarmSessionOwnerRetryAt(input: {
+  owner: Pick<typeof nativeRunFinalizations.$inferSelect, "controllerBootId" | "controllerPid" | "controllerHostHash"
+    | "controllerProcessStartedAt" | "updatedAt">;
+  finishedAt: Date | null;
+  idleTimeoutMs: number | null;
+  now?: Date;
+}): Promise<Date | null> {
+  const { owner } = input;
+  const now = input.now ?? new Date();
+  if (!owner.controllerBootId || owner.controllerBootId === currentControllerBootId()) return null;
+  const releasedAt = (input.finishedAt ?? owner.updatedAt).getTime();
+  const closesBy = releasedAt + (input.idleTimeoutMs ?? PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS) + WARM_OWNER_CLOSE_MARGIN_MS;
+  if (closesBy <= now.getTime()) return null;
+  const proof = await proveOwnerGone({
+    kind: "local", scope: "native_warm_session", generation: null, host: null,
+    processSpace: owner.controllerHostHash, processSpaceUnrecorded: owner.controllerHostHash == null,
+    bootId: owner.controllerBootId, pid: owner.controllerPid,
+    processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
+    touchedAt: owner.updatedAt.toISOString(),
+  }, { ...currentProcessProbe(), readOnly: true });
+  if (proof.verdict !== "alive") return null;
+  return new Date(Math.min(now.getTime() + WARM_OWNER_RECHECK_MS, closesBy));
+}
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -176,6 +206,9 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
   }
   if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
+  const liveOwnerRetryAt = await liveWarmSessionOwnerRetryAt({ owner: prior.owner, finishedAt: prior.run.finishedAt,
+    idleTimeoutMs: previous.session?.lifecyclePolicy?.idleTimeoutMs ?? null });
+  if (liveOwnerRetryAt) throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt);
   if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||

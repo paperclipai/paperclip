@@ -3,6 +3,7 @@ import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS } from "@paperclipai/shared";
 import { api } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "@/lib/issue-detail-preload-events";
+import { isRestoredSavedRead } from "@/lib/persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   hasFreshIssueChatFirstFrame,
@@ -275,14 +276,23 @@ function startSingle(queryClient: QueryClient, ref: string) {
  * is loading, loaded recently, or the task's first frame is cached and fresh.
  * Without a company it uses the single-task route. Resolves when the task's
  * bootstrap (new or already loading) settles; it never rejects.
+ *
+ * `aliases` are other refs the caller already knows the task by (a restored
+ * task's id): reads keyed by them share the request while it is loading.
  */
 export function startIssueChatBootstrap(
   queryClient: QueryClient,
   companyId: string | null | undefined,
   ref: string | null | undefined,
+  aliases: readonly (string | null | undefined)[] = [],
 ): Promise<unknown> {
   if (!ref) return Promise.resolve();
-  const settled = () => currentEntry(queryClient, ref)?.promise ?? Promise.resolve();
+  const settled = () => {
+    const entry = currentEntry(queryClient, ref);
+    if (!entry) return Promise.resolve();
+    for (const alias of aliases) if (alias && !currentEntry(queryClient, alias)) entries.set(refKey(alias), entry);
+    return entry.promise;
+  };
   if (currentEntry(queryClient, ref)) return settled();
   if (adoptEarlyChatBootstrap(queryClient, companyId, ref)) return settled();
   if (companyId) {
@@ -297,8 +307,10 @@ export function startIssueChatBootstrap(
 /**
  * For a task page's first read of `key`: when this account's bootstrap for
  * the task is loading or just arrived, use its part of the answer instead of
- * sending another request. A key that already holds data is being refreshed
- * (after a write, an invalidation or a poll), so it always asks the server.
+ * sending another request. A key that already holds data read in this
+ * document is being refreshed (after a write, an invalidation or a poll), so
+ * it always asks the server. Data restored from the saved read cache has not
+ * been read yet: its first revalidation shares the bootstrap like an empty key.
  * Falls back to the normal read when there is no bootstrap, or it lacks the task.
  */
 export async function readFromIssueChatBootstrap<T>(
@@ -308,7 +320,7 @@ export async function readFromIssueChatBootstrap<T>(
   pick: (item: ChatBootstrapItem) => T | undefined,
   read: () => Promise<T>,
 ): Promise<T> {
-  if (queryClient.getQueryData(key) !== undefined) return read();
+  if (queryClient.getQueryData(key) !== undefined && !isRestoredSavedRead(queryClient, key)) return read();
   const entry = currentEntry(queryClient, ref);
   // Only share an answer that is still loading or a moment old.
   if (entry && (entry.settledAt === undefined || Date.now() - entry.settledAt < SHARE_WINDOW_MS)) {
