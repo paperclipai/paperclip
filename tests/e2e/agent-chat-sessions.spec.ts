@@ -454,7 +454,7 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(nav.getByRole("link", { name: /^Alpha/ })).toHaveAttribute("aria-current", "page");
     await betaLink.click();
     await expect(nav.getByRole("link", { name: /^Beta/ })).toHaveAttribute("aria-current", "page");
-    await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("task-chat-human-bubble").getByText("Background activity", { exact: true })).toBeVisible();
     expect((await json(await request.get(betaPath))).id).toBe(beta.id);
     expect(await json(await request.get(chatListPath))).toHaveLength(3);
     await json(await request.post(`/api/agents/${f.agents[1].id}/terminate`));
@@ -462,9 +462,9 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await expect(nav.getByRole("link", { name: /^Beta / })).toContainText("Terminated");
     await betaLink.click();
     await expect(page).toHaveURL(new RegExp(`/chats/${f.agents[1].id}/${beta.id}$`));
-    await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("task-chat-human-bubble").getByText("Background activity", { exact: true })).toBeVisible();
     await page.reload();
-    await expect(page.getByText("Background activity", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("task-chat-human-bubble").getByText("Background activity", { exact: true })).toBeVisible();
   } finally {
     await json(await request.put(workspacePath, { data: { coordinatorWorkspaceEnabled: originalWorkspace.coordinatorWorkspaceEnabled } }));
     await f.restore();
