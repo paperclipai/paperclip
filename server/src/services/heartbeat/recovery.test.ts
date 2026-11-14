@@ -322,7 +322,7 @@ describePostgres("heartbeat recovery module ownership", () => {
     const sockets = new Set<Socket>();
     let received = 0;
     const server = createServer(client => {
-      const upstream = connect(Number(target.port), target.hostname);
+      const upstream = connect(Number(target.port || "5432"), target.hostname);
       sockets.add(client).add(upstream);
       upstream.on("data", chunk => { received += chunk.length; });
       client.pipe(upstream);
@@ -398,11 +398,13 @@ describePostgres("heartbeat recovery module ownership", () => {
       adapterConfig,
       controllerLeaseExpiresAt: new Date(0),
     });
-    const deps = callbacks(db);
+    const deps = {
+      ...callbacks(db),
+      timerClaimWasFirstHeartbeat: vi.fn<HeartbeatRecoveryDependencies["timerClaimWasFirstHeartbeat"]>(source =>
+        source.contextSnapshot?.timerClaimWasFirstHeartbeat === true ? true : undefined),
+    };
     deps.setRunStatusFromLive.mockImplementation(async (_id, status, _from, patch) =>
       ({ updated: true, run: { ...run, ...patch, status } as Run }));
-    deps.timerClaimWasFirstHeartbeat.mockImplementation(source =>
-      source.contextSnapshot?.timerClaimWasFirstHeartbeat === true ? true : undefined);
     try {
       expect(await createHeartbeatRecovery(db, deps).recoverActiveExecutions({ companyId: run.companyId, runId: run.id },
         { staleThresholdMs: 0 })).toEqual([run.id]);
