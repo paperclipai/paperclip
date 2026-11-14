@@ -471,6 +471,103 @@ describe("plugin scoped API routes", () => {
     expect(workerManager.call).not.toHaveBeenCalled();
   });
 
+  function deleteRouteManifest(): PaperclipPluginManifestV1 {
+    return manifest([
+      {
+        routeKey: "thing.delete",
+        method: "DELETE",
+        path: "/things/:thingId",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
+  }
+
+  async function appForDeleteRoute(apiRoutes: PaperclipPluginManifestV1) {
+    return createApp({
+      actor: {
+        type: "board",
+        userId: "user-1",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      },
+      plugin: {
+        id: pluginId,
+        pluginKey: apiRoutes.id,
+        status: "ready",
+        manifestJson: apiRoutes,
+      },
+    });
+  }
+
+  it("dispatches a bodyless DELETE that declares a JSON content type", async () => {
+    const apiRoutes = deleteRouteManifest();
+    const { app, workerManager } = await appForDeleteRoute(apiRoutes);
+
+    const res = await request(app)
+      .delete(`/api/plugins/${pluginId}/api/things/abc?companyId=${companyId}`)
+      .set("Content-Type", "application/json");
+
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({
+      routeKey: "thing.delete",
+      method: "DELETE",
+      params: { thingId: "abc" },
+    }));
+  });
+
+  it("dispatches a bodyless DELETE that declares no content type at all", async () => {
+    const apiRoutes = deleteRouteManifest();
+    const { app, workerManager } = await appForDeleteRoute(apiRoutes);
+
+    const res = await request(app)
+      .delete(`/api/plugins/${pluginId}/api/things/abc?companyId=${companyId}`);
+
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalled();
+  });
+
+  it("still refuses a non-JSON body before the worker sees it", async () => {
+    const apiRoutes = deleteRouteManifest();
+    const { app, workerManager } = await appForDeleteRoute(apiRoutes);
+
+    const res = await request(app)
+      .delete(`/api/plugins/${pluginId}/api/things/abc?companyId=${companyId}`)
+      .set("Content-Type", "text/plain")
+      .send("not json at all");
+
+    expect(res.status).toBe(415);
+    expect(res.body.error).toContain("JSON requests only");
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a JSON body on a write route", async () => {
+    const apiRoutes = manifest([
+      {
+        routeKey: "thing.post",
+        method: "POST",
+        path: "/things",
+        auth: "board",
+        capability: "api.routes.register",
+        companyResolution: { from: "query", key: "companyId" },
+      },
+    ]);
+    const { app, workerManager } = await appForDeleteRoute(apiRoutes);
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/api/things?companyId=${companyId}`)
+      .set("Content-Type", "application/json")
+      .send({ title: "a thing" });
+
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({
+      routeKey: "thing.post",
+      method: "POST",
+      body: { title: "a thing" },
+    }));
+  });
+
   it("rejects manifest routes that try to claim core API paths", () => {
     const result = pluginManifestV1Schema.safeParse(manifest([
       {
