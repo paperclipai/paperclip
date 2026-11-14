@@ -12,6 +12,7 @@ import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
 import {
   CLOUD_PRODUCT_EVENT_NAMES,
   CLOUD_PRODUCT_EVENT_START_CURSOR,
+  cloudProductEventOrigin,
   draftCloudProductEvent,
   hasCloudProductEvent,
   listCloudProductEvents,
@@ -65,6 +66,28 @@ describe("draftCloudProductEvent", () => {
     ["issue.thread_interaction_answered", { interactionKind: "ask_user_questions" }, "interaction.resolved", { kind: "ask_user_questions", result: "answered" }],
   ])("maps %s to a named event with fixed values only", (action, details, name, properties) => {
     expect(draftCloudProductEvent(source({ action, details }))).toMatchObject({ name, properties });
+  });
+
+  it.each([
+    ["ai_connection.connected", { provider: "acme-internal", method: "customer-sso" }, {}],
+    ["agent.created", { role: "acme-growth-lead" }, { source: "direct" }],
+    ["issue.work_product_created", { type: "acme-report" }, { kind: "work_product" }],
+    ["routine.run_triggered", { source: "acme-cron", status: "acme-state" }, {}],
+    ["tool_connection.created", { transport: "acme-bus", status: "acme-live" }, {}],
+    ["issue.thread_interaction_accepted", { interactionKind: "acme-kind" }, { result: "accepted" }],
+  ])("drops a %s value that is not in the closed list", (action, details, properties) => {
+    expect(draftCloudProductEvent(source({ action, details }))?.properties).toEqual(properties);
+  });
+
+  it.each([
+    ["manual", "manual"],
+    ["routine_execution", "routine_execution"],
+    ["plugin:example:operation", "plugin"],
+    ["plugin:example:private-customer-name", "plugin"],
+    ["private-customer-name", "other"],
+    [null, "other"],
+  ])("reports the task origin %s as %s", (originKind, origin) => {
+    expect(cloudProductEventOrigin(originKind)).toBe(origin);
   });
 
   it("keeps the routine identifier on a routine run", () => {
@@ -243,6 +266,32 @@ const support = await getEmbeddedPostgresTestSupport();
       properties: { origin: "routine_execution", isSubtask: true, isOnboarding: false },
     });
     expect(Object.values(rows[0]!).map((value) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item)).join(" ")).not.toContain("Private customer wording");
+  });
+
+  it("stores a plugin origin as a fixed category, without the text the plugin supplied", async () => {
+    const companyId = await createCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plugin task",
+      originKind: "plugin:example:private-customer-name",
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: "user-owner",
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      details: {},
+    });
+
+    const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.properties).toEqual({ origin: "plugin", isSubtask: false, isOnboarding: false });
+    expect(JSON.stringify(rows[0]!.properties)).not.toContain("private-customer-name");
   });
 
   it("marks the onboarding task, whether the wizard or the Cloud seed created it", async () => {

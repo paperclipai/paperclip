@@ -44,8 +44,12 @@ so `origin` alone does not identify it.
 
 - An event holds no free text. Titles, names, document text, comments, file
   names, and prompts never enter the table.
-- A text property is stored only when it is a short fixed value that matches
-  `^[a-z0-9][a-z0-9._:-]{0,63}$`. Any other value is dropped.
+- A text property is stored only when its value is in a closed list in the
+  code, for example the list of agent roles. Any other value is dropped. The
+  shape of a value is not sufficient.
+- The `origin` property is a built-in origin, `plugin` for each origin that a
+  plugin defines, or `other`. The origin text that a plugin supplies never
+  enters the table.
 - Each event holds the company ID, the actor type and ID, the responsible user
   ID, and the entity type and ID.
 - The instance keeps events for 30 days. A write removes older rows at most
@@ -73,7 +77,8 @@ the database delays later events until it ends.
 ## Adding or changing an event
 
 1. Add the name to `CLOUD_PRODUCT_EVENT_NAMES`.
-2. Add the mapping to `draftCloudProductEvent`. Copy fixed values only.
+2. Add the mapping to `draftCloudProductEvent`. Copy a text value only when it
+   is in a closed list.
 3. Add a test in `server/src/__tests__/cloud-product-events.test.ts`.
 4. Update the event list in this document.
 5. Request a privacy review.

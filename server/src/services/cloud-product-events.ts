@@ -2,7 +2,20 @@ import { and, asc, eq, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { cloudProductEvents, companyOnboardingSeeds, issues } from "@paperclipai/db";
-import { isUuidLike, ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import {
+  AGENT_ROLES,
+  AI_PROVIDERS,
+  aiAuthMethodSchema,
+  ISSUE_ORIGIN_KINDS,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  issueWorkProductTypeSchema,
+  isUuidLike,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ROUTINE_RUN_SOURCES,
+  ROUTINE_RUN_STATUSES,
+  toolConnectionStatusSchema,
+  toolConnectionTransportSchema,
+} from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 
@@ -72,7 +85,9 @@ export interface CloudProductEventPage {
 }
 
 const CLOUD_CONTROL_ACTOR_ID = "paperclip-cloud";
-const FIXED_VALUE_RE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
+const PLUGIN_ORIGIN_PREFIX = "plugin:";
+export const CLOUD_PRODUCT_EVENT_PLUGIN_ORIGIN = "plugin";
+export const CLOUD_PRODUCT_EVENT_OTHER_ORIGIN = "other";
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -111,17 +126,20 @@ const SKILL_SOURCES: Readonly<Record<string, string>> = {
   "company.skill_catalog_installed": "catalog",
 };
 
-function fixedValue(value: unknown): string | null {
-  return typeof value === "string" && FIXED_VALUE_RE.test(value) ? value : null;
-}
+type ListedValue = readonly [value: unknown, allowed: readonly string[]];
 
-function fixedValues(values: Record<string, unknown>): Properties {
+function listedValues(values: Record<string, ListedValue>): Properties {
   const properties: Properties = {};
-  for (const [key, value] of Object.entries(values)) {
-    const fixed = fixedValue(value);
-    if (fixed) properties[key] = fixed;
+  for (const [key, [value, allowed]] of Object.entries(values)) {
+    if (typeof value === "string" && allowed.includes(value)) properties[key] = value;
   }
   return properties;
+}
+
+export function cloudProductEventOrigin(originKind: unknown): string {
+  if (typeof originKind !== "string") return CLOUD_PRODUCT_EVENT_OTHER_ORIGIN;
+  if ((ISSUE_ORIGIN_KINDS as readonly string[]).includes(originKind)) return originKind;
+  return originKind.startsWith(PLUGIN_ORIGIN_PREFIX) ? CLOUD_PRODUCT_EVENT_PLUGIN_ORIGIN : CLOUD_PRODUCT_EVENT_OTHER_ORIGIN;
 }
 
 function previousStatus(details: Record<string, unknown>): string | null {
@@ -141,19 +159,25 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
   const details = source.details ?? {};
   switch (source.action) {
     case "ai_connection.connected":
-      return { name: "ai_provider.connected", properties: fixedValues({ provider: details.provider, method: details.method }) };
+      return {
+        name: "ai_provider.connected",
+        properties: listedValues({
+          provider: [details.provider, AI_PROVIDERS],
+          method: [details.method, aiAuthMethodSchema.options],
+        }),
+      };
     case "agent.created":
     case "agent.hire_created":
       return {
         name: "agent.created",
-        properties: { ...fixedValues({ role: details.role }), source: source.action === "agent.created" ? "direct" : "hire" },
+        properties: { ...listedValues({ role: [details.role, AGENT_ROLES] }), source: source.action === "agent.created" ? "direct" : "hire" },
       };
     case "issue.document_created":
       return details.key === "plan"
         ? { name: "plan.created", properties: {} }
         : { name: "artifact.created", properties: { kind: "document" } };
     case "issue.work_product_created":
-      return { name: "artifact.created", properties: { kind: "work_product", ...fixedValues({ type: details.type }) } };
+      return { name: "artifact.created", properties: { kind: "work_product", ...listedValues({ type: [details.type, issueWorkProductTypeSchema.options] }) } };
     case "issue.attachment_added":
       return { name: "artifact.created", properties: { kind: "attachment" } };
     case "issue.created":
@@ -166,12 +190,21 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
       return {
         name: "routine.run_triggered",
         properties: {
-          ...fixedValues({ source: details.source, status: details.status }),
+          ...listedValues({
+            source: [details.source, ROUTINE_RUN_SOURCES],
+            status: [details.status, ROUTINE_RUN_STATUSES],
+          }),
           ...(typeof details.routineId === "string" && isUuidLike(details.routineId) ? { routineId: details.routineId } : {}),
         },
       };
     case "tool_connection.created":
-      return { name: "connector.connected", properties: fixedValues({ transport: details.transport, status: details.status }) };
+      return {
+        name: "connector.connected",
+        properties: listedValues({
+          transport: [details.transport, toolConnectionTransportSchema.options],
+          status: [details.status, toolConnectionStatusSchema.options],
+        }),
+      };
     case "project.created":
       return { name: "project.created", properties: {} };
     case "goal.created":
@@ -184,7 +217,10 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
     case "issue.thread_interaction_answered":
       return {
         name: "interaction.resolved",
-        properties: { ...fixedValues({ kind: details.interactionKind }), result: INTERACTION_RESULTS[source.action]! },
+        properties: {
+          ...listedValues({ kind: [details.interactionKind, ISSUE_THREAD_INTERACTION_KINDS] }),
+          result: INTERACTION_RESULTS[source.action]!,
+        },
       };
     default:
       return null;
@@ -204,7 +240,7 @@ async function issueProperties(db: Db, source: CloudProductEventSource): Promise
     .then((rows) => rows[0] ?? null);
   if (!issue) return {};
   return {
-    ...fixedValues({ origin: issue.originKind }),
+    origin: cloudProductEventOrigin(issue.originKind),
     isSubtask: issue.parentId !== null,
     isOnboarding: issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND || issue.seededIssueId !== null,
   };

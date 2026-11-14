@@ -62,8 +62,9 @@ Apply a review level that matches the path:
   `doc/run-log-events.md` when an event is added or changed.
 - **Cloud product event change (strict review).** The Cloud-managed instance
   gate stays in place. The read endpoint stays behind the
-  `product-events:read` Cloud control action. An event holds fixed values and
-  identifiers only, never free text. The author updates the closed event list
+  `product-events:read` Cloud control action. An event holds identifiers and
+  values from a closed list only, never free text. A value that only has a
+  safe shape is not sufficient, because a plugin or a customer can supply it. The author updates the closed event list
   and `doc/cloud-product-events.md` in the same pull request. The author
   requests a privacy review. Reason: Paperclip Cloud reads these events and
   links them to an organization.
