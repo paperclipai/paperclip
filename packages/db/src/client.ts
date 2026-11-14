@@ -271,8 +271,56 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // A long advisory-lock transaction must not borrow the normal pool that its
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
-const dedicatedDbFactories = new WeakMap<object, () => Db>();
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+/**
+ * How many idle single-connection clients `withDedicatedDbConnection` keeps per
+ * owner `createDb` client for reuse. Each retained client holds at most one
+ * physical connection, which postgres.js still closes after the owner's
+ * `DATABASE_IDLE_TIMEOUT_SECONDS` and recycles after `DATABASE_MAX_LIFETIME_SECONDS`.
+ * This bounds what the owner keeps open between actions. It is not an
+ * admission limit: callers hold advisory locks and nest dedicated actions, so
+ * an action that finds no idle client opens one (as before) and closes it on
+ * release when the retained set is full.
+ */
+export const DEDICATED_CONNECTION_IDLE_MAX = 4;
+
+type DedicatedConnectionSet = {
+  create(): Db;
+  idle: Db[];
+  /** Clients whose `$client.end` was called, by the pool or by an action. */
+  ended: WeakSet<Db>;
+  closed: boolean;
+};
+// Shared by an owner and every private client derived from it, so a nested
+// dedicated action draws from the same bounded set.
+const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
+
+/** Runs `onEnd` alongside every `$client.end` call, by the pool or by anyone holding the client. */
+function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {
+  const sql = client.$client;
+  const end = sql.end;
+  sql.end = async (options?: { timeout?: number }) => {
+    await Promise.all([onEnd(options?.timeout), end(options)]);
+  };
+}
+
+async function endDedicatedConnections(clients: Db[], timeoutSeconds: number): Promise<void> {
+  await Promise.all(clients.map(client => client.$client.end({ timeout: timeoutSeconds }).catch(() => undefined)));
+}
+
+/**
+ * Ends the owner's idle dedicated connections and stops retaining new ones.
+ * An action still running keeps its connection, which closes on release; a
+ * later action gets a connection that closes when it finishes. Ending the
+ * owner's `$client` does the same.
+ */
+export async function closeDedicatedDbConnections(db: Db, timeoutSeconds: number): Promise<void> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) return;
+  set.closed = true;
+  await endDedicatedConnections(set.idle.splice(0), timeoutSeconds);
+}
 
 export interface OwnedDatabaseListener {
   listen: Db["$client"]["listen"];
@@ -289,12 +337,35 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
+/**
+ * Runs `action` with exclusive use of one database session that the owner's
+ * main pool does not share. The session is reused by later actions, so an
+ * action must keep session state transaction-scoped (`pg_advisory_xact_lock`,
+ * `set_config(..., true)`). A connection is closed instead of reused when the
+ * action throws, so a failed or cancelled transaction, a broken socket or an
+ * interrupted lock wait never reaches the next action.
+ */
 export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
-  const factory = dedicatedDbFactories.get(db);
-  if (!factory) throw new Error("dedicated_connection_requires_create_db");
-  const dedicated = factory();
-  try { return await action(dedicated); }
-  finally { await dedicated.$client.end({ timeout: 1 }); }
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) throw new Error("dedicated_connection_requires_create_db");
+  let dedicated: Db | undefined;
+  while (!dedicated && set.idle.length) {
+    const candidate = set.idle.pop()!;
+    if (!set.ended.has(candidate)) dedicated = candidate;
+  }
+  dedicated ??= set.create();
+  let completed = false;
+  try {
+    const result = await action(dedicated);
+    completed = true;
+    return result;
+  } finally {
+    if (completed && !set.closed && !set.ended.has(dedicated) && set.idle.length < DEDICATED_CONNECTION_IDLE_MAX) {
+      set.idle.push(dedicated);
+    } else if (!set.ended.has(dedicated)) {
+      await dedicated.$client.end({ timeout: 1 });
+    }
+  }
 }
 
 // postgres.js pipelines a query onto a busy connection when none is idle, so
@@ -420,7 +491,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   return createDbClient(url, resolved);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, dedicatedSet?: DedicatedConnectionSet) {
   const sql = postgres(url, postgresJsOptions(resolved));
   if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
@@ -431,9 +502,22 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
-  dedicatedDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  const ownerSet = owner ? dedicatedConnectionSets.get(owner) : undefined;
+  if (dedicatedSet) {
+    trackClientEnd(db, () => { dedicatedSet.ended.add(db); });
+    dedicatedConnectionSets.set(db, dedicatedSet);
+  } else if (ownerSet) {
+    dedicatedConnectionSets.set(db, ownerSet);
+  } else {
+    const set: DedicatedConnectionSet = {
+      create: () => createDbClient(url, {
+        ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+      }, db, set),
+      idle: [], ended: new WeakSet(), closed: false,
+    };
+    dedicatedConnectionSets.set(db, set);
+    trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
+  }
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
   }, db));

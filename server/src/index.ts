@@ -131,6 +131,7 @@ import {
   closeLivenessDb,
   closeCheckpointDb,
   closeFileStorageDb,
+  closeDedicatedDbConnections,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -752,7 +753,7 @@ async function startServerWithDatabaseTeardown(
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
-    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5)]);
+    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5), closeDedicatedDbConnections(db, 5)]);
   };
   startupDatabase.close = closeDatabaseClients;
   startupTimeline.mark("database");

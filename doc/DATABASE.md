@@ -916,6 +916,18 @@ DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this lo
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
+single-connection clients idle for reuse; they follow the same idle timeout and
+max lifetime as the main pool. This is not an admission limit: callers hold
+advisory locks and nest dedicated actions, so an action that finds no idle
+client opens one and closes it on release when four are already retained. A
+connection whose action throws is closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Shutdown and ending the owner client close the idle
+set.
+
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
 clients. Postgres.js manages the statement cache. This does not cache query
