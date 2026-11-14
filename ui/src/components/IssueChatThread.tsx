@@ -230,7 +230,7 @@ import {
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
-import { agentUrl, cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { agentUrl, cn, formatDateTime } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
@@ -1119,13 +1119,9 @@ function isUnassignedReassignValue(value: string): boolean {
   return !value || value === "__none__";
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
 function commentDateLabel(date: Date | string | undefined): string {
   if (!date) return "";
-  const then = new Date(date).getTime();
-  if (Date.now() - then < WEEK_MS) return timeAgo(date);
-  return formatShortDate(date);
+  return formatDateTime(date);
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({

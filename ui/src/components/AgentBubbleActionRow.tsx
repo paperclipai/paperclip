@@ -3,8 +3,7 @@ import type {
   FeedbackDataSharingPreference,
   FeedbackVoteValue,
 } from "@paperclipai/shared";
-import { cn, formatShortDate } from "../lib/utils";
-import { timeAgo } from "../lib/timeAgo";
+import { cn, formatDateTime } from "../lib/utils";
 import { useCopyAction, useCopyToast } from "../lib/use-copy-action";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -26,18 +25,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, Copy, MoreHorizontal, ThumbsDown, ThumbsUp, X } from "lucide-react";
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
- * Short relative timestamp for an agent bubble — "2h ago" within a week, then
- * an absolute short date. Mirrors the task thread's `commentDateLabel` so both
- * surfaces read identically.
+ * Date and time for an agent bubble. Mirrors the task thread's
+ * `commentDateLabel` so both surfaces read identically.
  */
 export function agentBubbleDateLabel(date: Date | string | undefined): string {
   if (!date) return "";
-  const then = new Date(date).getTime();
-  if (Date.now() - then < WEEK_MS) return timeAgo(date);
-  return formatShortDate(date);
+  return formatDateTime(date);
 }
 
 /**
