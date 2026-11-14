@@ -57,17 +57,26 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * they may then return URL input requests, which Paperclip shows as a link.
  * Legacy sessions keep the handshake capabilities they have always received.
  */
-export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean; declareClientCredentials?: boolean } = {}): Record<string, unknown> {
+export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean } = {}): Record<string, unknown> {
+  const version: string = protocolVersion;
   // The skills and tasks extensions are defined against stateless MCP only.
   // Tasks are declared only where Paperclip can wait on one: a provider tool
   // call over HTTP and the task requests themselves (spec: per request).
-  return isModernMcpProtocolVersion(protocolVersion)
-    ? { elicitation: { url: {} }, extensions: {
-        ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
-        ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
-        ...(options.declareClientCredentials ? { [MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID]: {} } : {}),
-      } }
-    : { extensions: MCP_APPS_CLIENT_CAPABILITY };
+  // Form questions are declared only where a person can answer them: an HTTP
+  // tool call that belongs to a task, or an HTTP session (whose questions
+  // outside a task are answered "cancel" at once). See MCP-ELICITATION.md.
+  if (isModernMcpProtocolVersion(protocolVersion)) {
+    return { elicitation: options.elicitationForm ? { form: {}, url: {} } : { url: {} }, extensions: {
+      ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
+      ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
+      ...(options.declareClientCredentials ? { [MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID]: {} } : {}),
+    } };
+  }
+  // 2025-06-18 knows only form questions (`{}`); 2025-11-25 added URL mode.
+  const legacyElicitation = !options.elicitationForm ? null
+    : version >= "2025-11-25" ? { form: {}, url: {} }
+      : version >= "2025-06-18" ? {} : null;
+  return { ...(legacyElicitation ? { elicitation: legacyElicitation } : {}), extensions: MCP_APPS_CLIENT_CAPABILITY };
 }
 
 /** Newest version both sides support, or null when there is none. */
@@ -204,7 +213,7 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown; declareTasks?: boolean; declareClientCredentials?: boolean } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
@@ -215,7 +224,7 @@ export function mcpHttpRequestInit(
       _meta: {
         ...record(params._meta),
         [META_PROTOCOL_VERSION]: protocolVersion,
-        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks, declareClientCredentials: options.declareClientCredentials }),
+        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks, elicitationForm: options.elicitationForm, declareClientCredentials: options.declareClientCredentials }),
         [META_CLIENT_INFO]: MCP_CLIENT_INFO,
       },
     };
@@ -440,6 +449,12 @@ type McpInitializeInput = {
   requestId: string;
   /** Identifies the server (connection + endpoint) so its era is probed once. */
   eraKey?: string;
+  /**
+   * Declare form questions at `initialize`. Only for sessions whose every
+   * request answers a server's `elicitation/create` (tool calls); a session
+   * that only reads must not invite a question it would leave waiting.
+   */
+  elicitationForm?: boolean;
 };
 
 type DiscoverOutcome = { protocolVersion: string; capabilities?: Record<string, unknown> } | { legacy: true };
@@ -547,7 +562,7 @@ async function initializeLegacyMcpHttpSession(input: McpInitializeInput, request
       method: "initialize",
       params: {
         protocolVersion: requestedVersion,
-        capabilities: mcpClientCapabilities(requestedVersion),
+        capabilities: mcpClientCapabilities(requestedVersion, { elicitationForm: input.elicitationForm }),
         clientInfo: MCP_CLIENT_INFO,
       },
     }),
