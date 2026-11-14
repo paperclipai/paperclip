@@ -1192,6 +1192,7 @@ async function consumeTurn(
   compactionResult?: PrpStructuredRunResult,
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   providerTurnWaitOptions?: ProviderTurnWaitOptions,
+  resumedProviderTurnWait?: PrpEvent,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const providerTurnWait = createProviderTurnWait({
@@ -1405,6 +1406,7 @@ async function consumeTurn(
     };
     let pendingRead: Promise<IteratorResult<PrpEvent>> | null = null;
     let forcedEndTaken = false;
+    if (resumedProviderTurnWait) providerTurnWait.begin(resumedProviderTurnWait);
     while (true) {
       if (pendingRead === null) {
         pendingRead = eventIterator.next().catch((error) => {
@@ -3198,6 +3200,18 @@ export async function executeNativeSession(
         replayedDisposition !== null || dispositionFallback !== null;
       const recoveryTerminal =
         replayedDisposition?.terminal ?? dispositionFallback;
+      const awaitedTurnId = persistedSession?.terminalTurns?.at(-1)?.turnId ?? null;
+      const awaitedTerminal = recovered && recoveredSnapshot.awaitingProviderTurn === true && !recoveredActiveTurnId &&
+          !recoveredSnapshot.semanticResult && !governedWait && !checkpointedDispositionTerminal && awaitedTurnId !== null
+        ? (await replayCheckpointedTurnTerminal({
+            controlPlane: options.controlPlane,
+            runId: input.binding.runId,
+            sourceInstanceId: options.runnerInstanceId,
+            priorTerminalTurnIds: [],
+            expectedTurnId: awaitedTurnId,
+          }))?.terminal ?? null
+        : null;
+      const resumedProviderTurnWait = awaitedTerminal !== null && awaitsProviderTurn(awaitedTerminal) ? awaitedTerminal : undefined;
       const consumptionAbort = new AbortController();
       const consuming =
         (governedTerminal || governedWait?.settlement) && governedWait
@@ -3236,6 +3250,7 @@ export async function executeNativeSession(
                 : undefined,
               supersededByRestartContinuation,
               options.providerTurnWait,
+              resumedProviderTurnWait,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -3259,7 +3274,8 @@ export async function executeNativeSession(
           (!recoveredActiveTurnId &&
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
-            !dispositionRecoveryStillOwned));
+            !dispositionRecoveryStillOwned &&
+            !resumedProviderTurnWait));
         if (options.sessionCompaction) {
           // Compaction summarizes existing provider context. A new session or
           // one that is still running a turn has nothing safe to compact.

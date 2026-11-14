@@ -100,7 +100,7 @@ const restartCheckpoint: PersistedNativeSession = {
 
 interface RestartContinuation {
   onDisposition?: (push: (...values: Array<PrpEvent | "end">) => void) => void;
-  recovery?: { checkpoint: PersistedNativeSession; snapshot: Partial<PersistedNativeSession> };
+  recovery?: { checkpoint: PersistedNativeSession; snapshot: Partial<PersistedNativeSession>; replay?: PrpEvent[] };
 }
 
 function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinuation } = {}) {
@@ -122,6 +122,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
   const capabilities = { resume: options.restart !== undefined, typedEvents: true, steering: false, interruption: true, structuredResult: true };
   const startTurn = vi.fn(async (_input: Parameters<NativeSession["startTurn"]>[0]) => {
     if (!options.restart) return { turnId: "turn-1" };
+    if (options.restart.recovery) return { turnId: "turn-fresh" };
     if (startTurn.mock.calls.length === 1) {
       push(event("turn-continuation", "turn.started", { status: "inProgress" }), event("turn-continuation", "item.completed", usage),
         event("turn-continuation", "turn.completed", { status: "completed", error: null, awaitingProviderTurn: true }));
@@ -173,6 +174,7 @@ async function run(options: {
 }) {
   const control = harness({ withoutInterrupt: options.withoutInterrupt, restart: options.restart });
   const appended: PrpEvent[] = [];
+  const checkpoints: PersistedNativeSession[] = [];
   let queued: Array<() => void> = [];
   const flushStreamingEvents = vi.fn(() => {
     const flushed = queued;
@@ -192,13 +194,17 @@ async function run(options: {
       ...(options.restart ? { async recoverSession() { return { recovered: true, session: control.session }; } } : {}) },
     controlPlane: {
       ...(options.pipelinesDeltas ? { pipelinesStreamingEvents: true, flushStreamingEvents } : {}),
-      async openRun() {}, async checkpointSession() {},
+      async openRun() {}, async checkpointSession(value: PersistedNativeSession) { checkpoints.push(structuredClone(value)); },
       async appendEvent(value: PrpEvent) {
         appended.push(structuredClone(value));
         if (options.pipelinesDeltas && value.eventType === "item.delta") await new Promise<void>(resolve => queued.push(resolve));
         return { cursor: value.sourceSeq, highestContiguousSourceSeq: value.sourceSeq, disposition: "committed" };
       },
-      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async replayEvents(request: { sourceInstanceId: string; afterSourceSeq: number }) {
+        const events = (options.restart?.recovery?.replay ?? [])
+          .filter(value => value.sourceInstanceId === request.sourceInstanceId && value.sourceSeq > request.afterSourceSeq);
+        return { events, highestContiguousSourceSeq: Math.max(0, ...events.map(value => value.sourceSeq)) };
+      },
       completeRun,
     },
     runnerInstanceId: "runner-provider-turn", controlPlaneInstanceId: "control-provider-turn", timeoutMs: 30_000,
@@ -210,7 +216,7 @@ async function run(options: {
   await options.after?.(control, appended);
   const outcome = await execution;
   return { outcome, returned, appended, completeRun, resolveMissingResult, interrupt: control.interrupt, flushStreamingEvents,
-    startTurn: control.startTurn, elapsedMs: Date.now() - started };
+    startTurn: control.startTurn, checkpoints, elapsedMs: Date.now() - started };
 }
 
 const types = (events: PrpEvent[]) => events.map(value => value.eventType);
@@ -490,6 +496,103 @@ describe("the controller consumer with provider-started turn sequences", () => {
         terminalEvent: expect.objectContaining({ eventType: "turn.completed", payload: expect.objectContaining({ awaitingProviderTurn: true }) }) }));
       expect(outcome.elapsedMs).toBeLessThan(5_000);
     }
+  });
+
+  const awaitingSnapshot = { terminalTurns: [completedTerminal("turn-1")], semanticResult: null, awaitingProviderTurn: true };
+  const afterTerminalRecovery = (options: { flag?: boolean; replay?: PrpEvent[] } = {}) => ({
+    checkpoint: { ...restartCheckpoint, terminalTurns: [completedTerminal("turn-1")], ...(options.flag === false ? {} : { awaitingProviderTurn: true }) },
+    snapshot: options.flag === false ? { terminalTurns: [completedTerminal("turn-1")], semanticResult: null } : awaitingSnapshot,
+    replay: options.replay ?? turnOne(true),
+  });
+
+  it.each([true, false])("keeps waiting after a controller restart saved after the awaiting terminal (provider turn arrives: %s)", async (arrives) => {
+    const turn = providerTurn("provider-1", { result: true });
+    const recovery = afterTerminalRecovery();
+    const outcome = await run({
+      stream: [], restart: { recovery }, turnTimeoutMs: 10_000,
+      providerTurnWait: { startedAtMs: Date.now() - (arrives ? 599_000 : 599_700) },
+      after: async (control) => {
+        if (!arrives) return;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        control.push(...turn);
+      },
+    });
+    expect(outcome.startTurn).not.toHaveBeenCalled();
+    expect(appendedOf(outcome.appended, recovery.replay)).toEqual([]);
+    if (arrives) {
+      expect(outcome.outcome).toBe("finalized");
+      expect(outcome.returned).toMatchObject({ result, turnId: "provider-1" });
+      expect(outcome.interrupt).not.toHaveBeenCalled();
+      expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
+    } else {
+      expect(outcome.outcome).toContain("native_finalization_missing");
+      expect(outcome.interrupt).toHaveBeenCalledOnce();
+      expect(outcome.resolveMissingResult).toHaveBeenCalledWith(expect.objectContaining({ turnId: "turn-1",
+        terminalEvent: expect.objectContaining({ eventType: "turn.completed", payload: expect.objectContaining({ awaitingProviderTurn: true }) }) }));
+      expect(outcome.elapsedMs).toBeLessThan(5_000);
+    }
+  });
+
+  it.each([false, true])("ends a resumed wait at once through the no-result path when its limit passed before the restart (without interrupt: %s)", async (withoutInterrupt) => {
+    const outcome = await run({
+      stream: [], restart: { recovery: afterTerminalRecovery() }, turnTimeoutMs: 10_000, withoutInterrupt,
+      providerTurnWait: { startedAtMs: Date.now() - 700_000 },
+    });
+    expect(outcome.startTurn).not.toHaveBeenCalled();
+    expect(outcome.outcome).toContain("native_finalization_missing");
+    expect(outcome.interrupt).toHaveBeenCalledTimes(withoutInterrupt ? 0 : 1);
+    expect(outcome.resolveMissingResult).toHaveBeenCalledOnce();
+    expect(outcome.resolveMissingResult).toHaveBeenCalledWith(expect.objectContaining({ turnId: "turn-1",
+      terminalEvent: expect.objectContaining({ payload: expect.objectContaining({ awaitingProviderTurn: true }) }) }));
+    expect(outcome.elapsedMs).toBeLessThan(1_000);
+  });
+
+  it.each([
+    { label: "the replayed terminal has no marker", recovery: afterTerminalRecovery({ replay: turnOne(false) }) },
+    { label: "replay has no terminal", recovery: afterTerminalRecovery({ replay: [] }) },
+    { label: "the recovered session has no awaiting flag", recovery: afterTerminalRecovery({ flag: false }) },
+  ])("sends the disposition-only recovery prompt after a restart as before when $label", async ({ recovery }) => {
+    const fresh = [
+      event("turn-fresh", "turn.started", { status: "inProgress" }),
+      event("turn-fresh", "run.result.proposed", result as unknown as Record<string, unknown>),
+      event("turn-fresh", "turn.completed", { status: "completed", error: null }),
+    ];
+    const outcome = await run({
+      stream: [], restart: { recovery }, turnTimeoutMs: 10_000, providerTurnWait: { startedAtMs: Date.now() - 599_000 },
+      after: async (control) => {
+        await waitFor(() => control.startTurn.mock.calls.length === 1);
+        control.push(...fresh);
+      },
+    });
+    expect(outcome.startTurn).toHaveBeenCalledOnce();
+    expect(dispositionRequests(outcome.startTurn)).toBe(1);
+    expect(outcome.outcome).toBe("finalized");
+    expect(outcome.returned).toMatchObject({ result, turnId: "turn-fresh" });
+    expect(outcome.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("resumes the wait again after a second restart during a resumed wait", async () => {
+    const startedAtMs = Date.now() - 599_000;
+    const first = await run({
+      stream: [], restart: { recovery: afterTerminalRecovery() }, turnTimeoutMs: 10_000, providerTurnWait: { startedAtMs },
+    });
+    expect(first.startTurn).not.toHaveBeenCalled();
+    expect(first.checkpoints.length).toBeGreaterThan(0);
+    const persisted = first.checkpoints.at(-1)!;
+    expect(persisted).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true });
+    expect(persisted.dispositionOnlyRecoveryConsumed).toBeFalsy();
+    const turn = providerTurn("provider-1", { result: true });
+    const second = await run({
+      stream: [], restart: { recovery: { ...afterTerminalRecovery(), checkpoint: persisted } }, turnTimeoutMs: 10_000,
+      providerTurnWait: { startedAtMs: Date.now() - 599_000 },
+      after: async (control) => {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        control.push(...turn);
+      },
+    });
+    expect(second.startTurn).not.toHaveBeenCalled();
+    expect(second.outcome).toBe("finalized");
+    expect(second.returned).toMatchObject({ result, turnId: "provider-1" });
   });
 
   it("fails the run as today when the Runner's stream ends during the wait", async () => {
