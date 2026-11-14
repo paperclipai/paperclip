@@ -61,7 +61,8 @@ export interface StagingMixRecord {
 
 export interface CompletionEvidence {
   completedAt: number | null;
-  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean }>;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean;
+    doneRejected?: boolean }>;
 }
 
 export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
@@ -398,9 +399,14 @@ export function hasDispositions(completion: CompletionEvidence | null | undefine
   return Boolean(completion?.runs.some(run => run.acceptedDisposition !== null));
 }
 
+function countsAsDone(run: CompletionEvidence["runs"][number] | undefined, comments: readonly CommentEvidence[], nonce: string): run is CompletionEvidence["runs"][number] {
+  return run?.acceptedDisposition === "done"
+    && (!run.doneRejected || comments.some(comment => comment.runId === run.runId && isDoneComment(comment.body, nonce)));
+}
+
 export function completedAtAnchor(completion: CompletionEvidence | null | undefined, comments: readonly CommentEvidence[], nonce: string):
   { at: number | null; source: "accepted_result" | "completed_at" | "done_comment" | null } {
-  const accepted = (completion?.runs ?? []).filter(run => run.acceptedDisposition === "done" && run.acceptedAt !== null).map(run => run.acceptedAt!);
+  const accepted = (completion?.runs ?? []).filter(run => countsAsDone(run, comments, nonce) && run.acceptedAt !== null).map(run => run.acceptedAt!);
   if (accepted.length) return { at: Math.min(...accepted), source: "accepted_result" };
   if (completion?.completedAt != null) return { at: completion.completedAt, source: "completed_at" };
   const comment = firstDoneCommentAt(comments, nonce);
@@ -415,11 +421,11 @@ export function completionRunIds(comments: readonly CommentEvidence[], nonce: st
     const byId = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run] as const] : []));
     const reportedAt = (runId: string) => {
       const run = byId.get(runId);
-      if (run?.acceptedDisposition === "done" && run.acceptedAt !== null) return run.acceptedAt;
+      if (countsAsDone(run, comments, nonce) && run.acceptedAt !== null) return run.acceptedAt;
       const posted = comments.filter(comment => comment.runId === runId && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
       return posted.length ? Math.min(...posted) : run?.startedAt ?? Number.POSITIVE_INFINITY;
     };
-    const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
+    const accepted = completion.runs.filter(run => countsAsDone(run, comments, nonce) && run.runId).map(run => run.runId!);
     const ordered = [...new Set([...accepted, ...summaries])].sort((a, b) => reportedAt(a) - reportedAt(b));
     return ordered.filter((runId, index) => index === 0 || !byId.get(runId)?.answersFollowUp);
   }

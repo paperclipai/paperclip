@@ -1,5 +1,5 @@
 import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -9,9 +9,14 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./deliv
 
 export type ExecutionWorkScope = { companyId: string; agentId?: string; runId?: string; issueId?: string };
 
+async function notifyExecutionAttentionRetention(transaction: object, scope: ExecutionWorkScope) {
+  if (scope.issueId || scope.runId) await notifyIssueAttentionRetentionWork(transaction, { companyId: scope.companyId, issueId: scope.issueId, runId: scope.runId });
+  else await notifyAttentionRetentionWork(transaction, scope);
+}
+
 export async function notifyExecutionRunWork(transaction: object, scope?: ExecutionWorkScope) {
   if (scope) {
-    await notifyAttentionRetentionWork(transaction, scope);
+    await notifyExecutionAttentionRetention(transaction, scope);
     await notifyRunDispatch(transaction, scope);
     await notifyStatusCardIssueChange(transaction, scope.companyId);
     await notifyDeferredExecutionEligibility(transaction, scope);
@@ -36,7 +41,7 @@ export function writeExecutionControl<T>(
     await notifyRunDispatch(transaction, scope);
     if (scope) {
       await notifyStatusCardIssueChange(transaction, scope.companyId);
-      await notifyAttentionRetentionWork(transaction, scope);
+      await notifyExecutionAttentionRetention(transaction, scope);
       await notifyRoutineExecutionStatus(transaction, scope.issueId, scope.companyId);
       await notifyDeferredExecutionEligibility(transaction, scope);
       await notifyLiveRunRecovery(transaction, scope);

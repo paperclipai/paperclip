@@ -47,6 +47,7 @@ import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
 import { ProviderToolIconsProvider } from "@/components/ProviderToolIcon";
 import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressProvider } from "@/components/task-chat/tool-call-progress";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
@@ -3372,6 +3373,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <McpAppIssueProvider issueId={issueId} sendMessage={composerDisabledReason ? null : sendMcpAppMessage}>
     <ProviderToolIconsProvider companyId={companyId}>
+    <ToolCallProgressProvider issueId={issueId}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3550,7 +3552,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                         items={tailItems}
                                         emptyMessage={
                                           tailStatus === "queued"
-                                            ? "Waiting to start..."
+                                            ? undefined
                                             : (liveRun && liveRun.id === tailRunId
                                                 ? liveRun.currentStatusMessage
                                                 : null) ||
@@ -3719,6 +3721,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </ToolCallProgressProvider>
     </ProviderToolIconsProvider>
     </McpAppIssueProvider>
     </TaskChatRequestHistoryContext.Provider>

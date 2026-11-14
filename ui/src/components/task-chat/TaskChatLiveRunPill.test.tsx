@@ -5,6 +5,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type { TranscriptEntry } from "../../adapters";
+import { MemoryRouter } from "@/lib/router";
+
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: null }) }));
 import { TaskChatLiveRunPill, toolCountSummaryFromEntries } from "./TaskChatLiveRunPill";
 
 function toolCall(overrides: Partial<Extract<TranscriptEntry, { kind: "tool_call" }>>): TranscriptEntry {
@@ -100,6 +103,43 @@ describe("TaskChatLiveRunPill", () => {
       expect(container.textContent).not.toContain("Reconnecting");
     },
   );
+
+  it("shows a queued run that waits for an agent slot as waiting, not working", () => {
+    const execution = {
+      phase: "queued", label: "Waiting for Codie", cause: "agent_at_capacity",
+      agentQueue: { agentId: "agent-1", agentName: "Codie", maxConcurrentRuns: 20, runningCount: 20, position: 41, queuedCount: 295 },
+    } as ExecutionProjection;
+    act(() => root.render(
+      <MemoryRouter>
+        <TaskChatLiveRunPill status="queued" execution={execution} startedAtMs={Date.now() - 3 * 60 * 60_000} toolSummary={null} />
+      </MemoryRouter>,
+    ));
+    expect(container.textContent).toContain("Waiting for Codie·20 slots max·41 of 295 in line·Configure");
+    expect(container.textContent).not.toContain("Working");
+    expect(container.querySelector(".animate-spin")).toBeNull();
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/agents/codie/advanced");
+  });
+
+  it("says a queued run with no named hold is waiting to start once the startup grace passes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-13T17:46:13Z"));
+    const queuedAt = Date.now() - 5_000;
+    const queued = { phase: "queued", label: "Queued", cause: null } as ExecutionProjection;
+    act(() => root.render(<TaskChatLiveRunPill status="queued" execution={queued} startedAtMs={queuedAt} toolSummary={null} />));
+    expect(container.textContent).toContain("Working");
+    act(() => vi.advanceTimersByTime(26_000));
+    expect(container.textContent).toContain("Waiting to start");
+    expect(container.textContent).not.toContain("Working");
+    expect(container.querySelector(".animate-spin")).toBeNull();
+    expect(container.querySelector(".shimmer-text")).toBeNull();
+  });
+
+  it("names another server hold on a queued run instead of Working", () => {
+    const execution = { phase: "queued", label: "Waiting for maintenance", cause: "task_drain" } as ExecutionProjection;
+    act(() => root.render(<TaskChatLiveRunPill status="queued" execution={execution} startedAtMs={Date.now()} toolSummary={null} />));
+    expect(container.textContent).toContain("Waiting for maintenance");
+    expect(container.textContent).not.toContain("Working");
+  });
 
   it("settles to a static 'Worked' summary once the run is terminal", () => {
     const startedAtMs = 1_000;

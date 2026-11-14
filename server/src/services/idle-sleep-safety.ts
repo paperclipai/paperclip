@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "./instance-settings.js";
 import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
 import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
 import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
@@ -101,8 +102,7 @@ const WORK_CHECKS = [
   // A pending provider task (MCP Tasks) is polled: the provider cannot wake
   // Paperclip, so the instance stays awake until the task is settled.
   // Only while the MCP Tasks setting is on; off, nothing polls these rows.
-  workCheck("tool_mcp_tasks", `SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL
-    AND EXISTS (SELECT 1 FROM instance_settings WHERE (experimental->>'enableMcpTasks') = 'true')`),
+  workCheck("tool_mcp_tasks", `SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
   workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),
@@ -403,6 +403,7 @@ export async function readIdleSleepSafety(
     let scheduledWake: ScheduledWake | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      const mcpTasksEnabled = (await instanceSettingsService(db).getExperimentalReadOnly(tx)).enableMcpTasks;
       if (options.incomingWake?.incomingWake) {
         if (!ownerId || ownerId !== before.ownerId) return undefined;
         incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
@@ -439,6 +440,8 @@ export async function readIdleSleepSafety(
         (!scheduledRoutines || check.reason !== "routines")
         && (!scheduledIssueMonitors || check.reason !== "issues"))
         .map(check => {
+          if (check.reason === "tool_mcp_tasks") return { ...check,
+            query: sql`SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL AND ${mcpTasksEnabled}` };
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
           const mcp = incomingProof?.mcp;
           const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule

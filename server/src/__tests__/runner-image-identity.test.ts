@@ -312,9 +312,14 @@ describe("Runner image stages", () => {
     ]);
     // `docker build .` builds the last stage.
     expect(names.at(-1)).toBe("cloud");
-    for (const stage of stages) {
-      if (!stage.name.startsWith("runner-artifacts")) expect(stage.lines.join("\n"), stage.name).not.toMatch(/runner-artifacts/);
+    const application = stages.filter((stage) => !stage.name.startsWith("runner-artifacts"));
+    for (const stage of application) {
+      expect(stage.from, stage.name).not.toMatch(/^runner-artifacts/);
+      const read = [...stage.lines.join("\n").matchAll(/from=(runner-artifacts[a-z-]*)/g)].map((match) => match[1]);
+      expect(read.filter((name) => name !== "runner-artifacts"), stage.name).toEqual([]);
     }
+    expect(application.filter((stage) => /from=runner-artifacts/.test(stage.lines.join("\n"))).map((stage) => stage.name))
+      .toEqual(["build", "runner-provider-pack"]);
   });
 
   it("name the published image in the pack only for a publication build, which is off by default", () => {

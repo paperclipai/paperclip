@@ -291,6 +291,9 @@ import {
   workspaceFileResourceQuerySchema,
   // Tool access
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
   configureRailwaySshSchema,
   createToolApplicationSchema,
   updateToolApplicationSchema,
@@ -1447,6 +1450,7 @@ const browserUseOperations = [
 // MCP Apps views in the task chat. Board only; reads follow task read access.
 const mcpAppsOperations = [
   ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/tool-call-progress", "Read the latest progress of a task's running app tool calls", undefined],
   ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
   ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
   ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
@@ -1628,6 +1632,13 @@ const BOARD_ONLY_OPERATIONS = new Set([
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/device-login",
+  "GET /api/companies/{companyId}/tailscale-connections/{connectionId}/devices",
+  "DELETE /api/companies/{companyId}/tailscale-connections/{connectionId}",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/pairing",
+  "GET /api/tools/oauth/tailscale/callback",
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
@@ -9597,6 +9608,91 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+const tailscaleCompanyParams = z.object({ companyId: z.string().uuid() });
+const tailscaleConnectionParams = tailscaleCompanyParams.extend({ connectionId: z.string().uuid() });
+const tailscaleConnectionResponse = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), name: z.string(),
+  status: z.enum(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]),
+}).strict();
+const tailscaleDeviceLoginResponse = {
+  ...r.ok(z.object({
+    connection: tailscaleConnectionResponse,
+    expiresAt: z.string().datetime().nullable(),
+    authorizationUrl: z.string().url().optional(),
+    needsApproval: z.boolean().optional(),
+  }).strict()),
+  headers: {
+    "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  },
+};
+const tailscaleErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable };
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "List company Tailscale connections",
+  description: "Requires an instance administrator with company access, or local implicit board access. Returns connection metadata without credentials or node state.",
+  request: { params: tailscaleCompanyParams },
+  responses: { 200: r.ok(z.array(tailscaleConnectionResponse)), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "Start Tailscale device sign-in",
+  description: "Requires an instance administrator with company access, or local implicit board access. Starts device sign-in without a Cloud broker or OAuth app. Reuses an unexpired sign-in for connectionId; a connected network must be disconnected before replacement. Pending sign-in is bound to its initiating user and has a fixed ten-minute deadline. The authorization URL is present when sign-in is ready; needsApproval identifies a device waiting for tailnet administrator approval.",
+  request: { params: tailscaleCompanyParams, body: jsonBody(z.object({
+    name: z.string().trim().min(1).max(100).default("My tailnet"), connectionId: z.string().uuid().optional(),
+  }).strict()) },
+  responses: { 201: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/device-login", tags: ["tailscale"],
+  summary: "Resume Tailscale device sign-in and read its progress",
+  description: "Requires the initiating user to retain instance-admin and company access, or local implicit board access. Resumes the private client for an existing sign-in without extending its deadline. Returns connection metadata, an optional sign-in URL or device approval flag, and expiresAt (null when no sign-in is pending). Does not return credentials or node state.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/devices", tags: ["tailscale"],
+  summary: "List machines on a connected tailnet",
+  description: "Requires an instance administrator with company access, or local implicit board access. Resolves devices through this connection's private network client.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(z.array(z.object({
+    id: z.string(), name: z.string(), hostname: z.string(), address: z.string(), os: z.string(), online: z.boolean(),
+  }).strict())), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "delete", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}", tags: ["tailscale"],
+  summary: "Disconnect a Tailscale network",
+  description: "Requires an instance administrator with company access, or local implicit board access. Invalidates pending consent and stops the private client. Keeps the saved connection record and does not remove the target machine from its tailnet.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(tailscaleConnectionResponse), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/pairing", tags: ["tailscale"],
+  summary: "Prepare an SSH machine pairing command",
+  description: "Requires an instance administrator with company access, or local implicit board access. Generates a fresh SSH key, stores its private half in the company vault, and returns its secret ID and public install command.",
+  request: { params: tailscaleConnectionParams, body: jsonBody(z.object({
+    deviceId: z.string().min(1).max(256), port: z.number().int().min(1).max(65535).default(22),
+  }).strict()) },
+  responses: { 200: r.ok(z.object({ privateKeySecretId: z.string().uuid(), publicKey: z.string(), command: z.string() }).strict()), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/tools/oauth/tailscale/callback", tags: ["tailscale"],
+  summary: "Complete Tailscale network authorization",
+  description: "Requires the initiating board operator to retain instance-admin and company access. Consumes user-bound consent state and an opaque broker claim. Redirects to the connector page without returning enrollment credentials.",
+  request: { query: z.object({ state: z.string().min(1).max(128), claim_id: z.string().max(256).optional(), error: z.string().max(128).optional() }) },
+  responses: { 303: { description: "Return to the company Tailscale connector", headers: {
+    Location: { schema: { type: "string" } }, "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  } }, ...tailscaleErrors },
+});
+
 // ─── Environments ─────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -12450,6 +12546,68 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+});
+
+const MACHINE_SIGN_IN_ERRORS = {
+  400: r.badRequest,
+  401: r.unauthorized,
+  403: r.forbidden,
+  404: r.notFound,
+  422: r.unprocessable,
+};
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/companies/{companyId}/tools/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Start machine sign-in (OAuth client credentials) for an organization connection",
+  description: "Creates a draft organization connection to a remote MCP server that signs in as a registered client, with no person involved. With method paperclip_key, Paperclip creates a signing key, keeps the private half in the company vault, and returns the public key to register with the provider. Secrets are write-only.",
+  body: createMachineSignInSchema,
+  responses: { 201: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Read a connection's machine sign-in settings (no secret values)",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
+  tags: ["tool-access"],
+  summary: "Test machine sign-in against the provider and server, then turn the connection on",
+  body: testMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate",
+  tags: ["tool-access"],
+  summary: "Replace the machine sign-in key or client secret without downtime",
+  body: rotateMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate/complete",
+  tags: ["tool-access"],
+  summary: "Switch to the new machine sign-in key once the provider accepts it",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 
 registerCurrentRoute({

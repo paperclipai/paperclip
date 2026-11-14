@@ -4,9 +4,12 @@ import {
   QUEUED_RUN_AGING_MS,
   RECOVERY_BACKLOG_AGE_MS,
   createQueuedRunDispatcher,
+  dispatchCountersFromStarts,
+  queuedRunStartOf,
   RECOVERY_DISPATCH_SHARE,
   isRecoveryWakeReason,
   orderQueuedRunsForDispatch,
+  queuedRunDispatchLine,
   queuedRunDispatchClass,
   type QueuedRunDispatchFacts,
 } from "./queued-run-dispatch-order.js";
@@ -58,10 +61,17 @@ describe("queued run dispatch order", () => {
     expect(ordered.slice(0, 2).map(entry => entry.id).sort()).toEqual([chat.id, assignment.id].sort());
   });
 
-  it("keeps draining recovery wakes while people keep sending work", () => {
+  it("holds recovery wakes while people keep sending work", () => {
+    const burst = Array.from({ length: 10 }, () => backlogRecovery());
+    const { started, pending } = dispatch(burst, { steps: 40, arrivals: () => [personRetry()] });
+    expect(started.every(entry => entry.wakeReason === "task_retry")).toBe(true);
+    expect(pending.filter(entry => entry.wakeReason === "issue_recovery_action_restored")).toHaveLength(burst.length);
+  });
+
+  it("keeps draining recovery wakes at their share while agents keep sending work", () => {
     const burst = Array.from({ length: 10 }, () => backlogRecovery());
     const steps = burst.length * RECOVERY_DISPATCH_SHARE;
-    const { started } = dispatch(burst, { steps, arrivals: () => [personRetry()] });
+    const { started } = dispatch(burst, { steps, arrivals: () => [run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) })] });
     const recoveryStarts = started.filter(entry => entry.wakeReason === "issue_recovery_action_restored").length;
     expect(recoveryStarts).toBe(burst.length);
     for (let window = 0; window + RECOVERY_DISPATCH_SHARE <= started.length; window += 1) {
@@ -69,18 +79,22 @@ describe("queued run dispatch order", () => {
       if (window + RECOVERY_DISPATCH_SHARE <= steps)
         expect(slice.some(entry => entry.wakeReason === "issue_recovery_action_restored")).toBe(true);
     }
-    expect(started.filter(entry => entry.wakeReason === "task_retry").length).toBe(steps - burst.length);
+    expect(started.filter(entry => entry.wakeReason === "issue_assigned").length).toBe(steps - burst.length);
   });
 
-  it("keeps recovery's share when one dispatch fills many slots", () => {
-    const people = Array.from({ length: 12 }, () => personRetry());
+  it("keeps recovery's share of agent work when one dispatch fills many slots, and none of a person's", () => {
+    const work = Array.from({ length: 12 }, () => run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }));
     const recovery = Array.from({ length: 6 }, () => backlogRecovery());
-    const batch = orderQueuedRunsForDispatch([...recovery, ...people], { now, startsSinceRecovery: 0 }).slice(0, 8);
-    expect(batch.map(entry => entry.wakeReason === "task_retry" ? "P" : "R").join("")).toBe("PPPRPPPR");
+    const batch = orderQueuedRunsForDispatch([...recovery, ...work], { now, startsSinceRecovery: 0 }).slice(0, 8);
+    expect(batch.map(entry => entry.wakeReason === "issue_assigned" ? "A" : "R").join("")).toBe("AAARAAAR");
+    const people = Array.from({ length: 4 }, () => personRetry());
+    const mixed = orderQueuedRunsForDispatch([...recovery, ...people, ...work], { now, startsSinceRecovery: 0 }).slice(0, 8);
+    expect(mixed.map(entry => entry.wakeReason === "task_retry" ? "P" : entry.wakeReason === "issue_assigned" ? "A" : "R").join(""))
+      .toBe("PPPPRAAA");
   });
 
   it("offers the next recovery run when the reserved recovery run cannot be claimed", () => {
-    const people = Array.from({ length: 4 }, () => personRetry());
+    const people = Array.from({ length: 4 }, () => run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }));
     const stuck = backlogRecovery(59);
     const claimable = backlogRecovery(30);
     const dispatcher = createQueuedRunDispatcher([...people, stuck, claimable], { now, startsSinceRecovery: RECOVERY_DISPATCH_SHARE - 1 });
@@ -89,7 +103,7 @@ describe("queued run dispatch order", () => {
     const second = dispatcher.next();
     expect(second!.id).toBe(claimable.id);
     dispatcher.claimed(second!);
-    expect(dispatcher.next()!.wakeReason).toBe("task_retry");
+    expect(dispatcher.next()!.wakeReason).toBe("issue_assigned");
   });
 
   it("does not put a fresh interruption's continuation behind old-backlog recovery wakes", () => {
@@ -125,29 +139,22 @@ describe("queued run dispatch order", () => {
     expect(ordered.map(entry => entry.id)).toEqual([urgent.id, earlier.id, later.id, inProgress.id, todo.id]);
   });
 
-  it("starts an old queued continuation within a bounded number of starts while fresh person and system work keeps arriving", () => {
+  it("starts an old queued continuation within a bounded number of starts while fresh agent and recovery work keeps arriving", () => {
     const continuation = run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(150), sourceEndedAt: minutesAgo(152) });
     const started: QueuedRunDispatchFacts[] = [];
     let pending: QueuedRunDispatchFacts[] = [continuation];
     const steps = 40;
     for (let step = 0; step < steps; step += 1) {
-      pending.push(personRetry(), run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }),
+      pending.push(run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }),
         run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }));
-      const recent = started.slice(-RECOVERY_DISPATCH_SHARE).reverse();
-      const lastRecovery = recent.findIndex(entry => isRecoveryWakeReason(entry.wakeReason));
-      const oldest = pending.reduce((left, right) => left.createdAt <= right.createdAt ? left : right);
-      const recentForOldest = started.slice(-OLDEST_DISPATCH_SHARE).reverse();
-      const lastOldest = recentForOldest.findIndex(entry => entry.createdAt <= oldest.createdAt);
-      const [next] = orderQueuedRunsForDispatch(pending, { now,
-        startsSinceRecovery: lastRecovery < 0 ? recent.length : lastRecovery,
-        startsSinceOldest: lastOldest < 0 ? recentForOldest.length : lastOldest });
+      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, now)), now) });
       started.push(next!);
       pending = pending.filter(entry => entry.id !== next!.id);
     }
     const position = started.findIndex(entry => entry.id === continuation.id);
     expect(position).toBeGreaterThanOrEqual(0);
-    expect(position).toBeLessThan(OLDEST_DISPATCH_SHARE);
-    expect(started.slice(0, position).every(entry => entry.wakeReason === "task_retry" || entry.wakeReason === "issue_continuation_needed")).toBe(true);
+    expect(position).toBeLessThan(RECOVERY_DISPATCH_SHARE);
+    expect(started.slice(0, position).every(entry => entry.wakeReason === "issue_assigned")).toBe(true);
   });
 
   it("serves the longest-waiting run once every share even when fresher work outranks it", () => {
@@ -166,12 +173,11 @@ describe("queued run dispatch order", () => {
     expect(ordered[0]!.wakeReason).toBe("task_retry");
   });
 
-  it("lets an old-backlog recovery run age into the work tier", () => {
-    const aged = run({ wakeReason: "issue_continuation_needed", createdAt: new Date(now.getTime() - QUEUED_RUN_AGING_MS),
-      sourceEndedAt: minutesAgo(200) });
+  it("never lets a long-waiting recovery run age ahead of agent work or into the oldest-run share", () => {
+    const aged = run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(400), sourceEndedAt: minutesAgo(402) });
     const fresh = run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) });
-    const ordered = orderQueuedRunsForDispatch([fresh, aged], { now, startsSinceRecovery: 0 });
-    expect(ordered.map(entry => entry.id)).toEqual([aged.id, fresh.id]);
+    const ordered = orderQueuedRunsForDispatch([fresh, aged], { now, startsSinceRecovery: 0, startsSinceOldest: OLDEST_DISPATCH_SHARE - 1 });
+    expect(ordered.map(entry => entry.id)).toEqual([fresh.id, aged.id]);
   });
 
   it("passes the oldest-run share to the next oldest run while the oldest one keeps failing to claim", () => {
@@ -194,17 +200,105 @@ describe("queued run dispatch order", () => {
     for (let step = 0; step < 3 * OLDEST_DISPATCH_SHARE; step += 1) {
       pending.push(run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }),
         run({ wakeReason: "issue_assigned", readinessRank: 1, createdAt: minutesAgo(1) }));
-      const recent = started.slice(-RECOVERY_DISPATCH_SHARE).reverse();
-      const lastRecovery = recent.findIndex(entry => isRecoveryWakeReason(entry.wakeReason));
-      const oldest = pending.reduce((left, right) => left.createdAt <= right.createdAt ? left : right);
-      const recentForOldest = started.slice(-OLDEST_DISPATCH_SHARE).reverse();
-      const lastOldest = recentForOldest.findIndex(entry => entry.createdAt <= oldest.createdAt);
-      const [next] = orderQueuedRunsForDispatch(pending, { now,
-        startsSinceRecovery: lastRecovery < 0 ? recent.length : lastRecovery,
-        startsSinceOldest: lastOldest < 0 ? recentForOldest.length : lastOldest });
+      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, now)), now) });
       started.push(next!);
       pending = pending.filter(entry => entry.id !== next!.id);
     }
     for (const continuation of continuations) expect(started.map(entry => entry.id)).toContain(continuation.id);
+  });
+});
+
+describe("deep per-agent queue: a recovery burst behind 20 busy slots (paperclip.staging, 2026-11-13)", () => {
+  // Codie, maxConcurrentRuns 20, every slot busy: each freed slot is one dispatch.
+  const at = new Date("2026-11-13T14:30:00.000Z");
+  const clock = (iso: string) => new Date(`2026-11-13T${iso}:00.000Z`);
+  const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60_000);
+  let id = 0;
+  const make = (input: Partial<QueuedRunDispatchFacts> & { wakeReason: string; createdAt: Date }): QueuedRunDispatchFacts =>
+    ({ id: `codie-${++id}`, requestedByUser: false, sourceEndedAt: null, readinessRank: 1, priorityRank: 2, ...input });
+  const isPerson = (run: QueuedRunDispatchFacts) => run.requestedByUser;
+
+  function todaysQueue() {
+    // Agent-made assignments queued before the people's tasks.
+    const assignments = Array.from({ length: 60 }, (_, index) => make({ wakeReason: "issue_assigned",
+      createdAt: addMinutes(clock("05:00"), index * 2) }));
+    // Two tasks people created, stalled by a restart at 07:25 and waiting since 07:29 on system wakes:
+    // a monitor check and the assigned-work sweep's continuation. Neither wake was a person's.
+    const waitingPeople = [
+      make({ wakeReason: "issue_monitor_due", personTask: true, readinessRank: 0, createdAt: clock("07:29") }),
+      make({ wakeReason: "issue_continuation_needed", personTask: true, readinessRank: 0, sourceEndedAt: clock("07:27"),
+        createdAt: addMinutes(clock("07:29"), 1) }),
+    ];
+    // Later person-requested work on tasks already in progress, at higher priority.
+    const laterPeople = Array.from({ length: 30 }, (_, index) => make({ wakeReason: "issue_commented", requestedByUser: true,
+      readinessRank: 0, priorityRank: 1, createdAt: addMinutes(clock("08:00"), index * 12) }));
+    // The burst: 139 system recovery wakes between 10:46 and 11:47 for in-progress tasks.
+    const burst = Array.from({ length: 139 }, (_, index) => make({ wakeReason: "issue_recovery_action_restored",
+      readinessRank: 0, sourceEndedAt: clock("09:00"), createdAt: addMinutes(clock("10:46"), Math.floor(index * 61 / 139)) }));
+    return { assignments, waitingPeople, laterPeople, burst };
+  }
+
+  function dispatchOneAtATime(queue: QueuedRunDispatchFacts[], steps: number) {
+    const started: Array<{ run: QueuedRunDispatchFacts; personWaiting: boolean }> = [];
+    let pending = [...queue];
+    for (let step = 0; step < steps; step += 1) {
+      // People and agents keep adding work while the queue drains.
+      if (step % 2 === 0) pending.push(make({ wakeReason: "issue_commented", requestedByUser: true, readinessRank: 0,
+        priorityRank: 1, createdAt: at }));
+      pending.push(make({ wakeReason: "issue_assigned", createdAt: at }));
+      const history = started.map(entry => entry.run);
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...history].reverse().map(run => queuedRunStartOf(run, at)), at) });
+      started.push({ run: next!, personWaiting: pending.some(entry => entry !== next && isPerson(entry) && entry.readinessRank < 3) });
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    return started;
+  }
+
+  it("starts the oldest run on a task a person is waiting on within the oldest-run share, and never starts recovery while a person waits", () => {
+    const { assignments, waitingPeople, laterPeople, burst } = todaysQueue();
+    const started = dispatchOneAtATime([...burst, ...assignments, ...laterPeople, ...waitingPeople], 40);
+    const position = started.findIndex(entry => entry.run.id === waitingPeople[0]!.id);
+    expect(position).toBeGreaterThanOrEqual(0);
+    expect(position).toBeLessThan(OLDEST_DISPATCH_SHARE);
+    // The next one starts within the following share.
+    const second = started.findIndex(entry => entry.run.id === waitingPeople[1]!.id);
+    expect(second).toBeGreaterThanOrEqual(0);
+    expect(second).toBeLessThan(2 * OLDEST_DISPATCH_SHARE);
+    const recoveryAheadOfPeople = started.filter(entry => entry.run.wakeReason === "issue_recovery_action_restored" && entry.personWaiting);
+    expect(recoveryAheadOfPeople).toHaveLength(0);
+  });
+
+  it("does not let older agent work use up the turn of a run on a task a person created", () => {
+    // No person-requested arrivals: normal order serves the older, higher-priority assignments.
+    const assignments = Array.from({ length: 60 }, (_, index) => make({ wakeReason: "issue_assigned", priorityRank: 1,
+      createdAt: addMinutes(clock("05:00"), index * 2) }));
+    const monitor = make({ wakeReason: "issue_monitor_due", personTask: true, priorityRank: 3, createdAt: clock("07:29") });
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending = [...assignments, monitor];
+    for (let step = 0; step < 2 * OLDEST_DISPATCH_SHARE && pending.length; step += 1) {
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at,
+        ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, at)), at) });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    const position = started.findIndex(entry => entry.id === monitor.id);
+    expect(position).toBeGreaterThanOrEqual(0);
+    expect(position).toBeLessThan(OLDEST_DISPATCH_SHARE);
+    // The place-in-line order agrees.
+    const line = queuedRunDispatchLine([...assignments, monitor], { now: at, startsSinceRecovery: 0, startsSinceOldest: 0 });
+    expect(line.findIndex(entry => entry.id === monitor.id)).toBeLessThan(OLDEST_DISPATCH_SHARE);
+  });
+
+  it("keeps recovery behind agent assignments once people are served, and still drains it at its share", () => {
+    const { assignments, burst } = todaysQueue();
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending = [...burst.slice(0, 3), ...assignments];
+    for (let step = 0; step < 4 * RECOVERY_DISPATCH_SHARE && pending.length; step += 1) {
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, at)), at) });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    expect(started.filter(entry => entry.wakeReason === "issue_recovery_action_restored")).toHaveLength(3);
+    expect(started[0]!.wakeReason).toBe("issue_assigned");
   });
 });

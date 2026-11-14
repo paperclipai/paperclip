@@ -28,9 +28,9 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     getAgent: vi.fn<HeartbeatQueueDependencies["getAgent"]>(async () => { throw new Error("Unexpected agent lookup"); }),
     options: {},
     // Same compare-and-set contract as the run lifecycle: write only from one of fromStatuses.
-    setRunStatusFromLive: vi.fn<HeartbeatQueueDependencies["setRunStatusFromLive"]>(async (id, status, fromStatuses, patch) => {
+    setRunStatusFromLive: vi.fn<HeartbeatQueueDependencies["setRunStatusFromLive"]>(async (id, status, fromStatuses, patch, _report, condition) => {
       const [updated] = await db.update(heartbeatRuns).set({ ...patch, status })
-        .where(and(eq(heartbeatRuns.id, id), inArray(heartbeatRuns.status, fromStatuses))).returning();
+        .where(and(eq(heartbeatRuns.id, id), inArray(heartbeatRuns.status, fromStatuses), ...(condition ? [condition] : []))).returning();
       if (updated) return { run: updated, updated: true as const };
       const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
       return { run: current ?? null, updated: false as const };

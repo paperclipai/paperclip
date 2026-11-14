@@ -27,7 +27,7 @@ function database(present: string[] = [], change?: (row: Record<string, unknown>
     const row = Object.fromEntries(keys.map(key => [key, present.includes(key)]));
     return change ? change(row) : [row];
   });
-  const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ execute }));
+  const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute }));
   return { db: { transaction } as unknown as Db, transaction, execute, keys: () => keys };
 }
 

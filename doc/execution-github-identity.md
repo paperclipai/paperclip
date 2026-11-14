@@ -194,6 +194,15 @@ Native warm sessions retain their token-free launchers and inactive broker until
 session retirement; environment deletion and orderly controller shutdown close
 idle owners first. Cleanup failures are logged and do not change the run result.
 
+Remote native sessions verify the GitHub callback bridge from inside their execution
+environment before publishing the launcher environment. The probe authenticates
+to the inactive broker and acquires no GitHub credential. If the HTTP/2 bridge
+fails this startup check, the controller closes it and tries the existing file
+bridge once. Both transports use the same live identity and credential resolver.
+An unverified final bridge is stopped before anonymous launchers are returned.
+This startup fallback cannot replay an agent command. A later HTTP/2 loss
+still makes the warm session unavailable for reuse.
+
 ## Project authorization for background repository work
 
 Background provisioning and workspace maintenance have no responsible task user.

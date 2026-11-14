@@ -1,4 +1,4 @@
-import type { McpAppCallToolResult, McpAppModelContext, McpAppViewDetail, McpAppViewSummary } from "@paperclipai/shared";
+import type { McpAppCallToolResult, McpAppModelContext, McpAppViewDetail, McpAppViewSummary, ToolCallProgressSnapshot } from "@paperclipai/shared";
 import { api } from "./client";
 
 /** MCP Apps views recorded for a task's tool calls. */
@@ -17,4 +17,7 @@ export const mcpAppsApi = {
   /** Records that the viewer sent a view's proposed message (sent with this client request id). */
   messageSent: (issueId: string, viewId: string, clientRequestId: string) =>
     api.post<{ commentId: string }>(`/issues/${issueId}/mcp-app-views/${viewId}/messages`, { clientRequestId }),
+  /** The latest progress of the task's running app tool calls (for a reload mid-call). */
+  toolCallProgress: (issueId: string) =>
+    api.get<ToolCallProgressSnapshot[]>(`/issues/${issueId}/tool-call-progress`, { cache: "no-store" }),
 };

@@ -606,7 +606,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       expect(scan.mock.calls.filter(([input]) => input.operation === "execution_workspaces.close_readiness_status"))
         .toHaveLength(3);
       expect(select.mock.calls.filter(([fields]) => fields && "completedAt" in fields && "cancelledAt" in fields))
-        .toHaveLength(4);
+        .toHaveLength(1);
     } finally {
       scan.mockRestore();
       select.mockRestore();
@@ -673,6 +673,50 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(await service.sweepTerminalWorkspaces(2)).toMatchObject({ checked: 1, archived: 1 });
     expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(false);
     expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+  });
+
+  it("inspects only the workspaces a hint reaches, however many trees stay open", async () => {
+    const open = [await seedTerminalWorkspace({ childStatus: "todo" }), await seedTerminalWorkspace({ childStatus: "todo" }),
+      await seedTerminalWorkspace({ childStatus: "todo" })];
+    const seed = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    const original = db.select.bind(db);
+    let treeReads = 0;
+    const select = vi.spyOn(db, "select").mockImplementation(((fields: any) => {
+      if (fields?.completedAt && fields?.cancelledAt) treeReads += 1;
+      return original(fields);
+    }) as typeof db.select);
+    try {
+      expect(await service.sweepTerminalWorkspaces(50, undefined, { targets: { workspaceIds: [], issueIds: [child!.id] } }))
+        .toMatchObject({ checked: 1, archived: 1 });
+      expect(treeReads).toBe(1);
+      expect(await service.sweepTerminalWorkspaces(50, undefined, {
+        targets: { workspaceIds: [open[0]!.executionWorkspaceId], issueIds: [] } })).toMatchObject({ checked: 1, skippedNonTerminalTree: 1 });
+      expect(treeReads).toBe(2);
+    } finally { select.mockRestore(); }
+  });
+
+  it("hints the former parent and workspace when a task moves or is removed", async () => {
+    const seed = await seedTerminalWorkspace({ childStatus: "todo" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    await db.update(issues).set({ executionWorkspaceId: seed.executionWorkspaceId }).where(eq(issues.id, child!.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await issueService(db).update(child!.id, { parentId: null });
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`]));
+      await db.update(issues).set({ parentId: seed.sourceIssueId }).where(eq(issues.id, child!.id));
+      hints.length = 0;
+      await issueService(db).remove(child!.id);
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`,
+        `workspace:${seed.executionWorkspaceId}`]));
+    } finally { unsubscribe(); }
   });
 
   it("retries unread rows from a failed full page before it can park recovery", async () => {

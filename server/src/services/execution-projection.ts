@@ -22,7 +22,9 @@ import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../sta
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
+import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
+const ANOTHER_ROUTINE_TASK = "another task in this routine";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -203,8 +205,39 @@ export async function executionProjectionsForRuns(
       retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
     .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
   const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
+  // Only never-started runs wait on the agent's limit; their place in line is
+  // read once per full agent, not once per run.
+  const agentQueueByRun = queuedRuns.some(run => !run.startedAt)
+    ? await read(() => agentQueueLinesForRuns(db, companyId, queuedRuns.filter(run => !run.startedAt), now))
+    : new Map<string, NonNullable<ExecutionProjection["agentQueue"]>>();
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
+  // A routine runs one execution at a time (issues_open_routine_execution_uq):
+  // a never-started run of a routine task waits while another open task of
+  // the same routine holds an execution. One read for the batch.
+  const routineHolderByIssue = new Map<string, string>();
+  const unstartedIssueIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(issueIdOf).filter((id): id is string => !!id))];
+  if (unstartedIssueIds.length) {
+    const holders = await read(async () => db.execute<{ issueId: string; holderIdentifier: string | null }>(sql`
+      -- A private holder is never named: this projection has no reader to check access for.
+      select waiting.id as "issueId", case when holder.visibility = 'open' then holder.identifier end as "holderIdentifier"
+      from ${issues} waiting
+      join ${issues} holder on holder.company_id = waiting.company_id
+        and holder.origin_kind = 'routine_execution'
+        and holder.origin_id = waiting.origin_id
+        and holder.origin_fingerprint is not distinct from waiting.origin_fingerprint
+        and holder.id <> waiting.id
+        and holder.hidden_at is null
+        and holder.execution_run_id is not null
+        and holder.status in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')
+      where waiting.company_id = ${companyId}
+        and waiting.origin_kind = 'routine_execution'
+        and waiting.origin_id is not null
+        and waiting.id in (${sql.join(unstartedIssueIds.map(id => sql`${id}::uuid`), sql`, `)})`));
+    for (const row of [...holders]) {
+      if (!routineHolderByIssue.has(row.issueId)) routineHolderByIssue.set(row.issueId, row.holderIdentifier ?? ANOTHER_ROUTINE_TASK);
+    }
+  }
   if (queuedIssueIds.length) {
     const issueKey = sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
     // Two set-based reads for the whole batch, then one bounded, parallel
@@ -278,6 +311,8 @@ export async function executionProjectionsForRuns(
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
         currentResponseWait(run),
+        agentQueueByRun.get(run.id),
+        run.status === "queued" && !run.startedAt ? routineHolderByIssue.get(issueIdOf(run) ?? "") : undefined,
       ),
     );
   }
@@ -305,6 +340,9 @@ export function projectExecution(
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
   responseWaitCurrent = false,
+  agentQueue?: ExecutionProjection["agentQueue"],
+  /** The open task of the same routine that holds the routine's one execution. */
+  routineHolder?: string,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -552,6 +590,18 @@ export function projectExecution(
     projection.cause = "previous_run_settling";
     projection.nextAction = "The previous run on this task is still releasing its runner. This turn starts automatically when it settles.";
     return set("queued", "Waiting for previous run to stop");
+  }
+  // Checked before the agent's limit: a free slot would not start this run.
+  if (run.status === "queued" && !run.startedAt && routineHolder) {
+    projection.cause = "routine_execution_in_progress";
+    projection.nextAction = `This routine runs one task at a time and ${routineHolder === ANOTHER_ROUTINE_TASK ? "another of its tasks" : routineHolder} is still open with its run. This task starts automatically when that one finishes.`;
+    return set("queued", `Waiting for ${routineHolder} to finish`);
+  }
+  if (run.status === "queued" && !run.startedAt && agentQueue) {
+    projection.cause = "agent_at_capacity";
+    projection.agentQueue = agentQueue;
+    projection.nextAction = `${agentQueue.agentName} is running ${agentQueue.runningCount} of ${agentQueue.maxConcurrentRuns} tasks at once. This task is ${agentQueue.position} of ${agentQueue.queuedCount} in line and starts automatically when a slot frees.`;
+    return set("queued", `Waiting for ${agentQueue.agentName}`);
   }
   return projection;
 }

@@ -56,6 +56,35 @@ harness validates the task identity before measuring. Network spans in the trace
 use recorded request start/end timestamps relative to task navigation; they
 include completed requests observed during the sample, even after content paint.
 
+## Cold direct task load (chat bootstrap)
+
+A hard load of a task URL starts `GET /api/issues/:ref/chat-bootstrap` from the
+inline preload script, before the app's JavaScript loads. The chat's
+first-frame reads share that answer (`ui/src/lib/issue-chat-bootstrap.ts`) and
+fall back to their own requests when it fails, lacks a field, or stalls.
+
+`cold-bootstrap.perf.spec.ts` delays every API response (300 ms by default)
+so serial request stages show up as wall-clock time. It opens the task by URL
+in a fresh browser context with the app's JavaScript in the HTTP cache and no
+app storage. The finish event is the revealed history with the latest saved
+message and an editable composer. Its request-shape test always runs: one
+bootstrap request, no per-endpoint first-frame read before the frame, and no
+such read completing before it. Reads that start after the live socket
+connects are its catch-up refresh and are excluded. The benchmark is opt-in:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3287 \
+PAPERCLIP_ISSUE_PERF_COLD_RUNS=7 PAPERCLIP_ISSUE_PERF_LABEL=candidate \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts cold-bootstrap -g benchmark
+```
+
+It writes `cold-bootstrap-<label>.{json,md}` with the median, spread, the
+request count before the frame, the requests that finished last before it,
+and the first run's request timeline. `PAPERCLIP_ISSUE_PERF_API_DELAY_MS`
+changes the delay. `PAPERCLIP_ISSUE_PERF_COLD_HTTP_CACHE=1` downloads the
+JavaScript on every run. Serve a production build
+(`PAPERCLIP_UI_DEV_MIDDLEWARE=false`).
+
 ## Real-instance click harness
 
 Local fixtures cannot reproduce staging's network round trips, server contention

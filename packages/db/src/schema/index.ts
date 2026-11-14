@@ -26,6 +26,7 @@ export { budgetResumeClaims } from "./budget_resume_claims.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
+export { automaticRunBrakes } from "./automatic_run_brakes.js";
 export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
@@ -194,6 +195,7 @@ export {
   toolMcpSkills,
   toolMcpSkillFiles,
   toolMcpTasks,
+  toolMcpElicitations,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,
@@ -285,4 +287,5 @@ export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interactio
 
 export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
 export { budgetEvaluationWork } from "./budget_evaluation_work.js";
+export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";

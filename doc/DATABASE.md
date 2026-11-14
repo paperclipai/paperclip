@@ -507,6 +507,16 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0487 builds two partial `heartbeat_runs` indexes concurrently for the
+settled-process recovery queue. `heartbeat_runs_settled_process_identity_idx`
+keys settled native runs that still hold a process identity by
+`process_host_hash`, company and id. Each server reads only the runs recorded in
+its own PID space, sandbox runs (`remote`) and rows saved before the hash, so
+finished runs from replaced containers are not read at all.
+`heartbeat_runs_pending_api_stop_idx` keys cancelled `cursor_cloud_api` runs
+whose Stop is still `requested`. Without them, the queue reads every finished
+run of a company on each hint.
+
 Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
 keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
 dispatch finds the person wakes that joined or were adopted by each queued run
@@ -916,6 +926,20 @@ DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this lo
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
+single-connection clients idle for reuse; they follow the same idle timeout and
+max lifetime as the main pool. This is not an admission limit: callers hold
+advisory locks and nest dedicated actions, so an action that finds no idle
+client opens one and closes it on release when four are already retained. A
+connection whose action throws is closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
+
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
 clients. Postgres.js manages the statement cache. This does not cache query
@@ -1094,6 +1118,33 @@ connection. This can help interactive requests that share a prepared-query pool
 with slow background work. It does not make the SQL itself faster. The default
 pipeline limit remains unchanged. Test transaction behavior before using this
 setting with a driver build that does not include the patch.
+
+The patch also releases a connection's receive buffer when the connection has
+read every message in it. Without this fix, an idle connection keeps the buffer
+of its last read until its next read: the socket chunk, or the whole buffer of
+its largest recent message. At 340 open connections that each read a 1 MB row,
+this held about 320 MB of `external` memory. The memory is outside the
+JavaScript heap. `packages/db/src/postgres-receive-buffer.test.ts` checks that
+the buffer is released. It also checks that results are reassembled correctly
+when socket chunks end exactly at message boundaries, when they split messages
+in the middle, and when the operating system chooses the chunks. Measure it with
+`pnpm --filter @paperclipai/db exec node --expose-gc --import tsx scripts/benchmark-postgres-receive-buffer.ts`
+(`CONNECTIONS` and `ROW_BYTES` are optional).
+
+The patch also keeps the driver's connection queues proportional to the
+connections they hold. Without this fix, the queue of idle connections keeps an
+empty slot for every query it has handed out until it is completely empty. A
+busy pool always has some idle connections, so that queue never empties. Each
+new query then scans one slot for every query the process has already run. In a
+simulation at 1,000 statements per second, dispatching a query used about 15%
+of the main thread after 17 minutes, and the cost kept growing. The patched queue removes
+the empty slots once there are more than 1,024 of them and more empty slots
+than queued connections. It also searches only the queued connections.
+`packages/db/src/postgres-queue.test.ts` checks the queue order and the work per
+query, and `packages/db/src/postgres-queue-pool.test.ts` checks a real pool.
+Measure it with
+`pnpm --filter @paperclipai/db exec tsx scripts/benchmark-postgres-queue.ts`
+(`SIMULATED_QUERIES` and `QUERIES` are optional).
 
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
@@ -1696,6 +1747,17 @@ grace. Retention uses committed producer notifications and actual deadlines;
 pinned history and an empty queue do not cause recurring scans. Deletion fences
 new adoption, rechecks references, and removes every recorded upload candidate
 and winning object within the company/workspace prefix.
+
+When retention finds a pinned version, it records the first reference that holds
+it in `metadata.retentionPin`: the current pointer, an importing parent, an
+operation, an unfinished child, a run, or a recovery action. The candidate query
+leaves that version out while the recorded reference still holds, so execution
+notifications do not re-examine unchanged history. When the recorded reference
+releases, the next pass checks every reference again. It records the next
+reference that holds, or schedules or retires the version. The record is durable,
+so a restarted server keeps the exclusion. A version without a record, such as
+one saved before this change, is examined once. Wakes coalesce for up to one
+second.
 
 Database backups contain snapshot receipts, not S3 payloads or encryption keys.
 Disaster recovery requires the database, object store, and original master key.
@@ -2503,6 +2565,14 @@ error carries a bounded message, keeps the SQLSTATE in `code` and the database
 error in `cause`, and is logged with both. A run that fails this way keeps the
 generic `adapter_failed` code, so existing retry paths apply, and records that
 bounded message with the SQLSTATE as its failure cause.
+
+Prompt-injection classifier admission also uses READ COMMITTED. Its company,
+project, configuration, agent, run and secret share locks retain the admission
+fences. Run status and execution identity are read under the run lock, so a
+concurrent run-event append cannot invalidate an earlier snapshot and discard
+a connector result before classification. The budget check, invocation and
+reservation still commit together. Classifier settlement keeps its separate
+repeatable-read transaction and receipt replay rules.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

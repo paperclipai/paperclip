@@ -6,7 +6,6 @@ import {
   heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { truncateTablesWithDeadlockRetry } from "../__tests__/helpers/truncate-with-deadlock-retry.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-pacing.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -29,6 +28,8 @@ import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapte
 import { createSystemRecovery } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
+import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
+import { taskAutomaticAttempts } from "./recovery/task-automatic-attempts.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -64,7 +65,9 @@ suite("fresh-continuation fallback", () => {
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
     await heartbeatService(db).drainActiveRunExecutions();
-    await truncateTablesWithDeadlockRetry(db, `truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
+    // The drain covers every background run, wake and resume dispatch, so
+    // nothing still holds these tables. A deadlock here is a leak to fix.
+    await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
       issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 
@@ -994,6 +997,33 @@ suite("fresh-continuation fallback", () => {
       .toMatchObject({ kind: "continued", delivery: taken ? "recorded" : "saved_input" });
   }, 60_000);
 
+  it.each(["native", "legacy"] as const)("starts a run for the person's message once the task continues from saved work (%s)", async runtime => {
+    const f = await unfinishedRun({ runtime, errorCode: runtime === "native" ? "native_provider_terminal_failed" : "process_lost" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: userId, body: "try again" } as typeof issueComments.$inferInsert).returning();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment!.id, mutation: "comment" },
+      requestedByActorType: "user", requestedByActorId: userId,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment!.id, wakeCommentId: comment!.id,
+        source: "issue.comment", wakeReason: "issue_commented" } });
+    const wakes = () => db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.payload}->>'issueId' = ${f.issueId}`);
+    expect((await wakes()).map(w => w.status)).toEqual(["deferred_issue_execution"]);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", delivery: "saved_input" });
+    await occupySlot();
+    await deliver();
+    await heartbeat.resumeQueuedRuns();
+    const runs = await db.select().from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    const saved = await wakes();
+    expect(runs, JSON.stringify({ issue: await issue(f.issueId),
+      wakes: saved.map(w => ({ status: w.status, error: w.error, runId: w.runId, payload: w.payload })) })).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot?.wakeCommentIds).toContain(comment!.id);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.runId).toBe(runs[0]!.id);
+  }, 60_000);
+
   it.each([
     { title: "a pending approval", setup: "approval" as const, errorCode: "native_continuation_requires_reconciliation" },
     { title: "a credential the person has not shared", setup: "none" as const, errorCode: "configuration_incomplete" },
@@ -1322,5 +1352,126 @@ suite("fresh-continuation fallback", () => {
     await deliver();
     const [next] = await successors(f.runId);
     expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace" });
+  }, 60_000);
+
+  async function followUpFailedBeforeProviderWork(options: { restoreFailed?: boolean } = {}) {
+    const issueId = randomUUID(), runId = randomUUID();
+    const endedAt = new Date(Date.now() - 60_000);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Summarize the subtasks", status: "in_progress", assigneeAgentId: agentId });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", cwd: "/work/remote-task" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, issueId));
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation", issueId,
+      runtimeMode: "legacy", status: "running", startedAt: new Date(endedAt.getTime() - 10_000),
+      createdAt: new Date(endedAt.getTime() - 60_000), responsibleUserId: userId,
+      contextSnapshot: { issueId, executionWorkspaceId: workspace!.id, wakeReason: "issue_children_completed" } }).returning();
+    const [environment] = await db.insert(environments).values({ name: `sandbox-${runId}`, driver: "sandbox" }).returning();
+    await db.insert(environmentLeases).values({ companyId, issueId, executionWorkspaceId: workspace!.id,
+      heartbeatRunId: runId, environmentId: environment!.id, status: "active", leasePolicy: "reuse_by_environment", provider: "daytona",
+      providerLeaseId: `sandbox-${runId}`, metadata: { remoteCwd: "/work/remote-task", driver: "sandbox",
+        workspaceRealization: { authoritativeRoot: "/work/remote-task" } } });
+    await terminalizeLegacyExecution({ db, run: run!, status: "failed", patch: { errorCode: "adapter_failed",
+      error: "native_instruction_materialization_handoff_unavailable", finishedAt: endedAt,
+      resultJson: options.restoreFailed === false ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
+        : { workspaceRestoreFailure: "restore_failed" } } });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    return { issueId, runId, actionId: hold?.id ?? null };
+  }
+
+  async function savedWorkRecoveryState(actionId: string, runId: string, state: "running" | "complete") {
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(),
+      evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({ systemRecovery: { ...createSystemRecovery(runId), state } })}::jsonb` })
+      .where(eq(issueRecoveryActions.id, actionId));
+  }
+
+  async function systemRetryAtClaim(f: { issueId: string; runId: string }) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId,
+      runtimeMode: "legacy", status: "queued", retryOfRunId: f.runId,
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_continuation_needed", retryReason: "issue_continuation_needed",
+        retryOfRunId: f.runId } }).returning();
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: run!.id,
+      expectedStatus: "queued", now: new Date() });
+    return { run: run!, outcome };
+  }
+
+  async function deliveredContinuationIsClaimable(f: { issueId: string; runId: string; actionId: string | null }, refusedRunId: string) {
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId, issueId: f.issueId });
+    expect((await issue(f.issueId)).status).not.toBe("blocked");
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const next = (await successors(f.runId)).filter(run => run.id !== refusedRunId);
+    expect(next).toHaveLength(1);
+    expect(next[0]!.status).toBe("queued");
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: next[0]!.id,
+      expectedStatus: "queued", now: new Date() })).toEqual({ outcome: "not_stale" });
+    return next[0]!;
+  }
+
+  it("continues a follow-up that failed before provider work with unrestored files, when the saved work was recovered before the system retry was refused at claim", async () => {
+    const f = await followUpFailedBeforeProviderWork();
+    expect(f.actionId).not.toBeNull();
+    await savedWorkRecoveryState(f.actionId!, f.runId, "complete");
+    const refused = await systemRetryAtClaim(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({
+      freshContinuation: { sourceRunId: f.runId }, continuationDelivery: "pending",
+      freshContinuationSettlement: { refusedAtDispatchRunId: refused.run.id, requestedBy: "system" } });
+    await deliveredContinuationIsClaimable(f, refused.run.id);
+  }, 60_000);
+
+  it("continues a follow-up that failed before provider work with unrestored files, when the saved work was recovered after the system retry was refused at claim", async () => {
+    const f = await followUpFailedBeforeProviderWork();
+    await savedWorkRecoveryState(f.actionId!, f.runId, "running");
+    const refused = await systemRetryAtClaim(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect((await holdRow(f.actionId!)).evidence.freshContinuationCheck)
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "saved_work_recovery_running" });
+    await savedWorkRecoveryState(f.actionId!, f.runId, "complete");
+    await makeDue(f.actionId!);
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({ freshContinuation: { sourceRunId: f.runId },
+      freshContinuationSettlement: { refusedAtDispatchRunId: refused.run.id, requestedBy: "system" } });
+    await deliveredContinuationIsClaimable(f, refused.run.id);
+  }, 60_000);
+
+  it("continues a follow-up that failed before provider work with its files in place, after its system retry was refused at claim", async () => {
+    const f = await followUpFailedBeforeProviderWork({ restoreFailed: false });
+    const refused = await systemRetryAtClaim(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({ freshContinuation: { sourceRunId: f.runId },
+      freshContinuationSettlement: { refusedAtDispatchRunId: refused.run.id, requestedBy: "system" } });
+    await deliveredContinuationIsClaimable(f, refused.run.id);
+  }, 60_000);
+
+  it("counts only automatic retries that started, or still may, against the task's hourly budget", async () => {
+    const f = await followUpFailedBeforeProviderWork();
+    for (let index = 0; index < FRESH_CONTINUATIONS_PER_HOUR; index++) {
+      await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId, runtimeMode: "legacy",
+        status: "cancelled", errorCode: "execution_reconciliation_required", finishedAt: new Date(), retryOfRunId: f.runId,
+        scheduledRetryReason: "transient_failure", contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry" } });
+    }
+    expect(await sharedContinuationAttempts(db, companyId, f.issueId, new Date())).toHaveLength(0);
+    expect((await taskAutomaticAttempts(db, companyId, f.issueId, new Date())).started).toHaveLength(0);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId, runtimeMode: "legacy",
+      status: "failed", errorCode: "adapter_failed", startedAt: new Date(), finishedAt: new Date(), retryOfRunId: f.runId,
+      scheduledRetryReason: "transient_failure", contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry" } });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId, runtimeMode: "legacy",
+      status: "scheduled_retry", retryOfRunId: f.runId,
+      scheduledRetryReason: "transient_failure", contextSnapshot: { issueId: f.issueId, wakeReason: "transient_failure_retry" } });
+    expect(await sharedContinuationAttempts(db, companyId, f.issueId, new Date())).toHaveLength(2);
+    expect((await taskAutomaticAttempts(db, companyId, f.issueId, new Date())).started).toHaveLength(2);
+  }, 60_000);
+
+  it("still leaves a person's failed Retry of a follow-up for that person after its successor is refused at claim", async () => {
+    const f = await followUpFailedBeforeProviderWork();
+    await savedWorkRecoveryState(f.actionId!, f.runId, "complete");
+    await db.update(heartbeatRuns).set({ contextSnapshot: sql`${heartbeatRuns.contextSnapshot} || '{"wakeReason":"task_retry"}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const refused = await systemRetryAtClaim(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect((await holdRow(f.actionId!)).evidence.freshContinuation).toBeUndefined();
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toEqual({ kind: "person_owned", reason: "retry_needed" });
   }, 60_000);
 });

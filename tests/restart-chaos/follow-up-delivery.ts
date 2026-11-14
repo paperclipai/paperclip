@@ -49,6 +49,22 @@ export function laterAnswers(evidence: { runs?: readonly DeliveryRun[]; wakes?: 
   return answers;
 }
 
+export const COMPLETION_INCOMPLETE_KEY = "native-completion-incomplete";
+
+export function rejectedDoneRuns(evidence: { runs?: ReadonlyArray<{ runId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null }>;
+  wakes?: readonly DeliveryWake[] } | null): Set<string> {
+  const rejected = new Set<string>();
+  const results = (evidence?.runs ?? []).flatMap(run => run.runId && run.acceptedDisposition && typeof run.acceptedAt === "number"
+    ? [{ runId: run.runId, disposition: run.acceptedDisposition, acceptedAt: run.acceptedAt }] : []);
+  for (const wake of evidence?.wakes ?? []) {
+    const at = wake.createdAt;
+    if (typeof at !== "number" || object(wake.payload).continuationIdempotencyKey !== COMPLETION_INCOMPLETE_KEY) continue;
+    const cause = results.filter(run => run.acceptedAt <= at).sort((a, b) => b.acceptedAt - a.acceptedAt)[0];
+    if (cause?.disposition === "done") rejected.add(cause.runId);
+  }
+  return rejected;
+}
+
 function percentile(values: readonly number[], fraction: number): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);

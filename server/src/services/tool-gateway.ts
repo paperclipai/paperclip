@@ -30,6 +30,7 @@ import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } 
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
+import { usesClientCredentials } from "./tool-access/oauth/client-credentials.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -77,7 +78,7 @@ import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@p
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -87,6 +88,7 @@ import {
   gt,
   inArray,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -125,6 +127,7 @@ import {
   toolMcpGatewayTokens,
   toolMcpSkills,
   toolMcpTasks,
+  toolMcpElicitations,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -201,7 +204,20 @@ import {
   type McpInputRequired,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
+  mcpProgressNotificationOf,
 } from "./mcp-http.js";
+import { createToolCallProgressReporter, saveToolCallProgress, type ToolCallProgressReporter } from "./tool-call-progress.js";
+import {
+  buildElicitationQuestionSet,
+  elicitationQuestionHash,
+  elicitationResponseForCard,
+  formElicitationOf,
+  MCP_ELICITATION_MAX_FORMS_PER_ROUND,
+  openElicitationState,
+  sealElicitationState,
+  type McpElicitationResponse,
+  type McpFormElicitation,
+} from "./mcp-elicitation.js";
 import {
   projectedConnectionHeaders,
   projectedConnectionToolArguments,
@@ -581,6 +597,9 @@ type RemoteHttpErrorEvidence = {
 // that passes while they are recorded must not turn them into a timeout.
 const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "elicitation_required",
+  "elicitation_sensitive_refused",
+  "elicitation_unsupported",
+  "elicitation_limit_reached",
   "provider_interaction_required",
   "provider_input_required",
   "provider_retry_requested",
@@ -699,7 +718,8 @@ const MCP_CACHEABLE_CONTEXT_METHODS = new Set(["resources/list", "resources/read
  * person action is recorded, so claiming "accept" would assert consent nobody
  * gave. The next call goes out fresh and the server, which tracks out-of-band
  * steps itself, decides. A bare `requestState` (try again) is kept for the
- * retry because it asserts nothing. Form, sampling, and roots are not collected yet.
+ * retry because it asserts nothing. Form questions in a task go to a person
+ * first (see askElicitationRound); sampling and roots are not collected.
  */
 export function mcpInputRequiredPending(inputRequired: McpInputRequired): {
   answerable: boolean;
@@ -709,7 +729,11 @@ export function mcpInputRequiredPending(inputRequired: McpInputRequired): {
 } {
   const links: ToolUpstreamPending["links"] = [];
   let message: string | undefined;
+  let forms = 0;
   for (const request of Object.values(inputRequired.inputRequests)) {
+    // A form beside a link waits: the link goes first, and the server asks
+    // for the form again on the next call (spec: re-ask for missing input).
+    if (request.method === "elicitation/create" && (request.params.mode === undefined || request.params.mode === "form")) { forms += 1; continue; }
     if (request.method !== "elicitation/create" || request.params.mode !== "url") return { answerable: false };
     const checked = checkOAuthEndpointUrl(request.params.url);
     if (!checked.ok) return { answerable: false };
@@ -717,7 +741,7 @@ export function mcpInputRequiredPending(inputRequired: McpInputRequired): {
     if (!message && typeof request.params.message === "string") message = redactSensitiveText(request.params.message).slice(0, 4000);
   }
   if (!links.length) {
-    return inputRequired.requestState ? { answerable: true, retryState: inputRequired.requestState } : { answerable: false };
+    return inputRequired.requestState && !forms ? { answerable: true, retryState: inputRequired.requestState } : { answerable: false };
   }
   // The link flow shows up to eight; more is a clear stop, never a partial step.
   if (links.length > MCP_MAX_INPUT_LINKS) return { answerable: false };
@@ -5484,6 +5508,8 @@ export function createToolGatewayService(
     protocolMethod?: string;
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
+    /** Receives the call's `notifications/progress`; its token is sent with tools/call. */
+    progressReporter?: ToolCallProgressReporter | null;
   },
   /** One restart and one deadline are shared by every protocol recovery in a call. */
   recovery: { restarted: boolean; deadline: number } = { restarted: false, deadline: Date.now() + input.timeoutMs },
@@ -5564,6 +5590,8 @@ export function createToolGatewayService(
           try {
             const message = JSON.parse(line) as Record<string, unknown>;
             const id = typeof message.id === "number" ? message.id : null;
+            const progressUpdate = mcpProgressNotificationOf(message, input.progressReporter?.token);
+            if (progressUpdate) input.progressReporter!.report(progressUpdate);
             if (id !== null && pending.has(id)) {
               const waiter = pending.get(id)!;
               pending.delete(id);
@@ -5739,6 +5767,7 @@ export function createToolGatewayService(
           withMeta(protocolVersion, input.protocolParams ?? {
             name: input.entry?.toolName,
             arguments: input.parameters ?? {},
+            ...(input.progressReporter ? { _meta: { progressToken: input.progressReporter.token } } : {}),
           }),
         );
       } catch (error) {
@@ -6521,103 +6550,50 @@ export function createToolGatewayService(
     return { message, requestedSchema, raw: candidate };
   }
 
-  function enumOptions(
-    values: unknown[],
-  ): Array<{ id: string; label: string }> {
-    return values.slice(0, 10).map((value, index) => {
-      const label =
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean"
-          ? String(value)
-          : `Option ${index + 1}`;
-      return {
-        id: slugSegment(label, `option-${index + 1}`).slice(0, 120),
-        label: label.slice(0, 120),
-      };
-    });
-  }
-
-  function elicitationQuestions(request: McpElicitationRequest) {
-    const schema = request.requestedSchema;
-    const properties = asRecord(schema?.properties);
-    const required = Array.isArray(schema?.required)
-      ? new Set(
-          schema.required.filter(
-            (item): item is string => typeof item === "string",
-          ),
-        )
-      : new Set<string>();
-    const questions: Array<{
-      id: string;
-      prompt: string;
-      helpText?: string | null;
-      selectionMode: "single" | "multi";
-      required?: boolean;
-      options: Array<{
-        id: string;
-        label: string;
-        description?: string | null;
-      }>;
-    }> = [];
-    if (properties) {
-      for (const [key, rawProperty] of Object.entries(properties)) {
-        if (questions.length >= 10) break;
-        const property = asRecord(rawProperty) ?? {};
-        const enumValues = Array.isArray(property.enum) ? property.enum : [];
-        const options =
-          enumValues.length > 0
-            ? enumOptions(enumValues)
-            : [{ id: "answer", label: "Provide answer" }];
-        questions.push({
-          id: key.slice(0, 120),
-          prompt: (
-            stringValue(property.title) ??
-            stringValue(property.description) ??
-            key
-          ).slice(0, 500),
-          helpText:
-            enumValues.length > 0
-              ? null
-              : "Use Other to enter the requested value.",
-          selectionMode: "single",
-          required: required.has(key),
-          options,
-        });
-      }
+  /** The connection's name, as the person knows the app. */
+  async function elicitationAppName(companyId: string, connectionId: string | null | undefined, tool?: ToolGatewayDescriptor) {
+    const named = tool?.applicationDisplayName?.trim();
+    if (named) return named;
+    if (connectionId) {
+      const [connection] = await db.select({ name: toolConnections.name }).from(toolConnections)
+        .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId))).limit(1);
+      if (connection?.name.trim()) return connection.name.trim();
     }
-    if (questions.length > 0) return questions;
-    return [
-      {
-        id: "response",
-        prompt: request.message.slice(0, 500),
-        helpText: "Use Other to enter the requested response.",
-        selectionMode: "single" as const,
-        required: true,
-        options: [{ id: "answer", label: "Provide response" }],
-      },
-    ];
+    return "The app";
   }
 
-  /** The question card a provider's input request becomes; answering it wakes the assignee. */
-  function createElicitationCard(input: {
-    companyId: string; issueId: string; agentId: string | null; toolName: string;
-    request: McpElicitationRequest; idempotencyKey: string;
+  /** Why a provider's form was not shown; the agent reads this, the person sees no card. */
+  function elicitationRefusedError(appName: string, built: { reason: "sensitive" | "unsupported" }, invocationId?: string) {
+    return built.reason === "sensitive"
+      ? new ToolGatewayHttpError(409,
+        `${appName} asked for a password, key, or other secret in a form. Paperclip doesn't collect secrets that way, so nothing was shown. The app must ask for it through a secure link instead.`,
+        "elicitation_sensitive_refused", invocationId ? { invocationId } : undefined)
+      : new ToolGatewayHttpError(409,
+        `${appName} asked a question Paperclip can't show in the task chat. Complete this step in ${appName}, then try again.`,
+        "elicitation_unsupported", invocationId ? { invocationId } : undefined);
+  }
+
+  /**
+   * The question card a provider's form becomes. Only people answer it: an
+   * agent answering its own tool's question would consent on nobody's behalf.
+   * Answering wakes the assignee through the question-response outbox.
+   */
+  async function createElicitationCard(input: {
+    companyId: string; issueId: string; agentId: string | null; appName: string;
+    request: McpFormElicitation; idempotencyKey: string;
   }) {
+    const built = buildElicitationQuestionSet({ appName: input.appName, request: input.request });
+    if (!built.ok) throw elicitationRefusedError(input.appName, built);
     return interactions.create(
       { id: input.issueId, companyId: input.companyId },
       {
         kind: "ask_user_questions",
         idempotencyKey: input.idempotencyKey,
-        title: "Tool needs input",
-        summary: `${input.toolName} asked for more information before it can continue.`,
+        title: built.questionSet.title,
+        summary: built.questionSet.description,
         continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          title: input.request.message.slice(0, 240),
-          submitLabel: "Send response",
-          questions: elicitationQuestions(input.request),
-        },
+        resolverPolicy: "human_only",
+        payload: { version: 1, supersedeOnUserComment: false, questionSet: built.questionSet },
       },
       { agentId: input.agentId },
       // Each provider question is independent: a new one must never expire
@@ -6626,40 +6602,31 @@ export function createToolGatewayService(
     );
   }
 
-  async function requestElicitationForRecordedToolCall(input: {
-    session: ToolGatewaySession;
-    tool: ToolGatewayDescriptor;
-    invocationId: string;
-    request: McpElicitationRequest;
-    /** One card per provider input request; defaults to one per call. */
-    idempotencyKey?: string;
-    /** The name the card shows; a task's cards use one name on every path. */
-    cardToolName?: string;
+  /** What the agent reads while a person has the app's question. */
+  function elicitationWaitError(appName: string, details: Record<string, unknown>) {
+    return new ToolGatewayHttpError(
+      409,
+      `${appName} asked a question, and it is waiting for a person in the task chat. Paperclip wakes you when it is answered; then call this tool again with the same arguments to continue. Don't ask the question yourself.`,
+      "elicitation_required",
+      details,
+    );
+  }
+
+  async function markInvocationAwaitingElicitation(invocationId: string) {
+    await db.update(toolInvocations).set({
+      status: "awaiting_approval",
+      errorCode: "elicitation_required",
+      errorMessage: "The app asked a question; Paperclip put it in the task chat for a person to answer.",
+      updatedAt: new Date(),
+    }).where(eq(toolInvocations.id, invocationId));
+  }
+
+  /** Record that the call stopped for a person's answer, then end it. */
+  async function stopForElicitation(input: {
+    session: ToolGatewaySession; tool: ToolGatewayDescriptor; invocationId: string;
+    appName: string; interactionIds: string[]; requests: McpFormElicitation[];
   }): Promise<never> {
-    if (!input.session.issueId) {
-      throw new ToolGatewayHttpError(
-        409,
-        "MCP elicitation is not supported for non-interactive gateway clients",
-        "elicitation_not_supported",
-        { invocationId: input.invocationId, tool: input.tool.name },
-      );
-    }
-    const interaction = await createElicitationCard({
-      companyId: input.session.companyId, issueId: input.session.issueId, agentId: input.session.agentId,
-      toolName: input.cardToolName ?? input.tool.name, request: input.request,
-      idempotencyKey: input.idempotencyKey ?? `mcp-elicitation:${input.invocationId}`,
-    });
-    const now = new Date();
-    await db
-      .update(toolInvocations)
-      .set({
-        status: "awaiting_approval",
-        errorCode: "elicitation_required",
-        errorMessage:
-          "Remote MCP tool requested elicitation; Paperclip created an issue interaction for the response.",
-        updatedAt: now,
-      })
-      .where(eq(toolInvocations.id, input.invocationId));
+    await markInvocationAwaitingElicitation(input.invocationId);
     await writeToolCallEvent({
       invocationId: input.invocationId,
       session: input.session,
@@ -6669,11 +6636,10 @@ export function createToolGatewayService(
       policyDecision: "defer_runtime",
       reasonCode: "elicitation_required",
       metadata: {
-        interactionId: interaction.id,
-        elicitation: {
-          message: input.request.message,
-          requestedSchema: input.request.requestedSchema,
-        },
+        interactionId: input.interactionIds[0] ?? null,
+        interactionIds: input.interactionIds,
+        // The question's words and shape, never an answer.
+        elicitation: input.requests.map((request) => ({ message: request.message, requestedSchema: request.requestedSchema })),
       },
       tool: input.tool,
     });
@@ -6686,23 +6652,332 @@ export function createToolGatewayService(
       action: "tool_gateway.elicitation_requested",
       details: {
         invocationId: input.invocationId,
-        interactionId: interaction.id,
+        interactionId: input.interactionIds[0] ?? null,
+        interactionIds: input.interactionIds,
         decision: "defer_runtime",
         reasonCode: "elicitation_required",
         tool: input.tool.name,
         ...toolAuditMetadata(input.tool),
       },
     });
-    throw new ToolGatewayHttpError(
-      409,
-      "MCP tool requested additional input",
-      "elicitation_required",
-      {
-        invocationId: input.invocationId,
-        interactionId: interaction.id,
-        tool: input.tool.name,
+    throw elicitationWaitError(input.appName, {
+      invocationId: input.invocationId,
+      interactionId: input.interactionIds[0] ?? null,
+      interactionIds: input.interactionIds,
+      tool: input.tool.name,
+    });
+  }
+
+  /**
+   * A provider question with no way to send an answer back (a vendor result
+   * shape, or an MCP Task's question shown inline). The card is shown and the
+   * call ends; answering wakes the agent.
+   */
+  async function requestElicitationForRecordedToolCall(input: {
+    session: ToolGatewaySession;
+    tool: ToolGatewayDescriptor;
+    invocationId: string;
+    request: McpElicitationRequest;
+    /** One card per provider input request; defaults to one per call. */
+    idempotencyKey?: string;
+    connectionId?: string | null;
+  }): Promise<never> {
+    if (!input.session.issueId) {
+      throw new ToolGatewayHttpError(
+        409,
+        "MCP elicitation is not supported for non-interactive gateway clients",
+        "elicitation_not_supported",
+        { invocationId: input.invocationId, tool: input.tool.name },
+      );
+    }
+    const appName = await elicitationAppName(input.session.companyId, input.connectionId ?? input.tool.connectionId, input.tool);
+    const interaction = await createElicitationCard({
+      companyId: input.session.companyId, issueId: input.session.issueId, agentId: input.session.agentId,
+      appName, request: input.request,
+      idempotencyKey: input.idempotencyKey ?? `mcp-elicitation:${input.invocationId}`,
+    });
+    return stopForElicitation({
+      session: input.session, tool: input.tool, invocationId: input.invocationId,
+      appName, interactionIds: [interaction.id], requests: [input.request],
+    });
+  }
+
+  /** How long a question round can wait for its answers before the call starts over. */
+  const MCP_ELICITATION_TTL_MS = 24 * 60 * 60_000;
+  /** Open question rounds per task; more is a clear stop, never a wall of cards. */
+  const MCP_ELICITATION_MAX_OPEN_ROUNDS = 10;
+  type McpElicitationRow = typeof toolMcpElicitations.$inferSelect;
+  type McpElicitationCall = {
+    session: ToolGatewaySession & { issueId: string };
+    tool: ToolGatewayDescriptor;
+    connectionId: string;
+    grantId: string;
+    /** Keyed identity of the call, including forwarded routing headers; only the same call collects its round. */
+    callIdentity: string;
+    /** Keyed identity of the full arguments, checked before a keyed retry runs again. */
+    argumentsIdentity: string;
+    appName: string;
+  };
+  const mcpElicitationScope = (row: Pick<McpElicitationRow, "companyId" | "connectionId">) => ({ companyId: row.companyId, connectionId: row.connectionId });
+  const mcpElicitationCallIdentity = (continuationKey: string, routingIdentity: string) =>
+    createHmac("sha256", mcpTaskSecret()).update("paperclip:mcp-elicitation-call:v1\0").update(continuationKey).update("\0").update(routingIdentity).digest("hex");
+  const mcpElicitationCardKey = (roundId: string, key: string) =>
+    `mcp-elicit:${roundId}:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+
+  /**
+   * Save a round of form questions, then put each on a card, then end the
+   * call. The round is saved first: a crash before a card exists is repaired
+   * on the next call, which makes the missing card under the same key.
+   * Forms are checked before anything is saved or shown.
+   */
+  async function askElicitationRound(call: McpElicitationCall, input: {
+    invocationId: string;
+    era: "modern" | "legacy";
+    requestState: string | null;
+    forms: Array<{ key: string; request: McpFormElicitation }>;
+    /** An answered round this call just sent: spent in the same transaction that saves the next one. */
+    spend?: { row: McpElicitationRow; responses: Record<string, McpElicitationResponse> };
+  }): Promise<never> {
+    const { session } = call;
+    // The app already has the answered round's answers, even if this next one is refused.
+    const spendFirst = async () => { if (input.spend) await settleElicitationRound(input.spend.row, call, input.spend.responses, input.invocationId); };
+    for (const form of input.forms) {
+      const built = buildElicitationQuestionSet({ appName: call.appName, request: form.request });
+      if (!built.ok) {
+        await spendFirst();
+        await writeAudit({
+          session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+          action: "tool_gateway.elicitation_refused",
+          details: {
+            invocationId: input.invocationId, tool: call.tool.name, reason: built.reason,
+            ...(built.reason === "sensitive" ? { fields: built.fields.slice(0, 10) } : {}),
+          },
+        });
+        throw elicitationRefusedError(call.appName, built, input.invocationId);
+      }
+    }
+    if (input.forms.length > MCP_ELICITATION_MAX_FORMS_PER_ROUND) {
+      await spendFirst();
+      throw elicitationRefusedError(call.appName, { reason: "unsupported" }, input.invocationId);
+    }
+    const [open] = await db.select({ count: sql<number>`count(*)::int` }).from(toolMcpElicitations).where(and(
+      eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
+      eq(toolMcpElicitations.status, "waiting"), gt(toolMcpElicitations.expiresAt, new Date()),
+      // The answered round this one replaces is not counted: it is spent as this is saved.
+      ...(input.spend ? [ne(toolMcpElicitations.id, input.spend.row.id)] : []),
+    ));
+    if ((open?.count ?? 0) >= MCP_ELICITATION_MAX_OPEN_ROUNDS) {
+      await spendFirst();
+      throw new ToolGatewayHttpError(409,
+        `This task already has ${MCP_ELICITATION_MAX_OPEN_ROUNDS} app questions waiting for a person. Wait for those to be answered before trying again.`,
+        "elicitation_limit_reached", { invocationId: input.invocationId });
+    }
+    // One waiting round per call (per question for older servers, which ask
+    // one at a time): two matching calls at once share one set of cards.
+    const dedupeKey = createHash("sha256").update(JSON.stringify([
+      input.era, call.connectionId, call.grantId, call.callIdentity,
+      ...(input.era === "legacy" ? input.forms.map((form) => elicitationQuestionHash(form.request)) : []),
+    ])).digest("hex");
+    let row: McpElicitationRow | undefined;
+    for (let attempt = 0; attempt < 2 && !row; attempt += 1) {
+      const id = randomUUID();
+      const questions: McpElicitationRow["questions"] = input.forms.map((form) => ({
+        key: form.key, questionHash: elicitationQuestionHash(form.request), cardKey: mcpElicitationCardKey(id, form.key),
+        message: form.request.message, requestedSchema: form.request.requestedSchema,
+      }));
+      // The answered round is spent only together with saving the next one,
+      // so a stop between the two never loses the way to continue.
+      // If saving fails, the answered round is released, not left held, so the next call sends it again.
+      [row] = await db.transaction(async (tx) => {
+        if (input.spend && attempt === 0) {
+          await tx.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
+            .where(eq(toolMcpElicitations.id, input.spend.row.id));
+        }
+        return tx.insert(toolMcpElicitations).values({
+        id, companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, runId: session.runId,
+        invocationId: input.invocationId, connectionId: call.connectionId, grantId: call.grantId,
+        catalogToolName: call.tool.name, callIdentity: call.callIdentity, argumentsIdentity: call.argumentsIdentity,
+        dedupeKey, era: input.era,
+        sealedRequestState: input.requestState === null ? null
+          : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
+        questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
+      }).onConflictDoNothing().returning();
+      }).catch(async (error: unknown) => {
+        if (input.spend) await releaseElicitationRound(input.spend.row).catch(() => undefined);
+        throw error;
+      });
+      if (input.spend && attempt === 0) await writeElicitationSentAudit(input.spend.row, call, input.spend.responses, input.invocationId);
+      if (row) break;
+      // Another matching call saved the round first: show its cards. An
+      // expired one is ended so this call can save a fresh round.
+      const [existing] = await db.select().from(toolMcpElicitations).where(and(
+        eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
+        eq(toolMcpElicitations.dedupeKey, dedupeKey), eq(toolMcpElicitations.status, "waiting"),
+      )).limit(1);
+      if (existing && existing.expiresAt > new Date()) row = existing;
+      else if (existing) await expireElicitationRound(existing, call);
+    }
+    if (!row) throw elicitationWaitError(call.appName, { invocationId: input.invocationId, tool: call.tool.name });
+    const cards = await ensureElicitationCards(row, call);
+    return stopForElicitation({
+      session, tool: call.tool, invocationId: input.invocationId, appName: call.appName,
+      interactionIds: cards.map((card) => card.id), requests: input.forms.map((form) => form.request),
+    });
+  }
+
+  /**
+   * The round's cards, found by their keys. A card that is missing (the
+   * process stopped between saving the round and showing it) is made now
+   * under the same key, so a question is never lost or shown twice.
+   */
+  async function ensureElicitationCards(row: McpElicitationRow, call: McpElicitationCall) {
+    const keys = row.questions.map((question) => question.cardKey);
+    const found = keys.length ? await db.select({
+      id: issueThreadInteractions.id, idempotencyKey: issueThreadInteractions.idempotencyKey,
+      status: issueThreadInteractions.status, result: issueThreadInteractions.result, payload: issueThreadInteractions.payload,
+    }).from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, row.companyId), eq(issueThreadInteractions.issueId, row.issueId),
+      inArray(issueThreadInteractions.idempotencyKey, keys),
+    )) : [];
+    const cards: Array<{ id: string; status: string; result: unknown; payload: unknown }> = [];
+    let made = false;
+    for (const question of row.questions) {
+      let card: { id: string; status: string; result: unknown; payload: unknown } | undefined =
+        found.find((candidate) => candidate.idempotencyKey === question.cardKey);
+      if (!card) {
+        const created = await createElicitationCard({
+          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, appName: call.appName,
+          request: { message: question.message, requestedSchema: question.requestedSchema }, idempotencyKey: question.cardKey,
+        });
+        card = { id: created.id, status: created.status, result: created.result ?? null, payload: created.payload };
+        made = true;
+      }
+      cards.push(card);
+    }
+    if (made || row.questions.some((question, index) => question.interactionId !== cards[index]!.id)) {
+      const questions = row.questions.map((question, index) => ({ ...question, interactionId: cards[index]!.id }));
+      await db.update(toolMcpElicitations).set({ questions, updatedAt: new Date() }).where(eq(toolMcpElicitations.id, row.id));
+      row.questions = questions;
+    }
+    return cards;
+  }
+
+  /** The card's answer for each question of a round; null while any waits. */
+  async function elicitationRoundResponses(row: McpElicitationRow, call: McpElicitationCall) {
+    const cards = await ensureElicitationCards(row, call);
+    const responses: Record<string, McpElicitationResponse> = {};
+    for (const [index, question] of row.questions.entries()) {
+      const response = elicitationResponseForCard({ message: question.message, requestedSchema: question.requestedSchema }, cards[index]);
+      if (!response) return null;
+      responses[question.key] = response;
+    }
+    return responses;
+  }
+
+
+  /** End a round nobody answered in time; its cards are withdrawn so nobody answers a dead question. */
+  async function expireElicitationRound(row: McpElicitationRow, call: McpElicitationCall) {
+    const [expired] = await db.update(toolMcpElicitations).set({ status: "expired", claimedUntil: null, updatedAt: new Date() })
+      .where(and(eq(toolMcpElicitations.id, row.id), eq(toolMcpElicitations.status, "waiting"))).returning({ id: toolMcpElicitations.id });
+    if (!expired) return;
+    for (const question of row.questions) {
+      if (!question.interactionId) continue;
+      await interactions.withdrawInteraction({ id: row.issueId, companyId: row.companyId }, question.interactionId,
+        { reason: "The app's question expired before it was answered." }, { agentId: row.agentId, runId: call.session.runId })
+        .catch(() => undefined);
+    }
+    await writeAudit({
+      session: call.session, companyId: row.companyId, agentId: call.session.agentId, runId: call.session.runId, issueId: row.issueId,
+      action: "tool_gateway.elicitation_expired",
+      details: { roundId: row.id, invocationId: row.invocationId, tool: row.catalogToolName },
+    });
+  }
+
+  /**
+   * The waiting round for this exact call. Before every card is resolved the
+   * call stops again without contacting the app. Once they are, the round is
+   * claimed (so two repeated calls never both send) and its answers returned.
+   */
+  async function collectElicitationRound(call: McpElicitationCall, input: {
+    invocationId: string; era: "modern" | "legacy"; questionHash?: string; claimMs: number;
+  }): Promise<{ row: McpElicitationRow; requestState: string | null; responses: Record<string, McpElicitationResponse> } | null> {
+    const { session } = call;
+    const rows = await db.select().from(toolMcpElicitations).where(and(
+      eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
+      eq(toolMcpElicitations.connectionId, call.connectionId), eq(toolMcpElicitations.grantId, call.grantId),
+      eq(toolMcpElicitations.callIdentity, call.callIdentity), eq(toolMcpElicitations.era, input.era),
+      eq(toolMcpElicitations.status, "waiting"),
+    )).orderBy(desc(toolMcpElicitations.createdAt)).limit(MCP_ELICITATION_MAX_OPEN_ROUNDS);
+    const now = new Date();
+    for (const row of rows) {
+      if (input.questionHash && !row.questions.some((question) => question.questionHash === input.questionHash)) continue;
+      if (row.expiresAt <= now) { await expireElicitationRound(row, call); continue; }
+      const responses = await elicitationRoundResponses(row, call);
+      if (!responses) {
+        await markInvocationAwaitingElicitation(input.invocationId);
+        throw elicitationWaitError(call.appName, {
+          invocationId: input.invocationId, interactionId: row.questions[0]?.interactionId ?? null,
+          interactionIds: row.questions.map((question) => question.interactionId).filter(Boolean), tool: call.tool.name,
+        });
+      }
+      const [claimed] = await db.update(toolMcpElicitations)
+        .set({ claimedUntil: new Date(Date.now() + input.claimMs), updatedAt: new Date() })
+        .where(and(eq(toolMcpElicitations.id, row.id), eq(toolMcpElicitations.status, "waiting"),
+          or(isNull(toolMcpElicitations.claimedUntil), lt(toolMcpElicitations.claimedUntil, new Date()))))
+        .returning();
+      if (!claimed) {
+        // Another call is sending these answers right now.
+        await markInvocationAwaitingElicitation(input.invocationId);
+        throw elicitationWaitError(call.appName, { invocationId: input.invocationId, tool: call.tool.name });
+      }
+      const requestState = claimed.sealedRequestState === null ? null
+        : openElicitationState(mcpTaskSecret(), mcpElicitationScope(claimed), claimed.sealedRequestState);
+      if (claimed.sealedRequestState !== null && requestState === null) {
+        // Not readable here (a rotated secret): start over rather than send a guess.
+        await db.update(toolMcpElicitations).set({ status: "expired", claimedUntil: null, updatedAt: new Date() }).where(eq(toolMcpElicitations.id, claimed.id));
+        return null;
+      }
+      return { row: claimed, requestState, responses };
+    }
+    return null;
+  }
+
+  /** The round's answers reached the app and the call finished: it is spent. */
+  async function settleElicitationRound(row: McpElicitationRow, call: McpElicitationCall, responses: Record<string, McpElicitationResponse>, invocationId: string) {
+    await db.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
+      .where(eq(toolMcpElicitations.id, row.id));
+    await writeElicitationSentAudit(row, call, responses, invocationId);
+  }
+
+  async function writeElicitationSentAudit(row: McpElicitationRow, call: McpElicitationCall, responses: Record<string, McpElicitationResponse>, invocationId: string) {
+    await writeAudit({
+      session: call.session, companyId: row.companyId, agentId: call.session.agentId, runId: call.session.runId, issueId: row.issueId,
+      action: "tool_gateway.elicitation_sent",
+      details: {
+        roundId: row.id, invocationId, askedInvocationId: row.invocationId, tool: row.catalogToolName,
+        // Which kind of answer went back, never what the person wrote.
+        responses: Object.values(responses).map((response) => response.action),
       },
-    );
+    });
+  }
+
+  /** The app did not finish with these answers: the next identical call uses them again. */
+  async function releaseElicitationRound(row: McpElicitationRow) {
+    await db.update(toolMcpElicitations).set({ claimedUntil: null, updatedAt: new Date() })
+      .where(and(eq(toolMcpElicitations.id, row.id), eq(toolMcpElicitations.status, "waiting")));
+  }
+
+  /**
+   * A keyed retry of a call that stopped for an app's question runs again only
+   * when it is the same request: same tool and full arguments as the round.
+   */
+  async function elicitationRetryMatches(companyId: string, invocationId: string, toolName: string, parameters: unknown) {
+    const [row] = await db.select({ id: toolMcpElicitations.id }).from(toolMcpElicitations).where(and(
+      eq(toolMcpElicitations.companyId, companyId), eq(toolMcpElicitations.invocationId, invocationId),
+      eq(toolMcpElicitations.catalogToolName, toolName), eq(toolMcpElicitations.argumentsIdentity, mcpTaskArgumentsIdentity(parameters)),
+      eq(toolMcpElicitations.status, "waiting"),
+    )).limit(1);
+    return Boolean(row);
   }
 
   function normalizeMcpContent(content: unknown): string {
@@ -7071,40 +7346,6 @@ export function createToolGatewayService(
     return row.id;
   }
 
-  /** Map a person's question-card answers back onto the provider's form schema. */
-  function elicitationContent(request: McpElicitationRequest, result: unknown): Record<string, unknown> {
-    const answers = (Array.isArray(asRecord(result)?.answers) ? asRecord(result)!.answers as unknown[] : [])
-      .map((answer) => asRecord(answer)).filter((answer): answer is Record<string, unknown> => Boolean(answer));
-    const textOf = (answer: Record<string, unknown> | undefined) => typeof answer?.otherText === "string" ? answer.otherText.trim() : "";
-    const properties = asRecord(request.requestedSchema?.properties);
-    if (!properties || Object.keys(properties).length === 0) {
-      const text = textOf(answers.find((answer) => answer.questionId === "response"));
-      return text ? { response: text } : {};
-    }
-    const content: Record<string, unknown> = {};
-    for (const [key, raw] of Object.entries(properties).slice(0, 10)) {
-      const property = asRecord(raw) ?? {};
-      const answer = answers.find((candidate) => candidate.questionId === key.slice(0, 120));
-      if (!answer) continue;
-      const enumValues = Array.isArray(property.enum) ? property.enum : [];
-      const optionIds = Array.isArray(answer.optionIds) ? answer.optionIds : [];
-      const index = enumOptions(enumValues).findIndex((option) => optionIds.includes(option.id));
-      if (index >= 0) { content[key] = enumValues[index]; continue; }
-      const text = textOf(answer);
-      if (!text) continue;
-      if (property.type === "number" || property.type === "integer") {
-        const value = Number(text);
-        if (Number.isFinite(value) && (property.type === "number" || Number.isInteger(value))) content[key] = value;
-      } else if (property.type === "boolean") {
-        if (/^(true|yes|y|1)$/i.test(text)) content[key] = true;
-        else if (/^(false|no|n|0)$/i.test(text)) content[key] = false;
-      } else {
-        content[key] = text;
-      }
-    }
-    return content;
-  }
-
   type McpTaskInputPlan = {
     /** Responses ready to send with tasks/update. */
     responses: Record<string, unknown>;
@@ -7144,17 +7385,17 @@ export function createToolGatewayService(
           raw: request.params,
         },
       };
-      const [card] = await db.select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+      // A secret or a shape the card can't show is never put on a card.
+      if (!buildElicitationQuestionSet({ appName: "app", request: form.request }).ok) return { ...plan, unsupported: true };
+      const [card] = await db.select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result, payload: issueThreadInteractions.payload })
         .from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, row.companyId),
           eq(issueThreadInteractions.issueId, row.issueId),
           eq(issueThreadInteractions.idempotencyKey, mcpTaskInputKey(row, key)),
         )).limit(1);
-      if (!card || card.status === "pending") { plan.waitingForm ??= { ...form, hasCard: Boolean(card) }; continue; }
-      const outcome = asRecord(card.result)?.outcome;
-      plan.responses[key] = card.status === "answered" && outcome === undefined
-        ? { action: "accept", content: elicitationContent(form.request, card.result) }
-        : { action: "decline" };
+      const response = elicitationResponseForCard(form.request, card);
+      if (!response) { plan.waitingForm ??= { ...form, hasCard: Boolean(card) }; continue; }
+      plan.responses[key] = response;
     }
     if (plan.links.length > MCP_MAX_INPUT_LINKS) plan.unsupported = true;
     return plan;
@@ -7278,7 +7519,8 @@ export function createToolGatewayService(
           // A form counts as shown only once its card exists.
           if (plan.waitingForm && !plan.waitingForm.hasCard && row.issueId) {
             await createElicitationCard({
-              companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, toolName: row.catalogToolName,
+              companyId: row.companyId, issueId: row.issueId, agentId: row.agentId,
+              appName: await elicitationAppName(row.companyId, row.connectionId, wait.tool),
               request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
             });
           }
@@ -7295,7 +7537,7 @@ export function createToolGatewayService(
             await requestElicitationForRecordedToolCall({
               session: wait.session, tool: wait.tool, invocationId: wait.invocationId,
               request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
-              cardToolName: row.catalogToolName,
+              connectionId: row.connectionId,
             });
           }
         }
@@ -7452,7 +7694,8 @@ export function createToolGatewayService(
         : Infinity;
       if (!plan.unsupported && plan.waitingForm && row.issueId && cardCount < MCP_TASK_MAX_CARDS) {
         const card = await createElicitationCard({
-          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, toolName: row.catalogToolName,
+          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId,
+          appName: await elicitationAppName(row.companyId, row.connectionId),
           request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
         });
         surfaced.add(plan.waitingForm.key);
@@ -7581,9 +7824,15 @@ export function createToolGatewayService(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
+    const progressReporter = toolCallProgressReporterFor(session, tool, invocationId);
     // The cached MCP session this call used, so a failure resets only this
     // identity's session and leaves other agents on the connection alone.
     let mcpSession: { scope: string; headers: Record<string, string>; sessionId: string } | undefined;
+    // Answers to an app's question that this call is carrying back, until the app has them.
+    let elicitationClaim: Awaited<ReturnType<typeof collectElicitationRound>> = null;
+    // An older app may ask several questions in turn; each answer is spent
+    // only when the whole call finishes, so a later stop never loses one.
+    const legacyAnswered: Array<{ row: McpElicitationRow; responses: Record<string, McpElicitationResponse> }> = [];
     try {
       const dispatchRemote = async (target: string, init: RequestInit) => {
         // Refresh can reduce consent. Recheck the selected grant after refreshing
@@ -7675,13 +7924,17 @@ export function createToolGatewayService(
       if (isModernMcpProtocolVersion(knownVersion)) {
         requestHeaders = { ...headers, "MCP-Protocol-Version": knownVersion };
       } else if (connectionRequiresMcpSession(connection)) {
-        const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
+        // Tool calls answer an older server's questions, so their session
+        // declares form questions; it is kept apart from sessions that only
+        // read (resources, prompts, listing), which declare none.
+        const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
         requestHeaders = await getMcpHttpSession({
           scope,
           send: sendForNegotiation,
           headers,
           requestId,
           eraKey,
+          elicitationForm: true,
         });
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
@@ -7692,11 +7945,84 @@ export function createToolGatewayService(
       // Tied to the server that issued the state: a changed URL starts fresh.
       const continuationKey = `${connection.id}:${createHash("sha256").update(String(endpoint)).digest("hex")}:${grant.id}:${session.agentId}:${upstreamToolName}:${createHash("sha256").update(JSON.stringify(parameters ?? {})).digest("hex")}`;
       const continuation = mcpContinuations.get(continuationKey);
+      // A person can answer the app's questions only when the call belongs to a task.
+      const elicitationCall: McpElicitationCall | null = session.issueId ? {
+        session: session as ToolGatewaySession & { issueId: string }, tool,
+        connectionId: connection.id, grantId: grant.id,
+        // Forwarded routing headers (such as a tenant) are part of the call:
+        // one tenant's answers never go out with another tenant's headers.
+        callIdentity: mcpElicitationCallIdentity(continuationKey, mcpTaskArgumentsIdentity(mcpTaskCallerHeaders(connection, callerHeaders))),
+        argumentsIdentity: mcpTaskArgumentsIdentity(parameters),
+        appName: tool.applicationDisplayName?.trim() || connection.name.trim() || "The app",
+      } : null;
+      // A question round this exact call left for a person (stateless MCP).
+      // Until every card is resolved the call stops again without contacting
+      // the app; then this call carries the answers and the app's exact state.
+      if (elicitationCall && isModernMcpProtocolVersion(mcpProtocolVersionOf(requestHeaders))) {
+        elicitationClaim = await collectElicitationRound(elicitationCall, { invocationId, era: "modern", claimMs: ms + 60_000 });
+      }
+      /**
+       * An older server asks over the open stream and waits for the reply.
+       * The first time, the question goes on a card and the server is told
+       * "cancel" at once, so it never hangs. When the person has answered,
+       * the same question on this same call is answered from the card, once.
+       */
+      const answerLegacyElicitation = async (messageId: unknown, form: McpFormElicitation) => {
+        const respond = (result: McpElicitationResponse) => dispatchRemote(endpoint, {
+          method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
+          body: JSON.stringify({ jsonrpc: "2.0", id: messageId, result }),
+        });
+        const cancel = () => respond({ action: "cancel" }).catch(() => undefined);
+        if (!elicitationCall) {
+          await cancel();
+          throw new ToolGatewayHttpError(409, "MCP elicitation is not supported for non-interactive gateway clients",
+            "elicitation_not_supported", { invocationId, tool: tool.name });
+        }
+        const questionHash = elicitationQuestionHash(form);
+        // The app asks a question it already had an answer to in this call
+        // (to have it corrected, or a second time): that answer is spent and
+        // the person is asked again on a fresh card.
+        const earlier = legacyAnswered.findIndex((used) => used.row.questions.some((question) => question.questionHash === questionHash));
+        if (earlier >= 0) {
+          const [used] = legacyAnswered.splice(earlier, 1);
+          try {
+            await askElicitationRound(elicitationCall, { invocationId, era: "legacy", requestState: null, forms: [{ key: "question", request: form }], spend: used });
+          } finally {
+            await cancel();
+          }
+        }
+        let answered: Awaited<ReturnType<typeof collectElicitationRound>>;
+        try {
+          answered = await collectElicitationRound(elicitationCall, { invocationId, era: "legacy", questionHash, claimMs: ms + 60_000 });
+        } catch (error) {
+          await cancel();
+          throw error;
+        }
+        if (answered) {
+          const key = answered.row.questions.find((question) => question.questionHash === questionHash)!.key;
+          const response = answered.responses[key]!;
+          legacyAnswered.push({ row: answered.row, responses: { [key]: response } });
+          const delivered = await respond(response);
+          // An app that refused the reply never got the answer: keep it for the next call.
+          if (!delivered.ok) {
+            throw new ToolGatewayHttpError(502, `${elicitationCall.appName} did not accept the answer to its question. Try the call again.`,
+              "mcp_remote_status", { status: delivered.status, connectionId: connection.id, catalogEntryId: entry.id });
+          }
+          return;
+        }
+        try {
+          await askElicitationRound(elicitationCall, { invocationId, era: "legacy", requestState: null, forms: [{ key: "question", request: form }] });
+        } finally {
+          await cancel();
+        }
+      };
       let callRequestId = requestId;
       let callParams: Record<string, unknown> = {
         name: upstreamToolName,
         arguments: parameters,
-        ...(continuation ? { requestState: continuation.requestState } : {}),
+        ...(elicitationClaim
+          ? { inputResponses: elicitationClaim.responses, ...(elicitationClaim.requestState !== null ? { requestState: elicitationClaim.requestState } : {}) }
+          : continuation ? { requestState: continuation.requestState } : {}),
       };
       // The guard runs inside this call and the connection is pinned to the
       // address it approved, so an operator-supplied hostname cannot be rebound
@@ -7709,6 +8035,10 @@ export function createToolGatewayService(
           toolInputSchema: entry.inputSchema ?? undefined,
           // Paperclip can wait on a task here, durably (see waitForMcpTask).
           declareTasks: tasksOn,
+          progressToken: progressReporter?.token,
+          // A person can answer the app's form questions in the task chat.
+          elicitationForm: Boolean(elicitationCall),
+          declareClientCredentials: usesClientCredentials(connection),
         }),
         redirect: "manual",
         signal: controller.signal,
@@ -7808,8 +8138,9 @@ export function createToolGatewayService(
           if (isModernMcpProtocolVersion(retryVersion)) {
             requestHeaders = { ...headers, "MCP-Protocol-Version": retryVersion };
           } else {
-            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
-            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey });
+            // The same form-capable tool session as a first call (see above).
+            const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
+            requestHeaders = await getMcpHttpSession({ scope, send: sendForNegotiation, headers, requestId: `${requestId}-version`, eraKey, elicitationForm: true });
             const sessionId = new Headers(requestHeaders).get("mcp-session-id");
             if (sessionId) mcpSession = { scope, headers, sessionId };
           }
@@ -7925,7 +8256,13 @@ export function createToolGatewayService(
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, callRequestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
+            // The call has a deadline (controller), so progress may outlast the total limit.
+            limitPerMessage: true,
             onProgress: (progress) => { execution.stream = progress; },
+            onNotification: (message) => {
+              const update = mcpProgressNotificationOf(message, progressReporter?.token);
+              if (update) progressReporter!.report(update);
+            },
             onRequest: async (message) => {
               const pending = extractRemoteMcpPending(message);
               if (pending) {
@@ -7938,8 +8275,12 @@ export function createToolGatewayService(
                 });
                 throw new ToolGatewayHttpError(409, "This tool needs authorization in the provider.", "provider_interaction_required", { upstreamPending: pending, invocationId });
               }
-              const request = extractMcpElicitationRequest(message);
-              if (request) await requestElicitationForRecordedToolCall({ session, tool, invocationId, request });
+              const form = message.method === "elicitation/create" ? formElicitationOf(asRecord(message.params) ?? {}) : null;
+              if (form) await answerLegacyElicitation(message.id, form);
+              else {
+                const request = extractMcpElicitationRequest(message);
+                if (request) await requestElicitationForRecordedToolCall({ session, tool, invocationId, request });
+              }
             },
           }))
         : await readBoundedRemoteResponse(response, (bytes) => {
@@ -7992,6 +8333,18 @@ export function createToolGatewayService(
       // spent (a new input request saves its own below). A rejected attempt,
       // such as a 401 before an OAuth refresh, keeps it for the explicit retry.
       if (continuation) mcpContinuations.delete(continuationKey);
+      // The app answered this call. If it asks a new form round, the answered
+      // round is spent together with saving that one (askElicitationRound).
+      const nextInput = mcpInputRequired(asRecord(payloadRecord.result));
+      const asksNextForms = Boolean(nextInput && Object.values(nextInput.inputRequests).length
+        && Object.values(nextInput.inputRequests).every((request) => request.method === "elicitation/create" && formElicitationOf(request.params)));
+      if (elicitationClaim && !asksNextForms) {
+        const sent = elicitationClaim;
+        elicitationClaim = null;
+        await settleElicitationRound(sent.row, elicitationCall!, sent.responses, invocationId);
+      }
+      // The older app finished the call: the answers it used are spent.
+      for (const used of legacyAnswered.splice(0)) await settleElicitationRound(used.row, elicitationCall!, used.responses, invocationId);
       const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
@@ -8042,6 +8395,18 @@ export function createToolGatewayService(
       if (inputRequired) {
         // Stateless servers ask for input by returning it as a result. The call
         // is retried later, with the answers and the server's opaque state.
+        // Form questions alone go to a person in the task chat; the repeated
+        // call carries their answers (see collectElicitationRound).
+        const forms = Object.entries(inputRequired.inputRequests).flatMap(([key, request]) => {
+          const form = request.method === "elicitation/create" ? formElicitationOf(request.params) : null;
+          return form ? [{ key, request: form }] : [];
+        });
+        if (elicitationCall && forms.length && forms.length === Object.keys(inputRequired.inputRequests).length) {
+          const spend = elicitationClaim ?? undefined;
+          // From here the answered round is spent with the next one saved; never released.
+          elicitationClaim = null;
+          await askElicitationRound(elicitationCall, { invocationId, era: "modern", requestState: inputRequired.requestState, forms, spend });
+        }
         const pending = mcpInputRequiredPending(inputRequired);
         if (!pending.answerable) {
           throw new ToolGatewayHttpError(
@@ -8091,6 +8456,9 @@ export function createToolGatewayService(
         return { result, failureInstructions, headerSummary, execution };
       }
     } catch (error) {
+      // The app never got the answers this call carried: the next identical call sends them.
+      if (elicitationClaim) await releaseElicitationRound(elicitationClaim.row).catch(() => undefined);
+      for (const used of legacyAnswered.splice(0)) await releaseElicitationRound(used.row).catch(() => undefined);
       execution.error = remoteHttpErrorEvidence(error);
       execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
       if (execution.response && execution.stream) execution.response.bodySizeBytes = execution.stream.bytesReceived;
@@ -8157,7 +8525,22 @@ export function createToolGatewayService(
       );
     } finally {
       clearTimeout(timer);
+      progressReporter?.finish();
     }
+  }
+
+  /** Progress is shown to the run's viewers, so only a call made by a run reports it. */
+  function toolCallProgressReporterFor(session: ToolGatewaySession, tool: ToolGatewayDescriptor, invocationId: string | undefined) {
+    if (!session.runId || !invocationId) return null;
+    return createToolCallProgressReporter({
+      companyId: session.companyId,
+      runId: session.runId,
+      issueId: session.issueId,
+      agentId: session.agentId,
+      invocationId,
+      toolName: tool.name,
+      save: saveToolCallProgress(db, session.companyId, invocationId),
+    });
   }
 
   async function executeLocalStdioTool(
@@ -8166,6 +8549,7 @@ export function createToolGatewayService(
     parameters: unknown,
     ms: number,
     useProviderDefaultTimeout = false,
+    invocationId?: string,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedLocalStdioTool(
       session,
@@ -8179,8 +8563,10 @@ export function createToolGatewayService(
       template,
       grant,
     );
-    const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters,
-      timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms });
+    const progressReporter = template.templateId === "paperclip.cognee-cloud" ? null : toolCallProgressReporterFor(session, tool, invocationId);
+    const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters, progressReporter,
+      timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms })
+      .finally(() => progressReporter?.finish());
     // Cognee is a bundled HTTP client. Provider failures are tool failures, not
     // crashed local processes, and must never consume slots or restart budgets.
     const result = template.templateId === "paperclip.cognee-cloud"
@@ -9228,6 +9614,7 @@ export function createToolGatewayService(
                 args.parameters,
                 executionTimeoutMs,
                 args.timeoutMs === undefined,
+                args.invocationId,
               )
             : null;
       if (!connectedMcpExecution) {
@@ -9586,20 +9973,31 @@ export function createToolGatewayService(
     };
   }
 
-  /** Return a claimed approved action whose provider task is still running to approved, under the same claim. */
-  async function resumeApprovedActionForPendingTask(input: { actionRequestId: string; invocationId: string; claimUpdatedAt: Date; message: string }) {
+  /**
+   * Return a claimed approved action to approved, under the same claim, when
+   * its call stopped without finishing: the provider's task is still running,
+   * or the app asked the person a question. The next execution continues it
+   * (attaches to the task, or sends the answer) without asking for approval again.
+   */
+  async function resumeApprovedActionForPendingTask(input: {
+    actionRequestId: string; invocationId: string; claimUpdatedAt: Date; message: string;
+    errorCode?: "provider_task_pending" | "elicitation_required";
+  }) {
     const now = new Date();
+    const errorCode = input.errorCode ?? "provider_task_pending";
     return db.transaction(async (tx) => {
       const [invocation] = await tx.select({ status: toolInvocations.status }).from(toolInvocations)
         .where(eq(toolInvocations.id, input.invocationId)).for("update").limit(1);
-      if (invocation?.status !== "executing") return false;
+      // A question stop already marked the invocation as waiting.
+      const resumable = invocation?.status === "executing" || (errorCode === "elicitation_required" && invocation?.status === "awaiting_approval");
+      if (!resumable) return false;
       const [actionRequest] = await tx.select({ companyId: toolActionRequests.companyId, status: toolActionRequests.status, updatedAt: toolActionRequests.updatedAt })
         .from(toolActionRequests).where(eq(toolActionRequests.id, input.actionRequestId)).for("update").limit(1);
       if (actionRequest?.status !== "executing" || actionRequest.updatedAt.getTime() !== input.claimUpdatedAt.getTime()) return false;
       await notifyToolReviewChange(tx, actionRequest.companyId);
       await tx.update(toolInvocations).set({
-        status: "awaiting_approval", startedAt: null, errorCode: "provider_task_pending", errorMessage: input.message, updatedAt: now,
-      }).where(and(eq(toolInvocations.id, input.invocationId), eq(toolInvocations.status, "executing")));
+        status: "awaiting_approval", startedAt: null, errorCode, errorMessage: input.message, updatedAt: now,
+      }).where(and(eq(toolInvocations.id, input.invocationId), inArray(toolInvocations.status, ["executing", "awaiting_approval"])));
       await tx.update(toolActionRequests).set({ status: "approved", updatedAt: now })
         .where(and(eq(toolActionRequests.id, input.actionRequestId), eq(toolActionRequests.status, "executing"), eq(toolActionRequests.updatedAt, input.claimUpdatedAt)));
       return true;
@@ -10094,6 +10492,8 @@ export function createToolGatewayService(
                 tool,
                 parameters,
                 executionTimeoutMs,
+                false,
+                invocation.id,
               )
             : null;
       const result = connectedMcpExecution
@@ -10171,6 +10571,12 @@ export function createToolGatewayService(
       // asking the person again or starting the work twice.
       if (error instanceof ToolGatewayHttpError && error.reasonCode === "provider_task_pending"
         && await resumeApprovedActionForPendingTask({ actionRequestId: claimed.id, invocationId: invocation.id, claimUpdatedAt: claimed.updatedAt, message: error.message })) {
+        throw error;
+      }
+      // The app asked the person a question: keep the approval, so the
+      // repeated call carries the answer instead of failing the action.
+      if (error instanceof ToolGatewayHttpError && error.reasonCode === "elicitation_required"
+        && await resumeApprovedActionForPendingTask({ actionRequestId: claimed.id, invocationId: invocation.id, claimUpdatedAt: claimed.updatedAt, message: error.message, errorCode: "elicitation_required" })) {
         throw error;
       }
       const { reasonCode } = await markApprovedActionFailed({
@@ -12885,7 +13291,17 @@ export function createToolGatewayService(
               callerHeaders: input.callerHeaders,
             })
           : null;
-        const retryingMcpTask = Boolean(retryingMcpTaskRecordId);
+        // The same call repeated after the app asked a person a question runs
+        // again: it carries the answers back, or waits again without the app.
+        // An explicit key may name a different request: only the same tool
+        // and arguments as the saved question round run again.
+        const retryingElicitation = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
+          && !retryingMcpTaskRecordId && recorded.invocation.agentId === session.agentId
+          // Whatever the last attempt ended with (a failed send records its
+          // own error), a matching unsent round means the answer still has
+          // to reach the app.
+          && await elicitationRetryMatches(session.companyId, recorded.invocation.id, tool.name, effectiveParameters);
+        const retryingMcpTask = Boolean(retryingMcpTaskRecordId) || retryingElicitation;
         if (retryingGitHubPublication) {
           // Invocation hashes describe shortened audit previews. The durable
           // publication checks the complete saved request and current authority.
@@ -13054,6 +13470,7 @@ export function createToolGatewayService(
                   effectiveParameters,
                   executionTimeoutMs,
                   input.timeoutMs === undefined,
+                  invocationId,
                 )
               : null;
         const result = recoveredGitHubPublication ?? (connectedMcpExecution

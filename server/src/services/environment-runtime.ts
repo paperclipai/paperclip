@@ -277,6 +277,7 @@ export {
   type EnvironmentDriverCapabilitySupport,
 } from "./environment-driver-traits.js";
 import { ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT } from "./environment-driver-traits.js";
+import { warmSandboxWindowMetadata } from "./warm-sandbox-expiry.js";
 
 /**
  * The one general capability classifier. It resolves each of the eight effective
@@ -2129,6 +2130,7 @@ function createSandboxEnvironmentDriver(
               }
             : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+          ...warmSandboxWindowMetadata(input.warmRunnerIdleTimeoutMs),
         };
         const recordedLease = await environmentsSvc.acquireLease({
           creationOperationId: providerLease ? undefined : acquiredLease.metadata?.creationOperationId as string | undefined,
@@ -2358,6 +2360,7 @@ function createSandboxEnvironmentDriver(
             }
           : {}),
         ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+        ...warmSandboxWindowMetadata(input.warmRunnerIdleTimeoutMs),
       };
       return await environmentsSvc.acquireLease({
         creationOperationId: providerLease.metadata?.creationOperationId as string | undefined,

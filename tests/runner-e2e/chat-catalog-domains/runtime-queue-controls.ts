@@ -85,7 +85,7 @@ export function gradeQueueEdit(value: unknown) {
 
 export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued-message", ctx => humanQueuedRuntime(ctx), gradeQueueEdit, {
   sourceFiles: ["chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/steering.yaml"],
-  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v6",
+  oracleVersion: "paperclip.chat-catalog.edit-queued-message.structural.v7",
   authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 2 }, maximumTerminalStatusCounts: { succeeded: 3 } },
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
