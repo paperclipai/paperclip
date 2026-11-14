@@ -2,7 +2,7 @@ import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
-import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
+import { acpxInstructionsAdmissionError, recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
@@ -1418,7 +1418,7 @@ async function cleanupRuntimeResources(
 function boundedInstructions(value: string | undefined): string {
   const instructions = value ?? "";
   if (Buffer.byteLength(instructions) > 256 * 1024) {
-    throw new Error("ACPX system instructions exceed their bounded size");
+    throw acpxInstructionsAdmissionError("ACPX system instructions exceed their bounded size");
   }
   return instructions;
 }
