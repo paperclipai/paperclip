@@ -393,6 +393,8 @@ export {
 export {
   projectDiscoverySchema,
   createProjectSchema,
+  createProjectToolInputSchema,
+  createProjectToolInputJsonSchema,
   updateProjectSchema,
   addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
