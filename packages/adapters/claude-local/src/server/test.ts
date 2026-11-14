@@ -328,14 +328,21 @@ export async function testEnvironment(
         .filter(Boolean)
         .join(" and ");
       const confinementSandboxCommand = asString(config.filesystemSandboxCommand, "bwrap").trim() || "bwrap";
+      const confinementProbeEnv = localProbe?.env ?? env;
+      const sharedClaudeConfigDir = config.managedAiConnection
+        ? asString(env.CLAUDE_CONFIG_DIR, "")
+        : resolveSharedClaudeConfigDir(process.env);
       let localProcessSandbox: LocalProcessSandboxOptions | null = null;
       let confinementUnavailable = false;
       if (probeWantsConfinement) {
+        const extraPaths = parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths);
+        const networkAllowlist = parseLocalProcessNetworkAllowlist(config.networkAllowlist);
         try {
-          await ensureAdapterExecutionTargetCommandResolvable(confinementSandboxCommand, target, cwd, runtimeEnv);
-          const sharedClaudeConfigDir = config.managedAiConnection
-            ? asString(env.CLAUDE_CONFIG_DIR, "")
-            : resolveSharedClaudeConfigDir(process.env);
+          await ensureAdapterExecutionTargetCommandResolvable(confinementSandboxCommand, target, cwd, confinementProbeEnv);
+        } catch {
+          confinementUnavailable = true;
+        }
+        if (!confinementUnavailable) {
           localProcessSandbox = {
             workspaceDir: cwd,
             filesystemScope,
@@ -345,20 +352,13 @@ export async function testEnvironment(
                   { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
                 ]
               : [],
-            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            extraPaths,
             homeDir: filesystemScope && isNonEmpty(sharedClaudeConfigDir) ? path.dirname(sharedClaudeConfigDir) : null,
             networkScope,
-            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            networkAllowlist,
             networkTrustedUrls: isNonEmpty(env.PAPERCLIP_API_URL) ? [env.PAPERCLIP_API_URL] : [],
             command: confinementSandboxCommand,
           };
-          checks.push({
-            code: "claude_hello_probe_confined",
-            level: "info",
-            message: `Hello probe runs under local process confinement (${confinementScopes} scope).`,
-          });
-        } catch {
-          confinementUnavailable = true;
         }
       }
       if (confinementUnavailable) {
@@ -448,8 +448,19 @@ export async function testEnvironment(
         // A local probe uses the trusted resolved executable and the
         // deny-by-default child env. A remote probe uses the caller command and
         // env, because the remote transport owns its own env sanitization.
+        if (localProcessSandbox) {
+          checks.push({
+            code: "claude_hello_probe_confined",
+            level: "info",
+            message: `Hello probe runs under local process confinement (${confinementScopes} scope).`,
+          });
+        }
         const probeCommand = localProbe?.command ?? command;
-        const probeEnv = localProbe ? localProbe.env : env;
+        const probeEnv = localProbe
+          ? (localProcessSandbox?.filesystemScope && isNonEmpty(sharedClaudeConfigDir)
+              ? { ...localProbe.env, CLAUDE_CONFIG_DIR: sharedClaudeConfigDir }
+              : localProbe.env)
+          : env;
         const probe = await runAdapterExecutionTargetProcess(
           runId,
           target,

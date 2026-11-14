@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget, AdapterSandboxInstallCommandCheck } from "@paperclipai/adapter-utils/execution-target";
 
@@ -56,6 +59,7 @@ vi.mock("./probe-env.js", () => ({
 
 import { testEnvironment } from "./test.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 const sandboxTarget: AdapterExecutionTarget = {
@@ -294,5 +298,86 @@ describe("claude local confinement probe", () => {
       (call) => (call as unknown as [string, unknown, string, string[]])[3]?.includes("--print"),
     ) as unknown as [string, unknown, string, string[], { localProcessSandbox?: unknown }];
     expect(localHello[4]?.localProcessSandbox ?? null).toBeNull();
+  });
+
+  it.runIf(process.platform === "linux")("confines the local probe through the real launch path", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "claude-probe-sandbox-"));
+    const argvLog = path.join(dir, "sandbox-argv.log");
+    const stubSandbox = path.join(dir, "bwrap-stub");
+    const stubClaude = path.join(dir, "claude");
+    const successLine = '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}';
+    await writeFile(
+      stubSandbox,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvLog}"\nwhile [ $# -gt 0 ]; do if [ "$1" = "--" ]; then shift; exec "$@"; fi; shift; done\nexit 127\n`,
+      { mode: 0o755 },
+    );
+    await writeFile(stubClaude, `#!/bin/sh\nprintf '%s\\n' '${initLine}' '${successLine}'\n`, { mode: 0o755 });
+
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+      "@paperclipai/adapter-utils/execution-target",
+    );
+    const mockedRunner = runAdapterExecutionTargetProcess.getMockImplementation();
+    runAdapterExecutionTargetProcess.mockImplementation(actual.runAdapterExecutionTargetProcess as never);
+    vi.mocked(buildLocalAdapterTestProbeEnv).mockResolvedValueOnce({
+      command: stubClaude,
+      env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir },
+    });
+    try {
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          model: "claude-opus-5",
+          engine: "cli",
+          command: "claude",
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: stubSandbox,
+        },
+      });
+
+      expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_confined" }));
+      expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed" }));
+      const argv = await readFile(argvLog, "utf8");
+      expect(argv).toContain("--unshare-pid");
+      expect(argv).toContain("--chdir");
+      expect(argv).toContain(`--\n${stubClaude}`);
+    } finally {
+      if (mockedRunner) runAdapterExecutionTargetProcess.mockImplementation(mockedRunner);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "linux")("surfaces a missing confinement tool through the real launch path", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "claude-probe-sandbox-missing-"));
+    const stubClaude = path.join(dir, "claude");
+    await writeFile(stubClaude, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+      "@paperclipai/adapter-utils/execution-target",
+    );
+    const mockedRunner = runAdapterExecutionTargetProcess.getMockImplementation();
+    runAdapterExecutionTargetProcess.mockImplementation(actual.runAdapterExecutionTargetProcess as never);
+    vi.mocked(buildLocalAdapterTestProbeEnv).mockResolvedValueOnce({
+      command: stubClaude,
+      env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir },
+    });
+    try {
+      await expect(
+        testEnvironment({
+          companyId: "company-1",
+          adapterType: "claude_local",
+          config: {
+            model: "claude-opus-5",
+            engine: "cli",
+            command: "claude",
+            filesystemScope: "workspace",
+            filesystemSandboxCommand: path.join(dir, "definitely-missing-bwrap"),
+          },
+        }),
+      ).rejects.toThrow("Local process confinement requires Bubblewrap");
+    } finally {
+      if (mockedRunner) runAdapterExecutionTargetProcess.mockImplementation(mockedRunner);
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
