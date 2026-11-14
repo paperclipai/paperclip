@@ -79,6 +79,12 @@ describe("isSandboxProviderSupportedForAdapter", () => {
 });
 
 describe("getEnvironmentCapabilities reusable leases default", () => {
+  it("keeps t3code_local on the local driver only", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("t3code_local")).toBe(false);
+    expect(supportedEnvironmentDriversForAdapter("t3code_local")).toEqual(["local"]);
+    expect(isSandboxProviderSupportedForAdapter("t3code_local", "fake-plugin", ["fake-plugin"])).toBe(false);
+  });
+
   it("test_absent_reusable_leases_presents_as_false", () => {
     const capabilities = getEnvironmentCapabilities(["codex_local"], {
       sandboxProviders: {

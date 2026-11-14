@@ -47,6 +47,7 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  "t3code_local",
 ]);
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
@@ -96,6 +97,11 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
   hermes_local: {
+    supportsSessionResume: true,
+    nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
+  t3code_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
