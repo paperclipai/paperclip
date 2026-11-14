@@ -419,6 +419,19 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+export function isPendingExecutionStageParticipant(
+  issue: { status?: string | null; executionState?: unknown } | null | undefined,
+  agentId: string | null | undefined,
+): boolean {
+  if (!issue || !agentId || issue.status !== "in_review") return false;
+  const state = parseIssueExecutionState(issue.executionState);
+  return (
+    state?.status === PENDING_STATUS &&
+    state.currentParticipant?.type === "agent" &&
+    state.currentParticipant.agentId === agentId
+  );
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

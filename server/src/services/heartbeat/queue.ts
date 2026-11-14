@@ -1,4 +1,5 @@
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
+import { isPendingExecutionStageParticipant } from "../issue-execution-policy.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
@@ -1340,16 +1341,22 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issueId, agentId: run.agentId, context }),
         )
       ) {
-        await cancelQueuedRunForBlockedDependencies(
-          run,
-          issueId,
-          readiness?.unresolvedBlockerIssueIds ?? [],
-        );
-        logger.info(
-          { runId: run.id, issueId, unresolvedBlockerCount },
-          "claimQueuedRun: cancelled blocked queued run",
-        );
-        return null;
+        const [issueRow] = await db
+          .select({ status: issues.status, executionState: issues.executionState })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+        if (!isPendingExecutionStageParticipant(issueRow, run.agentId)) {
+          await cancelQueuedRunForBlockedDependencies(
+            run,
+            issueId,
+            readiness?.unresolvedBlockerIssueIds ?? [],
+          );
+          logger.info(
+            { runId: run.id, issueId, unresolvedBlockerCount },
+            "claimQueuedRun: cancelled blocked queued run",
+          );
+          return null;
+        }
       }
 
       const staleness = await runDispatch.cancelStaleQueuedRun({
@@ -4475,11 +4482,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               );
           }
 
+          const pendingStageParticipantWake = isPendingExecutionStageParticipant(issue, agentId);
+
           if (
             !activeExecutionRun &&
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            !blockedInteractionWake
+            !blockedInteractionWake &&
+            !pendingStageParticipantWake
           ) {
             if (caseRequest) waitForCaseAdmission("issue_dependencies_blocked", "Case handoff is waiting for task dependencies to resolve");
             await recordExecutionWait(tx as unknown as Db, {
