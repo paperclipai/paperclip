@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, projects } from "@paperclipai/db";
@@ -54,12 +54,12 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
       runnerProfileJson: { savedProfile: bulk }, stdoutExcerpt: bulk, stderrExcerpt: bulk,
     }).where(eq(heartbeatRuns.id, f.runId)).returning();
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     let returned: Awaited<ReturnType<typeof terminalizeLegacyExecution>>;
     try { returned = await terminalizeLegacyExecution({ db, run: saved!, status: "failed", patch }); }
     finally { capture.flush(); }
-    const groups = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1");
+    const groups = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1");
     const reads = groups.filter(group => group.table === "heartbeat_runs" && group.operation === "select");
     expect(reads.reduce((sum, group) => sum + Number(group.calls), 0)).toBe(1);
     expect(reads.reduce((sum, group) => sum + Number(group.responseValueBytes), 0)).toBeLessThan(4096);
@@ -86,7 +86,7 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
       patch: { resultJson: { workspaceRestoreFailure: "restore_failed", futureResult: bulk } },
     }))!;
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     let returned: Awaited<ReturnType<typeof terminalizeLegacyExecution>>;
     try { returned = await terminalizeLegacyExecution({ db, run: failed, status: "failed", recordRestoreFailureOnly,
@@ -94,7 +94,7 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
       ...(recordRestoreFailureOnly ? { patch: { resultJson: failed.resultJson } } : {}),
     }); }
     finally { capture.flush(); }
-    const writes = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const writes = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && event.operation === "update");
     expect(writes.reduce((sum, group) => sum + Number(group.rows), 0)).toBe(1);
     expect(returned).toMatchObject({ id: f.runId, status: "failed", finishedAt: failed.finishedAt,

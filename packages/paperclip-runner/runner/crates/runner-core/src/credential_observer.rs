@@ -230,11 +230,15 @@ impl CredentialObserver {
         self.watch_directory();
         let state = self.state.as_ref().expect("configured observer");
         let snapshot = read_snapshot(&state.provider, &state.path).or_else(|| {
-            (state.provider == "grok"
-                && fs::symlink_metadata(&state.path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound))
-            .then(|| read_snapshot("grok", &state.path.with_file_name("auth-refresh.json")))
-            .flatten()
+            fs::symlink_metadata(&state.path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                .then(|| {
+                    read_snapshot(
+                        &state.provider,
+                        &state.path.with_file_name("auth-refresh.json"),
+                    )
+                })
+                .flatten()
         });
         let Some(snapshot) = snapshot else {
             return Ok(());
@@ -669,6 +673,21 @@ mod tests {
         fs::remove_file(f.root.join("auth.json")).unwrap();
         f.observer.poll(true).unwrap();
         assert_eq!(f.observer.pending(), Some(update_event("grok", 2)));
+    }
+
+    #[test]
+    fn codex_close_handoff_preserves_shutdown_refresh() {
+        let mut f = Fixture::new("codex", &codex("seed"));
+        f.write("auth.json", &codex("seed"));
+        f.observer.activate().unwrap();
+        assert!(f.observer.pending().is_none());
+        f.write("auth-refresh.json", &codex("close"));
+        fs::remove_file(f.root.join("auth.json")).unwrap();
+        f.observer.poll(true).unwrap();
+        assert_eq!(f.observer.pending(), Some(update_event("codex", 1)));
+        f.observer.acknowledge(1).unwrap();
+        f.observer.poll(true).unwrap();
+        assert!(f.observer.pending().is_none());
     }
 
     #[test]

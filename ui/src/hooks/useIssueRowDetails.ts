@@ -34,27 +34,49 @@ export function useIssueRowDetails(
       setVisibleIds([]);
       return;
     }
-    const nodes = [...element.querySelectorAll<HTMLElement>("[data-issue-row-details]")];
-    const visible = new Set<string>();
+    const selector = "[data-issue-row-details]";
+    const observed = new Set<HTMLElement>();
+    const visible = new Set<HTMLElement>();
     const publish = () => {
-      const next = [...visible].sort().slice(0, 50);
+      const next = [...new Set([...visible].map(node => node.dataset.issueRowDetails!))].sort().slice(0, 50);
       setVisibleIds((previous) => previous.join(",") === next.join(",") ? previous : next);
     };
-    if (typeof IntersectionObserver === "undefined") {
-      for (const node of nodes.slice(0, 50)) visible.add(node.dataset.issueRowDetails!);
-      publish();
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
+    const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        const id = (entry.target as HTMLElement).dataset.issueRowDetails!;
-        if (entry.isIntersecting) visible.add(id);
-        else visible.delete(id);
+        const node = entry.target as HTMLElement;
+        if (!observed.has(node)) continue;
+        if (entry.isIntersecting) visible.add(node);
+        else visible.delete(node);
       }
       publish();
     });
-    for (const node of nodes) observer.observe(node);
-    return () => observer.disconnect();
+    const syncRows = () => {
+      const nodes = new Set(element.querySelectorAll<HTMLElement>(selector));
+      for (const node of observed) if (!nodes.has(node)) {
+        observer?.unobserve(node);
+        observed.delete(node);
+        visible.delete(node);
+      }
+      for (const node of nodes) if (!observed.has(node)) {
+        observed.add(node);
+        observer?.observe(node);
+      }
+      if (!observer) {
+        visible.clear();
+        for (const node of [...nodes].filter(node => !node.closest("[hidden]")).slice(0, 50)) visible.add(node);
+      }
+      publish();
+    };
+    syncRows();
+    // Board pagination and collapsed lanes can mount rows without changing the
+    // collection. Observe only added/removed row markers, not badge/text updates.
+    const mutations = new MutationObserver(records => {
+      if (records.some(record => [...record.addedNodes, ...record.removedNodes].some(node =>
+        node instanceof Element && (node.matches(selector) || node.querySelector(selector)),
+      ))) syncRows();
+    });
+    mutations.observe(element, { childList: true, subtree: true });
+    return () => { observer?.disconnect(); mutations.disconnect(); };
   }, [companyId, root, rowIdentity, enabled]);
 
   const versions = new Map<string, number>();

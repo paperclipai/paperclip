@@ -9,7 +9,7 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
-  it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
+  it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
         companyId: "10000000-0000-4000-8000-000000000001",
@@ -31,6 +31,24 @@ describe("LCA-05 explicit native work mode", () => {
       expect(input.executionMode).toBe(workMode === "planning" ? "plan" : "default");
       expect(input.task.title).toBe(text);
     }
+  });
+
+  it.each(["standard", "planning", "ask"] as const)("preserves Cursor Cloud %s intent independently of its native harness mode", workMode => {
+    const planningContext = workMode === "planning" ? { documentId: "plan-document", baseRevisionId: "plan-revision-3", baseRevisionNumber: 3,
+      markdown: "# Pinned canonical plan", sha256: "a".repeat(64), reviewContext: { feedback: "Keep the requested scope" } } : null;
+    const input = buildNativeExecutionInput({
+      companyId: "10000000-0000-4000-8000-000000000001", runId: "50000000-0000-4000-8000-000000000005", agentId: "30000000-0000-4000-8000-000000000003",
+      issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "MODE-1", title: "Create the requested result", description: null, workMode },
+      taskPrompt: "Follow the task's actual work mode.",
+      workspace: { id: "50000000-0000-4000-8000-000000000005", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null }, normalizedSessionId: null,
+      provider: "cursor_cloud", model: "explicit-cloud-model", cursorCloud: { schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/fixture" }] },
+      planningContext,
+      completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(input).toMatchObject({ task: { workMode }, executionMode: workMode === "planning" ? "plan" : "default", planningContext });
+    expect(buildNativeModelEnvelope(input)).toMatchObject({ task: { workMode }, executionMode: workMode === "planning" ? "plan" : "default", planningContext });
   });
 });
 

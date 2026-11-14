@@ -31,43 +31,68 @@ export type BuildRunOutputSilenceRunInput = Pick<
   "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
 >;
 
+export function createBuildRunOutputSilences(deps: BuildRunOutputSilenceDeps) {
+  return async function buildRunOutputSilences(
+    runs: readonly BuildRunOutputSilenceRunInput[],
+    now: Date,
+  ): Promise<RunOutputSilenceSummary[]> {
+    const runIdsByCompany = new Map<string, string[]>();
+    for (const run of runs) {
+      const runIds = runIdsByCompany.get(run.companyId) ?? [];
+      runIds.push(run.id);
+      runIdsByCompany.set(run.companyId, runIds);
+    }
+    const stateByCompany = new Map(await Promise.all([...runIdsByCompany].map(async ([companyId, runIds]) => {
+      const [decisions, evaluations] = await Promise.all([
+        deps.reader.findLatestDecisions(companyId, runIds, now),
+        deps.reader.findOpenStaleRunEvaluations(companyId, runIds),
+      ]);
+      return [companyId, { decisions, evaluations }] as const;
+    })));
+    return runs.map((run) => {
+      const state = stateByCompany.get(run.companyId);
+      const { dismissedFalsePositive, quietUntilDecision } = state?.decisions.get(run.id)
+        ?? { dismissedFalsePositive: false, quietUntilDecision: null };
+      const evaluation = state?.evaluations.get(run.id) ?? null;
+      const isRunningRun = run.status === "running";
+      const silenceAgeMsValue = isRunningRun ? silenceAgeMs(run, now) : null;
+      const level = classifySilenceLevel({
+        isRunningRun,
+        silenceAgeMs: silenceAgeMsValue,
+        dismissedFalsePositive,
+        snoozed: Boolean(quietUntilDecision),
+        suspicionThresholdMs: deps.suspicionThresholdMs,
+        criticalThresholdMs: deps.criticalThresholdMs,
+      });
+
+      return {
+        lastOutputAt: run.lastOutputAt ?? null,
+        lastOutputSeq: run.lastOutputSeq ?? 0,
+        lastOutputStream: run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr"
+          ? run.lastOutputStream
+          : null,
+        silenceStartedAt: silenceStartedAt(run),
+        silenceAgeMs: silenceAgeMsValue,
+        level,
+        suspicionThresholdMs: deps.suspicionThresholdMs,
+        criticalThresholdMs: deps.criticalThresholdMs,
+        snoozedUntil: dismissedFalsePositive ? null : quietUntilDecision?.snoozedUntil ?? null,
+        evaluationIssueId: evaluation?.id ?? null,
+        evaluationIssueIdentifier: evaluation?.identifier ?? null,
+        evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
+      };
+    });
+  };
+}
+
 export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
+  const buildRunOutputSilences = createBuildRunOutputSilences(deps);
   return async function buildRunOutputSilence(
     run: BuildRunOutputSilenceRunInput,
     now: Date,
   ): Promise<RunOutputSilenceSummary> {
-    const [decisionState, evaluation] = await Promise.all([
-      deps.reader.findLatestDecision(run.companyId, run.id, now),
-      deps.reader.findOpenStaleRunEvaluation(run.companyId, run.id),
-    ]);
-    const { dismissedFalsePositive, quietUntilDecision } = decisionState;
-    const isRunningRun = run.status === "running";
-    const silenceAgeMsValue = isRunningRun ? silenceAgeMs(run, now) : null;
-    const level = classifySilenceLevel({
-      isRunningRun,
-      silenceAgeMs: silenceAgeMsValue,
-      dismissedFalsePositive,
-      snoozed: Boolean(quietUntilDecision),
-      suspicionThresholdMs: deps.suspicionThresholdMs,
-      criticalThresholdMs: deps.criticalThresholdMs,
-    });
-
-    return {
-      lastOutputAt: run.lastOutputAt ?? null,
-      lastOutputSeq: run.lastOutputSeq ?? 0,
-      lastOutputStream: run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr"
-        ? run.lastOutputStream
-        : null,
-      silenceStartedAt: silenceStartedAt(run),
-      silenceAgeMs: silenceAgeMsValue,
-      level,
-      suspicionThresholdMs: deps.suspicionThresholdMs,
-      criticalThresholdMs: deps.criticalThresholdMs,
-      snoozedUntil: dismissedFalsePositive ? null : quietUntilDecision?.snoozedUntil ?? null,
-      evaluationIssueId: evaluation?.id ?? null,
-      evaluationIssueIdentifier: evaluation?.identifier ?? null,
-      evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
-    };
+    const [summary] = await buildRunOutputSilences([run], now);
+    return summary!;
   };
 }
 
@@ -100,7 +125,7 @@ export function createFoldSourceResolvedRun(deps: FoldSourceResolvedRunDeps) {
       fallbackProcessGroupId: input.run.processGroupId,
     });
 
-    return deps.writer.foldSourceResolvedRun(input.run.companyId, {
+    const outcome = await deps.writer.foldSourceResolvedRun(input.run.companyId, {
       run: input.run,
       sourceIssue: input.sourceIssue,
       evidence: input.evidence,
@@ -110,6 +135,8 @@ export function createFoldSourceResolvedRun(deps: FoldSourceResolvedRunDeps) {
       cleanup,
       now: input.now,
     });
+    return outcome.kind === "stale" && cleanup.attempted && cleanup.outcome === "termination_sent_still_running"
+      ? { ...outcome, retryAt: input.now.getTime() + 30_000 } : outcome;
   };
 }
 
@@ -227,12 +254,14 @@ export type ScanSilentActiveRunsDeps = {
 
 export type ScanSilentActiveRunsOptions = {
   now?: Date;
+  runId?: string;
+  onDeferredDeadline?: (at: number) => void;
   companyId?: string;
   issueCreatedAtGte?: Date | null;
 };
 
 type InspectOutcome =
-  | { kind: "skipped" }
+  | { kind: "skipped"; retryAt?: number }
   | { kind: "existing"; evaluationIssueId: string }
   | { kind: "folded"; evaluationIssueId: string | null };
 
@@ -283,7 +312,7 @@ export function createScanSilentActiveRuns(deps: ScanSilentActiveRunsDeps) {
         });
         return foldOutcome.kind === "folded"
           ? { kind: "folded", evaluationIssueId: foldOutcome.evaluationIssueId }
-          : { kind: "skipped" };
+          : { kind: "skipped", ...(foldOutcome.retryAt === undefined ? {} : { retryAt: foldOutcome.retryAt }) };
       }
     }
 
@@ -305,6 +334,7 @@ export function createScanSilentActiveRuns(deps: ScanSilentActiveRunsDeps) {
     const suspicionBefore = new Date(now.getTime() - deps.suspicionThresholdMs);
     const candidates = await deps.reader.findCandidateSilentRuns({
       companyId: opts?.companyId,
+      runId: opts?.runId,
       suspicionBefore,
       issueCreatedAtGte: opts?.issueCreatedAtGte,
     });
@@ -331,6 +361,7 @@ export function createScanSilentActiveRuns(deps: ScanSilentActiveRunsDeps) {
         now,
         dismissedFalsePositive: decisionState.dismissedFalsePositive,
       });
+      if (outcome.kind === "skipped" && outcome.retryAt !== undefined) opts?.onDeferredDeadline?.(outcome.retryAt);
       if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "folded") result.folded += 1;
       else result.skipped += 1;

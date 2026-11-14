@@ -8,7 +8,7 @@ export const listProjectsInputSchema = {
   additionalProperties: false,
 } as const;
 
-export const listProjectsDescription = "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.";
+export const listProjectsDescription = "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details. Project descriptions and goal links supply defaults for newly admitted tasks. Updating a project's defaults does not rewrite existing tasks or running context; backfill existing task properties only when the user asks, and explain that scope when reporting a defaults change.";
 
 /** Canonical project discovery definition. */
 export const listProjectsAction = {

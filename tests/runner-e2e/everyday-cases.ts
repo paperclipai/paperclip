@@ -29,6 +29,7 @@ export function productionStoryProfile(
 
 export const SLUGIFY_REQUIREMENTS = `Build a small dependency-free Python command-line tool in slugify.py. It accepts one positional string and prints its slug: trim whitespace, lowercase, replace each sequence outside ASCII a-z and 0-9 with one hyphen, then trim hyphens. Expose slugify(text) for reuse. Include a README and automated tests. Deliver the source and tests as a downloadable ZIP. Work in the project workspace.`;
 export const SLUGIFY_REVISION = `Add an optional --separator argument that accepts either - or _. Keep - as the default and preserve the earlier behavior. Deliver an updated ZIP, keeping the previous download available.`;
+export const SLUGIFY_DEPLOYMENT_SOAK = `Before editing, run a short command that prints the current workspace path. After implementing the revision, run a foreground reliability soak for a full 180 seconds: repeatedly invoke the CLI on varied inputs and check its output, sleeping briefly between iterations to avoid excessive CPU use. Wait for that command to finish; do not background it or shorten the duration. Include a small soak report with measured elapsed time and check count in the updated ZIP. Finish only after the soak and the regular tests pass.`;
 export const LATE_REQUIREMENT = `Also support --max-length as a positive integer. Truncate the final slug to that length, then remove any trailing separator. In particular, input "  Queue--Ready!!  " with --max-length 7 must print "queue-r". Preserve the default behavior.`;
 
 const definitions = [

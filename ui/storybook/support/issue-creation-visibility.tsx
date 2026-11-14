@@ -96,7 +96,7 @@ const filter: Story = {
     await expect(await canvas.findByText("Human request")).toBeVisible();
     canvas.getByTitle("Filter").click();
     const page = within(canvasElement.ownerDocument.body);
-    await expect(await page.findByRole("checkbox", { name: /show agent-created tasks/ })).not.toBeChecked();
+    await expect(await page.findByRole("checkbox", { name: /Show agent-created tasks/ })).not.toBeChecked();
   },
 };
 

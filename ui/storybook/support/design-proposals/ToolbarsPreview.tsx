@@ -36,7 +36,7 @@ const decisionItems = [
   companyId: "storybook-company", subject: { ...item.subject, kind: "issue", id: item.id, companyId: "storybook-company", status: "in_review", href: null },
   decisionVerbs: [], inlineResolvable: false, entryRule: "", exitRule: "", dedupKey: item.id, dismissalKey: item.id,
   dismissal: null, rank: 0, activityAt: "2026-10-16T12:00:00Z", createdAt: "2026-10-16T12:00:00Z", updatedAt: "2026-10-16T12:00:00Z",
-  project: null, workspace: null, relatedIssue: null, detail: null, expiresAt: null, ruleKey: null, queues: [], shelf: false,
+  project: null, workspace: null, relatedIssue: null, audience: { kind: "pool", userId: null, reason: "none" }, stale: null, required: false, changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null, detail: null, expiresAt: null, ruleKey: null, queues: [], shelf: false,
   retentionDays: 30, keep: false, archivedAt: null, retentionVersion: 1, decideBy: null, decideByAttribution: null, snoozedUntil: null, trainingExampleId: null,
 }));
 
@@ -106,8 +106,8 @@ function ProjectsToolbarSpecimen() {
   const [field, setField] = useState<ProjectSortField>("name");
   const [direction, setDirection] = useState<ProjectSortDir>("asc");
   const [action, setAction] = useState("");
-  return <Specimen title="Projects toolbar" source="ProjectsToolbar · shared project search, sort direction and Add Project action used by the Projects page.">
-    <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={field} sortDir={direction} onSortChange={(nextField, nextDirection) => { setField(nextField); setDirection(nextDirection); }} onNewProject={() => setAction("Add Project requested · local preview only")} />
+  return <Specimen title="Projects toolbar" source="ProjectsToolbar · shared project search, sort direction and Create project action used by the Projects page.">
+    <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={field} sortDir={direction} onSortChange={(nextField, nextDirection) => { setField(nextField); setDirection(nextDirection); }} onNewProject={() => setAction("Create project requested · local preview only")} />
     <output className="block text-xs" aria-live="polite">Search: {query || "All projects"} · Sort: {field} · Direction: {direction}{action ? ` · ${action}` : ""}</output>
   </Specimen>;
 }
@@ -121,7 +121,7 @@ function RoutinesToolbarSpecimen() {
   return <Specimen title="Routines toolbar" source="RoutinesToolbar · shared routine search, sorting, grouping, folder creation and run history controls used by the Routines page.">
     <RoutinesToolbar query={query} onQueryChange={setQuery} sortField={field} sortDir={direction} groupBy={group}
       onSortChange={(nextField, nextDirection) => { setField(nextField); setDirection(nextDirection); }} onGroupChange={setGroup}
-      runsHref="/activity/runs" onNewFolder={group === "folder" ? () => setAction("New folder requested · local preview only") : undefined}
+      tasksHref="/issues?view=all&originKind=routine_execution" onNewFolder={group === "folder" ? () => setAction("New folder requested · local preview only") : undefined}
       onCreateRoutine={() => setAction("Create routine requested · local preview only")} />
     <output className="block text-xs" aria-live="polite">Search: {query || "All routines"} · Sort: {field} · Direction: {direction} · Group: {group}{action ? ` · ${action}` : ""}</output>
   </Specimen>;

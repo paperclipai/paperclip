@@ -23,7 +23,7 @@ export function decisionExpiryService(db: Db, deliverContinuation: (id: string) 
         agentId: row.originAgentId, runId: row.originRunId, action: "decision.expired", entityType: "decision",
         entityId: row.id, details: { expiredReason: reason } }, publications);
       return row;
-    });
+    }, { companyId: decision.companyId, sourceId: decision.id });
     if (!updated) return 0;
     for (const publication of publications) publishActivity(publication);
     await deliverContinuation(updated.id);

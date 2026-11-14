@@ -1,7 +1,9 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { connectionEventWakeRoutes } from "../routes/connection-event-wake.js";
+import { registerConnectionEventWake } from "../services/connection-event-wake.js";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLOUD_CONTROL_AUDIENCE,
   CLOUD_CONTROL_HEADER,
@@ -184,6 +186,7 @@ describe("verifyCloudControlAssertion", () => {
 });
 
 describe("cloudControlMiddleware", () => {
+  const eventOwner = {};
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -208,6 +211,7 @@ describe("cloudControlMiddleware", () => {
       next();
     });
     app.use(cloudControlMiddleware());
+    app.use(connectionEventWakeRoutes(eventOwner));
     app.all("/api/instance/task-drain", (req, res) => {
       res.json({ actor: req.actor });
     });
@@ -240,6 +244,22 @@ describe("cloudControlMiddleware", () => {
     const signature = sign(null, Buffer.from(`${header}.${payload}`, "ascii"), pair.privateKey).toString("base64url");
     return `${header}.${payload}.${signature}`;
   }
+
+  it("accepts only signed exact-action event hints and leaves unavailable receivers retryable", async () => {
+    const app = createApp(); const path = "/api/instance/connector-events/wake";
+    expect((await request(app).post(path)).status).toBe(403);
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("lifecycle:read"))).status).toBe(401);
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(503);
+    const wake = vi.fn(); const stop = registerConnectionEventWake(eventOwner, wake);
+    try {
+      const token = freshAssertion("connector-events:wake");
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, token)).status).toBe(202);
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, token)).status).toBe(401);
+      expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(202);
+      expect(wake).toHaveBeenCalledTimes(2);
+    } finally { stop(); }
+    expect((await request(app).post(path).set(CLOUD_CONTROL_HEADER, freshAssertion("connector-events:wake"))).status).toBe(503);
+  });
 
   it("installs a synthetic instance-admin board actor for a valid assertion, per method", async () => {
     const app = createApp();
@@ -360,5 +380,67 @@ describe("cloudControlMiddleware", () => {
     });
     const res = await request(app).post("/api/instance/task-drain");
     expect(res.status).toBe(200);
+  });
+});
+
+
+describe("body-bound Cloud idle status assertion", () => {
+  const body = Buffer.from(JSON.stringify({ idleCapabilities: { deadlineCatalog: "domain_deadlines_v1" } }));
+  const digest = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
+  const token = (raw: Uint8Array, extra: Record<string, unknown> = {}) => controlAssertion({ action: "task-drain:read-body", claims: { bodySha256: digest(raw), ...extra } });
+  const read = (compactJws: string, rawBody?: Uint8Array) => verifyCloudControlAssertion({ compactJws, rawBody,
+    expectedAction: "task-drain:read-body", env: ENV, now: NOW });
+  beforeEach(() => resetCloudControlReplayFenceForTests());
+  it("installs the complete closed body only after its exact-byte binding and rejects replay", () => {
+    const jws = token(body);
+    const claims = read(jws, body);
+    expect(claims.idleCapabilities).toEqual({ deadlineCatalog: "domain_deadlines_v1" });
+    expect(Object.isFrozen(claims.idleCapabilities)).toBe(true);
+    expect(() => read(jws, body)).toThrow(/already been used/);
+  });
+  it("rejects changed or missing bytes without burning the valid exact request", () => {
+    const jws = token(body);
+    expect(() => read(jws)).toThrow(/body binding/);
+    expect(() => read(jws, Buffer.concat([body, Buffer.from(" ")]))).toThrow(/digest changed/);
+    expect(read(jws, body).idleCapabilities?.deadlineCatalog).toBe("domain_deadlines_v1");
+  });
+  it("rejects malformed UTF8 before consuming the same nonce", () => {
+    const requestId = "invalid-utf8-status-read";
+    const malformed = Buffer.concat([Buffer.from('{"idleCapabilities":{"deadlineCatalog":"'), Buffer.from([0xff]), Buffer.from('"}}')]);
+    expect(() => read(token(malformed, { requestId }), malformed)).toThrow(TypeError);
+    expect(read(token(body, { requestId }), body).idleCapabilities?.deadlineCatalog).toBe("domain_deadlines_v1");
+  });
+  it.each([
+    ["unknown catalog", '{"idleCapabilities":{"deadlineCatalog":"unowned"}}'],
+    ["extra field", '{"idleCapabilities":{"deadlineCatalog":"domain_deadlines_v1"},"extra":true}'],
+    ["array body", '[{"idleCapabilities":{"deadlineCatalog":"domain_deadlines_v1"}}]'],
+    ["malformed JSON", "{"],
+  ])("rejects %s before consuming the same nonce", (_name, text) => {
+    const requestId = "rejected-status-body";
+    const raw = Buffer.from(text);
+    expect(() => read(token(raw, { requestId }), raw)).toThrow();
+    expect(read(token(body, { requestId }), body).idleCapabilities?.deadlineCatalog).toBe("domain_deadlines_v1");
+  });
+  it("rejects mixed embedded capabilities and malformed digest without consuming a nonce", () => {
+    for (const extra of [{ idleCapabilities: { deadlineCatalog: "domain_deadlines_v1" } }, { bodySha256: "invalid" }]) {
+      resetCloudControlReplayFenceForTests();
+      const requestId = "mixed-status-body";
+      expect(() => read(token(body, { requestId, ...extra }), body)).toThrow(/body binding/);
+      expect(read(token(body, { requestId }), body).idleCapabilities?.deadlineCatalog).toBe("domain_deadlines_v1");
+    }
+  });
+  it("enforces the unchanged ten MiB JSON limit before consuming the same nonce", () => {
+    const raw = Buffer.alloc(10 * 1024 * 1024 + 1, 32), requestId = "oversized-status-body";
+    expect(() => read(token(raw, { requestId }), raw)).toThrow(/body binding/);
+    expect(read(token(body, { requestId }), body).idleCapabilities?.deadlineCatalog).toBe("domain_deadlines_v1");
+  });
+  it("does not turn body-read authority into start or stop authority", () => {
+    for (const action of ["task-drain:start", "task-drain:stop"] as const) {
+      const jws = token(body);
+      expect(() => verifyCloudControlAssertion({ compactJws: jws, expectedAction: action, rawBody: body, env: ENV, now: NOW })).toThrow(/authorize/);
+      expect(read(jws, body).action).toBe("task-drain:read-body");
+      expect(() => verifyCloudControlAssertion({ compactJws: controlAssertion({ action, claims: { bodySha256: digest(body) } }),
+        expectedAction: action, rawBody: body, env: ENV, now: NOW })).toThrow(/Body|body/);
+    }
   });
 });

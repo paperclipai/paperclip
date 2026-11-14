@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { matchesGlob } from "node:path";
+import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 
 export function sourceFiles(cwd = process.cwd()) {
   return [...new Set(execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
@@ -30,7 +31,7 @@ export function executionPlan(config, task, args, files = sourceFiles()) {
     target = "@paperclipai/paperclip-runner#check:runner";
     commandArgs = args;
   } else throw new Error(`Missing task command: ${task}`);
-  const select = (globs) => files.filter((file) => globs.some((glob) => matchesGlob(file, glob))).map(literalGlob);
+  const select = (globs) => productInputs(files).filter((file) => globs.some((glob) => matchesGlob(file, glob))).map(literalGlob);
   const selectedInputs = select(definition.inputs);
   const inputs = target.startsWith("//#") ? selectedInputs
     : selectedInputs.map((input) => `$TURBO_ROOT$/${input}`);

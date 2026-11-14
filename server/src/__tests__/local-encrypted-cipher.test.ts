@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalEncryptedCipher, localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret, localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 
 describe("operation-scoped local encryption", () => {
   let root: string;
@@ -59,5 +59,17 @@ describe("operation-scoped local encryption", () => {
     expect(() => createLocalEncryptedCipher("read")).toThrow(expect.objectContaining({
       code: "provider_unavailable", operation: "resolveVersion",
     }));
+  });
+  it("derives the same instance secret from an existing key file or environment without creating missing keys", () => {
+    expect(() => deriveLocalEncryptedInstanceSecret("trace-test", process.env, { allowCreate: false }))
+      .toThrow("Secrets master key file is missing");
+    expect(existsSync(keyFile)).toBe(false);
+    const key = randomBytes(32).toString("hex");
+    writeFileSync(keyFile, key, { mode: 0o600 });
+    const fromFile = deriveLocalEncryptedInstanceSecret("trace-test", process.env, { allowCreate: false });
+    unlinkSync(keyFile);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", key);
+    expect(deriveLocalEncryptedInstanceSecret("trace-test", process.env, { allowCreate: false })).toBe(fromFile);
+    expect(existsSync(keyFile)).toBe(false);
   });
 });

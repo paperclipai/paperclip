@@ -177,10 +177,36 @@ describe("TaskChatProtocolCard", () => {
       workProduct: product,
     });
 
-    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Pending");
+    const chip = container.querySelector(".status-chip");
     expect(chip?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Image · 2.0 KB");
-    expect(container.textContent).toContain("Open gallery");
+    expect(container.querySelector('button[aria-label^="Open gallery:"]')).not.toBeNull();
+  });
+
+  it("opens an image when its original path differs from its preview URL", async () => {
+    const product = workProduct({
+      type: "artifact",
+      title: "screen.png",
+      url: "/images/preview.png",
+      metadata: { contentType: "image/png", originalFilename: "screen.png", openPath: "/images/original.png" },
+    });
+    renderCard(root, {
+      id: "resource:image",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "Image",
+      href: product.url,
+      workProduct: product,
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: screen.png"]')!.click();
+    });
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe("/images/preview.png");
   });
 
   it.each([
@@ -422,7 +448,26 @@ describe("TaskChatProtocolCard", () => {
     }
   });
 
-  it("opens a workspace diff review dialog", async () => {
+  it("says when a change set counts more files than it lists", () => {
+    renderCard(root, {
+      id: "workspace-large",
+      kind: "protocol",
+      surface: "workspace_change",
+      changeSetId: "changes-large",
+      revision: 1,
+      source: "harness_reported",
+      complete: true,
+      files: [
+        { path: "a.ts", operation: "modify", previousPath: null, additions: 1, deletions: 0, binary: false, diff: null, diffTruncated: true },
+      ],
+      totals: { files: 40, additions: 120, deletions: 3 },
+      patchArtifactRef: null,
+    });
+    expect(container.textContent).toContain("40 files changed");
+    expect(container.querySelector('[data-testid="task-chat-workspace-change-omitted"]')?.textContent).toContain("39 more files changed.");
+  });
+
+  it("lists the turn's changed files and opens each diff in place", async () => {
     renderCard(root, {
       id: "workspace",
       kind: "protocol",
@@ -439,24 +484,22 @@ describe("TaskChatProtocolCard", () => {
           additions: 1,
           deletions: 1,
           binary: false,
-          diff: "-old\n+new",
+          diff: "@@ -1 +1 @@\n-old\n+new\n",
         },
       ],
       totals: { files: 1, additions: 1, deletions: 1 },
       patchArtifactRef: null,
     });
-    const button = Array.from(container.querySelectorAll("button")).find(
-      (candidate) => candidate.textContent === "Review diff",
-    );
-    expect(button).not.toBeUndefined();
-    expect(container.textContent).toContain("1 file changed · +1 −1");
-    await act(async () => button?.click());
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "ui/src/App.tsx",
-    );
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
-      "old",
-    );
+    expect(container.textContent).toContain("Changed in this turn");
+    expect(container.textContent).toContain("1 file changed");
+    expect(container.querySelector('[data-testid="task-chat-diff-view"]')).toBeNull();
+    const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-workspace-change-file"] button');
+    expect(row?.textContent).toContain("ui/src/App.tsx");
+    await act(async () => row?.click());
+    const diff = container.querySelector('[data-testid="task-chat-diff-view"]');
+    expect(diff?.textContent).toContain("Line 1");
+    expect(diff?.textContent).toContain("old");
+    expect(diff?.textContent).toContain("new");
   });
 
   it("opens a bounded file preview", async () => {

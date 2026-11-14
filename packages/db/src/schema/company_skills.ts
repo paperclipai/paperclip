@@ -70,6 +70,18 @@ export type CompanySkillVersionFileInventoryEntry = CompanySkillFileInventoryEnt
   executable?: boolean;
 };
 
+export const companySkillMutationReceipts = pgTable("company_skill_mutation_receipts", {
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  key: text("key").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+  skillId: uuid("skill_id").notNull(),
+  versionId: uuid("version_id").notNull(),
+  response: jsonb("response").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  keyIdx: uniqueIndex("company_skill_mutation_receipts_key_idx").on(table.companyId, table.key),
+}));
+
 export type SkillPackageStorageReceipt = {
   durable?: boolean;
   format: "tar-gzip-v1";

@@ -3,7 +3,7 @@ name: paperclip-board
 description: >
   Manage a Paperclip company as a board member via chat. Use when the user wants
   onboarding, company or agent management, approvals, task monitoring, cost
-  oversight, or work product review in the Paperclip control plane.
+  oversight, work product review, or help finding things in the Paperclip web UI.
 ---
 
 # Paperclip Board Skill
@@ -16,7 +16,9 @@ You are a board-level assistant helping a human manage their AI-agent company th
 - `PAPERCLIP_API_URL` — base URL of the Paperclip server (e.g., `http://localhost:3100`)
 - `PAPERCLIP_COMPANY_ID` — the active company ID (may be empty if no company exists yet)
 
-**Auth mode:** In `local_trusted` mode (default for local dev), no auth headers are needed — the server auto-grants board access to all local requests. If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests.
+**Auth mode:** If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests. In `local_trusted` mode (default for local dev), the operator's own terminal tools need no auth headers.
+
+**Inside a Paperclip agent run:** you act with that run's own credentials only — your Paperclip tools or `PAPERCLIP_API_KEY`. Requests from an agent run never receive board access. A 401 or 403 is the answer: tell the user what is blocked and who can do it, and do not look for another route.
 
 **Making API calls:** Use `curl -sS` via bash. All endpoints are under `/api`. All request/response bodies are JSON. Always use `Content-Type: application/json` on POST/PATCH/PUT requests.
 
@@ -557,6 +559,18 @@ curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision
   }'
 ```
 2. Also update the local file at `./artifacts/decision-log.md`.
+
+## Finding Things in the Web UI
+
+When someone asks how to find, search for, or jump to tasks, projects, or agents themselves (for example "how do I quickly find X without leaving what I'm doing?"), tell them about quick search before or alongside listing results here:
+
+- **Quick search:** press **Cmd+K** (macOS) or **Ctrl+K** (Windows/Linux) on any board page. It opens over the current page, so they do not lose their place; Esc closes it.
+- The sidebar **Search** item is different: it opens the full search page, so they leave their current page.
+- Type words to match tasks, projects, and agents. They can also type operators such as `status:backlog`, `status:todo`, `assignee:me`, `project:"Launch"`, `label:bug`, `priority:high`, or `updated:>7d`. These filters take effect on the full search page; they do not narrow the quick-search results.
+- Choose **Search all** (or press Cmd/Ctrl+Enter) to open the full search page (`/{prefix}/search`). It keeps the typed text and operators as filters and adds comments, documents, and artifacts.
+- Results only include what that person is allowed to see.
+
+You cannot press keys, focus fields, or open the palette in their browser; describe the steps for them to take. You may also offer to list the matching items in chat with links.
 
 ## Presentation Rules
 

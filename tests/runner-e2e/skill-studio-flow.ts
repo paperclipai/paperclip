@@ -16,6 +16,9 @@ export async function editCreatedSkillThroughStudio(input: {
   await expect(page).toHaveURL(new RegExp(`/skills/studio/${input.skillId}$`));
   await expect(page.getByRole("combobox").filter({ hasText: skillName })).toBeVisible();
   const editor = page.getByRole("textbox", { name: "editable markdown", exact: true });
+  // Studio mounts the editor before its file query completes. Wait for the
+  // saved body, otherwise hydration can replace edits made to the empty draft.
+  await expect(editor).toContainText("Verify checks.");
   await editor.click();
   await editor.press("ControlOrMeta+End");
   await editor.press("Enter");

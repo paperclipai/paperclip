@@ -3,7 +3,7 @@ import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ConversationTaskHandoff, IssueDocument, IssueThreadInteraction } from "@paperclipai/shared";
+import type { ConversationTaskHandoff, Issue, IssueDocument, IssueThreadInteraction } from "@paperclipai/shared";
 import { TaskChatThread } from "./TaskChatThread";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -77,6 +77,10 @@ const handoff = (id = "task", sourceRunId: string | null = "source-run", second 
   id: `chat_handoff:${id}`, issueId: id, identifier: `PAPER-${id}`, title: `Created ${id}`, status: "todo",
   createdAt: at(second), sourceRunId, suggestionInteractionId: null,
 });
+const createdTask = (overrides: Partial<Issue> = {}): Issue => ({
+  id: "child", companyId: "company", parentId: "chat", identifier: "PAPER-102", title: "Verify the repair",
+  status: "todo", createdByAgentId: "agent", createdAt: new Date(at(5)), ...overrides,
+} as Issue);
 const suggestion = (status: "pending" | "accepted"): IssueThreadInteraction => ({
   ...pendingSuggestedTasksInteraction, id: "suggestion", companyId: "company", issueId: "chat", sourceRunId: "source-run",
   status, createdAt: new Date(at(3)), updatedAt: new Date(at(3)),
@@ -111,6 +115,46 @@ const anchor = (id: string) => host.querySelector(`[data-thread-anchor="${id}"]`
 const before = (earlier: Element, later: Element) => expect(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
 describe("Coordinator task creation ordering", () => {
+  it("shows agent-created subtasks in ordinary task feeds at creation time and refreshes their status", async () => {
+    state.coordinator = false;
+    await paint({ conversationMode: false, companyId: "company", createdTasks: [createdTask(), createdTask()] });
+    const card = host.querySelector<HTMLAnchorElement>('[data-testid="task-chat-created-task"]')!;
+    expect(card.textContent).toContain("Subtask created");
+    expect(card.textContent).toContain("Verify the repair");
+    expect(card.textContent).toContain("Todo");
+    expect(card.getAttribute("href")).toBe("/issues/PAPER-102");
+    before(card, anchor("final"));
+    before(anchor("final"), anchor("next"));
+    expect(host.querySelectorAll('[data-testid="task-chat-created-task"]')).toHaveLength(1);
+    await paint({ conversationMode: false, companyId: "company", createdTasks: [createdTask({ status: "done" })] });
+    expect(host.querySelector('[data-testid="task-chat-created-task"]')).toBe(card);
+    expect(card.textContent).toContain("Done");
+  });
+
+  it("filters human and foreign-company tasks and links standalone follow-ups by ID", async () => {
+    state.coordinator = false;
+    await paint({ conversationMode: false, companyId: "company", createdTasks: [
+      createdTask({ id: "human", createdByAgentId: null }),
+      createdTask({ id: "foreign", companyId: "other" }),
+      createdTask({ id: "chat" }),
+      createdTask({ parentId: null, identifier: null }),
+    ] });
+    const cards = host.querySelectorAll<HTMLAnchorElement>('[data-testid="task-chat-created-task"]');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].textContent).toContain("Task created");
+    expect(cards[0].getAttribute("href")).toBe("/issues/child");
+  });
+
+  it("does not duplicate tasks already shown by chat handoffs or accepted suggestions", async () => {
+    state.handoffs = [handoff("direct")];
+    await paint({ companyId: "company", interactions: [suggestion("accepted")], createdTasks: [
+      createdTask({ id: "direct" }), createdTask({ id: "suggested-task" }), createdTask(),
+    ] });
+    expect(host.querySelectorAll('[data-testid="task-chat-created-task"]')).toHaveLength(1);
+    expect(anchor("chat_handoff:direct")).toBeTruthy();
+    expect(anchor("interaction:suggestion").querySelector(".coordinator-created-task")).toBeTruthy();
+  });
+
   it("keeps the saved plan before its resulting document even when both belong to one native run", async () => {
     state.plan = { id: "plan", issueId: "chat", companyId: "company", key: "plan", title: "Plan", body: "Draft the concepts.",
       format: "markdown", latestRevisionId: "plan-rev", latestRevisionNumber: 1,

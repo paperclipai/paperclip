@@ -51,7 +51,7 @@ async function document(page: Page): Promise<AgentConfigurationInput> {
     await editor(page).press("ControlOrMeta+a");
     const selectedEditor = await editor(page).evaluate(element => {
       const selection = window.getSelection();
-      return document.activeElement === element && !!selection?.anchorNode && !!selection.focusNode
+      return window.document.activeElement === element && !!selection?.anchorNode && !!selection.focusNode
         && element.contains(selection.anchorNode) && element.contains(selection.focusNode);
     });
     if (!selectedEditor) return false;
@@ -135,7 +135,7 @@ test("compact YAML stays small as the company grows and preserves hidden configu
   await json(await request.put(`/api/agents/${agent.id}/instructions-bundle/file`, { data: {
     path: "AGENTS.md", content: instructions, baseHash: entry.contentHash, baseRevisionId: entry.revision?.id ?? null,
   } }));
-  const profiles = [];
+  const profiles: Array<{ id: string }> = [];
   for (let index = 0; index < 8; index++) profiles.push(await json(await request.post(`/api/companies/${company.id}/tools/profiles`, { data: {
     profileKey: `profile-${index}`, name: `Profile ${index}`, defaultAction: "deny",
     entries: Array.from({ length: 30 }, (_, tool) => ({ selectorType: "tool_name", effect: "include", toolName: `fixture_tool_${tool}` })),
@@ -238,7 +238,7 @@ test("Advanced YAML persists settings and commands through their real resource A
   expect((await json(await request.get(`/api/agents/${agent.id}/instructions-bundle`))).files.map((file: { path: string }) => file.path)).not.toContain("workflow.md");
   expect(cleared.spec.skills).toBeUndefined();
   expect(cleared.spec.tools).toBeUndefined();
-  expect(cleared.spec.channels![0].settings.allowUnlinkedPeople).toBe(true);
+  expect(cleared.spec.channels![0].settings!.allowUnlinkedPeople).toBe(true);
   expect(cleared.spec.channels![0].settings).not.toHaveProperty("communicationInstructions");
   expect((await json(await request.get(`/api/agents/${agent.id}/keys`))).find((row: { id: string }) => row.id === key.id).revokedAt).not.toBeNull();
   await page.screenshot({ path: info.outputPath("saved-agent-yaml.png") });
@@ -305,7 +305,7 @@ test("a lost creation response requires reload and cannot blindly replay command
   // Reproduce the observed CI failure once: a copy contains surrounding page
   // text as well as the YAML header. The read helper must reacquire a clean
   // editor copy instead of accepting the header and parsing the whole page.
-  await page.evaluate(() => document.addEventListener("copy", event => {
+  await page.evaluate(() => window.document.addEventListener("copy", event => {
     event.clipboardData?.setData("text/plain", "Skip to Main Content\napiVersion: paperclip/v1\nCopied surrounding page text");
     event.preventDefault();
   }, { capture: true, once: true }));

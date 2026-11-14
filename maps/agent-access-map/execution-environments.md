@@ -192,6 +192,10 @@ The [focused policy tests](../../server/src/__tests__/environment-task-runtime.t
 cover these checks; this is not live provider verification.
 This source update does not qualify live agent access, warm retention, or a provider.
 See the [execution contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
+Managed GitHub shell selectors are controller-owned. Task overrides cannot set
+BASH_ENV, ZDOTDIR, GH_CONFIG_DIR or the launcher-directory marker. Stored bindings
+are stripped before secret resolution, and configured environment projections
+reject shell selectors. The native qualified executable checks still apply.
 
 Same-run checkpoint recovery also uses the saved lease path after a turn omits
 its completion result. It requires verified prior termination, retained session

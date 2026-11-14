@@ -135,6 +135,21 @@ describe("orphan-reaping probe", () => {
     expect(source).toContain("scripts/assert-orphan-reaping.sh");
   });
 
+  it("probes each pushed platform digest before it can be published or signed", () => {
+    // The probe runs in every native build leg, before that leg exports the
+    // digest merge-and-push assembles. Publication then signs only an index
+    // whose Linux images are those probed digests, instead of pulling the
+    // image again after the exact-source gate.
+    const leg = dockerWorkflow.split("\n  build-and-push:\n")[1].split("\n  publication_verification:\n")[0];
+    const probe = leg.indexOf("- name: Verify PID 1 reaps orphaned processes");
+    expect(probe).toBeGreaterThan(leg.indexOf("- name: Build and push by digest"));
+    expect(probe).toBeLessThan(leg.indexOf("- name: Export digest"));
+    expect(leg).toContain('--platform "$PLATFORM" "$IMAGE_NAME@$IMAGE_DIGEST" sh -s < scripts/assert-orphan-reaping.sh');
+    const publisher = dockerWorkflow.split("\n  merge-and-push:\n")[1].split("\n  promote_canary_channel:\n")[0];
+    expect(publisher).toContain('standard-image-contract.mjs --resolve "$GITHUB_SHA" --verified-digests /tmp/digests');
+    expect(publisher).not.toContain("docker run");
+  });
+
   it("fails closed when the orphan is never adopted by PID 1", () => {
     // A probe whose grandchild is not reparented onto PID 1 proves nothing, so
     // it must error rather than report a pass it did not observe.

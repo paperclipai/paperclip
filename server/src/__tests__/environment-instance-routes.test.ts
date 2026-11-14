@@ -116,11 +116,11 @@ function createEnvironment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+function createApp(actor: Express.Request["actor"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as typeof req & { actor: Record<string, unknown> }).actor = actor;
+    req.actor = actor;
     next();
   });
   app.use("/api", environmentRoutes({

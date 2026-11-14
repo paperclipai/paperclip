@@ -1,8 +1,9 @@
+import { readNativeCheckpointRetirement, nativeCheckpointRetirement, MAX_NATIVE_CHECKPOINT_RETIREMENT_RUNS } from "./native-runner-checkpoint-retirement.js";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   agentTaskSessions,
   environmentLeases,
@@ -10,6 +11,8 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunnerCheckpoints,
+  nativeHarnessBackups,
+  nativeProviderArtifactReferences,
   type Db,
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
@@ -17,6 +20,11 @@ import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import type { NativeHarnessBackupExpirationScope } from "../native-harness-backup-expiration-notifications.js";
+import { deleteRetiredNativeHarnessBackup, durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
+import { retireObsoleteNativeHarnessBackup } from "./native-harness-backup-retention.js";
+import type { StorageService } from "../../storage/types.js";
+import { releaseExpiredNativeProviderArtifactRun } from "./native-provider-artifacts.js";
 
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
@@ -50,6 +58,7 @@ export type NativeHarnessBackupExpirationOptions = {
   stateBase?: string;
   shouldContinue?: () => boolean;
   isSessionBusy?: (scopeDigest: string) => boolean;
+  storage?: StorageService;
 };
 
 export type NativeHarnessBackupExpirationResult = {
@@ -146,7 +155,9 @@ async function readSessionIdentity(root: string): Promise<SessionIdentity | null
     const stat = await fs.lstat(statePath);
     if (!stat.isFile() || stat.size > MAX_CONTROL_PLANE_STATE_BYTES) return null;
     const state = JSON.parse(await fs.readFile(statePath, "utf8")) as { identity?: Record<string, unknown> };
+    if (!state || typeof state !== "object" || Array.isArray(state)) return null;
     const identity = state.identity ?? {};
+    if (!identity || typeof identity !== "object" || Array.isArray(identity)) return null;
     const runId = identity.runId;
     const normalizedSessionId = identity.normalizedSessionId;
     const environmentLeaseId = identity.environmentLeaseId;
@@ -160,17 +171,22 @@ async function readSessionIdentity(root: string): Promise<SessionIdentity | null
           ? environmentLeaseId
           : null,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SyntaxError || ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    throw error;
   }
 }
+
+export type NativeHarnessBackupDependencies = {
+  companyId: string; agentId: string; sessionId: string; runIds: string[]; issueIds: string[]; leaseIds: string[];
+};
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 async function sessionRetentionBlocker(
   tx: Tx,
-  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean },
-): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[] }> {
+  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean; lock?: boolean },
+): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[]; issueIds: string[]; closedAt: number }> {
   const [owner] = await tx
     .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
     .from(heartbeatRuns)
@@ -181,6 +197,8 @@ async function sessionRetentionBlocker(
       id: heartbeatRuns.id,
       status: heartbeatRuns.status,
       finishedAt: heartbeatRuns.finishedAt,
+      incompleteRecovery: sql<boolean>`(${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'->>'schema' = 'paperclip.native-controller-recovery.v1'
+        and ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'->'checkpoint' = 'null'::jsonb) is true`,
       issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
     })
     .from(heartbeatRuns)
@@ -194,10 +212,11 @@ async function sessionRetentionBlocker(
   if (runs.some((run) => LIVE_RUN_STATUSES.includes(run.status) || !run.finishedAt)) {
     return { reason: "live_run" };
   }
+  if (runs.some(run => run.incompleteRecovery)) return { reason: "native_recovery_incomplete" };
   if (input.checkpoint && runs.some(run => run.finishedAt! >= input.closedBefore)) return { reason: "recent_run" };
   const issueIds = [...new Set(runs.map((run) => run.issueId).filter((id): id is string => Boolean(id)))];
   if (issueIds.length === 0) return { reason: "issue_unknown" };
-  const issueRows = await tx
+  const issueQuery = tx
     .select({
       id: issues.id,
       status: issues.status,
@@ -205,8 +224,8 @@ async function sessionRetentionBlocker(
       closedAt: sql<Date | null>`coalesce(${issues.completedAt}, ${issues.cancelledAt})`,
     })
     .from(issues)
-    .where(and(eq(issues.companyId, owner.companyId), inArray(issues.id, issueIds)))
-    .for("share");
+    .where(and(eq(issues.companyId, owner.companyId), inArray(issues.id, issueIds)));
+  const issueRows = await (input.lock === false ? issueQuery : issueQuery.for("share"));
   if (issueRows.length !== issueIds.length) return { reason: "issue_unknown" };
   for (const issue of issueRows) {
     if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open" };
@@ -246,7 +265,7 @@ async function sessionRetentionBlocker(
     .where(and(inArray(environmentLeases.status, LIVE_LEASE_STATUSES), or(...leaseReferences)))
     .limit(1);
   if (lease) return { reason: "live_lease" };
-  return { ...owner, runIds };
+  return { ...owner, runIds, issueIds, closedAt: issueRows.reduce((latest, issue) => Math.max(latest, new Date(issue.closedAt!).getTime()), Number.NEGATIVE_INFINITY) };
 }
 
 async function hasLiveRun(db: Db, owner: { companyId: string; agentId: string }, sessionId: string) {
@@ -280,13 +299,81 @@ export function nativeHarnessBackupExpirationService(
   let evidenceDueAt = 0;
   let passDueAt = Number.POSITIVE_INFINITY;
   let checkpointCursor: string | null = null;
+  let durableBackupCursor: string | null = null;
+  let checkpointsEnumerated = false;
+
+  async function expireDurableBackups(options: {
+    closedBefore: Date; dryRun: boolean; maxEntries: number; maxRemovals: number; shouldContinue: () => boolean;
+  }, result: NativeHarnessBackupExpirationResult) {
+    const storage = defaults.storage ?? durableNativeHarnessStorage();
+    if (!storage) return;
+    const candidates = await db.select({ id: nativeHarnessBackups.id, scopeDigest: nativeHarnessBackups.scopeDigest,
+      companyId: nativeHarnessBackups.companyId, runId: nativeHarnessBackups.runId, survivingRunId: heartbeatRuns.id,
+      sessionId: heartbeatRuns.nativeSessionId, status: nativeHarnessBackups.status })
+      .from(nativeHarnessBackups).leftJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeHarnessBackups.runId))
+      .where(and(durableBackupCursor ? gt(nativeHarnessBackups.id, durableBackupCursor) : undefined,
+        or(eq(nativeHarnessBackups.status, "retired"), lt(nativeHarnessBackups.createdAt, options.closedBefore))))
+      .orderBy(asc(nativeHarnessBackups.id)).limit(options.maxEntries + 1);
+    let processed = 0;
+    for (const candidate of candidates) {
+      if (!options.shouldContinue() || processed++ >= options.maxEntries || result.expired >= options.maxRemovals) {
+        result.truncated = true; return;
+      }
+      durableBackupCursor = candidate.id;
+      if (candidate.survivingRunId && !candidate.sessionId) continue;
+      try {
+        const retired = candidate.status === "retired" || await db.transaction(async tx => {
+          if (["pending", "superseded"].includes(candidate.status)) {
+            const obsolete = await retireObsoleteNativeHarnessBackup(tx, { ...candidate,
+              closedBefore: options.closedBefore, dryRun: options.dryRun });
+            if (obsolete) result.candidates++;
+            return obsolete && !options.dryRun;
+          }
+          if (!candidate.survivingRunId) {
+            result.candidates++;
+            if (options.dryRun) return false;
+            await tx.update(nativeHarnessBackups).set({ status: "retired", updatedAt: new Date() })
+              .where(eq(nativeHarnessBackups.id, candidate.id));
+            return true;
+          }
+          const blocker = await sessionRetentionBlocker(tx, { scopeDigest: candidate.scopeDigest, checkpoint: true,
+            closedBefore: options.closedBefore,
+            identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null } });
+          if ("reason" in blocker) return false;
+          const [recent] = await tx.select({ id: nativeHarnessBackups.id }).from(nativeHarnessBackups).where(and(
+            eq(nativeHarnessBackups.companyId, blocker.companyId), eq(nativeHarnessBackups.scopeDigest, candidate.scopeDigest),
+            gte(nativeHarnessBackups.createdAt, options.closedBefore))).limit(1);
+          if (recent) return false;
+          result.candidates++;
+          if (options.dryRun) return false;
+          await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
+          await tx.update(nativeRunFinalizations).set({ controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1` })
+            .where(inArray(nativeRunFinalizations.runId, blocker.runIds));
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${blocker.companyId}:${candidate.scopeDigest}`}, 0))`);
+          const cleared = await tx.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, blocker.companyId),
+            eq(agentTaskSessions.agentId, blocker.agentId), or(inArray(agentTaskSessions.lastRunId, blocker.runIds),
+              sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${candidate.sessionId}`))).returning({ id: agentTaskSessions.id });
+          result.clearedTaskSessions += cleared.length;
+          await tx.update(nativeHarnessBackups).set({ status: "retired", updatedAt: new Date() }).where(and(
+            eq(nativeHarnessBackups.companyId, blocker.companyId), eq(nativeHarnessBackups.scopeDigest, candidate.scopeDigest)));
+          return true;
+        });
+        if (retired && !options.dryRun && await deleteRetiredNativeHarnessBackup(db, storage, candidate.id, AbortSignal.timeout(60_000))) result.expired++;
+      } catch (err) {
+        result.failed++;
+        logger.warn({ err, backupId: candidate.id }, "durable native harness backup expiration skipped an object");
+      }
+    }
+    durableBackupCursor = null;
+  }
 
   async function expireCheckpoints(options: {
     closedBefore: Date; dryRun: boolean; maxEntries: number; maxRemovals: number; shouldContinue: () => boolean;
   }, result: NativeHarnessBackupExpirationResult) {
     // The partial header index enumerates retained checkpoints without reading
     // event payloads or scanning runs that have no checkpoint left to expire.
-    const candidates = await db.select({ runId: heartbeatRuns.id, sessionId: heartbeatRuns.nativeSessionId })
+    const candidates = await db.select({ runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, sessionId: heartbeatRuns.nativeSessionId,
+      retirement: sql<Record<string, unknown> | null>`case when ${nativeRunnerCheckpoints.material}->>'schema' like 'paperclip.native-runner-checkpoint-retirement.%' then ${nativeRunnerCheckpoints.material} else null end` })
       .from(nativeRunnerCheckpoints)
       .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, nativeRunnerCheckpoints.runId))
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
@@ -309,12 +396,14 @@ export function nativeHarnessBackupExpirationService(
       checkpointCursor = candidate.runId;
       if (!candidate.sessionId) continue; // Unknown identity is never expiration evidence.
       try {
-        const expired = await db.transaction(async tx => {
+        const previousRetirement = readNativeCheckpointRetirement(candidate.retirement, candidate);
+        if (previousRetirement && previousRetirement.sessionId !== candidate.sessionId) throw new Error("native_runner_checkpoint_retirement_invalid");
+        const retirement = previousRetirement ?? await db.transaction(async tx => {
           const blocker = await sessionRetentionBlocker(tx, {
             scopeDigest: null, checkpoint: true, closedBefore: options.closedBefore,
             identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null },
           });
-          if ("reason" in blocker) return false;
+          if ("reason" in blocker || blocker.runIds.length > MAX_NATIVE_CHECKPOINT_RETIREMENT_RUNS) return false;
           const [resume] = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions).where(and(
             eq(agentTaskSessions.companyId, blocker.companyId), eq(agentTaskSessions.agentId, blocker.agentId),
             or(inArray(agentTaskSessions.lastRunId, blocker.runIds),
@@ -328,11 +417,36 @@ export function nativeHarnessBackupExpirationService(
           await tx.update(nativeRunFinalizations).set({
             controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1`,
           }).where(inArray(nativeRunFinalizations.runId, blocker.runIds));
-          const rows = await tx.delete(nativeRunnerCheckpoints).where(and(
-            eq(nativeRunnerCheckpoints.companyId, blocker.companyId), eq(nativeRunnerCheckpoints.runId, candidate.runId),
-          )).returning({ part: nativeRunnerCheckpoints.part });
-          return rows.length > 0;
+          const retired = nativeCheckpointRetirement({ companyId: blocker.companyId, agentId: blocker.agentId,
+            sessionId: candidate.sessionId!, runIds: blocker.runIds });
+          await tx.update(nativeRunnerCheckpoints).set({ material: retired, updatedAt: new Date() }).where(and(
+            eq(nativeRunnerCheckpoints.companyId, blocker.companyId), inArray(nativeRunnerCheckpoints.runId, blocker.runIds),
+            eq(nativeRunnerCheckpoints.part, "header")));
+          return retired;
         });
+        let expired = false;
+        if (retirement && !options.dryRun) {
+          const storage = defaults.storage ?? durableNativeHarnessStorage();
+          if (!storage) {
+            const [pending] = await db.select({ id: nativeProviderArtifactReferences.id }).from(nativeProviderArtifactReferences).where(and(
+              eq(nativeProviderArtifactReferences.companyId, retirement.companyId), inArray(nativeProviderArtifactReferences.runId, retirement.runIds),
+              isNull(nativeProviderArtifactReferences.backupId))).limit(1);
+            if (pending) throw new Error("native_provider_artifacts_storage_unavailable");
+          }
+          if (storage) for (const runId of retirement.runIds) await releaseExpiredNativeProviderArtifactRun({ db, storage,
+            companyId: retirement.companyId, runId, signal: AbortSignal.timeout(60_000) });
+          expired = !options.dryRun && await db.transaction(async tx => {
+            const [header] = await tx.select().from(nativeRunnerCheckpoints).where(and(
+              eq(nativeRunnerCheckpoints.companyId, retirement.companyId), eq(nativeRunnerCheckpoints.runId, candidate.runId),
+              eq(nativeRunnerCheckpoints.part, "header"))).for("update");
+            const current = header && readNativeCheckpointRetirement(header.material, candidate);
+            if (!current || current.retiredAt !== retirement.retiredAt || current.agentId !== retirement.agentId
+              || current.sessionId !== retirement.sessionId || current.runIds.join(",") !== retirement.runIds.join(",")) return false;
+            const rows = await tx.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, retirement.companyId),
+              eq(nativeRunnerCheckpoints.runId, candidate.runId))).returning({ part: nativeRunnerCheckpoints.part });
+            return rows.length > 0;
+          });
+        }
         if (expired) { removed++; result.expiredCheckpoints++; }
       } catch (err) {
         result.failed++;
@@ -344,7 +458,7 @@ export function nativeHarnessBackupExpirationService(
 
   async function settleLeftovers(backupRoot: string) {
     const current = path.join(backupRoot, "current");
-    for (const name of await fs.readdir(backupRoot).catch(() => [] as string[])) {
+    for (const name of (await fs.readdir(backupRoot).catch(missingPath)) ?? []) {
       const target = path.join(backupRoot, name);
       if (name.startsWith(RETIRING_PREFIX) && UUID_PATTERN.test(name.slice(RETIRING_PREFIX.length))) {
         if (!(await isRealDirectory(current))) await fs.rename(target, current);
@@ -379,54 +493,49 @@ export function nativeHarnessBackupExpirationService(
     const identity = await readSessionIdentity(root);
     if (!identity) return skip("identity_unknown");
 
-    const decision = await db.transaction(async (tx) => {
-      const blocker = await sessionRetentionBlocker(tx, {
-        scopeDigest,
-        identity,
-        closedBefore: options.closedBefore,
-      });
-      if ("reason" in blocker) return blocker;
-      if (options.dryRun) return { owner: blocker, cleared: 0 };
-      await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
-      const cleared = await tx
-        .delete(agentTaskSessions)
-        .where(
-          and(
-            eq(agentTaskSessions.companyId, blocker.companyId),
-            eq(agentTaskSessions.agentId, blocker.agentId),
-            sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
-          ),
-        )
-        .returning({ id: agentTaskSessions.id });
-      return { owner: blocker, cleared: cleared.length };
-    });
-    if ("reason" in decision) return skip(decision.reason);
-
     const bytes = await allocatedBytes(current);
-    result.candidates++;
-    result.candidateBytes += bytes;
-    if (options.dryRun) return;
-    result.clearedTaskSessions += decision.cleared;
-    if (options.isSessionBusy(scopeDigest)) return skip("session_active");
     const id = randomUUID();
     const retiring = path.join(backupRoot, `${RETIRING_PREFIX}${id}`);
     const trash = path.join(backupRoot, `${EXPIRED_PREFIX}${id}`);
-    await fs.rename(current, retiring);
-    let liveRun: boolean;
+    let retired = false;
+    let decision: { reason: string } | { cleared: number; bytes: number };
     try {
-      liveRun = await hasLiveRun(db, decision.owner, identity.normalizedSessionId);
-    } catch (err) {
-      await fs.rename(retiring, current);
-      throw err;
+      decision = await db.transaction(async (tx) => {
+        const blocker = await sessionRetentionBlocker(tx, {
+          scopeDigest, identity, closedBefore: options.closedBefore,
+        });
+        if ("reason" in blocker) return blocker;
+        if ((await fs.stat(current)).mtime >= options.closedBefore) return { reason: "recent_backup" };
+        if (options.dryRun) return { cleared: 0, bytes };
+        if (options.isSessionBusy(scopeDigest)) return { reason: "session_active" };
+        await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
+        await fs.rename(current, retiring);
+        retired = true;
+        if (await hasLiveRun(tx as unknown as Db, blocker, identity.normalizedSessionId)) {
+          await fs.rename(retiring, current);
+          retired = false;
+          return { reason: "live_run" };
+        }
+        const cleared = await tx.delete(agentTaskSessions).where(and(
+          eq(agentTaskSessions.companyId, blocker.companyId),
+          eq(agentTaskSessions.agentId, blocker.agentId),
+          sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
+        )).returning({ id: agentTaskSessions.id });
+        return { cleared: cleared.length, bytes };
+      });
+    } catch (error) {
+      if (retired) await fs.rename(retiring, current);
+      throw error;
     }
-    if (liveRun) {
-      await fs.rename(retiring, current);
-      return skip("live_run");
-    }
+    if ("reason" in decision) return skip(decision.reason);
+    result.candidates++;
+    result.candidateBytes += decision.bytes;
+    if (options.dryRun) return;
+    result.clearedTaskSessions += decision.cleared;
     await fs.rename(retiring, trash);
     await removeBackupTree(trash);
     result.expired++;
-    result.reclaimedBytes += bytes;
+    result.reclaimedBytes += decision.bytes;
   }
 
   async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
@@ -698,13 +807,20 @@ export function nativeHarnessBackupExpirationService(
     const result = emptyResult();
     const shouldContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
     if (!shouldContinue()) return { ...result, truncated: true };
-    await expireCheckpoints({
+    const pass = {
       closedBefore: new Date((options.now ?? defaults.now ?? new Date()).getTime() - closedForDays * DAY_MS),
       dryRun: options.dryRun ?? defaults.dryRun ?? false,
       maxEntries: Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 200),
       maxRemovals: Math.max(1, options.maxRemovals ?? defaults.maxRemovals ?? 50),
       shouldContinue,
-    }, result);
+    };
+    if (!checkpointsEnumerated) {
+      await expireCheckpoints(pass, result);
+      if (result.truncated) return result;
+      checkpointsEnumerated = true;
+    }
+    await expireDurableBackups(pass, result);
+    if (!result.truncated) checkpointsEnumerated = false;
     return result;
   }
 
@@ -745,5 +861,91 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration };
+  async function backupDependencies(scopeDigest: string, identity: SessionIdentity): Promise<NativeHarnessBackupDependencies | null> {
+    const [owner] = await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    if (!owner) return null;
+    const runs = await db.select({ id: heartbeatRuns.id,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
+      eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.nativeSessionId, identity.normalizedSessionId)));
+    const runIds = [...new Set([identity.runId, ...runs.map(run => run.id)])];
+    const issueIds = [...new Set([owner.issueId, ...runs.map(run => run.issueId)].filter((id): id is string => Boolean(id)))];
+    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, owner.companyId), or(inArray(environmentLeases.heartbeatRunId, runIds),
+        sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256' = ${scopeDigest}`,
+        identity.environmentLeaseId ? eq(environmentLeases.id, identity.environmentLeaseId) : undefined)));
+    return { companyId: owner.companyId, agentId: owner.agentId, sessionId: identity.normalizedSessionId,
+      runIds, issueIds, leaseIds: leases.map(lease => lease.id) };
+  }
+
+  async function resolveBackupScope(scope: NativeHarnessBackupExpirationScope) {
+    let runId = scope.runId;
+    let issueId = scope.issueId;
+    let scopeDigest = scope.scopeDigest;
+    if (scope.leaseId) {
+      const [lease] = await db.select({ runId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
+        scopeDigest: sql<string | null>`${environmentLeases.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256'`,
+      }).from(environmentLeases).where(and(eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, scope.leaseId)));
+      runId = lease?.runId ?? runId; issueId = lease?.issueId ?? issueId;
+      scopeDigest = lease?.scopeDigest && SCOPE_PATTERN.test(lease.scopeDigest) ? lease.scopeDigest : scopeDigest;
+    }
+    const [run] = runId ? await db.select({ agentId: heartbeatRuns.agentId, sessionId: heartbeatRuns.nativeSessionId,
+      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.id, runId))) : [];
+    return { runId, issueId: run?.issueId ?? issueId, agentId: run?.agentId ?? scope.agentId,
+      sessionId: run?.sessionId ?? scope.sessionId, scopeDigest };
+  }
+
+  async function reconcileBackup(scopeDigest: string) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const root = path.join(base, scopeDigest);
+    if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
+    const backupRoot = path.join(root, "failover-backups");
+    if (!(await isRealDirectory(backupRoot))) return null;
+    if (!defaults.dryRun) await settleLeftovers(backupRoot);
+    const current = path.join(backupRoot, "current");
+    const stat = await fs.lstat(current).catch(missingPath);
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
+    const identity = await readSessionIdentity(root);
+    if (!identity) return null;
+    const dependencies = await backupDependencies(scopeDigest, identity);
+    if (!dependencies) return null;
+    const source = { id: scopeDigest, companyId: dependencies.companyId, agentId: dependencies.agentId, dependencies };
+    if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) {
+      return { ...source, dueAt: null };
+    }
+    const blocker = await db.transaction(tx => sessionRetentionBlocker(tx, {
+      scopeDigest, identity, closedBefore: new Date(8_000_000_000_000_000), lock: false,
+    }));
+    if ("reason" in blocker) return { ...source, dueAt: null };
+    const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
+    return { ...source, dueAt: Math.max(stat!.mtime.getTime(), blocker.closedAt) + retentionMs + 1 };
+  }
+
+  async function backupScopes(after?: string, limit = 100) {
+    const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
+    const names = (await fs.readdir(base).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [] as string[];
+      throw error;
+    })).filter(name => SCOPE_PATTERN.test(name) && (!after || name > after)).sort();
+    return { names: names.slice(0, limit), complete: names.length <= limit };
+  }
+
+  async function expireBackup(scopeDigest: string) {
+    if (!SCOPE_PATTERN.test(scopeDigest)) throw new Error("Invalid native harness backup scope");
+    const result = emptyResult();
+    const root = path.join(path.resolve(defaults.stateBase ?? nativeHarnessStateBase()), scopeDigest);
+    const dryRun = defaults.dryRun ?? false;
+    await expireSession(root, scopeDigest, {
+      dryRun,
+      isSessionBusy: defaults.isSessionBusy ?? nativeSessionScopeDigestIsBusy,
+      closedBefore: new Date(Date.now() - Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS),
+    }, result);
+    return result;
+  }
+
+  return { tick, noteEvidence, nextEvidenceAt, tickCheckpoints, registerCheckpointExpiration,
+    reconcileBackup, backupScopes, expireBackup, resolveBackupScope };
 }

@@ -1,8 +1,9 @@
+import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import { buildActorSecretContext } from "../routes/authz.js";
 
 function makeReq(actor: Express.Request["actor"]) {
-  return { method: "POST", actor } as Express.Request;
+  return { method: "POST", actor } as unknown as Request;
 }
 
 describe("buildActorSecretContext", () => {

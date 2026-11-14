@@ -50,7 +50,12 @@ function decodeMasterKey(raw: string): Buffer | null {
   return null;
 }
 
-function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = process.env): Buffer {
+/** Check the configured key without reading, creating, or changing key files. */
+export function isValidLocalEncryptedMasterKey(raw: string): boolean {
+  return decodeMasterKey(raw) !== null;
+}
+
+function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = process.env, options:{readOnly?:boolean}={}): Buffer {
   const envKeyRaw = env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
     const fromEnv = decodeMasterKey(envKeyRaw);
@@ -64,7 +69,9 @@ function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = p
 
   const keyPath = resolveMasterKeyFilePath(env);
   if (existsSync(keyPath)) {
-    enforceKeyFilePermissionsBestEffort(keyPath);
+    if(options.readOnly){
+      if((statSync(keyPath).mode&0o077)!==0)throw new Error("Secrets master key permissions are unsafe for inspection");
+    }else enforceKeyFilePermissionsBestEffort(keyPath);
     const raw = readFileSync(keyPath, "utf8");
     const decoded = decodeMasterKey(raw);
     if (!decoded) {
@@ -73,7 +80,7 @@ function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = p
     return decoded;
   }
 
-  if (!allowCreate) throw new Error(`Secrets master key file is missing: ${keyPath}`);
+  if (!allowCreate||options.readOnly) throw new Error(`Secrets master key file is missing: ${keyPath}`);
   const dir = path.dirname(keyPath);
   mkdirSync(dir, { recursive: true });
   const generated = randomBytes(32);
@@ -94,8 +101,8 @@ function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = p
 }
 
 /** Derive a purpose-specific instance secret without exposing or reusing the vault key. */
-export function deriveLocalEncryptedInstanceSecret(purpose: string, env: LocalEncryptedKeyEnv = process.env): string {
-  return Buffer.from(hkdfSync("sha256", loadOrCreateMasterKey(true, env), Buffer.alloc(0),
+export function deriveLocalEncryptedInstanceSecret(purpose: string, env: LocalEncryptedKeyEnv = process.env, options: { allowCreate?: boolean;readOnly?:boolean } = {}): string {
+  return Buffer.from(hkdfSync("sha256", loadOrCreateMasterKey(options.readOnly?false:options.allowCreate ?? true, env,{readOnly:options.readOnly}), Buffer.alloc(0),
     `paperclip:instance-secret:v1\0${purpose}`, 32)).toString("base64url");
 }
 
@@ -194,8 +201,10 @@ async function inspectLocalEncryptedHealth(): Promise<SecretProviderHealthCheck>
     };
   }
 
+  // Windows has no POSIX permission bits: stat() reports 0o666 for any writable
+  // file and chmod cannot restrict it, so this check would always warn there.
   const warnings =
-    mode !== null && (mode & 0o077) !== 0
+    process.platform !== "win32" && mode !== null && (mode & 0o077) !== 0
       ? [`Secrets key file permissions are ${mode.toString(8)}; run chmod 600 ${keyPath}`]
       : [];
   return {
@@ -271,10 +280,11 @@ function resolveLocalEncryptedValue<T>(operation: () => T): T {
 }
 
 /** Reuse one resolved key within a single batch; reload it for the next operation. */
-export function createLocalEncryptedCipher(mode: "read" | "write") {
+export function createLocalEncryptedCipher(mode: "read" | "write",options:{readOnly?:boolean}={}) {
+  if(mode==="write"&&options.readOnly)throw badRequest("Read-only inspection cannot create an encryption writer");
   const masterKey = mode === "write"
     ? loadOrCreateMasterKey()
-    : resolveLocalEncryptedValue(() => loadOrCreateMasterKey(false));
+    : resolveLocalEncryptedValue(() => loadOrCreateMasterKey(false,process.env,options));
   return {
     encrypt(value: string): StoredSecretVersionMaterial {
       return encryptValue(masterKey, value);

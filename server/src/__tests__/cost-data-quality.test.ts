@@ -166,9 +166,16 @@ describe("actionable cost data quality", () => {
     expect(report.runs.find(item => item.id === captureFailed.id)?.reason).toBe("waiting_for_receipt");
     expect(report.runs.find(item => item.id === invalidProof.id)?.reason).toBe("waiting_for_receipt");
     const integrity = accountingIntegrityService(db);
+    // A failed capture is never certified free. Before the accounting closure
+    // bound it stays pending; past it, its known usage settles as unpriced.
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, captureFailed.id));
     expect(await integrity.retry(owner.companyId, captureFailed.id, "board")).toEqual({ accounted: false });
     expect(await integrity.retry(owner.companyId, noWork.id, "board")).toEqual({ accounted: true });
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, owner.companyId))).toEqual([]);
+    await db.update(heartbeatRuns).set({ finishedAt: now }).where(eq(heartbeatRuns.id, captureFailed.id));
+    expect(await integrity.retry(owner.companyId, captureFailed.id, "board")).toEqual({ accounted: true });
+    const charges = await db.select().from(costEvents).where(eq(costEvents.companyId, owner.companyId));
+    expect(charges.map(charge => [charge.heartbeatRunId, charge.costStatus])).toEqual([[captureFailed.id, "unpriced"]]);
   });
 
   it("does not offer retry while a native coordinator can still resume provider work", async () => {
@@ -180,6 +187,30 @@ describe("actionable cost data quality", () => {
     expect(await accountingIntegrityService(db).retry(owner.companyId, pending.id, "board")).toEqual({ accounted: false });
     await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" }).where(eq(nativeRunFinalizations.runId, pending.id));
     expect((await costDataQualityReport(db, owner.companyId, true, undefined, now)).runs[0].reason).toBe("retryable");
+  });
+
+  it("exposes acknowledged late receipt debt through existing run and retry metadata", async () => {
+    const owner = await company(), other = await company();
+    const pending = await run(owner, { costAccountedAt: now, accountingLastError: "late_usage_requires_reconciliation",
+      usageJson: { accountingReceiptReady: true, accountingLateReceiptPending: true,
+        accountingLateReceiptId: randomUUID(), privateProviderPayload: "PRIVATE LATE RECEIPT" } });
+    const report = await costDataQualityReport(db, owner.companyId, true, undefined, now);
+    expect(report.canRetry).toBe(true);
+    expect(report.runs).toEqual([expect.objectContaining({ id: pending.id, runId: pending.id, reason: "retryable" })]);
+    expect(JSON.stringify(report)).not.toContain("PRIVATE LATE RECEIPT");
+    expect((await costDataQualityReport(db, owner.companyId, false, undefined, now)).canRetry).toBe(false);
+    expect((await costDataQualityReport(db, other.companyId, true, undefined, now)).runs).toEqual([]);
+    const summary = await costService(db).summary(owner.companyId, { from: new Date("2026-10-01T00:00:00Z"), to: now });
+    expect(summary.pendingRunCount).toBe(1);
+    expect(summary.pricingComplete).toBe(false);
+    const health = await accountingIntegrityService(db).health(owner.companyId);
+    expect(health.pendingRunCount).toBe(1);
+    expect(health.items).toEqual([expect.objectContaining({ runId: pending.id, state: "retryable",
+      lastError: "late_usage_requires_reconciliation" })]);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, pending.id));
+    expect(saved.costAccountedAt?.toISOString()).toBe(now.toISOString());
+    expect(saved.costAccountingPending).toBe(true);
+    expect(saved.usageJson?.accountingLateReceiptPending).toBe(true);
   });
 
   it("bounds each category independently and reports truncation", async () => {

@@ -1,9 +1,14 @@
+import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
+import { assertAgentInteraction } from "../agent-interaction-policy.js";
+import { forbidden, HttpError } from "../../errors.js";
+import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_DELIVERY_DENIED, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { readPreservedNativeResultFinalization, type PreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
@@ -13,16 +18,18 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
 import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
 import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
-import { readNativeMonitorDelivery, readNativePreservedMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
+import { readNativeMonitorDelivery, readNativePreservedMonitorWait, readNativeSupersededMonitorWait, type NativeSupersededMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { questionsAwaitedByAgentBlock } from "../blocked-question-answer.js";
 import { isConversation } from "../agent-conversations.js";
 import { hasPendingNativeChildCompletion, type NativeChildCompletionRecipient } from "./native-child-completion-delivery.js";
-import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { CreateIssueThreadInteraction } from "@paperclipai/shared";
 import {
@@ -43,6 +50,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import {
+  heldByAnotherRun,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeGovernanceGate,
   type NativeStatusDecision,
@@ -66,6 +74,8 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
+import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -203,6 +213,7 @@ export type NativeMaterializedStatusEffect = {
   targetType: string;
   targetId: string | null;
   payload: Record<string, unknown>;
+  deliveryState?: "skipped";
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -449,7 +460,7 @@ function failAt(
     throw new Error(`native_status_failpoint:${actual}`);
 }
 
-async function enqueueWake(input: {
+export async function enqueueWake(input: {
   tx: Db;
   companyId: string;
   issueId: string;
@@ -458,6 +469,8 @@ async function enqueueWake(input: {
   idempotencyKey: string;
   payload: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown>;
+  originRunId?: string;
+  originOperation?: "assign" | "comment";
 }) {
   const existing = await input.tx
     .select({ id: agentWakeupRequests.id })
@@ -466,17 +479,32 @@ async function enqueueWake(input: {
       and(
         eq(agentWakeupRequests.companyId, input.companyId),
         eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
-        inArray(agentWakeupRequests.status, [
+        or(inArray(agentWakeupRequests.status, [
           "queued",
           "deferred_issue_execution",
           "claimed",
           "completed",
-        ]),
+        ]), eq(agentWakeupRequests.error, INTERACTION_DELIVERY_DENIED)),
       ),
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (existing) return existing.id;
+  const [origin] = input.originRunId ? await input.tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, input.originRunId), eq(heartbeatRuns.companyId, input.companyId))) : [];
+  const actorType = origin ? "agent" : "system";
+  const actorId = origin?.agentId ?? "native-status-committer";
+  const originPayload = withInteractionDeliveryOrigin({}, actorType, actorId, { actorType, actorId });
+  if (originPayload.interactionOrigin) {
+    originPayload.interactionOrigin = { ...record(originPayload.interactionOrigin), operation: input.originOperation ?? "assign" };
+  }
+  const denial = origin ? await agentInteractionDeliveryDenial(input.tx, {
+    companyId: input.companyId, actorAgentId: origin.agentId, targetAgentId: input.agentId, issueId: input.issueId,
+    operation: input.originOperation ?? "assign", texts: agentWakeInteractionTexts(input.payload), delivery: true, lock: true,
+  }) : null;
+  const refusedParentReport = denial && input.reason === "issue_children_completed" && input.originOperation === "comment";
+  if (denial && !refusedParentReport) throw forbidden("Agent interaction is not permitted.", denial);
+  if (!denial) await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
   const inserted = await input.tx
     .insert(agentWakeupRequests)
     .values({
@@ -485,10 +513,18 @@ async function enqueueWake(input: {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
-      payload: {
+      ...(denial ? { status: "skipped", error: INTERACTION_DELIVERY_DENIED, finishedAt: new Date() } : {}),
+      payload: denial ? {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        sourceRunId: input.originRunId,
+        ...originPayload,
+        interactionPermissionDenials: { assignment: denial },
+      } : {
         issueId: input.issueId,
         taskId: input.issueId,
         ...input.payload,
+        ...originPayload,
         _paperclipWakeContext: {
           issueId: input.issueId,
           taskId: input.issueId,
@@ -506,6 +542,13 @@ async function enqueueWake(input: {
     .then((rows) => rows[0] ?? null);
   if (!inserted) throw new Error("native_status_wake_not_persisted");
   return inserted.id;
+}
+
+async function refusedWakePolicy(tx: Db, companyId: string, wakeId: string) {
+  const [wake] = await tx.select({ error: agentWakeupRequests.error, payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+  return wake?.error === INTERACTION_DELIVERY_DENIED
+    ? record(record(wake.payload).interactionPermissionDenials).assignment : null;
 }
 
 async function validateGovernanceGate(
@@ -572,6 +615,7 @@ async function materializeDecisionEffect(input: {
   companyId: string;
   issue: typeof issues.$inferSelect;
   runId: string;
+  actorAgentId: string | null;
   decisionId: string;
   effect: NativeStatusEffect;
   failpoint?: NativeStatusCommitFailpoint;
@@ -619,7 +663,7 @@ async function materializeDecisionEffect(input: {
           ],
         },
       },
-      { systemId: "native-status-committer", runId: input.runId },
+      { agentId: input.actorAgentId, systemId: "native-status-committer", runId: input.runId },
     );
     return {
       effectKind: effect.kind,
@@ -667,7 +711,8 @@ async function materializeDecisionEffect(input: {
     const interaction = await issueThreadInteractionService(input.tx).create(
       input.issue,
       reviewInput,
-      { systemId: "native-status-committer", runId: input.runId },
+      { agentId: input.actorAgentId, systemId: "native-status-committer", runId: input.runId },
+      { supersedePendingSiblingInteractions: false },
     );
     // The card and its next actor commit together. The post-commit dispatcher
     // revalidates this exact review before granting a scoped reviewer run.
@@ -678,6 +723,7 @@ async function materializeDecisionEffect(input: {
     const reviewerWakeId = effect.ownerAgentId && interaction.effectiveResolverPolicy !== "human_only"
       ? await enqueueWake({
           tx: input.tx,
+          originRunId: input.runId,
           companyId: input.companyId,
           issueId: input.issue.id,
           agentId: effect.ownerAgentId,
@@ -703,6 +749,7 @@ async function materializeDecisionEffect(input: {
   if (effect.kind === "notify_owner") {
     const wakeId = await enqueueWake({
       tx: input.tx,
+      originRunId: input.runId,
       companyId: input.companyId,
       issueId: input.issue.id,
       agentId: effect.agentId,
@@ -730,7 +777,7 @@ async function materializeDecisionEffect(input: {
       status: "todo",
       priority: input.issue.priority,
       assigneeAgentId: effect.agentId,
-      createdByAgentId: input.issue.assigneeAgentId,
+      createdByAgentId: input.actorAgentId,
       workMode: "standard",
       idempotencyKey: `native-delegation:${input.decisionId}`,
       inheritExecutionWorkspaceFromIssueId: input.issue.id,
@@ -780,6 +827,7 @@ async function materializeDecisionEffect(input: {
     if (effect.continuationKind === "monitor") throw new Error("Monitor delivery belongs to the issue monitor scheduler");
     const wakeId = await enqueueWake({
       tx: input.tx,
+      originRunId: input.runId,
       companyId: input.companyId,
       issueId: input.issue.id,
       agentId: effect.agentId,
@@ -804,6 +852,9 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "bind_blocker") {
     failAt("blocker_materialization", input.failpoint);
+    await assertAgentInteraction(input.tx, { companyId: input.companyId, actorAgentId: input.actorAgentId,
+      operation: "assign", issueId: input.issue.id, targetAgentId: typeof effect.owner === "object" ? effect.owner.agentId : null,
+      texts: [effect.action], lock: true });
     const [bound] = await input.tx
       .update(issues)
       .set({
@@ -822,6 +873,7 @@ async function materializeDecisionEffect(input: {
     if (effect.owner !== "board") {
       wakeId = await enqueueWake({
         tx: input.tx,
+        originRunId: input.runId,
         companyId: input.companyId,
         issueId: input.issue.id,
         agentId: effect.owner.agentId,
@@ -857,6 +909,7 @@ async function materializeDecisionEffect(input: {
       agentId: effect.agentId,
       reason: "issue_status_changed",
       idempotencyKey: `native-status:${input.decisionId}:retry`,
+      originRunId: input.runId,
       payload: {
         nativeDecisionId: input.decisionId,
         retryCause: effect.cause,
@@ -1536,13 +1589,17 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "release_checkout") {
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
+    // Release only this run's own locks. A successor can claim execution
+    // without changing statusVersion, so a preserve decision committed after
+    // that claim must not clear it. Each SET reads the pre-update row.
+    const ownsExecution = sql`${issues.executionRunId} = ${input.runId}::uuid`;
     const [released] = await input.tx
       .update(issues)
       .set({
-        checkoutRunId: null,
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
+        checkoutRunId: sql`case when ${issues.checkoutRunId} = ${input.runId}::uuid then null else ${issues.checkoutRunId} end`,
+        executionRunId: sql`case when ${ownsExecution} then null else ${issues.executionRunId} end`,
+        executionAgentNameKey: sql`case when ${ownsExecution} then null else ${issues.executionAgentNameKey} end`,
+        executionLockedAt: sql`case when ${ownsExecution} then null else ${issues.executionLockedAt} end`,
         updatedAt: new Date(),
       })
       .where(
@@ -1551,13 +1608,20 @@ async function materializeDecisionEffect(input: {
           eq(issues.companyId, input.companyId),
         ),
       )
-      .returning({ id: issues.id });
+      .returning({
+        id: issues.id,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      });
     if (!released) throw new Error("native_checkout_not_released");
     return {
       effectKind: effect.kind,
       targetType: "issue_checkout",
       targetId: released.id,
-      payload: { checkoutRunId: null, executionRunId: null },
+      payload: {
+        checkoutRunId: released.checkoutRunId,
+        executionRunId: released.executionRunId,
+      },
     };
   }
   if (effect.kind === "record_recovery") {
@@ -1606,10 +1670,12 @@ export async function commitNativeStatusDecision(input: {
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
   requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
+  requirePreservedResultFinalization?: PreservedNativeResultFinalization;
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
   requirePreservedMonitorWait?: NativePreservedMonitorWait;
+  requireSupersededMonitorWait?: NativeSupersededMonitorWait;
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
@@ -1632,7 +1698,8 @@ export async function commitNativeStatusDecision(input: {
   if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
     throw new Error("native_model_rejection_owner_required");
   }
-  if (reasonCode.startsWith("native_provider_overloaded") && !input.requireProviderFailureOwner) {
+  if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted")
+      && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
   }
   const publications: ActivityPublication[] = [];
@@ -1658,6 +1725,10 @@ export async function commitNativeStatusDecision(input: {
       .then((rows) => rows[0] ?? null);
     if (!coordinator)
       throw new Error("native_finalization_coordinator_missing");
+    if (coordinator.failureCode === "agent_interaction_denied") {
+      throw forbidden("This native interaction was permanently refused by agent permissions.",
+        record(record(coordinator.failureDetail).interactionDenial));
+    }
     const issue = await tx
       .select()
       .from(issues)
@@ -1671,6 +1742,8 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    const [originRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
     if (input.requireReassessmentSource) {
       const expected = input.requireReassessmentSource;
       const now = Date.now();
@@ -1775,6 +1848,41 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
+    if ((input.decision.statusAction === "done" || input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON ||
+        input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REJECTED_REASON) &&
+        !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
+      throw new NativeStatusRaceError();
+    }
+    // Every Done path (finalizer, reassessment, retired review) passes this
+    // lock. A policy that now requires or refuses review cannot be closed by a
+    // decision made without it; the finalizer recomputes against the policy.
+    if (input.decision.statusAction === "done" && !isConversation(issue) &&
+        completionReviewStageEntry(issue, originRun?.agentId ?? "").kind !== "none") {
+      throw new NativeStatusRaceError();
+    }
+    if (input.decision.statusAction === "done") {
+      try {
+        const [saved] = await tx.select({ context: heartbeatRuns.contextSnapshot, receipts: heartbeatRuns.resultJson,
+          envelope: nativeRunResults.resultJson }).from(heartbeatRuns)
+          .innerJoin(nativeRunResults, and(eq(nativeRunResults.runId, heartbeatRuns.id),
+            eq(nativeRunResults.id, coordinator.resultId!), eq(nativeRunResults.companyId, input.companyId),
+            eq(nativeRunResults.issueId, input.issueId), eq(nativeRunResults.schemaStatus, "accepted")))
+          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+            eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.runtimeMode, "native")))
+          .limit(1).for("share", { of: [heartbeatRuns, nativeRunResults], noWait: true });
+        if (!saved) throw new NativeStatusRaceError();
+        const continuation = record(saved.context?.executionContinuation);
+        const objective = typeof continuation.objective === "string" ? continuation.objective
+          : [issue.title, issue.description].filter(Boolean).join("\n");
+        await validateNativeDeliverableEvidence(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
+          runId: input.runId, objective, semanticToolReceipts: saved.receipts?.semanticToolReceipts, lockSources: true,
+          authoritativeDone: true }, record(saved.envelope).result);
+      } catch (error) {
+        if (error instanceof NativeDeliverableEvidenceError || record(error).code === "55P03" ||
+            record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
     if (reasonCode === "scheduled_monitor_waiting") {
       const expected = input.requireMonitorWait;
       const inReview = input.decision.statusAction === "in_review" && input.decision.toStatus === "in_review";
@@ -1810,6 +1918,22 @@ export async function commitNativeStatusDecision(input: {
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
           input.decision.effects.length !== 0) throw new NativeStatusRaceError();
     }
+    if (reasonCode === "scheduled_monitor_superseded") {
+      const expected = input.requireSupersededMonitorWait;
+      let actual: Awaited<ReturnType<typeof readNativeSupersededMonitorWait>> = null;
+      try {
+        actual = expected ? await readNativeSupersededMonitorWait(tx as unknown as Db, {
+          companyId: input.companyId, issueId: input.issueId, runId: input.runId, agentId: expected.agentId,
+        }, issue, true) : null;
+      } catch (error) {
+        if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!expected || !actual || actual.resultId !== expected.resultId || actual.wakeId !== expected.wakeId ||
+          actual.commentId !== expected.commentId || actual.successorRunId !== expected.successorRunId ||
+          input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
+          input.decision.effects.length !== 0) throw new NativeStatusRaceError();
+    }
     if (reasonCode === "scheduled_monitor_preserved") {
       const expected = input.requirePreservedMonitorWait;
       const actual = expected ? await readNativePreservedMonitorWait(tx as unknown as Db, {
@@ -1840,6 +1964,16 @@ export async function commitNativeStatusDecision(input: {
       } else if (issue.assigneeAgentId !== owner.agentId || issue.assigneeUserId) {
         throw new NativeStatusRaceError();
       }
+    }
+    if (input.requirePreservedResultFinalization) {
+      let current;
+      try {
+        current = await readPreservedNativeResultFinalization(tx as unknown as Db, input.requirePreservedResultFinalization, true);
+      } catch (error) {
+        if (isExternalChatWaitAuthorizationContention(error)) throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!current || current.fingerprint !== input.requirePreservedResultFinalization.fingerprint) throw new NativeStatusRaceError();
     }
     if (input.requireExternalChatResponseWaitAuthorization) {
       let authorization;
@@ -2036,12 +2170,18 @@ export async function commitNativeStatusDecision(input: {
         })
         .where(eq(nativeRunFinalizations.runId, input.runId));
     };
+    const awaitingInteractionIds = await questionsAwaitedByAgentBlock(tx as unknown as Db, {
+      companyId: input.companyId, issueId: input.issueId, agentId: originRun?.agentId, reasonCode,
+      toStatus: input.decision.toStatus, unblockOwner: input.decision.unblockDescriptor?.owner,
+      blockerOwnerKind: input.decision.blockerOwnerKind,
+    });
     const decisionJson = {
       statusAction: input.decision.statusAction,
       toStatus: input.decision.toStatus,
       reasonCode,
       unblockDescriptor: input.decision.unblockDescriptor,
       effects: input.decision.effects,
+      ...(awaitingInteractionIds.length ? { awaitingInteractionIds } : {}),
       ...(externalChatReviewPresentation
         ? { externalChatReviewPresentation }
         : {}),
@@ -2189,6 +2329,7 @@ export async function commitNativeStatusDecision(input: {
           issue,
           runId: input.runId,
           decisionId: decisionRow.id,
+          actorAgentId: originRun?.agentId ?? null,
           effect,
           failpoint: input.failpoint,
           preMaterializedEffects,
@@ -2213,14 +2354,20 @@ export async function commitNativeStatusDecision(input: {
       if (!updated) throw new NativeStatusRaceError();
     } else {
       failAt("status_projection", input.failpoint);
+      // Start the configured review stage from the locked task, as the issue
+      // route does; a changed policy makes the saved decision stale.
+      const reviewStage = input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON
+        ? completionReviewStageEntry(issue, originRun?.agentId ?? "") : null;
+      if (reviewStage && reviewStage.kind !== "starts") throw new NativeStatusRaceError();
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
+          ...(reviewStage?.kind === "starts" ? reviewStage.patch : {}),
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
-          actorAgentId: null,
+          actorAgentId: originRun?.agentId ?? null,
           actorUserId: null,
         },
         tx,
@@ -2228,8 +2375,48 @@ export async function commitNativeStatusDecision(input: {
       );
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
+      // The route wakes an agent participant when its stage starts; a person
+      // acts from the task. This is a workflow wake, not the worker's message.
+      const participant = reviewStage?.kind === "starts" ? reviewStage.state.currentParticipant : null;
+      if (reviewStage?.kind === "starts" && participant?.type === "agent" && participant.agentId) {
+        const state = reviewStage.state;
+        const reason = state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+        const executionStage = { wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
+          stageId: state.currentStageId, stageType: state.currentStageType, currentParticipant: participant,
+          returnAssignee: state.returnAssignee, reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome, allowedActions: ["approve", "request_changes"] };
+        await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId, issueId: input.issueId,
+          agentId: participant.agentId, reason, idempotencyKey: `native-status:${decisionRow.id}:execution-stage`,
+          payload: { mutation: "update", executionStage },
+          contextSnapshot: { executionStage, executionStageSource: "issue.execution_stage" } });
+      }
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
+      }
+      // Native task completion bypasses the REST issue route. Commit the Studio
+      // output with the authoritative task status so restart cannot lose it.
+      // The durable test row, not a mutable task mode, identifies the obligation.
+      if (issue.status !== updated.status && (updated.status === "done" || updated.status === "cancelled")) {
+        const testRun = await companySkillService(tx as unknown as Db).completeTestRunForIssue({
+          companyId: input.companyId,
+          issueId: input.issueId,
+          outcome: updated.status === "done" ? "succeeded" : "cancelled",
+          error: updated.status === "cancelled" ? "Harness issue was cancelled" : null,
+        });
+        if (testRun) {
+          const { publication } = await persistActivity(tx as unknown as Db, {
+            companyId: input.companyId,
+            actorType: "system",
+            actorId: "native-status-committer",
+            runId: input.runId,
+            action: "company.skill_test_run_completed",
+            entityType: "company_skill_test_run",
+            entityId: testRun.id,
+            issueId: input.issueId,
+            details: { issueId: input.issueId, status: testRun.status, outputDocumentKey: testRun.outputDocumentKey },
+          });
+          publications.push(publication);
+        }
       }
       materialized.unshift({
         effectKind: "issue_status_projection",
@@ -2304,6 +2491,8 @@ export async function commitNativeStatusDecision(input: {
             : null;
         const wakeId = await enqueueWake({
           tx: tx as unknown as Db,
+          originRunId: isCompletedChildParent ? input.runId : undefined,
+          originOperation: isCompletedChildParent ? "comment" : undefined,
           companyId: input.companyId,
           issueId: dependent.id,
           agentId: dependent.assigneeAgentId,
@@ -2318,22 +2507,35 @@ export async function commitNativeStatusDecision(input: {
           },
           contextSnapshot: childCompletionContext ?? undefined,
         });
+        const reportDenial = isCompletedChildParent ? await refusedWakePolicy(tx as unknown as Db, input.companyId, wakeId) : null;
         materialized.push({
           effectKind: isCompletedChildParent
             ? "parent_dependency_wake"
             : "dependency_wake",
           targetType: "agent_wakeup_request",
           targetId: wakeId,
+          ...(reportDenial ? { deliveryState: "skipped" as const } : {}),
           payload: {
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: input.issueId,
-            ...(childCompletionContext ?? {}),
+            ...(reportDenial ? { interactionPermissionDenials: { assignment: reportDenial } } : childCompletionContext ?? {}),
           },
         });
+        if (reportDenial) {
+          const dependencyWakeId = await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId,
+            issueId: dependent.id, agentId: dependent.assigneeAgentId, reason: "issue_blockers_resolved",
+            idempotencyKey: buildIssueBlockersResolvedWakeIdempotencyKey({ dependentIssueId: dependent.id, resolvedBlockerIssueId: input.issueId }),
+            payload: { resolvedBlockerIssueId: input.issueId, blockerIssueIds: dependent.blockerIssueIds },
+          });
+          materialized.push({ effectKind: "dependency_wake", targetType: "agent_wakeup_request", targetId: dependencyWakeId,
+            payload: { dependentIssueId: dependent.id, resolvedBlockerIssueId: input.issueId } });
+        }
       }
       if (parent && !parentIsDependent) {
         const wakeId = await enqueueWake({
           tx: tx as unknown as Db,
+          originRunId: input.runId,
+          originOperation: "comment",
           companyId: input.companyId,
           issueId: parent.id,
           agentId: parent.assigneeAgentId,
@@ -2356,17 +2558,21 @@ export async function commitNativeStatusDecision(input: {
             childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
           },
         });
+        const reportDenial = await refusedWakePolicy(tx as unknown as Db, input.companyId, wakeId);
         materialized.push({
           effectKind: "parent_wake",
           targetType: "agent_wakeup_request",
           targetId: wakeId,
+          ...(reportDenial ? { deliveryState: "skipped" as const } : {}),
           payload: {
             parentIssueId: parent.id,
             completedChildIssueId: input.issueId,
             ...childCompletionDelivery,
-            childIssueSummaries: parent.childIssueSummaries,
-            onboardingCompletion: parent.onboardingCompletion,
-            childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            ...(reportDenial ? { interactionPermissionDenials: { assignment: reportDenial } } : {
+              childIssueSummaries: parent.childIssueSummaries,
+              onboardingCompletion: parent.onboardingCompletion,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            }),
           },
         });
       }
@@ -2385,9 +2591,10 @@ export async function commitNativeStatusDecision(input: {
           targetId: effect.targetId,
           idempotencyKey: `native-status:${decisionRow.id}:${index + 1}`,
           payload: effect.payload,
-          deliveryState: "delivered",
+          deliveryState: effect.deliveryState ?? "delivered",
           attemptCount: 1,
-          deliveredAt: new Date(),
+          deliveredAt: effect.deliveryState === "skipped" ? null : new Date(),
+          lastError: effect.deliveryState === "skipped" ? INTERACTION_DELIVERY_DENIED : null,
         })
         .onConflictDoNothing();
     }
@@ -2444,6 +2651,22 @@ export async function commitNativeStatusDecision(input: {
       issue: updated,
       replayed: false,
     };
+  }).catch(async (error: unknown) => {
+    if (error instanceof HttpError && error.status === 403 && record(error.details).code === "agent_interaction_denied") {
+      await input.db.transaction(async tx => {
+        const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.companyId, input.companyId),
+          eq(nativeRunFinalizations.issueId, input.issueId))).for("update");
+        if (!coordinator || coordinator.phase === "committed" || coordinator.failureCode === "agent_interaction_denied") return;
+        await notifyNativeFinalizationWork(tx, { companyId: input.companyId, runId: input.runId });
+        await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "agent_interaction_denied",
+          failureDetail: { ...record(coordinator.failureDetail), interactionDenial: error.details,
+            recoveryOwner: { kind: "none", reason: "agent_interaction_denied" } },
+          nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+          .where(and(eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.companyId, input.companyId)));
+      });
+    }
+    throw error;
   });
 
   for (const publication of publications) publishActivity(publication);

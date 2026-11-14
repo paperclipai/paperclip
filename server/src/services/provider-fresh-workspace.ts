@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -152,6 +153,7 @@ export async function reserveFreshPluginTaskWorkspace(input: {
       providerType: "adapter_managed", cwd: `/workspaces/${input.fresh.attemptId}`,
       metadata: { runnerTaskFreshWorkspace: input.fresh, runnerTaskWorkspaceOwner: input.owner },
     });
+    await notifyStatusCardIssueChange(tx, input.companyId);
     await tx.update(issues).set({ executionWorkspaceId: input.fresh.attemptId, executionWorkspacePreference: "reuse_existing",
       workspaceBindingRevision: task.workspaceBindingRevision + 1,
       workspacePendingSelection: task.workspacePendingSelection?.expectedBindingRevision === task.workspaceBindingRevision

@@ -296,6 +296,7 @@ describe("inbox helpers", () => {
         kind: "dismiss",
         dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
         snoozedUntil: null,
+        fingerprint: null,
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       },
@@ -794,6 +795,7 @@ describe("inbox helpers", () => {
           liveOnly: false,
           externalObjectStatuses: [],
           showAgentCreatedTasks: false,
+        routineTasksOnly: false,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -815,6 +817,7 @@ describe("inbox helpers", () => {
           liveOnly: false,
           externalObjectStatuses: [],
           showAgentCreatedTasks: false,
+        routineTasksOnly: false,
         },
       }),
     ).toEqual([]);
@@ -836,6 +839,7 @@ describe("inbox helpers", () => {
           liveOnly: false,
           externalObjectStatuses: [],
           showAgentCreatedTasks: false,
+        routineTasksOnly: false,
         },
       }),
     ).toEqual([]);
@@ -884,6 +888,7 @@ describe("inbox helpers", () => {
           liveOnly: false,
           externalObjectStatuses: ["failed"],
           showAgentCreatedTasks: false,
+        routineTasksOnly: false,
         },
         issueFilterContext: {
           externalObjectSummaryByIssueId: summaries,
@@ -980,6 +985,7 @@ describe("inbox helpers", () => {
         liveOnly: true,
         externalObjectStatuses: [],
         showAgentCreatedTasks: true,
+        routineTasksOnly: false,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -996,6 +1002,7 @@ describe("inbox helpers", () => {
         liveOnly: false,
         externalObjectStatuses: [],
         showAgentCreatedTasks: false,
+        routineTasksOnly: false,
       },
     });
 
@@ -1013,6 +1020,7 @@ describe("inbox helpers", () => {
         liveOnly: true,
         externalObjectStatuses: [],
         showAgentCreatedTasks: true,
+        routineTasksOnly: false,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -1029,6 +1037,7 @@ describe("inbox helpers", () => {
         liveOnly: false,
         externalObjectStatuses: [],
         showAgentCreatedTasks: false,
+        routineTasksOnly: false,
       },
     });
   });
@@ -1064,6 +1073,7 @@ describe("inbox helpers", () => {
         liveOnly: false,
         externalObjectStatuses: [],
         showAgentCreatedTasks: false,
+        routineTasksOnly: false,
       },
     });
   });

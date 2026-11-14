@@ -1,10 +1,13 @@
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 
 type CredentialTurn = {
-  /** Copy refreshed credentials only into this invocation's private home. */
+  /** Legacy turn copy-back; event-backed bindings need no per-turn read. */
   copyBack: () => Promise<void>;
   /** Remove launch credentials after the provider owner has stopped. */
   remove: () => Promise<void>;
+  /** Save the final refresh directly through durable authority before removal. */
+  retire?: () => Promise<void>;
+  retirement?: Promise<void>;
   detached: boolean;
   closing?: boolean;
   completed: boolean;
@@ -17,7 +20,7 @@ const credentialTurns = new WeakMap<NativeSession, CredentialTurn>();
 /** A warm session outlives an invocation's temporary credential destination. */
 export function bindManagedNativeCredentialTurn(
   session: NativeSession,
-  callbacks: Pick<CredentialTurn, "copyBack" | "remove">,
+  callbacks: Pick<CredentialTurn, "copyBack" | "remove" | "retire">,
 ): NativeSession {
   const previous = credentialTurns.get(session);
   // A successor controller must attach a new handle. Reusing a detached or
@@ -49,6 +52,10 @@ export function bindManagedNativeCredentialTurn(
     if (owner) owner.closing = true;
     await close(input);
     if (!owner || owner.detached || credentialTurns.get(session) !== owner) return;
+    if (owner.retire && !owner.removed) {
+      owner.retirement ??= owner.retire().catch(error => { owner.retirement = undefined; throw error; });
+      await owner.retirement;
+    }
     try {
       await completeCredentialTurn(owner);
     } finally {
@@ -69,7 +76,7 @@ async function completeCredentialTurn(turn: CredentialTurn) {
   await turn.completion;
 }
 
-/** Flush refreshes after each turn, without closing a healthy warm provider. */
+/** Complete a turn without closing the provider; event-backed bindings flush through PRP. */
 export async function completeManagedNativeCredentialTurn(session: NativeSession | undefined) {
   if (!session) return;
   const turn = credentialTurns.get(session);

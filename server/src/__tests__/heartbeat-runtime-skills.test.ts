@@ -24,6 +24,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { companySkillService } from "../services/company-skills.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
@@ -160,7 +161,11 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     const skills = companySkillService(db);
     const imported = await skills.importFromSource(companyId, directory);
     const key = imported.imported[0]!.key;
-    if (sourceType === "catalog") await db.update(companySkills).set({ sourceType }).where(eq(companySkills.key, key));
+    if (sourceType === "catalog") {
+      await db.update(companySkills).set({ sourceType }).where(eq(companySkills.key, key));
+      const result = await skillInstallationMaintenance(db).installations({ id: imported.imported[0]!.id, apply: true, writersStopped: true });
+      expect(result.results[0]!.status).toBe("converted");
+    }
     const selected = { snapshotLatest: true, onlyKeys: new Set([key]) };
     const [first] = await skills.listRuntimeSkillEntries(companyId, selected);
     expect(first!.versionId).toBeTruthy();
@@ -169,6 +174,14 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     // A reference-only change must be discovered even when SKILL.md is unchanged.
     await fs.writeFile(path.join(directory, 'references/marker.txt'), 'v2\n');
     if (sourceType === "local_path") await skills.importFromSource(companyId, directory);
+    else {
+      const [beforeUpdate] = await skills.listRuntimeSkillEntries(companyId, selected);
+      expect(beforeUpdate!.versionId).toBe(first!.versionId);
+      const saved = (await skills.getVersion(companyId, imported.imported[0]!.id, first!.versionId!))!;
+      await skills.createVersion(companyId, imported.imported[0]!.id, {}, null, {
+        fileInventory: saved.fileInventory.map(file => file.path === "references/marker.txt" ? { ...file, content: "v2\n" } : file),
+      });
+    }
     const [latest] = await skills.listRuntimeSkillEntries(companyId, selected);
     expect(latest!.versionId).not.toBe(first!.versionId);
     expect(await fs.readFile(path.join(latest!.source, 'references/marker.txt'), 'utf8')).toBe('v2\n');

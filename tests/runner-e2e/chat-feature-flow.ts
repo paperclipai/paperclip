@@ -1,17 +1,28 @@
+import { readChatReadinessReceipts } from "./chat-readiness-observer.js";
+import { legacyChatFeatureFingerprint } from "./chat-catalog-fingerprint.js";
+import { runChatCatalogFlow } from "./chat-catalog-flow.js";
+import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
 import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage, type ChatFlowInput, type ChatIssue, type ChatRun } from "./chat-flow.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { codexSubscriptionAgentConfig } from "./codex-subscription-fixture.js";
 import { CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_GRADER, chatFeatureScenarios, type ChatFeatureCase } from "./chat-feature-cases.js";
-import { gradeChatFeature, linksFeatureTask, type ChatFeatureObservation, type FeatureDocument, type FeatureTask } from "./chat-feature-scoring.js";
+import { chatFeatureExecutionRuns, gradeChatFeature, linksFeatureTask, type ChatFeatureObservation, type FeatureDocument, type FeatureTask } from "./chat-feature-scoring.js";
 
 export async function runChatFeatureFlow(context: {
-  input: ChatFlowInput; issue(): ChatIssue | undefined; allRuns(): Promise<ChatRun[]>; refreshIssue(): Promise<void>;
+  input: ChatFlowInput; issue(): ChatIssue | undefined; allRuns(): Promise<ChatRun[]>; refreshIssue(): Promise<void>; selectSlackSource?(issueId: string): Promise<void>;
 }) {
   const { input } = context;
   const { api, page, fixtures: f, execution, nonce } = input;
+  if (!["create-backlog", "delegate-announcement"].includes(execution.task.id)) {
+    const scenario = chatCatalogScenarios.find(row => row.id === execution.task.id);
+    if (!scenario) throw new Error(`Unknown catalog scenario: ${execution.task.id}`);
+    return runChatCatalogFlow({ ...context, scenario });
+  }
   const caseId = execution.task.id as ChatFeatureCase;
+  await input.evidence("chat-catalog-definition.json", { scenarioId: `tasks.${caseId}`,
+    ...legacyChatFeatureFingerprint(execution), suiteDefinitionHash: execution.suiteDefinitionHash, journeyKind: "agent-chat" });
   const scenario = chatFeatureScenarios.find(row => row.id === `tasks.${caseId}`);
   if (!scenario) throw new Error(`Unregistered chat feature scenario: ${caseId}`);
   const marker = execution.task.buildVisibleMarker(nonce);
@@ -69,7 +80,8 @@ export async function runChatFeatureFlow(context: {
   async function saveEvidence() {
     await input.evidence("chat-feature.json", { schema: CHAT_FEATURE_GRADER, scenarioId: scenario!.id,
       capabilities: scenario!.capabilities, observation, grade: gradeChatFeature(observation),
-      setupObservations, setupUsageCoverage: "Production agent hello probes are outside heartbeat usage; their detailed tokens and cost are unavailable." });
+      setupObservations, setupProbeReceipts: await readChatReadinessReceipts(process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT ?? "", f.company.id),
+      setupUsageCoverage: "Production agent hello probes are outside heartbeat usage; their detailed tokens and cost are unavailable." });
   }
   try {
     expect(await api.get(`${company}/issues?includeAgentCreatedTasks=true`)).toEqual([]);
@@ -77,7 +89,8 @@ export async function runChatFeatureFlow(context: {
       await pollUntil({ label: `chat feature agent readiness ${agentId}`, deadlineAt: Date.now() + 45_000, intervalMs: 500,
         load: async () => {
           const agent = await api.get<{ lifecycleState: string; status: string; lifecycleError?: string; lifecycleHolds?: string[] }>(`/api/agents/${agentId}`);
-          setupObservations.push({ agentId, lifecycleState: agent.lifecycleState, status: agent.status });
+          setupObservations.push({ agentId, lifecycleState: agent.lifecycleState, status: agent.status,
+            lifecycleErrorPresent: !!agent.lifecycleError, lifecycleHeld: !!agent.lifecycleHolds?.length });
           return agent;
         },
         accept: agent => agent.lifecycleState === "ready" && ["idle", "active"].includes(agent.status),
@@ -110,9 +123,10 @@ export async function runChatFeatureFlow(context: {
         return Date.now() - settledAt >= 5_000;
       },
       reject: grade => {
-        if (observation.runs.length > execution.task.expectedRunCount) return "Chat exceeded its declared run bound";
-        if (observation.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status))) return "An observed provider run failed";
-        const finished = observation.runs.length === execution.task.expectedRunCount && observation.runs.every(run => run.status === "succeeded")
+        const runs = chatFeatureExecutionRuns(observation);
+        if (runs.length > execution.task.expectedRunCount) return "Chat exceeded its declared run bound";
+        if (runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status))) return "An observed provider run failed";
+        const finished = runs.length === execution.task.expectedRunCount && runs.every(run => run.status === "succeeded")
           && observation.source?.conversationState === "waiting";
         if (!finished) finishedWorkAt = undefined;
         else finishedWorkAt ??= Date.now();
@@ -143,9 +157,9 @@ export async function runChatFeatureFlow(context: {
     expect((await api.get<FeatureTask>(`/api/issues/${encodeURIComponent(savedTask.identifier ?? savedTask.id)}`)).id).toBe(savedTask.id);
     await page.goto(sourceUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
-    await input.capture("chat-feature-result", "Created task and retained source conversation", "chat-feature-result.png");
-    for (const check of gradeChatFeature(observation).checks) input.check?.(check.id, check.passed, check.detail);
+    await input.capture("final-state", "Created task and retained source conversation", "final-state.png");
     input.check?.("browser-result-access", true, "The exact linked task loaded in the browser and the source conversation survived reload.");
+    return { issue: observation.source!, runs: chatFeatureExecutionRuns(observation) };
   } catch (error) {
     failure = error;
     throw error;
@@ -153,11 +167,18 @@ export async function runChatFeatureFlow(context: {
     try {
       await refresh();
       await saveEvidence();
-      await input.evidence("chat-feature-runs.json", await Promise.all(observation.runs.map(run => collectChatRunEvidence(api, run))));
+      const runEvidence = await Promise.all(observation.runs.map(run => collectChatRunEvidence(api, run)));
+      await input.evidence("chat-feature-runs.json", runEvidence);
+      await input.evidence("api-state.json", { issue: observation.source, runs: observation.runs,
+        comments: observation.comments, activity: observation.activity, runEvidence });
     } catch (error) {
       if (!failure) throw error;
       await input.evidence("chat-feature-evidence-error.json", { incomplete: true,
         message: error instanceof Error ? error.message : "Evidence collection failed" });
-    } finally { await fixtures.teardown(); }
+    } finally {
+      try {
+        for (const check of gradeChatFeature(observation).checks) input.check?.(check.id, check.passed, check.detail);
+      } finally { await fixtures.teardown(); }
+    }
   }
 }

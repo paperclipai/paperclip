@@ -1,3 +1,4 @@
+import { queryViewKind } from "@/components/QueryView";
 import { useEffect, useMemo } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -7,11 +8,13 @@ import { useTaskRunLiveUpdates, useTranscriptLiveStream } from "@/context/LiveUp
 import { createLiveQueryRecovery } from "@/lib/live-query-recovery";
 import { QueryNotReadyError } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAgentEnvironmentSlots } from "@/plugins/useAgentEnvironmentSlots";
 import { usePluginSlots, type ResolvedPluginSlot } from "@/plugins/slots";
 
 export interface TaskPluginPanel {
   entityId: string;
-  runId: string;
+  runId?: string;
+  autoOpen: boolean;
   slot: ResolvedPluginSlot;
 }
 
@@ -21,29 +24,38 @@ export function taskPluginPanelId(panel: TaskPluginPanel) {
   return `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`;
 }
 
-/** Plugins own availability and content; the host supplies the running agent. */
-export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = true): TaskPluginPanel[] {
+export function taskPluginPanelActivationKey(panel: TaskPluginPanel, accountScope: string, issue: Pick<Issue, "companyId" | "id">) {
+  return JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]);
+}
+
+/** Plugins own their views; activity controls automatic opening. */
+export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = true): { panels: TaskPluginPanel[]; isLoading: boolean } {
   const queryClient = useQueryClient();
   const savedTask = enabled && !!issue && !issue.id.startsWith("chat:");
-  const { slots: declaredSlots, errorMessage } = usePluginSlots({
+  const { slots: declaredSlots, errorMessage, isLoading } = usePluginSlots({
     slotTypes: ["detailTab"], entityType: "agent", taskSidePanel: true,
     companyId: issue?.companyId, enabled: savedTask,
   });
-  const slots = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel?.activation), [declaredSlots]);
+  const declaredPanels = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel), [declaredSlots]);
   const connected = useTaskRunLiveUpdates({
-    companyId: savedTask && slots.length > 0 && !errorMessage ? issue?.companyId : null,
+    companyId: savedTask && declaredPanels.length > 0 && !errorMessage ? issue?.companyId : null,
     issueId: issue?.id, issueQueryRef: issue?.id ?? "pending", assigneeAgentId: issue?.assigneeAgentId,
   });
-  const { data: runs, isError: runsError } = useQuery({
+  const { data: runs, isError: runsError, isPending: runsPending } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
-    enabled: savedTask && slots.length > 0 && !errorMessage,
+    enabled: savedTask && declaredPanels.length > 0 && !errorMessage,
     refetchInterval: connected ? false : 3000,
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   });
   const run = runs?.find(run => run.status === "running"
     && (!issue?.executionRunId || run.id === issue.executionRunId));
+  const agentId = (!runsError && run?.agentId) || issue?.assigneeAgentId;
+  const { slots: panels, isLoading: environmentLoading } = useAgentEnvironmentSlots(
+    declaredPanels, savedTask && !errorMessage ? agentId : null, issue?.companyId,
+  );
+  const slots = useMemo(() => panels.filter(slot => slot.taskSidePanel?.activation), [panels]);
   const active = savedTask && slots.length > 0 && !!run && !runsError && !errorMessage;
   const declarations = slots.map(slot => [slot.pluginKey, slot.id, slot.pluginVersion,
     slot.taskSidePanel!.activation!.namespace, slot.taskSidePanel!.activation!.activityKey]);
@@ -122,10 +134,16 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   })) });
-  const available = availability.map((result, index) => !activationsError && !result.isError && result.data?.available === true
+  const available = availability.map((result, index) => !activationsError && queryViewKind(result) !== "error" && result.data?.available === true
     && activations.some(panel => panel.pluginKey === slots[index]?.pluginKey && panel.slotId === slots[index]?.id));
   const availableKey = available.join(",");
-  return useMemo(() => active && run ? slots.flatMap((slot, index) => available[index]
-    ? [{ entityId: run.agentId, runId: run.id, slot }] : []) : EMPTY_PANELS,
-  [active, run?.agentId, run?.id, slots, availableKey]);
+  const manualPanels = useMemo(() => savedTask && !errorMessage && agentId ? panels.map(slot => ({
+    entityId: agentId,
+    ...(!runsError && run ? { runId: run.id } : {}),
+    autoOpen: active && available[slots.indexOf(slot)] === true,
+    slot,
+  })) : EMPTY_PANELS,
+  [savedTask, errorMessage, agentId, panels, run?.id, runsError, active, slots, availableKey]);
+  return { panels: manualPanels, isLoading: savedTask && !errorMessage
+    && (isLoading || environmentLoading || (declaredPanels.length > 0 && runsPending)) };
 }

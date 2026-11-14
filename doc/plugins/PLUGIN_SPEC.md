@@ -3,9 +3,9 @@
 Status: proposed complete spec for the post-V1 plugin system
 
 This document is the complete specification for Paperclip's plugin and extension architecture.
-It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
+It should be read alongside the comparative analysis in [doc/plugins/ideas-from-opencode.md](./ideas-from-opencode.md).
 
-This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
+This is not part of the V1 implementation contract.
 It is the full target architecture for the plugin system that should follow V1.
 
 ## Current implementation caveats
@@ -33,6 +33,42 @@ Current limitations to keep in mind:
   API routes.
 
 In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
+
+### Managed image packages
+
+Managed Cloud provisions only plugins selected from the current release image
+catalog. A Cloud tenant token or managed configuration keeps this image-only
+policy active. Without an explicit selected package list, Cloud selects no
+packages and cannot fall back to local installs. An explicit operator-managed
+list also keeps this policy active outside Cloud. The database registration's
+plugin key, package name, version and
+approved manifest identify that package. Its legacy `packagePath` remains for
+local/self-hosted compatibility; Cloud never uses that path to locate code.
+Workers, plugin migrations and UI files resolve through the same current-image
+package resolver. Cloud does not install npm dependencies, build packages, use
+the development UI proxy, or fall back to a server home directory.
+
+Prebuilt workers use the current release's baked CLI `tsx` loader for the SDK's
+workspace TypeScript dependencies. The loader is located from the owning server
+package in both regular and bundled server layouts. Missing loaders and loader
+links outside the release's CLI or root `node_modules` fail activation. This
+loads image-supplied code without installing dependencies or building packages.
+
+Equivalent packages at different image roots reuse the existing registration,
+configuration, approval status and company scopes without rewriting its stored
+path. Concurrent first registration of the same package retains one plugin ID.
+Conflicting package identities fail explicitly. Normal maintenance boot retains
+the existing bundled manifest/version reconciliation and approval gates.
+
+`createBundledPluginPackageResolver(...).inspect(registration, verifiedManifest)`
+is a read-only qualification hook. Resolve the current image path, load its
+manifest with the validated plugin loader, and inspect the registration before
+normal boot reconciliation. Missing manifest evidence and incompatible packages
+produce explicit blockers. Distribution packages retain their catalog digest
+verification; built-in packages trust the immutable release image and must bump
+their version when their code changes. Qualification supports identical package
+sets only. This package-resolution boundary does not coordinate workers,
+background jobs, or deployment overlap between servers.
 
 ## 1. Scope
 
@@ -373,12 +409,14 @@ export interface PaperclipPluginManifestV1 {
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
-      /** Optional agent detail tab mirrored beside a running task.
-       * Declared board GET route scoped to agent :entityId returns { available: boolean }.
+      /** Optional agent detail tab offered beside a task for manual selection.
+       * Declared board GET route scoped to agent :entityId controls readiness for automatic opening.
        */
+      /** Agent-only detail tab: require this plugin environment driver key. */
+      agentEnvironmentDriver?: string;
       taskSidePanel?: {
         availabilityPath: string;
-        /** Match runtime.activity.recorded; absent mappings add no task panel. */
+        /** Match runtime.activity.recorded for automatic opening; manual views need no mapping. */
         activation?: { namespace: string; activityKey: string };
       };
       /** For page and companySettingsPage: single route segment */
@@ -387,6 +425,14 @@ export interface PaperclipPluginManifestV1 {
   };
 }
 ```
+
+Agent detail tabs can declare `agentEnvironmentDriver` to restrict settings navigation,
+direct plugin views, and manual task side panels to agents that use that driver.
+The host matches the effective agent environment's plugin key and driver key.
+An agent with no explicit environment inherits the instance default. Missing or
+unavailable configuration hides the restricted view. A transient connection
+failure preserves the last known configuration. Eligibility does not depend
+on runtime readiness, agent lifecycle state, or automatic panel activation.
 
 Rules:
 
@@ -482,6 +528,22 @@ The host is responsible for:
 - activity log writes
 - secret resolution
 - UI route registration
+
+An activation whose worker `initialize` call times out is transient. The host
+removes the failed worker, keeps the plugin `ready`, and retries the activation
+after 5, 15, 45 and 120 seconds on the shared work scheduler. While it retries,
+the plugin's `lastError` starts with `Activation timed out` and names the next
+retry; a successful retry clears it. Status writes are conditional on the
+expected current status, so a disable or uninstall during a retry wins. Server
+shutdown cancels pending retries and waits for running ones. Runs that need the plugin see a
+worker that is not running, which setup retries within its bounded budget. After
+the last retry, the plugin becomes `error` with that same prefix. A run that
+needs the plugin then re-activates it on demand, at most once a minute. A run that resumes its exact sandbox lease after a
+restart waits up to 60 seconds for a re-activating sandbox provider's worker
+before it reports the worker unavailable. Any
+other activation failure, such as a bad manifest, a worker that exits during
+`initialize`, or a version mismatch, makes the plugin `error` at once. The next
+server boot retries it once.
 
 ## 12.3 Worker Responsibilities
 
@@ -646,6 +708,7 @@ The host provides:
 - tool name (without plugin namespace prefix)
 - parsed parameters matching the tool's declared schema
 - run context: agent ID, run ID, company ID, project ID
+  (the project ID is an empty string when the run has no project)
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
 

@@ -1,5 +1,6 @@
+import { CancelledError } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import { ApiError } from "./client";
+import { ApiError } from "./api-error";
 import {
   apiErrorMessage,
   classifyError,
@@ -37,6 +38,7 @@ describe("classifyError", () => {
     ["422", apiError(422), "invalid"],
     ["500", apiError(500, { error: "boom" }), "unknown"],
     ["an abort", new DOMException("Aborted", "AbortError"), "aborted"],
+    ["a React Query cancellation", new CancelledError({ revert: false }), "aborted"],
     ["a programming TypeError", new TypeError("Cannot read properties of undefined"), "unknown"],
     ["a plain Error", new Error("nope"), "unknown"],
     ["undefined", undefined, "unknown"],
@@ -120,6 +122,15 @@ describe("describeError", () => {
     });
   });
 
+  it("keeps an OAuth error description instead of generic not-found copy", () => {
+    const error = apiError(404, {
+      error: "invalid_request",
+      error_description: "This code is expired, already decided, or invalid. Start a new connection from your assistant.",
+    });
+    expect(describeError(error).body).toBe("This code is expired, already decided, or invalid. Start a new connection from your assistant.");
+    expect(error.message).toBe("This code is expired, already decided, or invalid. Start a new connection from your assistant.");
+  });
+
   it("falls back to the kind's copy when the server sent a code or nothing", () => {
     expect(describeError(apiError(404, { error: "issue_not_found" })).body).toBe("This item doesn’t exist or was moved.");
     expect(describeError(apiError(403, null))).toMatchObject({ title: "Not allowed", retryable: false });
@@ -162,7 +173,7 @@ describe("ApiError", () => {
 });
 
 describe("isRawErrorCode", () => {
-  it.each(["tenant_app_unavailable", "WORKER_UNAVAILABLE", "TIMEOUT", "issue.not_found"])("%s is a code", (value) => {
+  it.each(["tenant_app_unavailable", "WORKER_UNAVAILABLE", "TIMEOUT", "issue.not_found", "forbidden", "unauthorized", "conflict"])("%s is a code", (value) => {
     expect(isRawErrorCode(value)).toBe(true);
   });
 

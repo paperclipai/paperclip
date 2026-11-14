@@ -1,3 +1,4 @@
+import { screenshotPrivacyReasons } from "./screenshot-privacy.js";
 import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import { validateEvalOperationsReport } from "./operations-report.js";
 import { validateCampaignFeedbackReview } from "./feedback-dispositions.js";
@@ -89,6 +90,7 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
   assertPublicCampaign(campaign);
   const screenshots = new Set<string>();
   for (const result of campaign.results) {
+    if (result.screenshotPrivacy?.withheld || screenshotPrivacyReasons(result).length) continue;
     const files =
       result.screenshots
         ?.filter(
@@ -121,7 +123,7 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
 }
 
 export function assertPublicCampaign(campaign: Pick<RunnerE2ECampaign, "results">) {
-  if (campaign.results.some(result => result.productJourney?.privacy === "private" || result.antigravityJourney?.privacy === "private")) {
+  if (campaign.results.some(result => result.productJourney?.privacy === "private" || result.antigravityJourney?.privacy === "private" || result.suiteId === "cursor-cloud")) {
     throw new Error("Private Product E2E campaigns cannot enter the public history publisher");
   }
 }

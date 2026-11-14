@@ -35,6 +35,12 @@ export const SUCCESSFUL_RUN_HANDOFF_OPTIONS = [
   "delegate_or_continue_from_checkpoint",
 ] as const;
 
+// Routine execution issues stay `in_progress` between cron fires by design — one
+// open issue is coalesced across dispatches (see issues_open_routine_execution_uq).
+// Their disposition is owned by the routine lifecycle, not by the missing-disposition
+// handoff, so a successful routine run must not be treated as a missing next step.
+const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
+
 const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
   "advanced",
   "completed",
@@ -227,9 +233,9 @@ export function buildSuccessfulRunHandoffExhaustedNotice(input: {
               : issueLinkRow("Recovery issue", input.recoveryIssue),
             input.recoveryOwner
               ? agentLinkRow("Recovery owner", input.recoveryOwner)
-              : keyValueRow("Recovery owner", "Board decision required"),
+              : keyValueRow("Recovery owner", "Waiting for you"),
             agentLinkRow("Source assignee", input.sourceAssignee),
-            keyValueRow("Suggested action", "inspect the evidence, then retry the original owner, explicitly reassign, or record a valid issue disposition"),
+            keyValueRow("Suggested action", "Mark the task done if it is, or press Retry to let the agent continue from the saved work"),
           ],
         },
         {
@@ -493,6 +499,9 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "missing issue comment retry owns the next action" };
   }
   if (!issue) return { kind: "skip", reason: "issue not found" };
+  if (issue.originKind === ROUTINE_EXECUTION_ORIGIN_KIND) {
+    return { kind: "skip", reason: "routine execution owns its own disposition" };
+  }
   if (!agent) return { kind: "skip", reason: "agent not found" };
   if (issue.companyId !== run.companyId || agent.companyId !== run.companyId) {
     return { kind: "skip", reason: "company scope mismatch" };

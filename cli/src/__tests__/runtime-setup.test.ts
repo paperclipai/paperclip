@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { resolveAntigravityProvisioner, resolveCursorProvisioner } from "../commands/runtime.js";
+import { resolveAntigravityProvisioner, resolveCursorProvisioner, resolveKimiProvisioner } from "../commands/runtime.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -35,6 +35,17 @@ it("rejects a provisioner linked outside the installed package", async () => {
   const f = await fixture(); const other = await fixture();
   await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
   await expect(resolveCursorProvisioner(f.url)).rejects.toThrow("escapes");
+});
+
+
+it("resolves only Kimi's installed provisioner and rejects a redirected setup", async () => {
+  const f = await fixture("kimi");
+  expect(await resolveKimiProvisioner(f.url)).toBe(f.provisioner);
+  const other = await fixture("kimi");
+  await rm(f.provisioner); await symlink(other.provisioner, f.provisioner);
+  await expect(resolveKimiProvisioner(f.url)).rejects.toThrow("escapes");
+  await writeFile(join(other.root, "package.json"), JSON.stringify({ name: "untrusted" }));
+  await expect(resolveKimiProvisioner(other.url)).rejects.toThrow("identity is invalid");
 });
 
 it("resolves Antigravity setup from the public server without importing it", async () => {

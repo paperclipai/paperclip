@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
+test.use({ trace: "retain-on-failure" });
+
 // The tenant UI and task database are real. Cloud is an external dependency:
 // simulate its entry endpoint and independent session states at the HTTP edge.
 for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paperclip.app"]) {
@@ -26,13 +28,13 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
           }
         }).observe(document, { childList: true, subtree: true });
       });
-      await page.route("**/api/health", async (route) => {
-        const response = await route.fetch();
-        await route.fulfill({ response, json: {
-          ...await response.json(), deploymentMode: "authenticated", bootstrapStatus: "ready",
-          cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: cloudOrigin, stackSlug: "test-workspace" },
-        } });
-      });
+      const healthResponse = await request.get("/api/health");
+      expect(healthResponse.ok()).toBe(true);
+      const cloudHealth = {
+        ...await healthResponse.json(), status: "ok", deploymentMode: "authenticated", bootstrapStatus: "ready",
+        cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: cloudOrigin, stackSlug: "test-workspace" },
+      };
+      await page.route("**/api/health", (route) => route.fulfill({ json: cloudHealth }));
       await page.route("**/api/auth/get-session", (route) => route.fulfill(authenticated ? {
         json: { session: { id: "test-session", userId: "local-board" }, user: { id: "local-board", email: "test@example.test", name: "Test user", image: null }, sentryDsn: null },
       } : { status: 401, json: { error: "Board authentication required" } }));
@@ -42,7 +44,9 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
         authenticated = true;
         await route.fulfill({ status: 302, headers: { Location: `${baseURL}${target}` } });
       });
+      const returnedFromCloud = page.waitForURL((url) => handoffs === 1 && url.href === `${baseURL}${target}`);
       await page.goto(entry === "auth" ? `/auth?next=${encodeURIComponent(target)}` : target);
+      await returnedFromCloud;
       await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
       expect(page.url()).toBe(`${baseURL}${target}`);
       expect(handoffs).toBe(1);

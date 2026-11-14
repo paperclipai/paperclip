@@ -31,7 +31,7 @@ The CEO is the first agent you create. Choose an adapter type (Claude Code is a 
 - **Prompt template** — instructions for what the CEO does on each heartbeat
 - **Budget** — monthly spend limit in cents
 
-The CEO's prompt should instruct it to review company health, set strategy, and delegate work to reports.
+The CEO's prompt should instruct it to review company health, set strategy, and carry out assigned work.
 
 ## Step 4: Build the Org Chart
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { processExists } from "./controller-process-identity.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -242,24 +243,16 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   return candidate;
 }
 
+/** EPERM means the process exists under another user, so it is alive. */
 export function isPidAlive(pid: number) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  return processExists(pid);
 }
 
 export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   if (process.platform === "win32") return false;
   if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
-  try {
-    process.kill(-processGroupId, 0);
-  } catch {
-    return false;
-  }
+  if (!processExists(-processGroupId)) return false;
 
   if (process.platform === "linux") {
     const liveMember = readLinuxProcessGroupActivity(processGroupId);

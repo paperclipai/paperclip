@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, assets, chatTaskHandoffs, companies, companyMemberships, createDb, documentRevisions, documents, heartbeatRuns,
+import { agents, assets, chatTaskHandoffs, companies, companyMemberships, createDb, applyPendingMigrations, decisionRetention, decisionTriage, documentRevisions, documents, heartbeatRuns,
   inboxDismissals, issueAttachments, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { requestConfirmationTargetSchema, suggestedTaskDraftSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -10,6 +10,7 @@ import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
 import { attentionService } from "../services/attention.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 describe("Coordinator task and artifact contracts", () => {
   it("keeps a proposed plan until explicit acceptance and requires immutable attachment identity", () => {
@@ -20,13 +21,15 @@ describe("Coordinator task and artifact contracts", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_COORDINATOR_HANDOFF_TEST_DATABASE_URL");
+const support = externalDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("Coordinator canonical handoffs", () => {
   let db: ReturnType<typeof createDb>;
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("coordinator-handoff-");
-    db = createDb(temporary.connectionString);
+    if (externalDatabase) await applyPendingMigrations(externalDatabase);
+    else temporary = await startEmbeddedPostgresTestDatabase("coordinator-handoff-");
+    db = createDb(externalDatabase ?? temporary!.connectionString);
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableAgentChat: true });
   }, 30_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
@@ -194,12 +197,150 @@ const support = await getEmbeddedPostgresTestSupport();
       all: true, allowUnscopedAll: true,
       actor: { type: "board", userId: f.userId, source: "session", ignoreInstanceAdmin: true }, userId: f.userId,
     });
-    expect(await f.pendingQuestions()).toEqual(canonical.items.filter(item => item.subject.id === question.id));
+    const withoutRank = ({ rank: _rank, ...item }: (typeof canonical.items)[number]) => item;
+    expect((await f.pendingQuestions()).map(withoutRank)).toEqual(canonical.items.filter(item => item.subject.id === question.id).map(withoutRank));
     expect(await f.pendingQuestions()).toMatchObject([{ sourceKind: "issue_thread_interaction",
       subject: { id: question.id, status: "pending" }, relatedIssue: { id: task.id }, detail: { kind: "questions" } }]);
     await f.service.answerQuestions(task, question.id, { answers: [{ questionId: "channel", optionIds: ["blog"] }] }, { userId: f.userId });
     expect(await f.pendingQuestions()).toEqual([]);
     expect((await f.receipts()).items).toEqual(expect.arrayContaining([expect.objectContaining({ sourceId: question.id, outcome: "answered" })]));
+  });
+
+  // The user starts the "Interview me" onboarding task, then asks the
+  // agent's chat to run the onboarding there instead. The chat must show one
+  // interview card, answerable once, not the task's card beside the chat's.
+  it("moves a pending onboarding interview into the agent chat instead of showing two question cards", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const interviewPayload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    const taskInterview = await f.service.create(onboarding, {
+      kind: "ask_user_questions", idempotencyKey: "first-task-interview-v1", continuationPolicy: "wake_assignee", payload: interviewPayload,
+    }, { agentId: f.agentId });
+    expect((await f.pendingQuestions()).map(item => item.subject.id)).toEqual([taskInterview.id]);
+
+    const chatInterview = await f.service.create(f.scope, {
+      kind: "ask_user_questions", idempotencyKey: "first-task-interview-v1", continuationPolicy: "wake_assignee", payload: interviewPayload,
+    }, { agentId: f.agentId });
+
+    const chatOwnCards = (await f.service.listForIssue(f.conversationId))
+      .filter(card => card.kind === "ask_user_questions" && card.status === "pending").map(card => card.id);
+    const mirroredTaskCards = (await f.pendingQuestions()).map(item => item.subject.id);
+    expect([...chatOwnCards, ...mirroredTaskCards]).toEqual([chatInterview.id]);
+    const [superseded] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, taskInterview.id));
+    expect(superseded).toMatchObject({ status: "expired", result: {
+      expirationReason: "superseded_by_newer_interaction", supersededByInteractionId: chatInterview.id,
+    } });
+  });
+
+  // After the interview moves to chat, nothing drives the onboarding task.
+  // It must follow the chat instead of asking the user how it continues.
+  it("resolves the onboarding task when its interview moves to the agent chat", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    await f.service.create(onboarding, { kind: "ask_user_questions", continuationPolicy: "wake_assignee", payload }, { agentId: f.agentId });
+    const stalledReviewCards = async () => (await attentionService(db).list(f.companyId, {
+      actor: { type: "board", source: "local_implicit", userId: f.userId }, userId: f.userId,
+    })).items.filter(item => item.sourceKind === "review" && item.subject.id === onboarding.id)
+      .map(item => item.subject.metadata?.reviewAttentionState);
+    expect(await stalledReviewCards()).toEqual([]);
+
+    await f.service.create(f.scope, { kind: "ask_user_questions", continuationPolicy: "wake_assignee", payload }, { agentId: f.agentId });
+
+    // No "Choose how this task continues" stalled-review card for the user.
+    expect(await stalledReviewCards()).toEqual([]);
+    const [task] = await db.select().from(issues).where(eq(issues.id, onboarding.id));
+    expect(task.status).toBe("done");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, onboarding.id));
+    expect(comments.map(comment => comment.body).join("\n")).toContain(`/issues/${f.conversationId}`);
+  });
+
+  it("leaves the onboarding task open when it still has a pending card for the user", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    await f.service.create(onboarding, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeUserId: "teammate-user", payload });
+    await f.service.create(f.scope, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    const [task] = await db.select().from(issues).where(eq(issues.id, onboarding.id));
+    expect(task.status).toBe("in_review");
+  });
+
+  it("moves the onboarding interview for native provider questions, but keeps cards meant for someone else", async () => {
+    const f = await seed();
+    const onboarding = await f.direct();
+    await db.update(issues).set({ originKind: "onboarding_first_task", status: "in_review" }).where(eq(issues.id, onboarding.id));
+    const payload = { version: 1 as const, questions: [
+      { id: "business", prompt: "What does your organization do?", selectionMode: "single" as const, options: [{ id: "shop", label: "A shop" }] },
+    ] };
+    const taskInterview = await f.service.create(onboarding, { kind: "ask_user_questions", payload }, { agentId: f.agentId });
+    const [teammateCard] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeUserId: "teammate-user", payload }).returning();
+    const [otherAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Reviewer", status: "idle", adapterType: "process" }).returning();
+    const [agentCard] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: onboarding.id,
+      kind: "ask_user_questions", createdByAgentId: f.agentId, addresseeAgentId: otherAgent.id, payload }).returning();
+
+    // Same options the native question bridge passes for provider requests.
+    const chatInterview = await f.service.create(f.scope, { kind: "ask_user_questions", resolverPolicy: "human_only",
+      continuationPolicy: "none", payload }, { agentId: f.agentId }, { supersedePendingSiblingInteractions: false });
+
+    const statusById = new Map((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, onboarding.id)))
+      .map(row => [row.id, row.status]));
+    expect(statusById.get(taskInterview.id)).toBe("expired");
+    expect(statusById.get(teammateCard.id)).toBe("pending");
+    expect(statusById.get(agentCard.id)).toBe("pending");
+    expect(chatInterview.status).toBe("pending");
+  });
+
+  it("keeps an ordinary direct task question pending when the agent asks something else in chat", async () => {
+    const f = await seed();
+    const task = await f.direct();
+    const taskQuestion = await f.service.create(task, { kind: "ask_user_questions", payload: { version: 1, questions: [
+      { id: "channel", prompt: "Which channel?", selectionMode: "single", options: [{ id: "blog", label: "Blog" }] },
+    ] } }, { agentId: f.agentId });
+    await f.service.create(f.scope, { kind: "ask_user_questions", payload: { version: 1, questions: [
+      { id: "tone", prompt: "Which tone?", selectionMode: "single", options: [{ id: "warm", label: "Warm" }] },
+    ] } }, { agentId: f.agentId });
+    expect((await f.pendingQuestions()).map(item => item.subject.id)).toEqual([taskQuestion.id]);
+  });
+
+  it("does not materialize unrelated company attention when opening task questions", async () => {
+    const f = await seed();
+    const task = await f.direct();
+    const question = await f.ask(task);
+    const [unrelated] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated", status: "blocked" }).returning();
+    const unrelatedQuestion = await f.ask(unrelated);
+    expect((await f.pendingQuestions()).map(item => item.subject.id)).toEqual([question.id]);
+    const materialized = await db.select().from(decisionRetention).where(eq(decisionRetention.companyId, f.companyId));
+    expect(materialized.map(row => row.sourceId)).toEqual([question.id]);
+    expect(materialized.map(row => row.sourceId)).not.toContain(unrelatedQuestion.id);
+    const options = { actor: { type: "board" as const, source: "local_implicit" as const, userId: f.userId }, userId: f.userId };
+    expect(await attentionService(db).taskQuestions(f.companyId, [], options)).toEqual([]);
+    expect(await attentionService(db).taskQuestions(randomUUID(), [task.id], options)).toEqual([]);
+  });
+
+  it("keeps scoped questions consistent with snooze and archive policy", async () => {
+    const f = await seed();
+    const task = await f.direct();
+    const question = await f.ask(task);
+    expect(await f.pendingQuestions()).toHaveLength(1);
+    await db.insert(decisionTriage).values({ companyId: f.companyId, sourceKind: "issue_thread_interaction",
+      sourceId: question.id, snoozedUntil: new Date(Date.now() + 60_000), setByType: "user", setByUserId: f.userId });
+    expect(await f.pendingQuestions()).toEqual([]);
+    await db.delete(decisionTriage).where(eq(decisionTriage.companyId, f.companyId));
+    expect(await f.pendingQuestions()).toHaveLength(1);
+    await db.update(decisionRetention).set({ archivedAt: new Date() }).where(eq(decisionRetention.companyId, f.companyId));
+    expect(await f.pendingQuestions()).toEqual([]);
   });
 
   it("shows only questions from tasks handed off by this agent in the current conversation generation", async () => {

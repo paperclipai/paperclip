@@ -58,7 +58,6 @@ export async function setupPiRuntime(): Promise<void> {
   } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
 }
 
-/** Resolve the installed public dependency without importing or starting it. */
 export async function resolveCursorProvisioner(serverUrl: string): Promise<string> {
   const url = new URL(serverUrl);
   if (url.protocol !== "file:" || url.search || url.hash) throw new Error("Cursor setup requires an installed Paperclip server");
@@ -131,6 +130,41 @@ export async function setupAntigravityRuntime(): Promise<void> {
 }
 
 
+export async function resolveKimiProvisioner(serverUrl: string): Promise<string> {
+  const url = new URL(serverUrl);
+  if (url.protocol !== "file:" || url.search || url.hash) throw new Error("Kimi setup requires an installed Paperclip server");
+  const entry = await realpath(fileURLToPath(url));
+  if (!entry.endsWith("/dist/index.js")) throw new Error("Kimi setup requires the published server layout");
+  const root = resolve(dirname(entry), "..");
+  const manifest = join(root, "package.json");
+  const info = await lstat(manifest);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 65536 || JSON.parse(await readFile(manifest, "utf8")).name !== "@paperclipai/server") throw new Error("Kimi setup server package identity is invalid");
+  const provisioner = join(root, "dist/vendor/paperclip-runner/cli/provision-kimi.cjs");
+  if (await realpath(provisioner) !== provisioner || !(await lstat(provisioner)).isFile()) throw new Error("Kimi setup entrypoint escapes its server package");
+  return provisioner;
+}
+
+export async function setupKimiRuntime(): Promise<void> {
+  const provisioner = await resolveKimiProvisioner(import.meta.resolve("@paperclipai/server"));
+  const child = spawn(process.execPath, ["--use-env-proxy", provisioner], {
+    stdio: "inherit", env: buildPiSetupEnvironment(),
+  });
+  const cancel = () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); };
+  process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
+  try {
+    await new Promise<void>((accept, reject) => {
+      let spawnError: Error | undefined;
+      child.on("error", error => { spawnError = error; });
+      child.once("close", (code, signal) => {
+        if (spawnError) reject(spawnError);
+        else if (code !== 0 || signal) reject(new Error("Kimi setup did not finish. Review its error; an invalid installation is never replaced automatically."));
+        else accept();
+      });
+    });
+  } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
+}
+
+
 export function registerRuntimeCommands(program: Command): void {
   const runtime = program.command("runtime").description("Manage explicitly installed agent runtimes");
   runtime.command("import-remote <directory>")
@@ -149,11 +183,12 @@ export function registerRuntimeCommands(program: Command): void {
       } finally { process.off("SIGINT", cancel); process.off("SIGTERM", cancel); }
     });
   runtime.command("setup <provider>")
-    .description("Install and verify a pinned Pi, Cursor, or Antigravity runtime (public downloads; no model calls)")
+    .description("Install and verify the pinned Pi, Cursor, Kimi Code, or Antigravity runtime for this host (public downloads; no model calls)")
     .action(async (provider: string) => {
       if (provider === "pi") await setupPiRuntime();
       else if (provider === "cursor") await setupCursorRuntime();
+      else if (provider === "kimi") await setupKimiRuntime();
       else if (provider === "antigravity") await setupAntigravityRuntime();
-      else throw new Error("Supported runtime setup: paperclipai runtime setup pi, cursor, or antigravity");
+      else throw new Error("Supported runtime setup: paperclipai runtime setup pi, cursor, kimi, or antigravity");
     });
 }

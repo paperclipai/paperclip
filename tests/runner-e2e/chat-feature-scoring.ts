@@ -1,5 +1,6 @@
 import { completionDelivery } from "./completion-updates.js";
 import type { ChatFeatureCase } from "./chat-feature-cases.js";
+import { isReassignedUnstartedWake } from "./non-execution-wake.js";
 
 export interface FeatureTask {
   id: string; companyId: string; title: string; description?: string | null; identifier?: string; status: string;
@@ -8,6 +9,7 @@ export interface FeatureTask {
 }
 export interface FeatureRun {
   id: string; companyId: string; agentId: string; status: string; runtimeMode?: string;
+  errorCode?: string | null;
   nativeIssueId?: string | null; startedAt?: string | null; finishedAt?: string | null;
   contextSnapshot?: Record<string, any>; resultJson?: Record<string, any>;
 }
@@ -45,13 +47,26 @@ export function announcementMatchesBrief(body: string, marker: string): boolean 
     && sentences.length === 2 && sentences.every(sentence => /[.!?]["'”’]*$/.test(sentence));
 }
 
+/** Keep obsolete queue entries in the observation, separate from actual work.
+ * Only the CEO's prior assignment on the one task now owned by Morgan qualifies.
+ * Backlog creation must never queue work, even if that wake is later cancelled. */
+export function chatFeatureExecutionRuns(input: ChatFeatureObservation): FeatureRun[] {
+  if (input.caseId !== "delegate-announcement" || input.tasks.length !== 1) return input.runs;
+  const task = input.tasks[0]!;
+  return input.runs.filter(run => !(isReassignedUnstartedWake(run)
+    && run.companyId === input.companyId && task.companyId === input.companyId
+    && run.agentId === input.leadId && task.assigneeAgentId === input.workerId
+    && task.id !== input.source?.id && run.contextSnapshot?.issueId === task.id));
+}
+
 export function gradeChatFeature(input: ChatFeatureObservation) {
   const checks: Array<{ id: string; passed: boolean; detail: string }> = [];
   const add = (id: string, passed: boolean, detail: string) => checks.push({ id, passed, detail });
   const task = input.tasks[0];
   const source = input.source;
-  const taskRuns = task ? input.runs.filter(run => (run.nativeIssueId ?? run.contextSnapshot?.issueId) === task.id) : [];
-  const sourceRuns = input.runs.filter(run => source && (run.nativeIssueId ?? run.contextSnapshot?.issueId) === source.id);
+  const runs = chatFeatureExecutionRuns(input);
+  const taskRuns = task ? runs.filter(run => (run.nativeIssueId ?? run.contextSnapshot?.issueId) === task.id) : [];
+  const sourceRuns = runs.filter(run => source && (run.nativeIssueId ?? run.contextSnapshot?.issueId) === source.id);
   const savedQuery = input.comments.filter(comment => !comment.authorAgentId && comment.body.trim() === input.query.trim());
   const replies = input.comments.filter(comment => comment.authorAgentId === input.leadId && sourceRuns.some(run => run.id === comment.createdByRunId));
   add("one-human-request", savedQuery.length === 1 && input.comments.filter(comment => !comment.authorAgentId).length === 1,
@@ -65,10 +80,10 @@ export function gradeChatFeature(input: ChatFeatureObservation) {
   const creations = input.activity.filter(event => event.action === "issue.created");
   add("agent-created-task", creations.length === 1 && creations[0]!.agentId === input.leadId,
     "The CEO's actual creation audit proves the harness did not create the result.");
-  add("bounded-native-work", input.runs.length === (input.caseId === "create-backlog" ? 1 : 3)
-    && input.runs.every(run => run.companyId === input.companyId && run.runtimeMode === "native" && run.status === "succeeded")
-    && input.runs.length === sourceRuns.length + taskRuns.length,
-  "All company runs are accounted for, native, succeeded, and bound to the source or delegated task.");
+  add("bounded-native-work", runs.length === (input.caseId === "create-backlog" ? 1 : 3)
+    && runs.every(run => run.companyId === input.companyId && run.runtimeMode === "native" && run.status === "succeeded")
+    && runs.length === sourceRuns.length + taskRuns.length,
+  "All work runs are native, succeeded, and task-bound; proven superseded unstarted assignments remain in the ledger.");
   add("conversation-retained", !!source && source.companyId === input.companyId && source.assigneeAgentId === input.leadId
     && source.status === "in_review" && source.conversationState === "waiting" && !source.scheduledRetry && !source.activeRecoveryAction,
   "The source conversation remains available and settled without recovery.");

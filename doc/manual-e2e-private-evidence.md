@@ -24,7 +24,7 @@ aliases are not registered. The exact registry is in
 `tests/runner-e2e/manual-private-retention.ts`.
 
 These IDs require the reviewed AWS Fleet route. Broad chat suites, mixed
-unsupported IDs, reruns and missing approvals fail closed. All chat-feature IDs
+unsupported IDs, reruns and runs without dispatch authority fail closed. All chat-feature IDs
 are classified as restricted by trusted code. A target descriptor cannot opt out.
 Other manual selections keep the existing Actions route only after a trusted
 per-cell check confirms that the actual selected execution is not restricted.
@@ -38,8 +38,8 @@ credentials. Generic nonprivate catalog selection retains its existing semantics
 A registered ID is not a claim of feature readiness or permission to run it.
 Each target still needs the exact reviewed producer contracts, matching helper
 bytes, declared private inputs, fresh source fingerprints, an available original
-attempt and exact operation approval. Earlier accepted target branches do not
-acquire these bytes or approval automatically. Running jobs keep their pinned
+attempt and an allowlisted manual dispatch. Earlier accepted target branches do not
+acquire these bytes automatically. Running jobs keep their pinned
 sources. No retained grade or historical qualification transfers to a new target.
 
 The private cell report contract binds the installed pinned Playwright producer
@@ -58,30 +58,41 @@ or run. Before a supported run, the operator must:
 1. Deploy this workflow and its helpers together on the protected default branch.
 2. Keep the existing numeric actor allowlist and protected default-branch checks.
 3. Keep `runner-e2e-private-paid` and `runner-e2e-private-history` restricted to
-   the default branch. Establish administrator-controlled approval for the exact
-   source and original run. A reviewer UI may supply this control but is not
-   mandatory. Prove the actual control and runtime contract before admission.
+   the default branch.
 4. Provide the existing private-history role ARN, AWS region and bucket variables
    in those environments. The existing role must support the existing bounded
    prefix and bucket-policy, ownership, public-access and retention reads.
-5. Provide `RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON` through administrator-controlled
-   configuration available to both protected jobs. Approve the exact resolved
-   workflow SHA, target SHA, original run ID,
-   attempt `1`, selected execution IDs and launcher SHA-256.
-6. Use a reviewed compatible target. Its private handoff and policy modules must
-   match the workflow implementation byte for byte. Its launcher digest must
-   match the protected approval. Earlier target branches do not gain this
-   protocol automatically.
+5. Use a compatible target. Its private handoff and policy modules must match
+   the workflow implementation byte for byte. Earlier target branches do not
+   gain this protocol automatically.
 
-Classification happens before the protected job. It grants no archive authority.
-The administrator-controlled record must bind the actual original run ID before
-target dependency setup or archive credentials. Prove who can change that record
-and that each job consumes the exact approved record. An environment reviewer
-gate is one way to govern authorization; its UI is not required. A missing or
-stale row still fails closed before target dependency setup, archive credentials,
-model credentials or fixture secrets. There is no wildcard approval.
+### Dispatch authority
 
-The variable has this closed shape (all values below are placeholders):
+In `runner-full-stack-e2e.yml`, the manual run itself authorizes its private
+evidence. There is no separate per-run approval record. Trusted code in
+`tests/runner-e2e/manual-dispatch-authority.ts` admits a cell only when all of
+these are true:
+
+- The event is `workflow_dispatch` of this workflow on the default branch, with
+  the `manual` cadence. Scheduled and bounded-cadence runs never qualify.
+- The run is on attempt `1`. A rerun does not inherit authority.
+- The dispatching actor is in `RUNNER_E2E_ALLOWED_ACTOR_IDS`, the event sender is
+  that actor, and the triggering actor is the same person.
+- The trusted cell selection equals the dispatch's own `id` input.
+
+The authority binds the workflow SHA, the target SHA resolved by the authorize
+job, the run ID and the cells. The dispatcher chooses and vouches for the target
+branch, so its launcher digest is recorded in the private identity instead of
+compared with a separately approved digest. Classification still happens before
+the protected job, and a failed check still stops before target dependency
+setup, archive credentials, model credentials or fixture secrets. The per-run
+limit of eight cells is unchanged.
+
+### Stored approval records
+
+The TestOps catalog case workflow still passes a protected approval record as
+`MANUAL_PRIVATE_APPROVALS_JSON`. That record has this closed shape (all values
+below are placeholders):
 
 ```json
 {
@@ -105,7 +116,7 @@ It prepares pinned publication dependencies with `--ignore-scripts` and a
 separate store before archive credentials. Transfers use that checkout's
 absolute helper, tsx and archive-script paths. They do not load the target's
 node_modules or an ambient Node loader. The target executes only after the
-protected approval and private-storage preflight pass.
+evidence authority and private-storage preflight pass.
 
 The AWS action returns session credentials as step outputs, not job-wide
 environment exports. Only trusted preflight and transfer steps receive those

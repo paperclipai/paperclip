@@ -98,6 +98,20 @@ async function flushDebounce() {
   });
 }
 
+function findButton(predicate: (text: string) => boolean) {
+  return Array.from(document.querySelectorAll("button")).find((btn) =>
+    predicate(btn.textContent ?? ""),
+  ) as HTMLButtonElement | undefined;
+}
+
+async function click(element: Element | null | undefined) {
+  expect(element).toBeTruthy();
+  await act(async () => {
+    (element as HTMLElement).click();
+  });
+  await flush();
+}
+
 function makeWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -172,8 +186,12 @@ describe("ImportFromVaultDialog", () => {
     await flush();
     await flush();
 
-    const tableBody = document.querySelector('[data-testid="vault-table-body"]');
-    expect(tableBody).not.toBeNull();
+    const list = document.querySelector('[data-testid="vault-list"]');
+    expect(list).not.toBeNull();
+    expect(document.body.textContent).toContain("Import secrets from a vault");
+    expect(document.body.textContent).toContain("Their values stay in your vault.");
+    // One usable vault: no vault picker.
+    expect(document.querySelector('[aria-label="Vault"]')).toBeNull();
     expect(document.body.textContent).toContain("prod/stripe");
     expect(document.body.textContent).toContain("prod/openai");
 
@@ -186,7 +204,7 @@ describe("ImportFromVaultDialog", () => {
       stripeRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
-    expect(document.body.textContent).toContain("1 selected");
+    expect(findButton((text) => text === "Continue with 1")).toBeTruthy();
 
     // Load more page
     const loadMore = document.querySelector('[data-testid="vault-load-more"]') as HTMLButtonElement | null;
@@ -199,14 +217,14 @@ describe("ImportFromVaultDialog", () => {
 
     expect(document.body.textContent).toContain("prod/sendgrid");
     // Selection persisted through pagination.
-    expect(document.body.textContent).toContain("1 selected");
+    expect(findButton((text) => text === "Continue with 1")).toBeTruthy();
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("disables checkboxes for already-imported (duplicate) rows and shows a conflict badge for conflicts", async () => {
+  it("shows secrets already in Paperclip as not selectable and explains conflicts", async () => {
     mockSecretsApi.remoteImportPreview.mockResolvedValueOnce(
       makePreview([
         makeCandidate({
@@ -261,8 +279,23 @@ describe("ImportFromVaultDialog", () => {
     ) as HTMLButtonElement | null;
     expect(duplicateCheckbox?.getAttribute("data-disabled")).not.toBeNull();
 
-    expect(document.body.textContent).toContain("Conflict");
-    expect(document.body.textContent).toContain("Name already in use");
+    expect(duplicateRow?.textContent).toContain("Already in Paperclip");
+
+    // Clicking the row does not select it either.
+    await act(async () => {
+      duplicateRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(findButton((text) => text === "Continue")).toBeTruthy();
+
+    const conflictRow = document.querySelector(
+      '[data-testid="vault-row-arn:aws:secretsmanager:us-east-1:1:secret:prod/openai-XYZ"]',
+    );
+    expect(conflictRow?.getAttribute("data-row-state")).toBe("conflict");
+    expect(conflictRow?.textContent).toContain("Name already in use");
+    expect(conflictRow?.textContent).not.toContain("Already in Paperclip");
+    // Raw references are never shown.
+    expect(document.body.textContent).not.toContain("arn:aws");
 
     await act(async () => {
       root.unmount();
@@ -336,7 +369,7 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
-    // Click "Continue → Review" button.
+    // Continue to the naming step.
     const continueBtn = Array.from(document.querySelectorAll("button")).find(
       (btn) => btn.textContent?.includes("Continue"),
     );
@@ -346,14 +379,20 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
-    // Review step: error message visible, Import button disabled.
+    // Naming step: the error is shown under the row. The Import button stays
+    // enabled, but pressing it explains what to fix instead of importing.
+    expect(document.body.textContent).toContain("Name 1 secret");
     expect(document.body.textContent?.toLowerCase()).toContain("a paperclip secret already uses this");
 
-    const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
-    ) as HTMLButtonElement | undefined;
+    const importBtn = findButton((text) => text.startsWith("Import "));
     expect(importBtn).toBeTruthy();
-    expect(importBtn?.disabled).toBe(true);
+    expect(importBtn?.disabled).toBe(false);
+    expect(document.querySelector('[data-testid="import-blocked-message"]')).toBeNull();
+    await click(importBtn);
+    expect(mockSecretsApi.remoteImport).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="import-blocked-message"]')?.textContent,
+    ).toContain("Fix the 1 secret marked above");
 
     await act(async () => {
       root.unmount();
@@ -407,6 +446,10 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
+    // Keys sit behind a disclosure until they are needed.
+    expect(document.querySelector(`[data-testid="review-key-${externalRef}"]`)).toBeNull();
+    await click(document.querySelector('[data-testid="review-details-toggle"]'));
+
     const keyInput = document.querySelector(
       `[data-testid="review-key-${externalRef}"]`,
     ) as HTMLInputElement | null;
@@ -421,10 +464,13 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     expect(document.body.textContent).toContain("lowercase letters");
-    const importBtn = Array.from(document.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.startsWith("Import "),
-    ) as HTMLButtonElement | undefined;
-    expect(importBtn?.disabled).toBe(true);
+    // The key field stays visible while it has a problem, even with the disclosure closed.
+    await click(document.querySelector('[data-testid="review-details-toggle"]'));
+    expect(document.querySelector(`[data-testid="review-key-${externalRef}"]`)).not.toBeNull();
+
+    await click(findButton((text) => text.startsWith("Import ")));
+    expect(mockSecretsApi.remoteImport).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="import-blocked-message"]')).not.toBeNull();
 
     await act(async () => {
       root.unmount();
@@ -499,6 +545,7 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
+    await click(document.querySelector('[data-testid="review-details-toggle"]'));
     const descriptionInput = document.querySelector(
       `[data-testid="review-description-${externalRef}"]`,
     ) as HTMLInputElement | null;
@@ -533,12 +580,19 @@ describe("ImportFromVaultDialog", () => {
       ],
     });
 
+    // Everything imported: a short confirmation with one Done action.
+    expect(document.body.textContent).toContain("1 secret imported");
+    expect(
+      document.querySelector(`[data-testid="result-row-${externalRef}"]`)?.getAttribute("data-row-status"),
+    ).toBe("imported");
+    expect(findButton((text) => text === "Done")).toBeTruthy();
+
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("renders mixed import results (created/skipped/failed) and shows error reason", async () => {
+  it("keeps failed secrets listed with their reason after a mixed import and retries only those", async () => {
     mockSecretsApi.remoteImportPreview.mockResolvedValueOnce(
       makePreview([
         makeCandidate({
@@ -622,8 +676,8 @@ describe("ImportFromVaultDialog", () => {
 
     // Select all loaded
     const headerCheckbox = document.querySelector(
-      '[data-testid="vault-table-body"]',
-    )?.parentElement?.querySelector('thead button[role="checkbox"]') as HTMLButtonElement | null;
+      '[data-testid="vault-select-all"]',
+    ) as HTMLButtonElement | null;
     expect(headerCheckbox).toBeTruthy();
     await act(async () => {
       headerCheckbox!.click();
@@ -651,13 +705,67 @@ describe("ImportFromVaultDialog", () => {
     await flush();
 
     expect(mockSecretsApi.remoteImport).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).toContain("Import complete");
-    expect(document.body.textContent).toContain("1 created");
-    expect(document.body.textContent).toContain("1 skipped");
-    expect(document.body.textContent).toContain("1 failed");
-    expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
+    const summary = document.querySelector('[data-testid="result-summary"]');
+    expect(summary?.textContent).toContain("1 imported.");
+    expect(summary?.textContent).toContain("1 already in Paperclip.");
+    expect(summary?.textContent).toContain("1 could not be linked and is listed below.");
+
+    // Only the failure stays in the list, with its reason.
+    const gammaRef = "arn:aws:secretsmanager:us-east-1:1:secret:c-CCC";
+    expect(document.querySelectorAll('[data-testid^="review-row-"]').length).toBe(1);
+    expect(
+      document.querySelector(`[data-testid="review-failure-${gammaRef}"]`)?.textContent,
+    ).toContain("AWS Secrets Manager denied the request");
     expect(document.body.textContent).not.toContain("AccessDeniedException");
     expect(document.body.textContent).not.toContain("123456789012");
+    expect(document.body.textContent).not.toContain("arn:aws");
+
+    // The finished rows are one click away, each with its own outcome.
+    await click(document.querySelector('[data-testid="result-done-toggle"]'));
+    expect(
+      document
+        .querySelector('[data-testid="result-row-arn:aws:secretsmanager:us-east-1:1:secret:a-AAA"]')
+        ?.getAttribute("data-row-status"),
+    ).toBe("imported");
+    const skippedRow = document.querySelector(
+      '[data-testid="result-row-arn:aws:secretsmanager:us-east-1:1:secret:b-BBB"]',
+    );
+    expect(skippedRow?.getAttribute("data-row-status")).toBe("skipped");
+    expect(skippedRow?.textContent).toContain("exact reference already imported");
+
+    // Footer: Close on the left, Try again on the right; closing needs no discard prompt.
+    expect(findButton((text) => text === "Close")).toBeTruthy();
+    expect(findButton((text) => text === "Back")).toBeUndefined();
+
+    mockSecretsApi.remoteImport.mockResolvedValueOnce({
+      providerConfigId: awsVault.id,
+      provider: "aws_secrets_manager",
+      importedCount: 1,
+      skippedCount: 0,
+      errorCount: 0,
+      results: [
+        {
+          externalRef: gammaRef,
+          name: "gamma",
+          key: "gamma",
+          status: "imported",
+          reason: null,
+          secretId: "secret-gamma",
+          conflicts: [],
+        },
+      ],
+    } satisfies RemoteSecretImportResult);
+    await click(findButton((text) => text === "Try again"));
+    await flush();
+
+    expect(mockSecretsApi.remoteImport).toHaveBeenCalledTimes(2);
+    const retryInput = mockSecretsApi.remoteImport.mock.calls[1]?.[1];
+    expect(retryInput.secrets.map((secret: { externalRef: string }) => secret.externalRef)).toEqual([
+      gammaRef,
+    ]);
+    expect(document.body.textContent).toContain("2 secrets imported");
+    expect(document.querySelectorAll('[data-testid^="result-row-"]').length).toBe(3);
+    expect(findButton((text) => text === "Done")).toBeTruthy();
 
     await act(async () => {
       root.unmount();
@@ -683,7 +791,10 @@ describe("ImportFromVaultDialog", () => {
     });
     await flush();
 
-    expect(document.querySelector('[data-testid="select-empty-vaults"]')).not.toBeNull();
+    const empty = document.querySelector('[data-testid="select-empty-vaults"]');
+    expect(empty?.textContent).toContain("No vault is connected yet.");
+    expect(findButton((text) => text === "Connect one in Vaults")).toBeTruthy();
+    expect(findButton((text) => text.startsWith("Continue"))).toBeUndefined();
     expect(mockSecretsApi.remoteImportPreview).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -719,7 +830,8 @@ describe("ImportFromVaultDialog", () => {
 
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("Could not load remote secrets");
+    expect(banner?.textContent).toContain("Paperclip couldn't load the secrets in this vault.");
+    expect(findButton((text) => text === "Try again")).toBeTruthy();
 
     await act(async () => {
       root.unmount();
@@ -727,6 +839,7 @@ describe("ImportFromVaultDialog", () => {
   });
 
   it("renders sanitized preview provider errors without raw AWS exception text", async () => {
+    const onManageVaults = vi.fn();
     const rawProviderMessage =
       "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
     mockSecretsApi.remoteImportPreview.mockRejectedValueOnce(
@@ -748,6 +861,7 @@ describe("ImportFromVaultDialog", () => {
             companyId="company-1"
             providerConfigs={[awsVault]}
             existingSecrets={[]}
+            onManageVaults={onManageVaults}
           />
         </QueryClientProvider>,
       );
@@ -757,8 +871,12 @@ describe("ImportFromVaultDialog", () => {
 
     const banner = document.querySelector('[data-testid="preview-error-banner"]');
     expect(banner).not.toBeNull();
-    expect(banner?.textContent).toContain("AWS denied list access");
-    expect(banner?.textContent).toContain("missing secretsmanager:ListSecrets");
+    expect(banner?.textContent).toContain("AWS denied access. Paperclip's role can't list the secrets in this vault.");
+    expect(banner?.textContent).toContain("secretsmanager:ListSecrets");
+    await click(findButton((text) => text === "Fix it in Vaults"));
+    expect(onManageVaults).toHaveBeenCalledTimes(1);
+    // Nothing to continue with while the vault cannot be listed.
+    expect(findButton((text) => text.startsWith("Continue"))).toBeUndefined();
     expect(banner?.textContent).not.toContain(rawProviderMessage);
     expect(banner?.textContent).not.toContain("arn:aws");
     expect(banner?.textContent).not.toContain("123456789012");
@@ -815,6 +933,89 @@ describe("ImportFromVaultDialog", () => {
     expect(mockSecretsApi.remoteImportPreview).toHaveBeenCalledTimes(2);
     const lastCall = mockSecretsApi.remoteImportPreview.mock.calls.at(-1);
     expect(lastCall?.[1]).toMatchObject({ query: "stripe" });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("explains why Continue does nothing when no secret is selected", async () => {
+    mockSecretsApi.remoteImportPreview.mockResolvedValueOnce(makePreview([makeCandidate()]));
+
+    const { queryClient } = makeWrapper();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ImportFromVaultDialog
+            open
+            onOpenChange={vi.fn()}
+            companyId="company-1"
+            providerConfigs={[awsVault]}
+            existingSecrets={[]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const continueBtn = findButton((text) => text === "Continue");
+    expect(continueBtn?.disabled).toBe(false);
+    await click(continueBtn);
+    expect(
+      document.querySelector('[data-testid="import-blocked-message"]')?.textContent,
+    ).toBe("Select at least one secret to import.");
+    expect(document.querySelector('[data-testid="vault-list"]')).not.toBeNull();
+
+    // Picking a secret clears the message.
+    await click(document.querySelector('[data-testid="vault-select-all"]'));
+    expect(document.querySelector('[data-testid="import-blocked-message"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers a vault picker only when more than one vault is usable, and asks before discarding picks", async () => {
+    mockSecretsApi.remoteImportPreview.mockResolvedValue(makePreview([makeCandidate()]));
+    const secondVault: CompanySecretProviderConfig = {
+      ...awsVault,
+      id: "vault-aws-2",
+      displayName: "AWS staging",
+      isDefault: false,
+    };
+    const onOpenChange = vi.fn();
+
+    const { queryClient } = makeWrapper();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ImportFromVaultDialog
+            open
+            onOpenChange={onOpenChange}
+            companyId="company-1"
+            providerConfigs={[awsVault, secondVault]}
+            existingSecrets={[]}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(document.querySelector('[aria-label="Vault"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Secret in AWS production");
+
+    await click(document.querySelector('[data-testid="vault-select-all"]'));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await click(findButton((text) => text === "Cancel"));
+    expect(confirmSpy).toHaveBeenCalledWith("Discard 1 pending import?");
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await click(findButton((text) => text === "Cancel"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    confirmSpy.mockRestore();
 
     await act(async () => {
       root.unmount();

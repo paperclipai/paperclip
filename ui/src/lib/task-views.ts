@@ -21,6 +21,7 @@ export const TASK_VIEW_KEYS = [
   "blocked",
   "recent",
   "everything",
+  "needs_attention",
   "all",
   "active",
   "backlog",
@@ -40,6 +41,7 @@ export interface TaskView {
   statuses?: string[];
   /** One-line description shown in the Views menu. */
   hint: string;
+  coordinatorOnly?: boolean;
 }
 
 export interface TaskViewGroup {
@@ -61,8 +63,9 @@ export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
   {
     label: "Organization",
     views: [
+      { key: "needs_attention", label: "Needs attention", surface: "issues", statuses: [], hint: "Tasks with pending decisions", coordinatorOnly: true },
       { key: "all", label: "All tasks", surface: "issues", statuses: [], hint: "Every task in the organization" },
-      { key: "active", label: "Active", surface: "issues", statuses: ["todo", "in_progress", "in_review", "blocked"], hint: "Open tasks, running or not" },
+      { key: "active", label: "Active", surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], hint: "Open tasks, running or not" },
       { key: "backlog", label: "Backlog", surface: "issues", statuses: ["backlog"], hint: "Not started yet" },
       { key: "done", label: "Done", surface: "issues", statuses: ["done", "cancelled"], hint: "Completed and cancelled" },
     ],
@@ -73,7 +76,7 @@ const VIEWS_BY_KEY = new Map<TaskViewKey, TaskView>(
   TASK_VIEW_GROUPS.flatMap((group) => group.views.map((view) => [view.key, view] as const)),
 );
 
-export const DEFAULT_TASK_VIEW: TaskViewKey = "mine";
+export const DEFAULT_TASK_VIEW: TaskViewKey = "all";
 export const TASK_VIEW_PARAM = "view";
 export const TASK_LAST_VIEW_KEY = "paperclip:tasks:last-view";
 
@@ -135,6 +138,7 @@ export const ORGANIZATION_SCOPED_PARAMS = [
   "assignee",
   "workspace",
   "participantAgentId",
+  "originKind",
   "q",
 ] as const;
 

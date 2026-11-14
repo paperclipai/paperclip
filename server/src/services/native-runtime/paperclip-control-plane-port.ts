@@ -1,7 +1,7 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
-import { and, asc, eq, gt, or } from "drizzle-orm";
+import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
@@ -9,6 +9,8 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeRunnerCheckpoints,
+  toolInvocations,
 } from "@paperclipai/db";
 import type {
   CompleteControlPlaneRunInput,
@@ -26,10 +28,17 @@ import {
   validatePrpEvent,
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { appendHeartbeatRunEvent, appendHeartbeatRunEventBatch, type AppendHeartbeatRunEventInput,
+  type AppendHeartbeatRunEventResult } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, type NativeControllerCompatibility } from "./native-controller-recovery.js";
+import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
+  type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
+import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
+import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -45,6 +54,21 @@ export interface PaperclipControlPlaneBinding {
 
 const IDENTITY_DELTA_RETRY_WINDOW = 1_024;
 const IDENTITY_DELTA_RETRY_BYTES = 4 * 1024 * 1024;
+/** Text deltas that follow the first one after another event wait at most this long for their batch. */
+export const STREAMING_EVENT_BATCH_MS = 250;
+/** A batch that reaches this many deltas commits at once. */
+export const STREAMING_EVENT_BATCH_MAX = 100;
+
+type AppendReceipt = { cursor: number; highestContiguousSourceSeq: number; disposition: "committed" | "duplicate" };
+type PendingStreamingEvent = {
+  event: PrpEvent;
+  input: AppendHeartbeatRunEventInput;
+  options?: { signal: AbortSignal };
+  startedAtMs: number;
+  startedClock: number;
+  resolve: (receipt: AppendReceipt) => void;
+  reject: (error: unknown) => void;
+};
 
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
@@ -88,8 +112,31 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #assertRunAdmissionActive?: () => void;
   readonly #onResultCommitted?: () => Promise<void>;
   readonly #onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
-  readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-  readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+  readonly #onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+  readonly #onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+  readonly #nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
+  readonly #taskSessionPublication?: NativeTaskSessionPublicationContext;
+  readonly #taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
+  readonly #deferredEventObservers = new Map<string, Promise<void>>();
+  #deferredObserverFailure: { error: unknown } | null = null;
+  /**
+   * Text deltas commit in batches. A caller may start the next append before
+   * a delta's receipt settles; the receipt settles after its batch commits.
+   */
+  readonly pipelinesStreamingEvents = true;
+  readonly #streamingBatchMs: number;
+  #streamingBatch: PendingStreamingEvent[] = [];
+  #streamingTimer: ReturnType<typeof setTimeout> | null = null;
+  #streamingTail: Promise<void> = Promise.resolve();
+  #streamingFlushQueued = false;
+  /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
+  #streamingEventsPending = 0;
+  /**
+   * False until a delta with text commits after the latest other event. Until
+   * then each delta commits at once, so the first text of an item, and the
+   * time to first token, never wait for the batch timer.
+   */
+  #streamedSinceBoundary = false;
 
   constructor(
     db: Db,
@@ -97,25 +144,35 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
+      secrets?: readonly string[];
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
       /** Read-only admission may finish an existing startup solely for restart detachment. */
       assertRunAdmissionActive?: () => void;
       onResultCommitted?: () => Promise<void>;
       onEventPersistence?: (event: PrpEvent, startedAtMs: number, endedAtMs: number) => Promise<void>;
-      onCommittedEvent?: (event: PrpEvent) => Promise<void>;
-      onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+      onCommittedEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+      onDuplicateEvent?: (event: PrpEvent, cursor: number) => Promise<void>;
+      nativeRecovery?: { compatibility: NativeControllerCompatibility; owner: NativeRunnerCheckpointOwner };
+      taskSessionPublication?: NativeTaskSessionPublicationContext;
+      taskSessionPublicationOwner?: NativeRunnerCheckpointOwner;
+      /** How long a text delta that is not the first after another event may wait for its batch. */
+      streamingBatchMs?: number;
     } = {},
   ) {
+    this.#streamingBatchMs = options.streamingBatchMs ?? STREAMING_EVENT_BATCH_MS;
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
     this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
-    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secrets, { maskResumedSuffixes: true });
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onEventPersistence = options.onEventPersistence;
     this.#onResultCommitted = options.onResultCommitted;
     this.#onDuplicateEvent = options.onDuplicateEvent;
+    this.#nativeRecovery = options.nativeRecovery;
+    this.#taskSessionPublication = options.taskSessionPublication ? structuredClone(options.taskSessionPublication) : undefined;
+    this.#taskSessionPublicationOwner = options.taskSessionPublicationOwner;
   }
 
   #assertActive(options?: { signal: AbortSignal }): void {
@@ -123,7 +180,36 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options?.signal.throwIfAborted();
   }
 
-  #matchesPersistedBinding(run: typeof heartbeatRuns.$inferSelect): boolean {
+  async #settleDeferredObservers(options?: { signal: AbortSignal }): Promise<void> {
+    const assertActive = () => {
+      this.#assertActive(options);
+      if (this.#deferredObserverFailure) throw this.#deferredObserverFailure.error;
+    };
+    assertActive();
+    if (this.#deferredEventObservers.size === 0) return;
+    const signal = options?.signal;
+    let removeAbort = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      if (!signal) return;
+      const abort = () => reject(signal.reason ?? new Error("native event observation aborted"));
+      signal.addEventListener("abort", abort, { once: true });
+      removeAbort = () => signal.removeEventListener("abort", abort);
+      if (signal.aborted) abort();
+    });
+    try {
+      // Aborting a checkpoint revokes its writes, not already-owned accounting
+      // or output observation. Each retained promise remains observed below.
+      while (this.#deferredEventObservers.size > 0) {
+        await Promise.race([Promise.all([...this.#deferredEventObservers.values()]), aborted]);
+        assertActive();
+      }
+    } finally { removeAbort(); }
+    assertActive();
+  }
+
+  #matchesPersistedBinding(run: Pick<typeof heartbeatRuns.$inferSelect,
+    "companyId" | "agentId" | "runtimeMode" | "nativeIssueId" | "nativeSessionId" |
+    "runnerInstanceId" | "completionContractId" | "completionContractSha256">): boolean {
     return run.companyId === this.#binding.companyId
       && run.agentId === this.#binding.agentId
       && run.runtimeMode === "native"
@@ -191,6 +277,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
 
   async checkpointSession(snapshot: PersistedNativeSession, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     snapshot = redactRunnerApiPayloads(this.#identityRedactor.redact(snapshot));
     const identity = snapshot.identity;
     if (
@@ -200,19 +288,105 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       || identity.agentId !== this.#binding.agentId
       || this.#sessionId !== identity.sessionId
     ) throw new Error("native_session_checkpoint_binding_mismatch");
+    const publication = this.#taskSessionPublication && eligibleNativeTaskSessionPublication(snapshot)
+      ? this.#taskSessionPublication : null;
+    if (publication && !this.#taskSessionPublicationOwner) throw new Error("native_task_session_publication_owner_required");
     await this.#db.transaction(async (tx) => {
-      const run = await tx.select().from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
+      const recovery = this.#nativeRecovery;
+      const owner = recovery?.owner ?? (publication ? this.#taskSessionPublicationOwner : undefined);
+      if (publication && recovery && nativeSha256(recovery.owner) !== nativeSha256(this.#taskSessionPublicationOwner)) {
+        throw new Error("native_task_session_publication_owner_mismatch");
+      }
+      const ownerLock = owner ? nativeRunnerCheckpointOwnerLock(tx, owner) : null;
+      // NO KEY UPDATE serializes reset/admission fields while remaining compatible
+      // with completeRun's parent KEY SHARE. Keep coordinator → issue → run order.
+      const publicationIssue = publication ? tx.$with("publication_issue").as(tx.select({
+        id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
+        conversationAgentId: issues.conversationAgentId, conversationSessionGeneration: issues.conversationSessionGeneration,
+      }).from(issues).where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId),
+        ownerLock ? sql`exists (select 1 from ${ownerLock})` : undefined)).for("no key update")) : null;
+      const lockedRun = tx.$with("snapshot_run").as(tx.select({
+        id: heartbeatRuns.id, status: heartbeatRuns.status,
+        contextSnapshot: (publication ? sql<Record<string, unknown>>`jsonb_build_object('conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration')` : sql<null>`null`).as("publication_context"),
+        resultJson: (publication ? sql<Record<string, unknown>>`jsonb_build_object('nativeCancellation', ${heartbeatRuns.resultJson}->'nativeCancellation',
+          'cancellation', ${heartbeatRuns.resultJson}->'cancellation', 'startupCancellation', ${heartbeatRuns.resultJson}->'startupCancellation')` : sql<null>`null`).as("publication_cancellation"),
+        startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+        companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+        runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,
+        nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
+        completionContractId: heartbeatRuns.completionContractId,
+        completionContractSha256: heartbeatRuns.completionContractSha256,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, this.#binding.runId), ownerLock
+          ? sql`exists (select 1 from ${ownerLock})` : undefined,
+          publicationIssue ? sql`exists (select 1 from ${publicationIssue})` : undefined)).for("update"));
+      // Project the locking CTE's tuples, including any update committed while
+      // the lock waited. A second scan of heartbeat_runs could see an old MVCC tuple.
+      // The run CTE depends on the coordinator CTE: both locks precede the
+      // outer clock sample, including when either lock waits.
+      const selected = await tx.with(...(ownerLock ? [ownerLock] : []), ...(publicationIssue ? [publicationIssue] : []), lockedRun).select({ run: {
+        id: lockedRun.id, status: lockedRun.status, contextSnapshot: lockedRun.contextSnapshot, resultJson: lockedRun.resultJson,
+        startedAt: lockedRun.startedAt, createdAt: lockedRun.createdAt,
+        companyId: lockedRun.companyId, agentId: lockedRun.agentId,
+        runtimeMode: lockedRun.runtimeMode, nativeIssueId: lockedRun.nativeIssueId,
+        nativeSessionId: lockedRun.nativeSessionId, runnerInstanceId: lockedRun.runnerInstanceId,
+        completionContractId: lockedRun.completionContractId,
+        completionContractSha256: lockedRun.completionContractSha256,
+        runnerProfileJson: lockedRun.runnerProfileJson,
+      }, now: sql<Date>`clock_timestamp()`, ...(ownerLock ? {
+        leaseOwner: sql<string | null>`(select ${ownerLock.leaseOwner} from ${ownerLock})`,
+        leaseExpiresAt: sql<Date | null>`(select ${ownerLock.leaseExpiresAt} from ${ownerLock})`.mapWith(nativeRunFinalizations.leaseExpiresAt),
+        resultId: sql<string | null>`(select ${ownerLock.resultId} from ${ownerLock})`,
+      } : {}), ...(recovery ? {
+        checkpointHeader: sql<Record<string, unknown> | null>`(select material from ${nativeRunnerCheckpoints}
+          where ${nativeRunnerCheckpoints.runId} = ${this.#binding.runId}
+            and ${nativeRunnerCheckpoints.companyId} = ${this.#binding.companyId}
+            and ${nativeRunnerCheckpoints.issueId} = ${this.#binding.issueId}
+            and ${nativeRunnerCheckpoints.part} = 'header')`,
+        } : {}), ...(publicationIssue ? { publicationIssue: sql<NativeTaskSessionPublicationIssue>`(select jsonb_build_object(
+          'id', ${publicationIssue.id}, 'companyId', ${publicationIssue.companyId}, 'executionRunId', ${publicationIssue.executionRunId},
+          'conversationAgentId', ${publicationIssue.conversationAgentId}, 'conversationSessionGeneration', ${publicationIssue.conversationSessionGeneration}) from ${publicationIssue})` } : {}),
+      }).from(lockedRun).limit(1)
         .then((rows) => rows[0] ?? null);
+      const run = selected?.run;
       this.#assertActive(options);
+      if (owner && !selected) throw new Error("native_runner_checkpoint_owner_lost");
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_session_checkpoint_binding_mismatch");
       }
-      await tx.update(heartbeatRuns).set({
-        runnerProfileJson: {
+      // The run row lock may have waited beyond our lease. Generation cannot
+      // change while we hold the coordinator, but wall-clock expiry still can.
+      if (owner && selected) await validateNativeRunnerCheckpointOwner(tx, owner,
+        { leaseOwner: selected.leaseOwner ?? null, leaseExpiresAt: selected.leaseExpiresAt ?? null,
+          resultId: selected.resultId ?? null, now: selected.now }, !snapshot.semanticResult);
+      const header = recovery && selected?.checkpointHeader
+        ? inspectNativeRunnerUpgradeHeader(this.#binding, selected.checkpointHeader) : null;
+      if (header && (header.normalizedSessionId !== identity.sessionId || header.runnerInstanceId !== this.#binding.sourceInstanceId)) {
+        throw new Error("native_session_checkpoint_prp_binding_mismatch");
+      }
+      const profile: Record<string, unknown> = {
           ...record(run.runnerProfileJson),
           sessionCheckpoint: structuredClone(snapshot) as unknown as Record<string, unknown>,
-        },
+          ...(recovery ? { nativeControllerRecovery: createNativeControllerRecovery(snapshot, recovery.compatibility,
+            header ? { runId: this.#binding.runId, runnerInstanceId: header.runnerInstanceId,
+              normalizedSessionId: header.normalizedSessionId } : null) } : {}),
+        };
+      // Driver/live snapshots may already describe a terminal result before
+      // completeRun accepts it. Persist that observation without a handled
+      // receipt; the existing post-acceptance checkpoint publishes the pointer.
+      if (publication && selected?.resultId) {
+        const receipt = await publishNativeTaskSessionInTransaction(tx, { binding: this.#binding, context: publication,
+          snapshot, run, issue: selected.publicationIssue ?? null, resultId: selected.resultId ?? null,
+          recoveryReady: !recovery || header !== null });
+        profile[NATIVE_TASK_SESSION_PUBLICATION_KEY] = receipt;
+        if (Buffer.byteLength(JSON.stringify({ nativeControllerRecovery: profile.nativeControllerRecovery,
+          [NATIVE_TASK_SESSION_PUBLICATION_KEY]: receipt })) > NATIVE_CONTROLLER_RECOVERY_MAX_BYTES) {
+          throw new Error("native_task_session_publication_metadata_too_large");
+        }
+      }
+      await tx.update(heartbeatRuns).set({
+        runnerProfileJson: profile,
         sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
         nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
         nativePhaseUpdatedAt: new Date(),
@@ -222,7 +396,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -238,9 +412,13 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
     }
+    if (options?.deferPostCommitObservers && (
+      !["turn.completed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)
+      || !event.turnId || event.payload.providerTerminalObserved === false
+    )) throw new Error("native_deferred_observer_terminal_required");
     const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
     const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
-    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
+    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && (this.#identityRedactor.values.length > 0 || this.#identityRedactor.secretValues.length > 0)) {
       const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
       const cached = this.#redactedDeltas.get(key);
       const originalSha = nativeSha256(validated.event);
@@ -270,31 +448,63 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       }
     }
     event = redactRunnerApiEvent(event);
-    const persisted = await this.#db.transaction(async tx => {
-      this.#assertActive(options);
-      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
-        companyId: this.#binding.companyId,
-        runId: this.#binding.runId,
-        agentId: this.#binding.agentId,
-        eventType: event.eventType,
-        stream: "system",
-        level: event.eventType.includes("failed") ? "error" : "info",
-        payload: { prpEvent: event as unknown as Record<string, unknown> },
-        nativeSource: {
-          sourceInstanceId: event.sourceInstanceId,
-          sourceEventId: event.sourceEventId,
-          sourceSeq: event.sourceSeq,
-          protocolSchemaVersion: event.schemaVersion,
-          canonicalPayload: event as unknown as Record<string, unknown>,
-        },
-      });
-      // The nested append has no publication side effects. Revocation rolls
-      // back its event and sequence allocation before the outer commit.
-      this.#assertActive(options);
-      return receipt;
-    });
+    const observerKey = JSON.stringify([event.sourceInstanceId, event.sourceEventId]);
+    const input: AppendHeartbeatRunEventInput = {
+      companyId: this.#binding.companyId,
+      runId: this.#binding.runId,
+      agentId: this.#binding.agentId,
+      eventType: event.eventType,
+      stream: "system",
+      level: event.eventType.includes("failed") ? "error" : "info",
+      payload: { prpEvent: event as unknown as Record<string, unknown> },
+      nativeSource: {
+        sourceInstanceId: event.sourceInstanceId,
+        sourceEventId: event.sourceEventId,
+        sourceSeq: event.sourceSeq,
+        protocolSchemaVersion: event.schemaVersion,
+        canonicalPayload: event as unknown as Record<string, unknown>,
+      },
+      assertWritable: () => this.#assertActive(options),
+    };
+    if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
+      return this.#appendStreamingEvent({ event, input, options, startedAtMs: persistenceStartedAt, startedClock: persistenceClock },
+        options?.streaming === true);
+    }
+    // Every other event commits after each delta appended before it.
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    this.#streamedSinceBoundary = false;
     this.#assertActive(options);
-    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceStartedAt + performance.now() - persistenceClock); } catch {}
+    const pendingObservation = this.#deferredEventObservers.get(observerKey);
+    const persisted = await appendHeartbeatRunEvent(this.#db, input);
+    this.#assertActive(options);
+    const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
+    let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
+    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt);
+    if (options?.deferPostCommitObservers) {
+      this.#deferredEventObservers.set(observerKey, observation);
+      void observation.then(() => {
+        if (this.#deferredEventObservers.get(observerKey) === observation) this.#deferredEventObservers.delete(observerKey);
+      }, error => {
+        this.#deferredObserverFailure ??= { error };
+        if (this.#deferredEventObservers.get(observerKey) === observation) this.#deferredEventObservers.delete(observerKey);
+      });
+    } else {
+      await observation;
+    }
+    return {
+      cursor: persisted.row.seq,
+      highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+      disposition: persisted.disposition,
+    };
+  }
+
+  async #observePersistedEvent(
+    event: PrpEvent,
+    persisted: AppendHeartbeatRunEventResult,
+    persistenceStartedAt: number,
+    persistenceEndedAt: number,
+  ): Promise<void> {
+    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
     if (persisted.disposition === "committed") {
       try {
         publishLiveEvent({
@@ -313,19 +523,85 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         });
       } catch {
       }
-      await this.#onCommittedEvent?.(event);
+      await this.#onCommittedEvent?.(event, persisted.row.seq);
     } else {
       // A recovered runner may replay the event whose durable side effects
       // parked the prior attempt. Do not repeat those effects, but let the
       // embedding runtime refresh observational state before appendEvent
       // returns to its synchronous governed-wait boundary.
-      await this.#onDuplicateEvent?.(event);
+      await this.#onDuplicateEvent?.(event, persisted.row.seq);
     }
-    return {
-      cursor: persisted.row.seq,
-      highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
-      disposition: persisted.disposition,
-    };
+  }
+
+  /**
+   * Queues a text delta for the next batch. A caller that waits for each
+   * receipt (no `streaming`) commits at once. Deltas up to the first one with
+   * text after any other event also commit at once.
+   * Later streaming deltas wait at most the batch time, or until the batch is full.
+   */
+  #appendStreamingEvent(pending: Omit<PendingStreamingEvent, "resolve" | "reject">, streaming: boolean): Promise<AppendReceipt> {
+    return new Promise<AppendReceipt>((resolve, reject) => {
+      this.#streamingBatch.push({ ...pending, resolve, reject });
+      this.#streamingEventsPending += 1;
+      if (!streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX) {
+        void this.#flushStreamingEvents();
+      } else {
+        this.#streamingTimer ??= setTimeout(() => { void this.#flushStreamingEvents(); }, this.#streamingBatchMs);
+      }
+    });
+  }
+
+  flushStreamingEvents(): void {
+    void this.#flushStreamingEvents();
+  }
+
+  /** Commits the queued deltas. Resolves after every earlier batch has settled, and never rejects. */
+  #flushStreamingEvents(): Promise<void> {
+    if (this.#streamingTimer !== null) clearTimeout(this.#streamingTimer);
+    this.#streamingTimer = null;
+    if (this.#streamingBatch.length > 0 && !this.#streamingFlushQueued) {
+      this.#streamingFlushQueued = true;
+      this.#streamingTail = this.#streamingTail.then(async () => {
+        this.#streamingFlushQueued = false;
+        const batch = this.#streamingBatch;
+        this.#streamingBatch = [];
+        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
+          this.#streamedSinceBoundary = true;
+        }
+        try { await this.#commitStreamingEvents(batch); }
+        finally { this.#streamingEventsPending -= batch.length; }
+      });
+    }
+    return this.#streamingTail;
+  }
+
+  /**
+   * One transaction for the batch. Each committed row is then observed in
+   * order; an observer failure rejects only that delta's receipt, and the
+   * later rows are still observed.
+   */
+  async #commitStreamingEvents(batch: PendingStreamingEvent[]): Promise<void> {
+    let receipts: AppendHeartbeatRunEventResult[];
+    try {
+      const assertWritable = () => { for (const pending of batch) this.#assertActive(pending.options); };
+      receipts = await appendHeartbeatRunEventBatch(this.#db, batch.map(pending => pending.input), assertWritable);
+      assertWritable();
+    } catch (error) {
+      for (const pending of batch) pending.reject(error);
+      return;
+    }
+    for (const [index, pending] of batch.entries()) {
+      const persisted = receipts[index]!;
+      const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
+      try {
+        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
+      } catch (error) {
+        pending.reject(error);
+        continue;
+      }
+      pending.resolve({ cursor: persisted.row.seq, highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+        disposition: persisted.disposition });
+    }
   }
 
   async replayEvents(input: ReplayControlPlaneEventsInput) {
@@ -335,6 +611,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     ) {
       throw new Error("native_replay_binding_mismatch");
     }
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
     const rows = await this.#db
       .select({ payload: heartbeatRunEvents.payload, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents)
@@ -358,8 +635,39 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return { events, highestContiguousSourceSeq: cursor };
   }
 
+  /**
+   * Proves from durable rows, across every runner instance, that this run has
+   * no provider event, source-sequenced runner event, tool invocation, or
+   * accepted result. Any such row, or a read failure, denies the proof.
+   */
+  async provesNoRunProviderWork(options: { signal: AbortSignal }): Promise<boolean> {
+    options.signal.throwIfAborted();
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    const { companyId, runId } = this.#binding;
+    const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
+    const result = await this.#db.execute(sql`select
+      exists (select 1 from ${heartbeatRunEvents} event where event.company_id = ${companyId} and event.run_id = ${runId}
+        and (event.source_event_id is not null or event.source_instance_id is not null
+          or event.event_type in (${providerEvents})
+          or event.event_type ~ '^(turn|item|tool|semantic_tool|run[.]result)[.]')) as "providerEvent",
+      exists (select 1 from ${toolInvocations} invocation where invocation.company_id = ${companyId}
+        and invocation.run_id = ${runId}) as "toolInvocation",
+      exists (select 1 from ${nativeRunResults} result where result.company_id = ${companyId}
+        and result.run_id = ${runId}) as "acceptedResult",
+      exists (select 1 from ${nativeRunFinalizations} coordinator where coordinator.run_id = ${runId}
+        and coordinator.result_id is not null) as "finalizedResult"`);
+    options.signal.throwIfAborted();
+    const rows = (Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    if (!row) return false;
+    return row.providerEvent === false && row.toolInvocation === false
+      && row.acceptedResult === false && row.finalizedResult === false;
+  }
+
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput, options?: { signal: AbortSignal }): Promise<void> {
     this.#assertActive(options);
+    if (this.#streamingEventsPending > 0) await this.#flushStreamingEvents();
+    if (this.#deferredEventObservers.size > 0 || this.#deferredObserverFailure) await this.#settleDeferredObservers(options);
     value = redactRunnerApiPayloads(this.#identityRedactor.redact(value));
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
@@ -386,9 +694,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
 
     const insertedResult = await this.#db.transaction(async (tx) => {
-      // Result insertion checks the task foreign key. Acquire that parent lock
-      // before the run, matching task mutations that subsequently update a run.
-      // Otherwise concurrent chat/status writes can deadlock after generation.
+      // Status commit and snapshot publication lock coordinator → issue → run.
+      // A replay must follow that order too: holding the issue while waiting
+      // for the coordinator deadlocks a status commit's issue UPDATE lock.
+      const recovery = this.#nativeRecovery;
+      const owner = recovery ? await lockNativeRunnerCheckpointOwner(tx, recovery.owner) : null;
+      // Result insertion checks the task FK. Keep its parent lock before run.
       await tx.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
         .for("key share");
@@ -398,6 +709,10 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       this.#assertActive(options);
       if (!run || !this.#matchesPersistedBinding(run)) {
         throw new Error("native_result_binding_mismatch");
+      }
+      if (recovery && owner) {
+        const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+        await validateNativeRunnerCheckpointOwner(tx, recovery.owner, { ...owner, now: clock.now }, false);
       }
 
       const callerConditions = [eq(nativeRunResults.serverFingerprint, serverFingerprint)];
@@ -411,6 +726,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
         return false;
       }
+      if (owner?.resultId) throw new Error("structured_result_replay_conflict");
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,
@@ -458,6 +774,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         nativePhaseUpdatedAt: new Date(),
         resultJson: {
           ...record(run.resultJson),
+          // Publish the accepted contract with its durable receipt. Recovery
+          // may settle this run without the original adapter ever returning.
+          nativeTerminal: value.terminal,
           prpTurnTerminalState: value.terminal.turnTerminalState,
           prpRunTerminalState: value.terminal.runTerminalState,
           prpReportedWorkDisposition: value.terminal.reportedWorkDisposition,
@@ -467,6 +786,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       this.#assertActive(options);
       return true;
     });
+    if (insertedResult) crashPoint("native.result.after_accept_before_finalize");
     if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }

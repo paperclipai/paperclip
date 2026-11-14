@@ -136,6 +136,7 @@ export function commentsToTaskChatItems(
       agent: effectiveAgentId(comment) ? ctx.agentMap?.get(effectiveAgentId(comment)!) ?? { id: effectiveAgentId(comment)! } : undefined,
       text: comment.body,
       origin: comment.origin ?? "comment",
+      chatMessage: comment.metadata?.chatMessage,
       sourceChannel: kind === "human" ? comment.metadata?.sourceChannel : undefined,
       timestamp: formatTaskChatCommentTimestamp(comment, kind),
       optimistic,
@@ -145,6 +146,7 @@ export function commentsToTaskChatItems(
         : undefined,
       agentIcon,
       onBehalfOfUserName,
+      ...(kind === "agent" && sourceRunId ? { sourceRunId } : {}),
       // System notices carry their structured hints through to the render
       // layer (PAP-443); other authors keep the item lean.
       presentation: kind === "system" ? comment.presentation ?? null : undefined,

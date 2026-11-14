@@ -35,21 +35,22 @@ export function ArtifactFront({
       );
     case "media":
       return (
-        <ArtifactPrint
-          subject={subject}
-          size={print}
-          onMediaLoad={onMediaLoad}
-          onMediaError={(event) => {
-            onOwnError();
-            onMediaError?.(event);
-          }}
-          style={style}
-        />
+        <div data-artifact-front className="shrink-0" style={style}>
+          <ArtifactPrint
+            subject={subject}
+            size={print}
+            onMediaLoad={onMediaLoad}
+            onMediaError={(event) => {
+              onOwnError();
+              onMediaError?.(event);
+            }}
+          />
+        </div>
       );
     case "media-fallback":
       return (
         <div data-artifact-front className="shrink-0" style={style}>
-          <IconSheet subject={subject} play />
+          <IconSheet subject={subject} play={subject.kind !== "image"} />
         </div>
       );
     default:

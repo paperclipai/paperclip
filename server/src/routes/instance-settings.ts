@@ -1,5 +1,7 @@
+import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
+import { verifiedCloudControlClaims, verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import { companies, type Db } from "@paperclipai/db";
 import {
   patchInstanceSettingsSchema,
@@ -8,6 +10,7 @@ import {
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
+import { assertAgentsReadyForEnvironmentChange } from "../services/plugin-environment-driver.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
@@ -29,7 +32,7 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -87,9 +90,7 @@ function publishActivitiesBestEffort(publications: ActivityPublication[], action
 }
 
 function assertCanManageInstanceSettings(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
-  }
+  assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }
@@ -132,7 +133,13 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
+export function instanceSettingsRoutes(
+  db: Db,
+  pluginWorkers?: PluginWorkerManager,
+  prepareIdleDatabaseBackup?: () => Promise<boolean>,
+  deadlineOwners?: IdleDeadlineOwners,
+  prepareIdlePluginLifecycle?: (input: { canRetire: () => boolean }) => Promise<"none" | "present" | "unknown">,
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -154,27 +161,15 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
           "instance",
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
+        const previousId = (await svc.get()).defaultEnvironmentId;
+        const environmentById = async (id: unknown) => typeof id === "string" ? environments.getById(id) : null;
+        await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
+          { inheritsDefault: true });
       }
-      // An explicit tenant write of the instance default reclassifies its
-      // attribution: whatever the default becomes — including a deliberate
-      // re-selection of the managed sandbox row — it is tenant-chosen, so
-      // the reconciliation stamp marker must not survive to let a later
-      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
-      // stamp and revert it. The marker clear and the settings write commit
-      // in ONE transaction, so no partial failure can desync attribution
-      // from the default (neither a stale stamp on a tenant choice, nor a
-      // reconciliation default that lost its marker and can never revert).
-      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
-      const managedSandbox = writesDefault
-        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
-        : null;
-      const updated = await db.transaction(async (tx) => {
-        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
-          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
-          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
-        }
-        return svc.update(req.body, { db: tx });
-      });
+      // An explicit default write is an ordinary set value: boot only fills an
+      // unset, local or dangling default (`fillUnsetInstanceDefault`), and the
+      // lock it takes on this row means it never overwrites a concurrent write.
+      const updated = await svc.update(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
@@ -307,7 +302,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
     },
   );
 
-  router.get("/instance/task-drain", async (req, res) => {
+  const readTaskDrainStatus: RequestHandler = async (req, res) => {
     assertBoardOrgAccess(req);
     if (req.query.upgradeReadiness === "1") {
       // This covers all companies and must not expose instance-wide work to a member.
@@ -319,7 +314,12 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
-      const scheduledIssueMonitors = req.query.scheduledWake === "2";
+      const domainDeadlines = req.query.scheduledWake === "domain-deadlines-v1";
+      const capabilities = verifiedIdleCapabilities(req);
+      if (domainDeadlines && capabilities?.deadlineCatalog !== "domain_deadlines_v1") {
+        throw forbidden("Domain deadline reports require the signed Cloud deadline catalog");
+      }
+      const scheduledIssueMonitors = req.query.scheduledWake === "2" || domainDeadlines;
       const scheduledRoutines = req.query.scheduledWake === "1" || scheduledIssueMonitors;
       if (scheduledRoutines && req.actor.source !== "cloud_control") {
         throw forbidden("Scheduled wake reports require Cloud control authority");
@@ -334,12 +334,27 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       }
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
-        () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors);
+        diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic,
+          deadlineCapability: domainDeadlines ? capabilities : undefined }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
+        { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+          prepareLocalWork: async ({ canPrepare }) => {
+            const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
+            if (result.busy || result.failed) return "present";
+            return prepareIdlePluginLifecycle ? prepareIdlePluginLifecycle({ canRetire: canPrepare }) : "none";
+          },
+          ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }
     res.json(heartbeat.getTaskDrainStatus());
+  };
+  router.get("/instance/task-drain", readTaskDrainStatus);
+  router.post("/instance/task-drain/status", async (req, res, next) => {
+    if (req.actor.source !== "cloud_control" || verifiedCloudControlClaims(req)?.action !== "task-drain:read-body") {
+      throw forbidden("Cloud body-bound read authority is required");
+    }
+    await readTaskDrainStatus(req, res, next);
   });
 
   router.post(

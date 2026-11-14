@@ -1,3 +1,4 @@
+import { skillExecutionContent } from "../skill-execution-content.js";
 import { withRuntimeAssetUse, removeRuntimeAssetTree } from "./runtime-asset-retention.js";
 import { cachedSkillAsset, rememberSkillAsset } from "./skill-asset-cache.js";
 import { verifyFileManifest, type FileManifestEntry } from "../file-manifest-cache.js";
@@ -10,8 +11,8 @@ import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, desc, eq } from "drizzle-orm";
+import { agentInstructionRevisions, agents, companySkillVersions, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
@@ -33,6 +34,7 @@ import { agentInstructionsService, agentInstructionsBundleMode } from "../agent-
 import { agentInstructionRevisionService } from "../agent-instruction-revisions.js";
 import { toolAccessService } from "../tool-access.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
+import { rehydratePreservedRuntimeSkill } from "./runtime-skill-preservation.js";
 
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
@@ -168,7 +170,7 @@ async function materializeInstructionBundle(db: Db, agent: RuntimeAgent, agentFi
     const entryPath = safeRelativePath(current.revision.entryFile, "instruction entry path");
     return { entryPath, bundle: await materializeAsset([{ path: entryPath, content: Buffer.from(current.content, "utf8"), mode: 0o444 }]) };
   }
-  const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+  const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
   if (agentInstructionsBundleMode(agent) === "managed") {
     // The database head remains authoritative when a saved revision could not
     // update its disk projection. Overlay the exact committed snapshot directly;
@@ -185,6 +187,139 @@ async function materializeInstructionBundle(db: Db, agent: RuntimeAgent, agentFi
   return { entryPath, bundle: await materializeAsset(files) };
 }
 
+async function materializeSkillAsset(source: string) {
+    let bundle = await measureRunPhase("runtime_context.asset_verify", () => cachedSkillAsset(source));
+    if (!bundle) {
+      const files = await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(source));
+      bundle = await materializeAsset(files);
+      const manifest: FileManifestEntry[] = files.map(file => ({ path: file.path, size: file.content.length,
+        sha256: sha256(file.content), mode: file.mode & 0o555, executable: Boolean(file.mode & 0o111) }));
+      if (await verifyFileManifest(source, manifest)) rememberSkillAsset(source, manifest, bundle);
+    }
+    return bundle;
+}
+
+async function localRuntimeAssetPresent(asset: NativeRuntimeAssetReference) {
+  const root = path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
+  const manifest = await fs.readFile(path.join(root, "manifests", `${asset.digest}.json`), "utf8").catch(() => null);
+  return manifest !== null && sha256(manifest) === asset.manifestDigest
+    && (await fs.lstat(path.join(root, "bundles", asset.digest)).catch(() => null))?.isDirectory() === true;
+}
+
+function singleFileAssetDigest(entryPath: string, content: Buffer) {
+  return sha256(JSON.stringify([{ path: entryPath, sha256: sha256(content), mode: 0o444, size: content.byteLength }]));
+}
+
+export async function rehydratePinnedInstructionAsset(
+  db: Db,
+  binding: { companyId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+): Promise<NativeRuntimeContextSnapshot> {
+  const pinned = context.instructions.bundle;
+  if (pinned.rootPath !== path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets", "bundles", pinned.digest)) return context;
+  if (await localRuntimeAssetPresent(pinned)) return context;
+  const matches = (bundle: NativeRuntimeAssetReference) => bundle.digest === pinned.digest
+    && bundle.manifestDigest === pinned.manifestDigest && bundle.fileCount === pinned.fileCount && bundle.totalBytes === pinned.totalBytes;
+  if (pinned.fileCount === 1) {
+    const rows = await db.select({ contentBase64: agentInstructionRevisions.contentBase64 }).from(agentInstructionRevisions)
+      .where(and(eq(agentInstructionRevisions.companyId, binding.companyId), eq(agentInstructionRevisions.agentId, binding.agentId),
+        eq(agentInstructionRevisions.entryFile, context.instructions.entryPath)))
+      .orderBy(desc(agentInstructionRevisions.createdAt)).limit(500);
+    for (const row of rows) {
+      const content = Buffer.from(row.contentBase64, "base64");
+      if (singleFileAssetDigest(context.instructions.entryPath, content) !== pinned.digest) continue;
+      const bundle = await materializeAsset([{ path: context.instructions.entryPath, content, mode: 0o444 }]);
+      if (matches(bundle)) return { ...context, instructions: { ...context.instructions, bundle } };
+    }
+  }
+  const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, binding.companyId), eq(agents.id, binding.agentId)));
+  if (agent) {
+    for (const agentFiles of [true, false]) {
+      const rebuilt = await materializeInstructionBundle(db, agent, agentFiles).catch(() => null);
+      if (rebuilt && rebuilt.entryPath === context.instructions.entryPath && matches(rebuilt.bundle)) {
+        return { ...context, instructions: { ...context.instructions, bundle: rebuilt.bundle } };
+      }
+    }
+  }
+  return context;
+}
+
+export async function rehydratePinnedSkillAssets(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+): Promise<NativeRuntimeContextSnapshot> {
+  if (!context.skills.length) return context;
+  const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId,
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    nativeIssueId: heartbeatRuns.nativeIssueId, runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)));
+  if (!run) throw new Error("Skill recovery has no matching admitted run");
+  const actor = { type: "agent" as const, companyId: binding.companyId, agentId: binding.agentId,
+    runId: binding.runId, source: "agent_jwt" as const,
+    onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId };
+  const delivery = skillExecutionContent(db, { actor });
+  const pins = run.contextSnapshot?.skillVersions;
+  const skills: NativeRuntimeContextSnapshot["skills"] = [];
+  for (const skill of context.skills) {
+    if (!skill.versionId) {
+      // Newly admitted local assets remain usable during an ordinary rolling
+      // upgrade. A migrated asset uses its exact durable receipt on cold hosts.
+      const preserved = run.runnerProfileJson?.nativeRuntimeSkillPreservation;
+      if (!preserved) { skills.push(skill); continue; }
+      const bundle = await rehydratePreservedRuntimeSkill(db, run, skill, materializeSkillAsset);
+      skills.push({ ...skill, bundle });
+      continue;
+    }
+    if (pins !== undefined && (!pins || typeof pins !== "object" || Array.isArray(pins)
+      || (pins as Record<string, unknown>)[skill.key] !== skill.versionId)) {
+      throw new Error("Skill recovery differs from the admitted version selection");
+    }
+    const [version] = await db.select({ skillId: companySkillVersions.companySkillId }).from(companySkillVersions).where(and(
+      eq(companySkillVersions.companyId, binding.companyId), eq(companySkillVersions.id, skill.versionId)));
+    if (!version) throw new Error("Pinned skill version is unavailable for recovery");
+    const bundle = await delivery.withVersion({ companyId: binding.companyId, skillId: version.skillId, versionId: skill.versionId },
+      source => materializeSkillAsset(source));
+    if (bundle.digest !== skill.bundle.digest || bundle.manifestDigest !== skill.bundle.manifestDigest
+      || bundle.fileCount !== skill.bundle.fileCount || bundle.totalBytes !== skill.bundle.totalBytes) {
+      throw new Error("Recovered skill projection does not match its admitted digest");
+    }
+    skills.push({ ...skill, bundle });
+  }
+  return { ...context, skills };
+}
+
+/**
+ * The admitted context names every skill by digest, so the Runner's copy is
+ * described without local files. Pinned skill files are rehydrated on this
+ * server now, or, when reconnecting to a live remote Runner that already holds
+ * them, only if a launch must stage them again.
+ */
+export async function prepareRuntimeContextSource(
+  db: Db,
+  binding: { companyId: string; runId: string; agentId: string },
+  context: NativeRuntimeContextSnapshot,
+  options: { deferUntilStaged: boolean },
+) {
+  // Defer only when preparation already checked access to every admitted skill:
+  // each one is pinned to its exact version in the run's saved selection.
+  const pinned = options.deferUntilStaged && context.skills.length > 0
+    ? await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.agentId, binding.agentId)))
+      .then(([run]) => {
+        const pins = run?.contextSnapshot?.skillVersions;
+        return Boolean(pins && typeof pins === "object" && !Array.isArray(pins)
+          && context.skills.every(skill => skill.versionId && (pins as Record<string, unknown>)[skill.key] === skill.versionId));
+      })
+    : options.deferUntilStaged;
+  let staged = pinned ? null : await rehydratePinnedSkillAssets(db, binding, context);
+  return {
+    described: staged ?? context,
+    forStaging: async () => (staged ??= await rehydratePinnedSkillAssets(db, binding, context)),
+  };
+}
+
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
@@ -194,16 +329,7 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
     const entry = byKey.get(key);
     if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
     if (entry.sourceStatus === "missing") throw new Error(entry.missingDetail ?? `assigned runtime skill source is missing: ${key}`);
-    let bundle = await measureRunPhase("runtime_context.asset_verify", () => cachedSkillAsset(entry.source));
-    if (!bundle) {
-      const files = await measureRunPhase("runtime_context.asset_read", () => collectDirectoryFiles(entry.source));
-      bundle = await materializeAsset(files);
-      const manifest: FileManifestEntry[] = files.map(file => ({ path: file.path, size: file.content.length,
-        sha256: sha256(file.content), mode: file.mode & 0o555, executable: Boolean(file.mode & 0o111) }));
-      // Populate the stat/digest cache against these exact source bytes before
-      // remembering the reference. A concurrent source edit cannot seed it.
-      if (await verifyFileManifest(entry.source, manifest)) rememberSkillAsset(entry.source, manifest, bundle);
-    }
+    const bundle = await materializeSkillAsset(entry.source);
     return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle };
   }));
 }
