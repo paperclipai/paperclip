@@ -23,12 +23,26 @@ export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
 /**
- * The cancelled request's setup label must be absent from the document's final revision. Whether the label
- * was ever saved is checked separately on the consuming run's revisions; the plan's layout is not graded.
+ * The contact section the consumed request added, located by the setup label: every saved line that carries
+ * the label, plus the body of any Markdown section whose heading carries it.
  */
-export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null }>, latestRevisionId: unknown, label: string) {
-  const final = rows.find(row => row.id === latestRevisionId);
-  return !!final && label.length > 0 && !(final.body ?? "").includes(label);
+export function labelledContactLines(body: string, label: string): string[] {
+  const lines: string[] = []; let sectionLevel = 0;
+  for (const line of body.split("\n").map(row => row.trim())) {
+    const heading = /^(#{1,6})\s/.exec(line)?.[1]?.length;
+    if (heading) sectionLevel = line.includes(label) ? heading : heading <= sectionLevel ? 0 : sectionLevel;
+    if (line && (sectionLevel > 0 || line.includes(label))) lines.push(line);
+  }
+  return lines;
+}
+/**
+ * None of the contact-section lines the consuming run saved survives in the final revision. The label may
+ * still be cited elsewhere, for example in a note that records the removal; the plan's layout is not graded.
+ */
+export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, label: string) {
+  const added = label.length > 0 ? labelledContactLines(consumedBody, label) : [];
+  const kept = new Set((finalBody ?? "").split("\n").map(row => row.trim()));
+  return finalBody !== undefined && added.length > 0 && !added.some(line => kept.has(line));
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -142,14 +156,17 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
     state.initialRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id);
-    // The consumed request asked for a contact section labelled with the attempt nonce. Its
-    // consuming run must have saved that label, and the cancellation run's latest plan must drop it.
+    // The consumed request asked for a contact section labelled with the attempt nonce. Its consuming run
+    // must have saved that label, and the cancellation run's latest plan must drop the section it added.
     const label = ctx.input.nonce, worker = (state.worker as Entity).id;
-    state.consumedLabelSaved = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
+    const consumed = o.revisions.filter(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
+    state.consumedLabelSaved = consumed.length > 0;
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
-    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => documentContactRemoved(
-      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, label));
+    state.finalPlanWithoutContact = latest.length > 0 && consumed.every(row => {
+      const doc = o.documents.find(d => d.id === row.documentId);
+      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, label);
+    });
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },
