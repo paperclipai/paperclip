@@ -268,7 +268,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const observed = createDb(externalUrl ?? temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents }, capture);
-    const decisions = new Map<string, unknown>();
+    const decisions = new Map<string, string>();
     try {
       const service = attentionRetentionService(observed);
       for (const sourceKind of ["failed_run", "review", "issue_thread_interaction"] as const) {
