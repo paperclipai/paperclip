@@ -3244,6 +3244,21 @@ impl CommandExecutor for AcpxCommandExecutor {
         self.retained_events()
     }
 
+    fn provider_poll_is_live(&self) -> bool {
+        self.restore_checked
+            && self.persistence_error.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.awaits_next_turn())
+            && self.state.as_ref().is_some_and(|state| {
+                matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+                    && state.active_turn_id.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+            })
+    }
+
     fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.ensure_persistence_healthy()?;
         if self.session.is_none()

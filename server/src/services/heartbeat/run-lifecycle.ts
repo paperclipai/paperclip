@@ -1,3 +1,4 @@
+import { settleReattachRun } from "./run-admission.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
@@ -59,6 +60,7 @@ import {
   isConversationAdapter,
 } from "../conversation-continuation.js";
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { randomUUID } from "node:crypto";
@@ -288,6 +290,9 @@ const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
   WORKSPACE_VALIDATION_FAILURE_CODE,
   ...NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
 ]);
+
+/** Each attempt waits at most the 1s task-row lock_timeout, so a Stop stays prompt. */
+const LEGACY_TERMINALIZATION_LOCK_ATTEMPTS = 3;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 
@@ -1279,7 +1284,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus, async writer => {
+    const legacyTerminalization = previousStatus?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status);
+    const write = () => writeRunStatus(status, previousStatus, async writer => {
       if (options?.setupFailure && previousStatus?.runtimeMode === "native" && previousStatus.nativeIssueId) {
         await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
           .where(and(eq(nativeRunFinalizations.runId, runId),
@@ -1292,7 +1298,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             eq(nativeRunFinalizations.companyId, previousStatus.companyId)))
           .for("update");
       }
-      return previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
+      return previousStatus && legacyTerminalization
         ? terminalizeLegacyExecution({
             db: writer,
             run: previousStatus,
@@ -1347,6 +1353,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               throw error;
             });
     });
+    // Legacy terminalization takes the task row under a short lock_timeout so
+    // it never queues behind a slow task writer. Losing that race rolls back
+    // the whole transaction, so a bounded fresh attempt is safe.
+    const updated = legacyTerminalization
+      ? await retryTransientLockContention(write, LEGACY_TERMINALIZATION_LOCK_ATTEMPTS)
+      : await write();
 
     if (updated) {
       publishLiveEvent({
@@ -2316,7 +2328,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     runId: string,
     meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind: "local" | "remote" },
   ) {
-    return retryTransientRunWrite(() => persistHeartbeatRunProcessMetadata(db, runId, meta));
+    const persisted = await retryTransientRunWrite(() => persistHeartbeatRunProcessMetadata(db, runId, meta));
+    settleReattachRun(runId, "reached");
+    return persisted;
   }
 
   async function clearDetachedRunWarning(runId: string) {

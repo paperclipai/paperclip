@@ -10,6 +10,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
+import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
@@ -1108,7 +1109,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .set({ contextSnapshot: withRunRedactionHistory(input.mergedContextSnapshot, current.contextSnapshot), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),

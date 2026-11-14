@@ -37,8 +37,8 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
-export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "tailscale.tailnet";
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack" | "tailscale";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -946,6 +946,7 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (profile === "tailscale.tailnet") return { provider: "tailscale", scopes: ["auth_keys:create:once"] };
   if (profile === "slack.manager") return { provider: "slack", scopes: SLACK_MANAGER_SCOPES };
   if (profile === "github.bot") return { provider: "github", scopes: [] };
   if (isAsanaConnectorProfileId(profile)) {
@@ -961,6 +962,7 @@ function isExpectedProviderAuthorizationUrl(
   profile: PaperclipCloudConnectorProfileId,
   url: URL,
 ): boolean {
+  if (profile === "tailscale.tailnet") return url.origin === "https://login.tailscale.com" && url.pathname === "/a/oauth_authorize";
   if (profile === "slack.manager") return url.origin === "https://slack.com" && url.pathname === "/oauth/v2/authorize";
   if (isAsanaConnectorProfileId(profile)) {
     return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
@@ -972,7 +974,7 @@ function isExpectedProviderAuthorizationUrl(
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
+  return value === "tailscale.tailnet" || value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

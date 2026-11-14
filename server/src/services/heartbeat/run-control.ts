@@ -72,6 +72,7 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
+import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
 import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
 import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
@@ -1249,10 +1250,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     let caseHandoffRetryClaimed = false;
     if (handoffIssueId && supersedesCaseHandoff && options.resultJson?.caseHandoffYieldStop !== true) {
       const publications: ActivityPublication[] = [];
+      let taskRowLocked = false;
       const applySupersession = () => db.transaction(async tx => {
+        taskRowLocked = false;
+        // As in legacy terminalization, wait at most 1s for the task row so a
+        // board Stop never queues behind a slow task writer. Later locks keep
+        // the transaction's previous timeout.
+        const [settings] = await tx.execute(sql`select current_setting('lock_timeout') as lock_timeout`);
+        await tx.execute(sql`select set_config('lock_timeout', '1000', true)`);
         const [issue] = await tx.select({ id: issues.id, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
           assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
           .where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
+        taskRowLocked = true;
+        await tx.execute(sql`select set_config('lock_timeout', ${String(settings.lock_timeout)}, true)`);
         const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
           eq(heartbeatRuns.companyId, run!.companyId))).for("update");
         if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
@@ -1313,9 +1323,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           supersessionApplied = await applySupersession();
           break;
         } catch (error) {
-          const value = parseObject(error);
-          const deadlock = value.code === "40P01" || parseObject(value.cause).code === "40P01";
-          if (!deadlock || attempt >= 2) rethrowNativeCancellationLockConflict(error);
+          const code = postgresErrorCode(error);
+          const taskRowBusy = code === "55P03" && !taskRowLocked;
+          if ((code !== "40P01" && !taskRowBusy) || attempt >= 2) {
+            // The task row stayed locked through every attempt. Nothing was
+            // committed, so the same Stop can be sent again.
+            if (taskRowBusy) {
+              throw conflict("The task is busy, so Stop could not finish. Try Stop again.", {
+                code: "run_stop_busy", runId,
+              });
+            }
+            rethrowNativeCancellationLockConflict(error);
+          }
           // PostgreSQL aborted the entire transaction. Discard its local
           // receipts before re-reading current authority under fresh locks.
           // Provider Stop and publication happen only after this boundary.
@@ -1645,6 +1664,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                 processCancellationSettlement,
               );
             }
+          }
+          // Another writer held the task row through every bounded attempt.
+          // The terminal write rolled back, so the same Stop can be sent again.
+          if (isTransientLockContention(error)) {
+            throw conflict("The task is busy, so Stop could not finish. Try Stop again.", {
+              code: "run_stop_busy", runId: run.id,
+            });
           }
           throw error;
         } finally {

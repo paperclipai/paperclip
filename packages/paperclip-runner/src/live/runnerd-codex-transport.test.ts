@@ -2450,6 +2450,136 @@ it("waits for the exact durable suspension command behind prior close work", asy
   expect(pumpCount).toBeGreaterThanOrEqual(2);
 });
 
+it("gives a suspend that completes near the close deadline its whole proof window from the completion", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const closeDeadline = startedAt + 300;
+  let completedAt = 0;
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (Date.now() - startedAt >= 250 && commands[0]?.status === "pending") {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: closeDeadline,
+    proofWindowMs: 400,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(true);
+  expect(completedAt).toBeGreaterThan(0);
+  expect(Date.now()).toBeGreaterThan(closeDeadline);
+  expect(Date.now()).toBeLessThanOrEqual(completedAt + 400 + 50);
+});
+
+async function suspendProofAfterCompletion(input: { lifecycleAt: (sinceCompletionMs: number) => string; runId?: string;
+  deadlineMs: number; proofWindowMs: number; proofSettleMs: number }) {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  let completedAt: number | null = null;
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      const lifecycle = input.lifecycleAt(completedAt === null ? 0 : Date.now() - completedAt);
+      const refutation = input.runId ? "identity" : lifecycle === "suspended" ? null : "lifecycle";
+      if (refutation) throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError(refutation);
+      return { lifecycle };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: startedAt + input.deadlineMs,
+    proofWindowMs: input.proofWindowMs,
+    proofSettleMs: input.proofSettleMs,
+    pollIntervalMs: 20,
+  });
+  return { proven, elapsedMs: Date.now() - startedAt };
+}
+
+it("proves a suspension whose suspended state appears 1.5 s after the command completed", async () => {
+  const { proven } = await suspendProofAfterCompletion({ lifecycleAt: since => since >= 1_500 ? "suspended" : "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(true);
+});
+
+it("fails a suspension whose state stays ready after the settle window, not after the whole proof window", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "ready",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 1_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeGreaterThanOrEqual(900);
+  expect(elapsedMs).toBeLessThan(3_000);
+});
+
+it("ignores a not-suspended read that started before the suspend completed, even when it answers after the proof window opened", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  let completedAt: number | null = null;
+  let reads = 0;
+  const refutations: Array<string | null> = [];
+  const proven = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      reads += 1;
+      if (reads === 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        throw new runnerdRecoveryInternals.RunnerSuspensionProofRefutedError("lifecycle");
+      }
+      if (Date.now() - completedAt! < 1_500) throw new Error("remote runner state read failed");
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (commands[0] && completedAt === null && reads >= 1) {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: Date.now() + 100,
+    proofWindowMs: 30_000,
+    proofSettleMs: 500,
+    onProofRefutation: refutation => refutations.push(refutation),
+    pollIntervalMs: 20,
+  });
+  expect(proven).toBe(true);
+  expect(refutations).not.toContain("lifecycle");
+});
+
+it("fails at the close deadline when the durable state belongs to another run", async () => {
+  const { proven, elapsedMs } = await suspendProofAfterCompletion({ lifecycleAt: () => "suspended", runId: "another-run",
+    deadlineMs: 200, proofWindowMs: 30_000, proofSettleMs: 3_000 });
+  expect(proven).toBe(false);
+  expect(elapsedMs).toBeLessThan(1_000);
+});
+
+it("bounds the proof window from the observed completion, so a proof read that never answers still ends", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: () => new Promise(() => undefined),
+    runnerHasExited: async () => true,
+    pump: () => { if (commands[0]) commands[0].status = "completed"; },
+    deadline: startedAt + 100,
+    proofWindowMs: 200,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(false);
+  expect(Date.now() - startedAt).toBeLessThan(100 + 200 + 150);
+});
+
 it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
   // An ACPX sidecar can reject session.suspend while the just-completed turn
   // is still settling. One rejected command must not leave a successful run's
