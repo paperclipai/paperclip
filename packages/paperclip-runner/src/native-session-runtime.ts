@@ -1403,20 +1403,26 @@ async function consumeTurn(
       await settlePendingDeltas();
       return { event: terminal, eventCount, highestContiguousSourceSeq, governedResult };
     };
+    let pendingRead: Promise<IteratorResult<PrpEvent>> | null = null;
+    let forcedEndTaken = false;
     while (true) {
-      const pending = eventIterator.next().catch((error) => {
-        throw providerFailure ?? error;
-      });
-      const next = providerTurnWait.started
-        ? await Promise.race([pending, providerTurnWait.forced])
-        : await pending;
+      if (pendingRead === null) {
+        pendingRead = eventIterator.next().catch((error) => {
+          throw providerFailure ?? error;
+        });
+        void pendingRead.catch(() => undefined);
+      }
+      const next = providerTurnWait.started && !forcedEndTaken
+        ? await Promise.race([pendingRead, providerTurnWait.forced])
+        : await pendingRead;
       if (stopConsumer) throw new Error("native event consumer stopped");
       if (next === null) {
-        void pending.catch(() => undefined);
+        forcedEndTaken = true;
         const ended = await endProviderTurnWait(providerTurnWait.awaitedTerminal!);
         if (ended === null) continue;
         return ended;
       }
+      pendingRead = null;
       if (next.done) {
         if (providerFailure) throw providerFailure;
         throw new Error(

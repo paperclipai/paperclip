@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { NativeExecutionInputV1 } from "./contracts/native-execution.js";
-import type { NativeSession } from "./contracts/native-session-backend.js";
+import type { NativeSession, PersistedNativeSession } from "./contracts/native-session-backend.js";
 import { executeNativeSession } from "./native-session-runtime.js";
 import { providerTurnWaitDeadline, PROVIDER_TURN_WAIT_TIMEOUT_MARGIN_MS, type ProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import type { PrpEvent, PrpStructuredRunResult } from "./protocol/replay-contract.js";
@@ -89,7 +89,20 @@ const providerTurn = (turnId: string, options: { result?: boolean; awaiting?: bo
   event(turnId, "turn.completed", { status: "completed", error: null, ...(options.awaiting ? { awaitingProviderTurn: true } : {}) }),
 ];
 
-function harness(options: { withoutInterrupt?: boolean } = {}) {
+const restartFailure = { code: "provider_turn_lost_on_restore", recoverable: true };
+const lostTerminal = { turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: restartFailure, result: null }) };
+const completedTerminal = (turnId: string) => ({ turnId, fingerprint: JSON.stringify({ terminalState: "completed", error: null, result: null }) });
+const restartCheckpoint: PersistedNativeSession = {
+  backendKind: "mock", driverKind: "codex_app_server", sessionId: identity.sessionId, identity,
+  providerSessionId: "provider-session", cursor: "0", activeTurnId: null,
+  terminalTurns: [lostTerminal], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+};
+
+interface RestartContinuation {
+  onDisposition?: (push: (...values: Array<PrpEvent | "end">) => void) => void;
+}
+
+function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinuation } = {}) {
   const queue: Array<PrpEvent | "end"> = [];
   let wake: (() => void) | null = null;
   let activeProviderTurn: string | null = null;
@@ -105,7 +118,17 @@ function harness(options: { withoutInterrupt?: boolean } = {}) {
     if (activeProviderTurn) push(event(activeProviderTurn, "turn.cancelled", { status: "cancelled", error: null }));
     else push(event("turn-1", "item.completed", { kind: "interrupt_acknowledgement", status: "provider_turn_wait_ended" }));
   });
-  const capabilities = { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+  const capabilities = { resume: options.restart !== undefined, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+  const startTurn = vi.fn(async (_input: Parameters<NativeSession["startTurn"]>[0]) => {
+    if (!options.restart) return { turnId: "turn-1" };
+    if (startTurn.mock.calls.length === 1) {
+      push(event("turn-continuation", "turn.started", { status: "inProgress" }), event("turn-continuation", "item.completed", usage),
+        event("turn-continuation", "turn.completed", { status: "completed", error: null, awaitingProviderTurn: true }));
+      return { turnId: "turn-continuation", borrowedDispositionMarker: true as const };
+    }
+    options.restart.onDisposition?.(push);
+    return { turnId: "turn-disposition" };
+  });
   const session: NativeSession = {
     identity: () => identity,
     async capabilities() { return capabilities; },
@@ -118,14 +141,22 @@ function harness(options: { withoutInterrupt?: boolean } = {}) {
         wake = null;
       }
     },
-    async startTurn() { return { turnId: "turn-1" }; },
+    startTurn,
     ...(options.withoutInterrupt ? {} : { interrupt }),
     async result() { return null; },
-    async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
-      providerSessionId: "provider-session", cursor: String(sequence), activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+    async snapshot() {
+      const base: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
+        providerSessionId: "provider-session", cursor: String(sequence), activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
+      if (!options.restart) return base;
+      const starts = startTurn.mock.calls.length;
+      return { ...base, semanticResult: null,
+        terminalTurns: [lostTerminal, ...(starts >= 1 ? [completedTerminal("turn-continuation")] : []),
+          ...(starts >= 2 ? [completedTerminal("turn-disposition")] : [])],
+        ...(starts >= 1 ? { dispositionOnlyRecoveryConsumed: starts >= 2, dispositionOnlyRecoveryTurnId: starts >= 2 ? "turn-disposition" : null } : {}) };
+    },
     async close() { push("end"); },
   };
-  return { session, push, interrupt };
+  return { session, push, interrupt, startTurn };
 }
 
 async function run(options: {
@@ -136,8 +167,9 @@ async function run(options: {
   missingResult?: (input: { turnId: string | null; terminalEvent: PrpEvent }) => PrpStructuredRunResult | null;
   withoutInterrupt?: boolean;
   pipelinesDeltas?: boolean;
+  restart?: RestartContinuation;
 }) {
-  const control = harness({ withoutInterrupt: options.withoutInterrupt });
+  const control = harness({ withoutInterrupt: options.withoutInterrupt, restart: options.restart });
   const appended: PrpEvent[] = [];
   let queued: Array<() => void> = [];
   const flushStreamingEvents = vi.fn(() => {
@@ -149,12 +181,13 @@ async function run(options: {
   const completeRun = vi.fn(async () => undefined);
   const resolveMissingResult = vi.fn(async (value: { turnId: string | null; terminalEvent: PrpEvent }) => options.missingResult?.(value) ?? null);
   control.push(...options.stream);
-  const capabilities = { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+  const capabilities = { resume: options.restart !== undefined, typedEvents: true, steering: false, interruption: true, structuredResult: true };
   const started = Date.now();
   const execution = executeNativeSession({
     input,
     backend: { async descriptor() { return { kind: "mock", name: "provider-turn", version: "1", capabilities }; },
-      async openSession() { return control.session; } },
+      async openSession() { return control.session; },
+      ...(options.restart ? { async recoverSession() { return { recovered: true, session: control.session }; } } : {}) },
     controlPlane: {
       ...(options.pipelinesDeltas ? { pipelinesStreamingEvents: true, flushStreamingEvents } : {}),
       async openRun() {}, async checkpointSession() {},
@@ -170,11 +203,12 @@ async function run(options: {
     ...(options.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: options.turnTimeoutMs }),
     resolveMissingResult,
     providerTurnWait: options.providerTurnWait,
+    ...(options.restart ? { persistedSession: restartCheckpoint, resumeInterruptedTurn: true } : {}),
   }).then((value) => { returned = value; return "finalized"; }, (error: unknown) => String(error instanceof Error ? error.message : error));
   await options.after?.(control, appended);
   const outcome = await execution;
   return { outcome, returned, appended, completeRun, resolveMissingResult, interrupt: control.interrupt, flushStreamingEvents,
-    elapsedMs: Date.now() - started };
+    startTurn: control.startTurn, elapsedMs: Date.now() - started };
 }
 
 const types = (events: PrpEvent[]) => events.map(value => value.eventType);
@@ -377,6 +411,52 @@ describe("the controller consumer with provider-started turn sequences", () => {
     expect(outcome.resolveMissingResult.mock.calls[0]![0].terminalEvent.payload).not.toHaveProperty("awaitingProviderTurn");
     expect((outcome.completeRun.mock.calls[0] as unknown[])[0]).toMatchObject({ result: planReviewWait, turnId: "provider-1",
       terminal: { runTerminalState: "succeeded", reportedWorkDisposition: "yielded" } });
+  });
+
+  const dispositionRequests = (startTurn: ReturnType<typeof harness>["startTurn"]) =>
+    startTurn.mock.calls.filter(([value]) => value.message.text.includes("Paperclip semantic-result recovery")).length;
+  const dispositionTurn = () => [
+    event("turn-disposition", "turn.started", { status: "inProgress" }),
+    event("turn-disposition", "run.result.proposed", result as unknown as Record<string, unknown>),
+    event("turn-disposition", "turn.completed", { status: "completed", error: null }),
+  ];
+
+  const ids = (events: PrpEvent[]) => events.map(value => value.sourceEventId);
+  const appendedOf = (appended: PrpEvent[], events: PrpEvent[]) =>
+    ids(appended).filter(id => ids(events).includes(id));
+
+  it("keeps reading the follow-up turn that a forced end of an idle wait starts and settles its result", async () => {
+    const turn = dispositionTurn();
+    const outcome = await run({
+      stream: [], providerTurnWait: { capMs: 100 }, withoutInterrupt: true,
+      restart: { onDisposition: push => push(...turn) },
+    });
+    expect(outcome.outcome).toBe("finalized");
+    expect(outcome.returned).toMatchObject({ result, turnId: "turn-disposition" });
+    expect(outcome.resolveMissingResult).not.toHaveBeenCalled();
+    expect(outcome.interrupt).not.toHaveBeenCalled();
+    expect(outcome.startTurn).toHaveBeenCalledTimes(2);
+    expect(dispositionRequests(outcome.startTurn)).toBe(1);
+    expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
+  });
+
+  it("appends exactly once an event that reaches the outstanding read after the forced end was taken", async () => {
+    const turn = dispositionTurn();
+    const outcome = await run({
+      stream: [], providerTurnWait: { capMs: 100 }, withoutInterrupt: true, restart: {},
+      after: async (control) => {
+        await waitFor(() => control.startTurn.mock.calls.length === 2);
+        const [first, ...rest] = turn;
+        await new Promise(resolve => setTimeout(resolve, 50));
+        control.push(first!);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        control.push(...rest);
+      },
+    });
+    expect(outcome.outcome).toBe("finalized");
+    expect(outcome.appended.filter(value => value.sourceEventId === turn[0]!.sourceEventId)).toHaveLength(1);
+    expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
+    expect(dispositionRequests(outcome.startTurn)).toBe(1);
   });
 
   it("fails the run as today when the Runner's stream ends during the wait", async () => {
