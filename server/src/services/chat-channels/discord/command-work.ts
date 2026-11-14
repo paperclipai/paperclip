@@ -1,3 +1,4 @@
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "../../task-admission.js";
 import { takeCompanyWorkBatch } from "../../company-work-batch.js";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
@@ -37,9 +38,11 @@ export function registerDiscordCommandWork(
     }
     return at;
   }
-  return coordinator.register(DELIVERY_QUEUES.chatCommandRegistration, {
+  let unsubscribeRefresh: (() => void) | undefined;
+  const worker = coordinator.register(DELIVERY_QUEUES.chatCommandRegistration, {
     retryMs,
     pausePassiveMaintenance: true,
+    onStop: () => { unsubscribeRefresh?.(); unsubscribeRefresh = undefined; },
     onSettled: hints => { for (const hint of hints ?? ["*"]) dirty.add(hint); },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
@@ -93,4 +96,12 @@ export function registerDiscordCommandWork(
     hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
+  const refresh = () => {
+    if (!canRun()) return;
+    const at = next();
+    if (at !== null && at <= Date.now()) worker.wake();
+  };
+  const unsubscribe = [subscribeTaskDrainChanges(refresh), subscribeTaskDrainExpiry(refresh)];
+  unsubscribeRefresh = () => { for (const stop of unsubscribe) stop(); };
+  return worker;
 }
