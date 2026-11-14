@@ -121,6 +121,18 @@ export async function observeCrossIssueInfluence(
       }
       throw crossIssueInfluenceRunContextError();
     }
+
+    // A run that has checked out or is executing the target issue owns it,
+    // regardless of which issue the run was originally scoped to. The checkout
+    // proves ownership — this is the exact scenario of a scoped-wake agent
+    // that checks out a different issue mid-run.
+    if (
+      input.runId === input.targetIssueCheckoutRunId ||
+      input.runId === input.targetIssueExecutionRunId
+    ) {
+      return null;
+    }
+
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier &&

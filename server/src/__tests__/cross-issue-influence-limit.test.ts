@@ -247,4 +247,33 @@ describe("cross-issue influence limit rollout", () => {
     });
     expect(fake.inserted).toEqual([]);
   });
+
+  // Regression test for CRE-8889: a scoped-wake run (contextSnapshot.issueId set
+  // to its wake issue) that checks out a *different* issue mid-run must be allowed
+  // to PATCH/comment on that checked-out issue. The fix extends the checkout/execution
+  // ownership bypass to the non-null sourceIssueId branch.
+  it.each([
+    ["checkout", "11111111-1111-4111-8111-111111111111", null],
+    ["execution", null, "11111111-1111-4111-8111-111111111111"],
+  ] as const)("allows a scoped run that owns the target issue via %s (CRE-8889 regression)", async (
+    _ownership,
+    targetIssueCheckoutRunId,
+    targetIssueExecutionRunId,
+  ) => {
+    // Run was woken for issue A (44444…) but checked out issue B (55555…).
+    const fake = counterDb(0, {
+      contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+    });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId,
+      targetIssueExecutionRunId,
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
 });
