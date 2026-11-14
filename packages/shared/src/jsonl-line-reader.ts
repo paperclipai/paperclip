@@ -7,7 +7,7 @@ export function createJsonlLineReader({ input }: { input: NodeJS.ReadableStream 
     close: [];
   }>();
   const decoder = new StringDecoder("utf8");
-  let buffer = "";
+  let fragments: string[] = [];
   let closed = false;
 
   function emitLine(line: string): void {
@@ -15,19 +15,26 @@ export function createJsonlLineReader({ input }: { input: NodeJS.ReadableStream 
   }
 
   function onData(chunk: string | Buffer): void {
-    buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+    const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+    let start = 0;
     while (!closed) {
-      const newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex < 0) break;
-      const line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
+      const newlineIndex = text.indexOf("\n", start);
+      if (newlineIndex < 0) {
+        if (start < text.length) fragments.push(text.slice(start));
+        break;
+      }
+      fragments.push(text.slice(start, newlineIndex));
+      const line = fragments.join("");
+      fragments = [];
+      start = newlineIndex + 1;
       emitLine(line);
     }
   }
 
   function onEnd(): void {
-    buffer += decoder.end();
-    if (buffer.length > 0) emitLine(buffer);
+    const tail = decoder.end();
+    if (tail) fragments.push(tail);
+    if (fragments.length > 0) emitLine(fragments.join(""));
     close();
   }
 
@@ -37,7 +44,7 @@ export function createJsonlLineReader({ input }: { input: NodeJS.ReadableStream 
     input.off("data", onData);
     input.off("end", onEnd);
     input.pause();
-    buffer = "";
+    fragments = [];
     reader.emit("close");
   }
 
