@@ -81,8 +81,10 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     // Source responses carry a summary; the approved files stay on the server.
     expect(result.source.securityOverride).toEqual({ commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false,
       approvedByUserId: 'admin-user', approvedAt: expect.any(String), fileCount: 1 });
-    const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources).where(eq(companySkillSources.id, result.source.id));
+    const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride, summary: companySkillSources.securityOverrideSummary })
+      .from(companySkillSources).where(eq(companySkillSources.id, result.source.id));
     expect(stored?.securityOverride?.files).toEqual([{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }]);
+    expect(stored?.summary).toEqual(result.source.securityOverride);
     expect(audits.find(entry => entry.action === 'company.skill_source_security_override_approved')?.details).toMatchObject({
       commit: first, reason: 'Maintained by our platform team.', approvedByUserId: 'admin-user',
       files: [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }],
@@ -392,6 +394,35 @@ echo third`;
     expect((await skills.getById(companyId, skillId))!.sourceRef).toBe(second);
     const audit = await skills.auditSkill(companyId, skillId);
     expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+  });
+
+  it('lists a source from its stored approval summary without reading the approved files', async () => {
+    const { companyId, result, service } = await setup(false);
+    // A summary that disagrees with the file list shows which one the listing read.
+    await db.update(companySkillSources).set({ securityOverrideSummary: { ...result.source.securityOverride!, fileCount: 7 } }).where(eq(companySkillSources.id, result.source.id));
+    expect((await service.list(companyId)).find(source => source.id === result.source.id)?.securityOverride).toMatchObject({ fileCount: 7 });
+    // A row saved without a summary still lists the count of its files.
+    await db.update(companySkillSources).set({ securityOverrideSummary: null }).where(eq(companySkillSources.id, result.source.id));
+    expect((await service.detail(companyId, result.source.id)).securityOverride).toMatchObject({ fileCount: 1 });
+  });
+
+  it('deletes the approval record once no installed version uses it', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Released record', issuePrefix: `R${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'skills/two/SKILL.md': md('two'), 'hooks/install.sh': hook };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'repository', commitSha: first,
+      selectedPaths: ['skills/one/SKILL.md', 'skills/two/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const approvals = () => db.select().from(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.companyId, companyId));
+    expect(await approvals()).toHaveLength(1);
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.disconnect(companyId, created.source.id, context, { revision, skills: 'delete' });
+    expect(await approvals()).toHaveLength(0);
   });
 
   it('keeps the approval on an editable copy kept when the source is disconnected', async () => {

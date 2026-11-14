@@ -73,12 +73,19 @@ export function skillSourceService(db: Db) {
   }
   /** The source row with only a summary of its saved approval, which can list thousands of files. */
   async function summaryRow(companyId: string, id: string, database: Db | Tx = db) {
-    const { securityOverride: _override, ...columns } = getTableColumns(sources);
-    const [source] = await database.select({ ...columns, securityOverride: sql<SkillSourceSecurityOverrideSummary | null>`case when ${sources.securityOverride} is null then null
-      else (${sources.securityOverride} - 'files') || jsonb_build_object('fileCount', jsonb_array_length(${sources.securityOverride} -> 'files')) end` })
+    const { securityOverride: _override, securityOverrideSummary: summary, ...columns } = getTableColumns(sources);
+    // The stored summary keeps polling off the approval itself; only a row saved without one computes it.
+    const [source] = await database.select({ ...columns, securityOverride: sql<SkillSourceSecurityOverrideSummary | null>`coalesce(${summary}, case when ${sources.securityOverride} is null then null
+      else (${sources.securityOverride} - 'files') || jsonb_build_object('fileCount', jsonb_array_length(${sources.securityOverride} -> 'files')) end)` })
       .from(sources).where(scope(companyId, id));
     if (!source || source.removedAt) throw notFound('Skill source not found.');
     return source;
+  }
+  /** The approval columns to write: the approval and the summary that listings read. */
+  function overrideColumns(override: SkillSourceSecurityOverride | null) {
+    if (!override) return { securityOverride: null, securityOverrideSummary: null };
+    const { files, ...summary } = override;
+    return { securityOverride: override, securityOverrideSummary: { ...summary, fileCount: files.length } };
   }
   /** The full saved approval, for scans that must apply it. */
   async function savedSecurityOverride(companyId: string, id: string) {
@@ -206,11 +213,13 @@ export function skillSourceService(db: Db) {
     if (!ids.length) return [];
     const saved = await db.select({ securityOverride: sources.securityOverride }).from(sources)
       .where(and(eq(sources.companyId, companyId), inArray(sources.id, ids), sql`${sources.securityOverride} is not null`));
-    const installed = await db.selectDistinct({ id: companySkillSecurityApprovals.id, approval: companySkillSecurityApprovals.approval }).from(companySkills)
+    // Many installed skills share one approval, so find the distinct records first and read each once.
+    const approvalIds = (await db.selectDistinct({ id: companySkillVersions.securityApprovalId }).from(companySkills)
       .innerJoin(companySkillVersions, and(eq(companySkillVersions.companyId, companySkills.companyId), eq(companySkillVersions.id, companySkills.currentVersionId)))
-      .innerJoin(companySkillSecurityApprovals, and(eq(companySkillSecurityApprovals.companyId, companySkillVersions.companyId),
-        eq(companySkillSecurityApprovals.id, companySkillVersions.securityApprovalId)))
-      .where(and(eq(companySkills.companyId, companyId), inArray(sql<string>`${companySkills.metadata} ->> 'skillSourceId'`, ids)));
+      .where(and(eq(companySkills.companyId, companyId), inArray(sql<string>`${companySkills.metadata} ->> 'skillSourceId'`, ids),
+        sql`${companySkillVersions.securityApprovalId} is not null`))).map(row => row.id!);
+    const installed = approvalIds.length ? await db.select({ approval: companySkillSecurityApprovals.approval }).from(companySkillSecurityApprovals)
+      .where(and(eq(companySkillSecurityApprovals.companyId, companyId), inArray(companySkillSecurityApprovals.id, approvalIds))) : [];
     return [...saved.map(row => row.securityOverride), ...installed.map(row => versionApprovalGrant(row.approval))];
   }
   async function authorizeScan(source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
@@ -379,7 +388,7 @@ export function skillSourceService(db: Db) {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
       const [source] = await tx.insert(sources).values({ id, companyId, repositoryId: scan.repositoryId, repositoryUrl: scan.repositoryUrl, fullName: scan.fullName,
         packageMode: scan.packageMode ?? 'skills', trackingRef: context.projectBindingId && input.trackingRef === 'HEAD' ? 'HEAD' : scan.trackingRef, connectionId: scan.connectionId ?? input.connectionId ?? null, lastAttemptAt: new Date(),
-        accessScope: context.projectBindingId ? 'projects' : 'company', importNewSkills: Boolean(context.projectBindingId), securityOverride: recorded,
+        accessScope: context.projectBindingId ? 'projects' : 'company', importNewSkills: Boolean(context.projectBindingId), ...overrideColumns(recorded),
         refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader.grantId ?? context.setup?.grantId }).onConflictDoNothing().returning();
       if (!source) throw conflict('This repository and branch are already in Sources. Manage its skills there.');
       if (context.projectBindingId) {
@@ -484,10 +493,10 @@ export function skillSourceService(db: Db) {
         const [locked] = await tx.select().from(sources).where(scope(companyId, id)).for('update');
         if (!locked || locked.leaseToken !== token || locked.revision !== source.revision || locked.leaseExpiresAt! < new Date()) throw conflict('Source refresh expired or changed. Try again.');
         if (recorded) {
-          await tx.update(sources).set({ securityOverride: recorded }).where(scope(companyId, id));
+          await tx.update(sources).set(overrideColumns(recorded)).where(scope(companyId, id));
           await auditSecurityOverride(tx, id, recorded, context);
         } else if (revoke) {
-          await tx.update(sources).set({ securityOverride: null }).where(scope(companyId, id));
+          await tx.update(sources).set(overrideColumns(null)).where(scope(companyId, id));
           await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
             approvedCommit: locked.securityOverride?.commitSha ?? null, fileCount: locked.securityOverride?.files.length ?? 0 });
         } else await auditCarriedSecurityOverride(tx, id, locked.securityOverride ?? null, scan, selectedPaths, context);
@@ -560,7 +569,7 @@ export function skillSourceService(db: Db) {
           refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null,
           refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader?.grantId ?? null, lastError: null } : {}),
         ...(input.trackingRef !== undefined ? { trackingRef: input.trackingRef, lastError: null, failureCount: 0 } : {}),
-        ...(narrowedOverride ? { securityOverride: narrowedOverride } : {}),
+        ...(narrowedOverride ? overrideColumns(narrowedOverride) : {}),
         revision: sql`${sources.revision} + 1`, nextSyncAt: new Date(),
       }).where(and(scope(companyId, id), eq(sources.revision, input.revision), or(isNull(sources.leaseToken), lt(sources.leaseExpiresAt, new Date())))).returning();
       if (!updated) throw conflict('This source is refreshing or changed. Reload before saving.', { code: 'skill_source_settings_changed' });

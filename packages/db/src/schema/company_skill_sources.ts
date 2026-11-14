@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
-import type { SkillPackageInspection, SkillRepositoryPackage, SkillSourceSecurityOverride } from '@paperclipai/shared';
+import type { SkillPackageInspection, SkillRepositoryPackage, SkillSourceSecurityOverride, SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
 import { companies } from './companies.js';
 import { companySkills } from './company_skills.js';
 import { projects } from './projects.js';
@@ -20,6 +20,8 @@ export const companySkillSources = pgTable('company_skill_sources', {
   excludedFolders: jsonb('excluded_folders').$type<string[]>().notNull().default([]),
   // Administrator-approved inclusion of flagged files, pinned to a reviewed commit.
   securityOverride: jsonb('security_override').$type<SkillSourceSecurityOverride>(),
+  // The approval without its file list, written with it, so source listings never read the large approval.
+  securityOverrideSummary: jsonb('security_override_summary').$type<SkillSourceSecurityOverrideSummary>(),
   enabled: boolean('enabled').notNull().default(true),
   // Removed project sources retain access provenance for editable copies and forks.
   removedAt: timestamp('removed_at', { withTimezone: true }),

@@ -513,6 +513,11 @@ dispatch finds the person wakes that joined or were adopted by each queued run
 through it, so the read is bounded by the queue size, not by the agent's wake
 history.
 
+Migration 0486 builds `company_skill_versions_security_approval_idx` concurrently.
+It keys skill versions by `security_approval_id`, partial on a non-null approval.
+Deleting a skill removes the approval records its versions used once no other
+version uses them, and that check reads the index instead of every version.
+
 Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
 It keys runs by company and `native_session_id`, partial on a non-null session.
 Native retention, recovery, resume and archive reads find a session's runs

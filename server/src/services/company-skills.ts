@@ -135,6 +135,7 @@ import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import { folderService } from "./folders.js";
+import { isForeignKeyViolation } from "../db-errors.js";
 import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
@@ -3292,11 +3293,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
       await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
         await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-        await db.transaction(async tx => {
+        const approvalIds = await db.transaction(async tx => {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
           await notifySkillVersionRetention(tx, companyId);
+          const used = await securityApprovalIdsOf(tx, companyId, [skill.id]);
           await tx.delete(companySkills).where(eq(companySkills.id, skill.id));
+          return used;
         });
+        await releaseSecurityApprovals(companyId, approvalIds);
       });
     }
   }
@@ -3625,9 +3629,35 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   async function saveSecurityApproval(tx: DbOrTransaction, companyId: string, approval: SkillVersionSecurityApproval) {
     const contentHash = createHash("sha256").update(JSON.stringify(approval)).digest("hex");
     await tx.insert(companySkillSecurityApprovals).values({ companyId, contentHash, approval }).onConflictDoNothing();
+    // The key-share lock keeps a cleanup of unreferenced approvals from deleting this one before the version that uses it commits.
     const [row] = await tx.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals)
-      .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash)));
+      .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash))).for("key share");
     return row!.id;
+  }
+
+  /** The approval records the versions of these skills use, read before the skills are deleted. */
+  async function securityApprovalIdsOf(tx: DbOrTransaction, companyId: string, skillIds: string[]) {
+    if (!skillIds.length) return [];
+    const rows = await tx.selectDistinct({ id: companySkillVersions.securityApprovalId }).from(companySkillVersions)
+      .where(and(eq(companySkillVersions.companyId, companyId), inArray(companySkillVersions.companySkillId, skillIds),
+        sql`${companySkillVersions.securityApprovalId} is not null`));
+    return rows.map(row => row.id!);
+  }
+
+  /**
+   * Deletes the approval records no version uses any more, after the skills that used them were deleted.
+   * A version that takes up a record meanwhile keeps it: the foreign key then refuses the delete.
+   */
+  async function releaseSecurityApprovals(companyId: string, approvalIds: Iterable<string>) {
+    for (const approvalId of new Set(approvalIds)) {
+      await db.delete(companySkillSecurityApprovals).where(and(eq(companySkillSecurityApprovals.companyId, companyId),
+        eq(companySkillSecurityApprovals.id, approvalId),
+        sql`not exists (select 1 from ${companySkillVersions} where ${companySkillVersions.securityApprovalId} = ${companySkillSecurityApprovals.id})`))
+        .catch(error => {
+          if (isForeignKeyViolation(error)) return;
+          logger.warn({ err: error, companyId, approvalId }, "Skill deleted; unused security approval cleanup failed");
+        });
+    }
   }
 
   /** The security approval recorded on an installed version when it was installed, if it admitted flagged files. */
@@ -7539,6 +7569,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     for (const skill of initial) await assertUnused(skill);
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const moved: Array<{ source: string; quarantine: string }> = [];
+    const releasedApprovalIds = new Set<string>();
     async function restoreSources() {
       for (const item of moved.reverse()) await fs.rename(item.quarantine, item.source);
       moved.length = 0;
@@ -7552,6 +7583,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
       try {
         return await db.transaction(async tx => {
+          releasedApprovalIds.clear();
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
           if (initial.length) await notifySkillVersionRetention(tx, companyId);
           await beforeDelete?.(tx);
@@ -7579,6 +7611,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
                 moved.push({ source, quarantine });
               }
             }
+            for (const approvalId of await securityApprovalIdsOf(tx, companyId, [skill.id])) releasedApprovalIds.add(approvalId);
             await tx.delete(companySkills).where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
             deleted.push(skill);
           }
@@ -7593,6 +7626,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     let deleted: CompanySkill[];
     try { deleted = await withSkillVersionCacheLock(db, companyId, () => withCacheLocks(0)); }
     catch (error) { await restoreSources(); throw error; }
+    await releaseSecurityApprovals(companyId, releasedApprovalIds);
     for (const item of moved) {
       await fs.rm(item.quarantine, { recursive: true, force: true }).catch(error => {
         logger.warn({ err: error, companyId }, "Skill deleted; quarantined source cleanup failed");

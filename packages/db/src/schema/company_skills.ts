@@ -198,6 +198,8 @@ export const companySkillVersions = pgTable(
   },
   (table) => ({
     migrationIdx: index("company_skill_versions_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),
+    // Finds the versions that still use an approval, so an unused one can be deleted.
+    securityApprovalIdx: index("company_skill_versions_security_approval_idx").on(table.securityApprovalId).where(sql`${table.securityApprovalId} is not null`),
     packageSnapshotIdx: index("company_skill_versions_package_snapshot_idx").on(table.packageSnapshotId),
     repositorySnapshotIdx: index("company_skill_versions_repository_snapshot_idx").on(table.repositorySnapshotId),
     companySkillRevisionUniqueIdx: uniqueIndex("company_skill_versions_skill_revision_idx").on(
