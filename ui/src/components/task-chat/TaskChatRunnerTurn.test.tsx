@@ -108,7 +108,6 @@ describe("TaskChatRunnerTurn", () => {
       permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
     });
     expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain(label);
-    // Named once, in the header: the turn body adds no second line.
     expect(container.textContent?.split(label)).toHaveLength(2);
     expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
     expect(container.textContent).not.toContain("Thinking");

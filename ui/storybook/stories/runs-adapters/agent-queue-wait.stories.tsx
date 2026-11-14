@@ -115,11 +115,13 @@ export const WaitingToStart: Story = {
   },
 };
 
-/** A routine task that waits for the routine's open execution: named once, in the header. */
+/** A routine task that waits for the routine's open execution. */
 export const WaitingForRoutine: Story = {
   render: () => <TaskChatRunnerTurn agentName="Test Gardener" status="queued" startedAtMs={Date.now() - 8 * 60_000} runId="run-1" items={[]}
     execution={{ ...waitingExecution, cause: "routine_execution_in_progress", label: "Waiting for PAP-3093 to finish", agentQueue: null }} />,
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getAllByText(/Waiting for PAP-3093 to finish/)).toHaveLength(1);
+    const holds = within(canvasElement).getAllByText(/Waiting for PAP-3093 to finish/);
+    await expect(holds).toHaveLength(1);
+    await expect(holds[0]).toBeVisible();
   },
 };

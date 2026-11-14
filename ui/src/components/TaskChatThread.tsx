@@ -3551,7 +3551,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
-                                          // The live run pill above names a queued turn's wait; no second line.
                                           tailStatus === "queued"
                                             ? undefined
                                             : (liveRun && liveRun.id === tailRunId
