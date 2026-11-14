@@ -175,8 +175,8 @@ describePostgres("assigned-work sweep database round trips", () => {
       },
     });
 
-    await sweep.checkTask({ companyId, issueId: sameAgentIssue, now: new Date() });
-    await sweep.checkTask({ companyId, issueId: reassignedIssue, now: new Date() });
+    await sweep.checkIssue({ companyId, issueId: sameAgentIssue });
+    await sweep.checkIssue({ companyId, issueId: reassignedIssue });
 
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatchObject({

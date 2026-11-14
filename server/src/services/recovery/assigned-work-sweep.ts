@@ -674,16 +674,15 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
     }
     const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
-    const latestRunForAssignee =
-      facts.latestRun && facts.latestRun.agentId === issue.assigneeAgentId ? facts.latestRun : null;
+    const latestForAssignee = facts.latestRun?.agentId === issue.assigneeAgentId ? facts.latestRun : null;
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
-      source: latestRunForAssignee ? "automation" : "assignment", triggerDetail: "system",
-      reason: latestRunForAssignee ? "issue_continuation_needed" : "issue_assigned",
+      source: latestForAssignee ? "automation" : "assignment", triggerDetail: "system",
+      reason: latestForAssignee ? "issue_continuation_needed" : "issue_assigned",
       payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
       requestedByActorType: "system", requestedByActorId: null,
-      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: latestRunForAssignee ? "issue_continuation_needed" : "issue_assigned",
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: latestForAssignee ? "issue_continuation_needed" : "issue_assigned",
         source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason,
-        ...(latestRunForAssignee ? { previousRunId: latestRunForAssignee.id, retryOfRunId: latestRunForAssignee.id } : {}) },
+        ...(latestForAssignee ? { previousRunId: latestForAssignee.id, retryOfRunId: latestForAssignee.id } : {}) },
     }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation was not admitted");
       return null;
