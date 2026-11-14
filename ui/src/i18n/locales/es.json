@@ -4,6 +4,10 @@
       "title": "Crea tu primera empresa",
       "description": "Comienza creando una empresa.",
       "newCompany": "Nueva empresa"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

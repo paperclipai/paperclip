@@ -4,6 +4,10 @@
       "title": "Δημιουργήστε την πρώτη σας εταιρεία",
       "description": "Ξεκινήστε δημιουργώντας μια εταιρεία.",
       "newCompany": "Νέα εταιρεία"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

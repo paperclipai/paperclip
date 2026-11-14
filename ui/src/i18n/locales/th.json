@@ -4,6 +4,10 @@
       "title": "สร้างบริษัทแรกของคุณ",
       "description": "เริ่มต้นด้วยการสร้างบริษัท",
       "newCompany": "บริษัทใหม่"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }
