@@ -219,6 +219,30 @@ describe("agent auth middleware", () => {
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
   });
 
+  it("normalizes a duplicated X-Paperclip-Run-Id header to the first UUID", async () => {
+    const runId = randomUUID();
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", `${runId}, ${randomUUID()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
+  });
+
+  it("drops a non-UUID X-Paperclip-Run-Id header instead of passing it to SQL", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("X-Paperclip-Run-Id", "not-a-uuid, also-not-a-uuid");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "board", userId: "local-board" });
+    expect(res.body.runId).toBeUndefined();
+  });
+
   it.each([
     ["empty bearer token", "Bearer   ", "Empty bearer token"],
     ["unverified token", "Bearer not-a-token", "Agent token did not verify"],

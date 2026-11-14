@@ -56,6 +56,13 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
+function normalizeRunIdHeader(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  const first = raw.includes(",") ? raw.split(",")[0].trim() : raw;
+  return isUuidLike(first) ? first : undefined;
+}
+
 function invalidAgentTokenMessage(token: string) {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
@@ -224,7 +231,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = normalizeRunIdHeader(req.header("x-paperclip-run-id"));
 
     const authHeader = req.header("authorization");
     const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
