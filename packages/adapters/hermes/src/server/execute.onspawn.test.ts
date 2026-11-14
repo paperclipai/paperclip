@@ -101,7 +101,14 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(mocked.mock.calls.length).toBeGreaterThan(0);
     const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
     const opts = lastCall[3] as Record<string, unknown>;
-    expect(opts.onSpawn).toBe(onSpawn);
+    const forwarded = opts.onSpawn as (meta: {
+      pid: number;
+      processGroupId: number | null;
+      startedAt: string;
+    }) => Promise<void>;
+    const receipt = { pid: 4242, processGroupId: null, startedAt: "2026-01-01T00:00:00.000Z" };
+    await forwarded(receipt);
+    expect(onSpawn).toHaveBeenCalledWith(receipt);
   });
 
   it("keeps wake data in the prompt and drops configured JSON env copies", async () => {
