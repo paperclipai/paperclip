@@ -415,6 +415,22 @@ suite("automatic-run brake in the recovery passes", () => {
     }, 120_000);
   }
 
+  it("a held automatic continuation does not hide a person's continuation for the same agent", async () => {
+    await seedCompany();
+    const personAction = await pendingContinuation();
+    await userWake(personAction.sourceIssueId, {});
+    const automaticAction = await pendingContinuation();
+    await openBrake();
+    const wake = runWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0]![1]).toMatchObject({ payload: { issueId: personAction.sourceIssueId } });
+    const delivery = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!
+      .evidence.continuationDelivery;
+    expect(await delivery(personAction.id)).toBe("delivered");
+    expect(await delivery(automaticAction.id)).toBe("pending");
+  }, 120_000);
+
   it("still pauses the delivery of a continuation no person asked for", async () => {
     await seedCompany();
     const action = await pendingContinuation();

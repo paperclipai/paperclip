@@ -551,10 +551,7 @@ export async function deliverReconciledExecutions(
           continue;
         }
         const slot = await reserveAutomaticRunCreation(db, action.companyId, { issueId: task.id, sourceRunId: decision.runId });
-        if (slot.heldUntil) {
-          seenAgents.add(action.returnOwnerAgentId);
-          continue;
-        }
+        if (slot.heldUntil) continue;
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",
