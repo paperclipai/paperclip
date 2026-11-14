@@ -247,6 +247,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(journal, &request)?;
             }
             let tokens = provider_turn_tokens();
+            let lost = if request["params"]["armed"] == json!(true) {
+                "provider-arm-reply-lost"
+            } else {
+                "provider-disarm-reply-lost"
+            };
+            if tokens.iter().any(|token| token == lost) {
+                continue;
+            }
             let armed = request["params"]["armed"] == json!(true)
                 && (pending_provider_run.is_some() || provider_rearmable)
                 && !tokens.iter().any(|token| token == "provider-arm-reject");

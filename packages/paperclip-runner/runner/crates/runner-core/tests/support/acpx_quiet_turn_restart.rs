@@ -763,3 +763,107 @@ fn a_same_run_attach_while_awaiting_publishes_the_held_run_terminal_once() {
     );
     let _ = harness.executor.shutdown();
 }
+
+fn execution_events(execution: &CommandExecution) -> Vec<Value> {
+    execution
+        .events
+        .iter()
+        .map(|(kind, _, payload)| json!({"type":kind,"payload":payload}))
+        .collect()
+}
+
+fn run_terminals(events: &[Value]) -> usize {
+    events
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .count()
+}
+
+#[test]
+fn a_lost_disarm_reply_is_bounded_and_still_publishes_the_held_run_terminal_once() {
+    for command in ["run.cancel", "turn.interrupt"] {
+        let mut harness = Harness::new();
+        harness
+            .fixture
+            .background("live provider-turn provider-turn-hold provider-disarm-reply-lost");
+        let pid = harness.opened["processId"].clone();
+        let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+        let first = [first, harness.drain()].concat();
+        assert_eq!(run_terminals(&first), 0, "{command}");
+        let started = Instant::now();
+        let ended = harness.execute(
+            command,
+            json!({"turnId": "first", "reason": "Operator stop"}),
+        );
+        let elapsed = started.elapsed();
+        assert_eq!(
+            ended.result["status"],
+            json!("already_settled"),
+            "{command}"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(10),
+            "{command}: {elapsed:?}"
+        );
+        let mut later = execution_events(&ended);
+        later.extend(drain_briefly(&mut harness));
+        assert_eq!(run_terminals(&later), 1, "{command}: {later:?}");
+        assert_eq!(
+            later
+                .iter()
+                .find(|event| event["type"] == "run.terminal")
+                .unwrap()["payload"]["turnTerminalState"],
+            json!("completed"),
+            "{command}"
+        );
+        assert!(
+            harness.fixture.state().get("providerTurnWait").is_none(),
+            "{command}"
+        );
+        let started = Instant::now();
+        let closed = harness.execute("session.close", json!({}));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{command}: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(closed.result["status"], json!("closed"), "{command}");
+        later.extend(execution_events(&closed));
+        later.extend(drain_briefly(&mut harness));
+        assert_eq!(run_terminals(&later), 1, "{command}: {later:?}");
+        assert!(!alive(&pid), "{command}");
+        let _ = harness.executor.shutdown();
+    }
+}
+
+#[test]
+fn a_lost_arm_reply_is_bounded_and_the_turn_ends_with_its_run_terminal() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-arm-reply-lost");
+    let started = Instant::now();
+    let mut seen = execution_events(&harness.execute(
+        "turn.start",
+        json!({"turnId": "first", "text": "Complete the work.", "providerStartedTurns": true}),
+    ));
+    let deadline = started + Duration::from_secs(15);
+    while run_terminals(&seen) == 0 {
+        assert!(Instant::now() < deadline, "{seen:?}");
+        seen.extend(harness.drain());
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    seen.extend(drain_briefly(&mut harness));
+    let completed = seen
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert!(completed["payload"].get("awaitingProviderTurn").is_none());
+    assert_eq!(run_terminals(&seen), 1, "{seen:?}");
+    assert!(harness.fixture.state().get("providerTurnWait").is_none());
+    let _ = harness.executor.shutdown();
+}
