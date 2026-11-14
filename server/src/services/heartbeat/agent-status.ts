@@ -50,7 +50,7 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
         AND r.status IN ('running', 'queued'))
     AND NOT EXISTS (SELECT 1 FROM heartbeat_runs r
       WHERE r.company_id = ${agents.companyId} AND r.agent_id = ${agents.id}
-        AND ((${sql.raw(finishedIdleRun("r"))}) IS NOT TRUE
+        AND ((${sql.raw(finishedIdleRun("r", { settledOrphanedAccounting: true, settledCancelledRetry: true }))}) IS NOT TRUE
           OR r.controller_lease_expires_at > ${now.toISOString()}::timestamptz))
     ${localRuns}
     AND NOT EXISTS (SELECT 1 FROM native_run_finalizations f
@@ -67,7 +67,7 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
           OR COALESCE(l.metadata, '{}'::jsonb) ?| ARRAY['nativeWorkspaceExportResume', 'sandboxStopAndRetain']))
     AND NOT EXISTS (SELECT 1 FROM agent_wakeup_requests w
       WHERE w.company_id = ${agents.companyId} AND w.agent_id = ${agents.id}
-        AND (${sql.raw(finishedIdleWake("w"))}) IS NOT TRUE)
+        AND (${sql.raw(finishedIdleWake("w", { settledOrphanedAccounting: true, settledCancelledRetry: true }))}) IS NOT TRUE)
     AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c
       WHERE c.company_id = ${agents.companyId} AND c.agent_id = ${agents.id}
         AND (c.state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')
