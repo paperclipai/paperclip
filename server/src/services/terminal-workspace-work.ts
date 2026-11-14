@@ -2,6 +2,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export const TERMINAL_WORKSPACE_RETRY_MS = 5 * 60 * 1000;
+export const MAX_TERMINAL_WORKSPACE_TARGETS = 50;
 
 export function notifyTerminalWorkspaceWork(transaction: object, hint?: string) {
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.terminalWorkspaces, hint);
@@ -47,15 +48,20 @@ export function registerTerminalWorkspaceWork(
   let startupSweepStarted = false;
   let rotationRequested = false;
   let dueAt: number | null = null;
+  let lastRotationPageAt = 0;
   const targetWorkspaceIds = new Set<string>(), targetIssueIds = new Set<string>();
   const worker = coordinator.register(DELIVERY_QUEUES.terminalWorkspaces, {
     retryMs: TERMINAL_WORKSPACE_RETRY_MS,
     onSettled: hints => {
-      service.terminalWorkspaceWorkSettled?.(hints, { targeted: true });
       const targets = terminalWorkspaceTargetsFromHints(hints);
-      if (!targets) { rotationRequested = true; return; }
-      for (const id of targets.workspaceIds) targetWorkspaceIds.add(id);
-      for (const id of targets.issueIds) targetIssueIds.add(id);
+      for (const id of targets?.workspaceIds ?? []) targetWorkspaceIds.add(id);
+      for (const id of targets?.issueIds ?? []) targetIssueIds.add(id);
+      const overflow = targetWorkspaceIds.size + targetIssueIds.size > MAX_TERMINAL_WORKSPACE_TARGETS;
+      service.terminalWorkspaceWorkSettled?.(hints, { targeted: Boolean(targets) && !overflow });
+      if (!targets || overflow) {
+        rotationRequested = true;
+        targetWorkspaceIds.clear(); targetIssueIds.clear();
+      }
     },
     run: async signal => {
       recovered = false;
@@ -66,8 +72,10 @@ export function registerTerminalWorkspaceWork(
       startupSweepStarted = true;
       const options = { compact: !startup, allowRemoteDeliveryChecks: !startup };
       const targeted = targetWorkspaceIds.size + targetIssueIds.size > 0;
-      if (startup || due || rotationRequested || !targeted || service.hasTerminalWorkspaceSweepContinuation()) {
+      if (startup || due || rotationRequested || !targeted
+        || (service.hasTerminalWorkspaceSweepContinuation() && Date.now() >= lastRotationPageAt + 1000)) {
         rotationRequested = false;
+        lastRotationPageAt = Date.now();
         return service.sweepTerminalWorkspaces(50, signal, options);
       }
       const targets = { workspaceIds: [...targetWorkspaceIds], issueIds: [...targetIssueIds] };
@@ -81,8 +89,8 @@ export function registerTerminalWorkspaceWork(
     },
     hasPending: async () => {
       if (!canRun()) next = Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
+      else if (service.hasTerminalWorkspaceSweepContinuation()) next = Math.max(Date.now(), lastRotationPageAt + 1000);
       else if (rotationRequested || targetWorkspaceIds.size + targetIssueIds.size > 0) next = Date.now();
-      else if (service.hasTerminalWorkspaceSweepContinuation()) next = Date.now() + 1000;
       else {
         const deadline = await service.nextTerminalWorkspaceSweepAt();
         next = deadline === null ? null : deadline > Date.now()

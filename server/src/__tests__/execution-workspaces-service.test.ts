@@ -700,6 +700,25 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     } finally { select.mockRestore(); }
   });
 
+  it("hints the former parent and workspace when a task moves or is removed", async () => {
+    const seed = await seedTerminalWorkspace({ childStatus: "todo" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    await db.update(issues).set({ executionWorkspaceId: seed.executionWorkspaceId }).where(eq(issues.id, child!.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await issueService(db).update(child!.id, { parentId: null });
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`]));
+      await db.update(issues).set({ parentId: seed.sourceIssueId }).where(eq(issues.id, child!.id));
+      hints.length = 0;
+      await issueService(db).remove(child!.id);
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`,
+        `workspace:${seed.executionWorkspaceId}`]));
+    } finally { unsubscribe(); }
+  });
+
   it("retries unread rows from a failed full page before it can park recovery", async () => {
     const seed = await seedTerminalWorkspace({ mergedPr: true });
     await seedTerminalWorkspace({ childStatus: "todo" });

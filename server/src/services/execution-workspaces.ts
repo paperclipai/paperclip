@@ -3632,6 +3632,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
+      if (targets && candidates.length >= limit) terminalSweepRescanRequested = true;
       if (!targets && candidates.length < limit) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
