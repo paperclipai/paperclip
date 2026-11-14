@@ -849,7 +849,7 @@ export class CodexHarnessSession
           ["completed", "failed", "interrupted", "cancelled"].includes(status)
         ) {
           reconciledTerminalTurnId = expectedTurnId;
-          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true, expectedTurn.awaitingProviderTurn === true);
         } else {
           throw new HarnessReconciliationError(
             `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,

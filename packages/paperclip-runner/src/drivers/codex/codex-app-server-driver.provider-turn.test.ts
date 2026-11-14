@@ -48,6 +48,25 @@ async function restoredAfterFirstTurn(awaiting: boolean) {
   return { transport: second, session, checkpoint, events: session.events()[Symbol.asyncIterator]() };
 }
 
+async function reconciledActiveTurn(awaiting: boolean) {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const driver = makeDriver([first, second]);
+  const original = await driver.openSession({
+    runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+  });
+  await original.startTurn({ message: { role: "user", text: "Start a background install." } });
+  const checkpoint = await original.snapshot();
+  expect(checkpoint.activeTurnId).toBe("turn-1");
+  await original.close({ reason: "controller restarted" });
+  second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+    turns: [{ id: "turn-1", status: "completed", items: [], ...(awaiting ? { awaitingProviderTurn: true } : {}) }] } };
+  const recovery = await driver.recoverSession!(checkpoint);
+  expect(recovery).toMatchObject({ recovered: true });
+  const session = recovery.session!;
+  return { transport: second, session, events: session.events()[Symbol.asyncIterator]() };
+}
+
 async function nextUntil(events: AsyncIterator<{ eventType: string; payload: Record<string, unknown> }>, done: (eventType: string) => boolean) {
   const collected: Array<{ eventType: string; payload: Record<string, unknown>; turnId?: string }> = [];
   for (;;) {
@@ -144,6 +163,35 @@ describe("Codex app-server driver with provider-started turns", () => {
     expect(settled.semanticResult).toMatchObject({ result, turnId: "provider-1" });
     expect(settled).not.toHaveProperty("awaitingProviderTurn");
     await session.close({ reason: "fixture complete" });
+  });
+
+  it("marks a persisted active turn that a restart reconciles as awaiting, then adopts the provider's own next turn", async () => {
+    const { transport, session, events } = await reconciledActiveTurn(true);
+    const reconciled = await nextUntil(events, eventType => eventType === "turn.completed");
+    expect(reconciled.at(-1)).toMatchObject({ eventType: "turn.completed", turnId: "turn-1",
+      payload: { status: "completed", awaitingProviderTurn: true } });
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: null, semanticResult: null, awaitingProviderTurn: true });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "provider-1", result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "provider-1", status: "completed", items: [] } });
+    const adopted = await nextUntil(events, eventType => eventType === "turn.completed" || eventType === "session.failed");
+    expect(adopted.some(event => event.eventType === "session.failed")).toBe(false);
+    expect(adopted.find(event => event.eventType === "turn.started")).toMatchObject({ turnId: "provider-1", payload: { origin: "provider" } });
+    expect(adopted.at(-1)).toMatchObject({ eventType: "turn.completed", turnId: "provider-1" });
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("reconciles an unmarked persisted active turn as an ordinary terminal", async () => {
+    const { transport, session, events } = await reconciledActiveTurn(false);
+    const reconciled = await nextUntil(events, eventType => eventType === "turn.completed");
+    expect(reconciled.at(-1)).toMatchObject({ eventType: "turn.completed", turnId: "turn-1" });
+    expect(reconciled.at(-1)!.payload).not.toHaveProperty("awaitingProviderTurn");
+    expect(await session.snapshot()).not.toHaveProperty("awaitingProviderTurn");
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    const failed = await nextUntil(events, eventType => eventType === "session.failed");
+    expect(failed.at(-1)).toMatchObject({ eventType: "session.failed", payload: { code: "turn_binding_mismatch" } });
+    await session.close({ reason: "fixture complete" }).catch(() => undefined);
   });
 
   it("writes no wait marker in a snapshot taken outside a wait", async () => {
