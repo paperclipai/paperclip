@@ -29,6 +29,19 @@ describe("paperclip config schema", () => {
     expect(parsed.secrets.localEncrypted.keyFilePath).toBe("~/.paperclip/instances/default/secrets/master.key");
   });
 
+  it("defaults tools.resultPromptInjectionMode to block, accepts ignore, and rejects other values", () => {
+    const base = {
+      $meta: { version: 1, updatedAt: "2026-05-10T00:00:00.000Z", source: "configure" },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file" },
+      server: {},
+    } as const;
+
+    expect(paperclipConfigSchema.parse({ ...base, tools: { resultPromptInjectionMode: "ignore" } }).tools?.resultPromptInjectionMode).toBe("ignore");
+    expect(paperclipConfigSchema.parse({ ...base, tools: {} }).tools?.resultPromptInjectionMode).toBe("block");
+    expect(() => paperclipConfigSchema.parse({ ...base, tools: { resultPromptInjectionMode: "redact" } })).toThrow();
+  });
+
   it("retains extension keys at the top level and every nested config boundary", () => {
     const parsed = paperclipConfigSchema.parse({
       $meta: {
