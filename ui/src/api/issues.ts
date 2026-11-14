@@ -192,6 +192,12 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+/** Filters the count endpoint applies; list-only paging, projection and enrichment flags are excluded. */
+export type IssueCountFilters = Omit<IssueListFilters,
+  | "ids" | "parentIds" | "oneChildPerParent" | "projection"
+  | "includeBlockedBy" | "includeBlockedInboxAttention" | "includeLiveDescendantSummary"
+  | "limit" | "offset" | "sortField" | "sortDir" | "afterId">;
+
 export type IssueListFilters = {
   ids?: readonly string[];
   parentIds?: readonly string[];
@@ -352,29 +358,12 @@ export const issuesApi = {
   },
   count: (
     companyId: string,
-    filters: {
-      attention: "blocked";
-      status?: string;
-      assigneeAgentId?: string;
-      assigneeUserId?: string;
-      projectId?: string;
-      labelId?: string;
-      q?: string;
-    },
+    filters?: IssueCountFilters,
+    options?: RequestOptions,
   ) => {
-    const params = new URLSearchParams();
-    params.set("attention", filters.attention);
-    if (filters.status) params.set("status", filters.status);
-    if (filters.assigneeAgentId)
-      params.set("assigneeAgentId", filters.assigneeAgentId);
-    if (filters.assigneeUserId)
-      params.set("assigneeUserId", filters.assigneeUserId);
-    if (filters.projectId) params.set("projectId", filters.projectId);
-    if (filters.labelId) params.set("labelId", filters.labelId);
-    if (filters.q) params.set("q", filters.q);
-    return api.get<{ count: number }>(
-      `/companies/${companyId}/issues/count?${params.toString()}`,
-    );
+    const params = issueListSearchParams(filters);
+    const path = `/companies/${companyId}/issues/count?${params.toString()}`;
+    return options ? api.get<{ count: number }>(path, options) : api.get<{ count: number }>(path);
   },
   listLabels: (companyId: string) =>
     api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
