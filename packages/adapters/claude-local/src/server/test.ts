@@ -34,7 +34,15 @@ import {
 import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
-import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import { prepareSandboxClaudeProbeRuntime, resolveSharedClaudeConfigDir } from "./claude-config.js";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  parseLocalProcessSandboxExtraPaths,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import path from "node:path";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -313,7 +321,54 @@ export async function testEnvironment(
     }
 
     if (canRunProbe && configuredModelIsCompatible) {
-      if (!claudeCommandLooksLike(command, "claude")) {
+      const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+      const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+      const probeWantsConfinement = !targetIsRemote && (filesystemScope !== null || networkScope !== null);
+      const confinementScopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+        .filter(Boolean)
+        .join(" and ");
+      const confinementSandboxCommand = asString(config.filesystemSandboxCommand, "bwrap").trim() || "bwrap";
+      const confinementProbeEnv = localProbe?.env ?? env;
+      const sharedClaudeConfigDir = config.managedAiConnection
+        ? asString(env.CLAUDE_CONFIG_DIR, "")
+        : resolveSharedClaudeConfigDir(process.env);
+      let localProcessSandbox: LocalProcessSandboxOptions | null = null;
+      let confinementUnavailable = false;
+      if (probeWantsConfinement) {
+        const extraPaths = parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths);
+        const networkAllowlist = parseLocalProcessNetworkAllowlist(config.networkAllowlist);
+        try {
+          await ensureAdapterExecutionTargetCommandResolvable(confinementSandboxCommand, target, cwd, confinementProbeEnv);
+        } catch {
+          confinementUnavailable = true;
+        }
+        if (!confinementUnavailable) {
+          localProcessSandbox = {
+            workspaceDir: cwd,
+            filesystemScope,
+            managedPaths: isNonEmpty(sharedClaudeConfigDir)
+              ? [
+                  { path: sharedClaudeConfigDir, access: "rw" },
+                  { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
+                ]
+              : [],
+            extraPaths,
+            homeDir: filesystemScope && isNonEmpty(sharedClaudeConfigDir) ? path.dirname(sharedClaudeConfigDir) : null,
+            networkScope,
+            networkAllowlist,
+            networkTrustedUrls: isNonEmpty(env.PAPERCLIP_API_URL) ? [env.PAPERCLIP_API_URL] : [],
+            command: confinementSandboxCommand,
+          };
+        }
+      }
+      if (confinementUnavailable) {
+        checks.push({
+          code: "claude_hello_probe_sandbox_unavailable",
+          level: "error",
+          message: `Skipped the Claude hello probe: the agent is confined to ${confinementScopes} scope but "${confinementSandboxCommand}" is not available on the Paperclip host.`,
+          hint: `Install ${confinementSandboxCommand} or set filesystemSandboxCommand to an available confinement tool; the probe is skipped rather than run unconfined.`,
+        });
+      } else if (!claudeCommandLooksLike(command, "claude")) {
         checks.push({
           code: "claude_hello_probe_skipped_custom_command",
           level: "info",
@@ -393,8 +448,19 @@ export async function testEnvironment(
         // A local probe uses the trusted resolved executable and the
         // deny-by-default child env. A remote probe uses the caller command and
         // env, because the remote transport owns its own env sanitization.
+        if (localProcessSandbox) {
+          checks.push({
+            code: "claude_hello_probe_confined",
+            level: "info",
+            message: `Hello probe runs under local process confinement (${confinementScopes} scope).`,
+          });
+        }
         const probeCommand = localProbe?.command ?? command;
-        const probeEnv = localProbe ? localProbe.env : env;
+        const probeEnv = localProbe
+          ? (localProcessSandbox?.filesystemScope && isNonEmpty(sharedClaudeConfigDir)
+              ? { ...localProbe.env, CLAUDE_CONFIG_DIR: sharedClaudeConfigDir }
+              : localProbe.env)
+          : env;
         const probe = await runAdapterExecutionTargetProcess(
           runId,
           target,
@@ -407,6 +473,7 @@ export async function testEnvironment(
             graceSec: 5,
             stdin: "Respond with hello.",
             onLog: async () => {},
+            localProcessSandbox,
           },
         );
 

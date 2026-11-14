@@ -3306,6 +3306,7 @@ export function agentRoutes(
       let aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      assertNoAgentLocalAdapterHostCommandMutation(req, type, inputAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
       const savedAgent = savedAgentId
         ? await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found")
