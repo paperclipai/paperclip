@@ -16,6 +16,8 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+import { resolveImagePullPolicy } from "./image-allowlist.js";
+
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -30,6 +32,7 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  preloadedImages?: boolean;
 }
 
 export function buildSandboxCrManifest(
@@ -85,7 +88,7 @@ export function buildSandboxCrManifest(
             {
               name: "agent",
               image: input.image,
-              imagePullPolicy: "IfNotPresent",
+              imagePullPolicy: resolveImagePullPolicy(input.image, input.preloadedImages),
               // sleep infinity keeps the pod running; paperclip-server execs
               // commands into it via Kubernetes exec API. Tini as PID 1 for
               // proper signal forwarding and zombie reaping.

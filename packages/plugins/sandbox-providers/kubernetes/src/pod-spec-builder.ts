@@ -1,3 +1,5 @@
+import { resolveImagePullPolicy } from "./image-allowlist.js";
+
 export interface BuildJobManifestInput {
   namespace: string;
   jobName: string;
@@ -14,6 +16,7 @@ export interface BuildJobManifestInput {
   activeDeadlineSec: number;
   ttlSecondsAfterFinished: number;
   imagePullSecrets?: string[];
+  preloadedImages?: boolean;
 }
 
 export function buildJobManifest(input: BuildJobManifestInput): Record<string, unknown> {
@@ -58,7 +61,7 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
             {
               name: "agent",
               image: input.image,
-              imagePullPolicy: "IfNotPresent",
+              imagePullPolicy: resolveImagePullPolicy(input.image, input.preloadedImages),
               command: ["/usr/bin/tini", "--", "/usr/local/bin/paperclip-agent-shim"],
               // HOME must point at a writable mount; the image's default
               // HOME is inside the readOnly root filesystem. Agent runtimes
