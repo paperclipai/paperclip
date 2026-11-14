@@ -322,11 +322,13 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     });
     const late = appendHeartbeatRunEventBatch(db, [4, 5].map(sourceSeq => nativeEvent(runId, sourceSeq)));
     const lateSingle = appendHeartbeatRunEvent(db, nativeEvent(runId, 4));
+    const lateRejected = expect(late).rejects.toThrow("heartbeat_run_event_binding_mismatch");
+    const lateSingleRejected = expect(lateSingle).rejects.toThrow("heartbeat_run_event_binding_mismatch");
     const lateSettledWhileHeld = await settlesWhileHeld(late);
     await deletion.release();
     expect(lateSettledWhileHeld).toBe(false);
-    await expect(late).rejects.toThrow("heartbeat_run_event_binding_mismatch");
-    await expect(lateSingle).rejects.toThrow("heartbeat_run_event_binding_mismatch");
+    await lateRejected;
+    await lateSingleRejected;
     expect(await readEvents(runId)).toEqual([]);
   });
 
