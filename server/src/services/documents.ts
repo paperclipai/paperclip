@@ -431,10 +431,11 @@ export function documentService(db: Db) {
               .set({ updatedAt: now })
               .where(eq(issueDocuments.documentId, existing.id));
 
+            const { latestBody: _previousBody, ...existingMetadata } = existing;
             return {
               created: false as const,
               document: {
-                ...existing,
+                ...existingMetadata,
                 title: input.title ?? null,
                 format: input.format,
                 body: input.body,
@@ -709,11 +710,12 @@ export function documentService(db: Db) {
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
 
+        const { latestBody: _previousBody, ...existingMetadata } = existing;
         return {
           restoredFromRevisionId: revision.id,
           restoredFromRevisionNumber: revision.revisionNumber,
           document: {
-            ...existing,
+            ...existingMetadata,
             title: revision.title ?? null,
             format: revision.format,
             body: revision.body,
