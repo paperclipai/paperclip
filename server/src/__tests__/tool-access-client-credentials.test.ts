@@ -668,6 +668,24 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     expect(started.machineSignIn.pendingPublicKey?.algorithm).toBe("ES256");
   });
 
+  it("lets a retest that replaces the secret and normal token refreshes finish together", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const grant = await organizationGrant(created.connectionId);
+    const refresh = () => service().refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    const started = Date.now();
+    await Promise.all([
+      svc.testMachineSignIn(company.id, created.connectionId, { clientSecret: CLIENT_SECRET }, actor),
+      refresh(), refresh(), refresh(),
+    ]);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 60_000);
+
   it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
     const company = await createCompany();
     const provider = useProvider();

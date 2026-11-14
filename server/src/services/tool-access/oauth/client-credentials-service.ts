@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolApplications, toolConnections } from "@paperclipai/db";
@@ -424,7 +425,11 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       const oauth = oauthConfig(row);
       return JSON.stringify([asRecord(oauth.clientAuth), oauth.clientId ?? null, oauth.credentialRevision ?? 0, row.credentialSecretRefs]);
     };
-    const updated = await db.transaction(async (tx) => {
+    // Take the company's secret-write lock before any database lock and hold it
+    // through commit. Each vault write takes it too (re-entrantly here); taking
+    // it per write inside this transaction could deadlock with a token refresh
+    // that holds it while waiting on a row this transaction has locked.
+    const updated = await withAccountHomeSecretMutationLock(undefined, previous.companyId, () => db.transaction(async (tx) => {
       const [locked] = await tx.select().from(toolConnections)
         .where(and(eq(toolConnections.id, previous.id), eq(toolConnections.companyId, previous.companyId)))
         .for("update");
@@ -452,7 +457,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         .where(eq(toolConnections.id, locked.id))
         .returning();
       return row!;
-    });
+    }));
     await store.syncCredentialBindings(updated);
     if (updated.status === "active") await deps.ensureDefaultOrganizationGrant(updated);
     emitConnectionUpdated(updated, previous, "gallery");
@@ -634,7 +639,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     // with this token's expiry (the grant's own expiry wins over the connection's).
     await deps.ensureDefaultOrganizationGrant(connection);
     await db.update(connectionGrants).set({
-      providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify({ accessTokenExpiresAt: expiresAt, tokenType: token.tokenType, refreshedAt: at.toISOString() })}::jsonb) - 'refreshLease')`,
+      providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify({ accessTokenExpiresAt: expiresAt, tokenType: token.tokenType, refreshedAt: at.toISOString() })}::jsonb))`,
       updatedAt: now(),
     }).where(and(
       eq(connectionGrants.companyId, companyId),
@@ -739,7 +744,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     });
     const pendingRef = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
     // One locked step: the row still stages this key, then the vault and config change together.
-    const updated = await db.transaction(async (tx) => {
+    const updated = await withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
       const [locked] = await tx.select().from(toolConnections)
         .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
         .for("update");
@@ -773,7 +778,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         updatedAt: now(),
       }).where(eq(toolConnections.id, locked.id)).returning();
       return row!;
-    });
+    }));
     await store.syncCredentialBindings(updated);
     if (updated.status === "active") await deps.ensureDefaultOrganizationGrant(updated);
     emitConnectionUpdated(updated, connection, "gallery");
