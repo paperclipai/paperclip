@@ -3709,10 +3709,20 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     it("leaves a run this process handed to the next server for that server", async () => {
       const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-HANDED-OFF",
         { liveController: true, leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      const [before] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const activityBefore = await fixture.db.select({ id: activityLog.id }).from(activityLog).where(eq(activityLog.companyId, companyId));
+      const actionsBefore = await fixture.db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.companyId, companyId));
       expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
         restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set(),
-        handedOffForShutdown: runId => runId === fixture.runId }))
-        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "controller_still_alive" })]);
+        handedOffForShutdown: runId => runId === fixture.runId, handedOffByThisController: runId => runId === fixture.runId }))
+        .toEqual([expect.objectContaining({ kind: "blocked", reason: "handed_off_to_next_controller" })]);
+      const [after] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(after).toEqual(before);
+      expect(await fixture.db.select({ id: activityLog.id }).from(activityLog).where(eq(activityLog.companyId, companyId)))
+        .toEqual(activityBefore);
+      expect(await fixture.db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.companyId, companyId))).toEqual(actionsBefore);
     });
 
     it("keeps waiting for a different live controller in this process space", async () => {
