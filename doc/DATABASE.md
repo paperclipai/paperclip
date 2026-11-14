@@ -1,5 +1,14 @@
 # Database
 
+### Published PostgreSQL driver
+
+`@paperclipai/db` bundles its exact reviewed `postgres` version. The normal
+`scripts/prepare-bundled-package.mjs` staging step applies the tracked driver
+patch before packing the package. This delivers the same connection lifecycle
+and queue fixes to npm consumers that the workspace receives through pnpm.
+When updating the driver, update its exact version and tracked patch together,
+then verify the staged and normally installed driver payloads.
+
 ### Better Auth 1.7.16 upgrade
 
 Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
