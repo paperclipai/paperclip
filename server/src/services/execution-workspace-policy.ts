@@ -501,3 +501,53 @@ export function canApplyTaskWorkspaceSelectionAtAdmission(input: {
 }): boolean {
   return input.admittedInput == null && !input.restarting && !input.hasLeaseOwner;
 }
+
+export const GATED_EXECUTION_WORKSPACE_FIELDS = [
+  "executionWorkspaceId",
+  "executionWorkspacePreference",
+  "executionWorkspaceSettings",
+] as const;
+
+export type GatedExecutionWorkspaceField =
+  (typeof GATED_EXECUTION_WORKSPACE_FIELDS)[number];
+
+export function normalizeGatedExecutionWorkspaceField(
+  field: GatedExecutionWorkspaceField,
+  value: unknown,
+): unknown {
+  if (field !== "executionWorkspaceSettings") return value ?? null;
+  const parsed = parseIssueExecutionWorkspaceSettings(value);
+  return parsed && Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+export function isGatedExecutionWorkspaceBaseline(
+  field: GatedExecutionWorkspaceField,
+  normalized: unknown,
+): boolean {
+  if (normalized === null) return true;
+  if (field === "executionWorkspacePreference") return normalized === "shared_workspace";
+  if (field === "executionWorkspaceSettings") {
+    const { networkEgress: _networkEgress, ...gated } = normalized as Record<string, unknown>;
+    const keys = Object.keys(gated);
+    if (keys.length === 0) return true;
+    return gated.mode === "shared_workspace" && keys.length === 1;
+  }
+  return false;
+}
+
+export function unpersistableGatedExecutionWorkspaceFields(
+  patch: Record<string, unknown>,
+): GatedExecutionWorkspaceField[] {
+  return GATED_EXECUTION_WORKSPACE_FIELDS.filter((field) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) return false;
+    const requested = patch[field];
+    if (requested === undefined) return false;
+    const normalized = normalizeGatedExecutionWorkspaceField(field, requested);
+    if (!isGatedExecutionWorkspaceBaseline(field, normalized)) return true;
+    return (
+      field === "executionWorkspaceSettings" &&
+      requested !== null &&
+      normalized === null
+    );
+  });
+}

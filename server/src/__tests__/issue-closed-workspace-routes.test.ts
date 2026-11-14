@@ -90,6 +90,13 @@ function registerServiceMocks() {
     heartbeatService: () => mockHeartbeatService,
   }));
 
+  vi.doMock("../services/instance-settings.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/instance-settings.js")>()),
+    instanceSettingsService: () => ({
+      getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
+    }),
+  }));
+
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
   }));

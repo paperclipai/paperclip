@@ -384,7 +384,13 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  buildExecutionWorkspaceAdapterConfig,
+  normalizeGatedExecutionWorkspaceField,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  unpersistableGatedExecutionWorkspaceFields,
+} from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -742,6 +748,35 @@ function readObject(value: unknown): Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`).join(",")}}`;
+}
+
+function isSameExecutionWorkspaceValue(requested: unknown, stored: unknown) {
+  const requestedIsAbsent = requested === null || requested === undefined;
+  const storedIsAbsent = stored === null || stored === undefined;
+  if (requestedIsAbsent || storedIsAbsent) return requestedIsAbsent && storedIsAbsent;
+  return stableStringify(requested) === stableStringify(stored);
+}
+
+function unhonourableExecutionWorkspaceFields(
+  body: Record<string, unknown>,
+  existing: Record<string, unknown>,
+) {
+  return unpersistableGatedExecutionWorkspaceFields(body).filter(
+    (field) =>
+      !isSameExecutionWorkspaceValue(
+        normalizeGatedExecutionWorkspaceField(field, body[field]),
+        normalizeGatedExecutionWorkspaceField(field, existing[field]),
+      ),
+  );
 }
 
 async function auditAgentIssueCreateAttributionSpoof(input: {
@@ -15001,6 +15036,23 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      const unhonourableWorkspaceFields = unhonourableExecutionWorkspaceFields(
+        readObject(req.body),
+        readObject(existing),
+      );
+      if (
+        unhonourableWorkspaceFields.length > 0 &&
+        !(await instanceSettings.getExperimental()).enableIsolatedWorkspaces
+      ) {
+        throw unprocessable(
+          `Isolated execution workspaces are disabled on this instance, so ${unhonourableWorkspaceFields.join(", ")} cannot be set`,
+          {
+            code: "isolated_workspaces_disabled",
+            fields: unhonourableWorkspaceFields,
+            setting: "enableIsolatedWorkspaces",
+          },
+        );
+      }
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"

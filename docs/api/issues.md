@@ -80,6 +80,14 @@ For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUI
 
 When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
+`executionWorkspaceId`, `executionWorkspacePreference` and `executionWorkspaceSettings` need the experimental `enableIsolatedWorkspaces` instance setting. When it is off, the update returns `422` with code `isolated_workspaces_disabled` for any of these fields whose value the instance cannot store. `details.fields` names each such field, and `details.setting` is `enableIsolatedWorkspaces`. These requests are still accepted:
+
+- clearing a field with `null`
+- `executionWorkspacePreference: "shared_workspace"`, or settings that contain only `mode: "shared_workspace"` and `networkEgress`
+- a value equal to the stored value, so a fetched issue can be sent back unchanged
+
+When the setting is off, accepted `executionWorkspaceSettings` are merged into the stored settings. Stored keys that the request does not name stay in place.
+
 ### Update Response
 
 Without a `Prefer` header, a successful update returns the full, updated issue row with two additive fields:

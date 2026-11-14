@@ -187,6 +187,7 @@ import {
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolvePinnedIssueWorkspaceStrategyType,
+  unpersistableGatedExecutionWorkspaceFields,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -11757,10 +11758,12 @@ export function issueService(db: Db) {
       // Warm sandbox continuity is runtime bookkeeping, independent of the
       // opt-in UI for creating isolated worktrees. Public updates still obey
       // the feature gate; only the internal shared-workspace binding bypasses it.
-      if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+      const gatedExecutionWorkspaceWrite =
+        !isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace;
+      if (gatedExecutionWorkspaceWrite) {
+        for (const field of unpersistableGatedExecutionWorkspaceFields(issueData)) {
+          delete issueData[field];
+        }
       }
 
       if (issueData.status) {
@@ -11899,7 +11902,10 @@ export function issueService(db: Db) {
             );
       if (issueData.executionWorkspaceSettings !== undefined) {
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
-          ? { ...nextExecutionWorkspaceSettings }
+          ? {
+            ...(gatedExecutionWorkspaceWrite ? parseObject(existing.executionWorkspaceSettings) : {}),
+            ...nextExecutionWorkspaceSettings,
+          }
           : null;
       }
       if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
@@ -12461,6 +12467,7 @@ export function issueService(db: Db) {
         }
         if (
           issueData.executionWorkspaceSettings !== undefined &&
+          !gatedExecutionWorkspaceWrite &&
           nextExecutionWorkspaceId &&
           nextExecutionWorkspacePreference === "reuse_existing"
         ) {
