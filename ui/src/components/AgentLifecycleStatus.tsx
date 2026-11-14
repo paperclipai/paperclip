@@ -5,6 +5,7 @@ import type { Agent, AgentLifecycleState } from "@paperclipai/shared";
 import { Loader2 } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
+import { useTx } from "@/i18n/tx";
 
 const phases = {
   preparing: ["Preparing agent", "Required resources are being prepared. Work stays queued."],
@@ -47,6 +48,7 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
   retryPending: boolean;
   refreshError?: boolean;
 }) {
+  const tx = useTx();
   const phase = pendingPhase(agent.lifecycleState);
   if (!phase && !refreshError) return null;
   return <div role="status" aria-live="polite" className="space-y-2 text-sm">
@@ -59,7 +61,7 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
       {!agent.lifecycleError && <span className="text-muted-foreground">{phase[1]}</span>}
     </div>}
     {phase && agent.lifecycleError && <div className="flex flex-wrap items-center gap-2 text-destructive">
-      <span>{agent.lifecycleError}</span>
+      <span>{tx(agent.lifecycleError)}</span>
       <Button variant="outline" size="sm" disabled={retryPending} onClick={onRetry}>
         {retryPending ? "Retrying…" : "Retry now"}
       </Button>

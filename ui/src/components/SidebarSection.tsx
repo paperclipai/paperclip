@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useTx, useUiLanguage } from "@/i18n/tx";
 import { useSidebarNavExpanded } from "./SidebarNavItem";
 
 type SidebarSectionIcon = ComponentType<{ className?: string }>;
@@ -70,6 +71,9 @@ function SidebarSectionHeader({
   menu,
 }: Pick<SidebarSectionProps, "collapsible" | "headerAction" | "label" | "menu">) {
   const { isMobile } = useSidebar();
+  const tx = useTx();
+  const language = useUiLanguage();
+  const visibleLabel = tx(label);
   const [menuOpen, setMenuOpen] = useState(false);
   const hasMenu = Boolean(
     menu && ((menu.actions?.length ?? 0) > 0 || (menu.radioChoices?.length ?? 0) > 0),
@@ -88,7 +92,7 @@ function SidebarSectionHeader({
     "h-5 w-5 shrink-0 text-muted-foreground/60 transition-opacity hover:text-foreground data-[state=open]:opacity-100",
     headerControlVisibilityClassName,
   );
-  const headerContent = <span data-slot="sidebar-group-label" className={labelClassName}>{label}</span>;
+  const headerContent = <span data-slot="sidebar-group-label" className={labelClassName}>{visibleLabel}</span>;
   const HeaderActionIcon = headerAction?.icon;
 
   const headingControl = hasMenu ? (
@@ -102,7 +106,7 @@ function SidebarSectionHeader({
             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
             menuOpen && "bg-accent/50",
           )}
-          aria-label={menu?.ariaLabel ?? `${label} actions`}
+          aria-label={menu?.ariaLabel ? tx(menu.ariaLabel) : (language === "ru" ? `${visibleLabel}, действия` : `${label} actions`)}
         >
           {headerContent}
         </button>
@@ -116,7 +120,7 @@ function SidebarSectionHeader({
           const content = (
             <>
               {Icon ? <Icon className="size-4" /> : null}
-              <span>{action.label}</span>
+              <span>{tx(action.label)}</span>
             </>
           );
           if (action.href) {
@@ -136,11 +140,11 @@ function SidebarSectionHeader({
           <DropdownMenuRadioGroup
             value={menu.radioValue}
             onValueChange={menu.onRadioValueChange}
-            aria-label={menu.radioLabel}
+            aria-label={menu.radioLabel ? tx(menu.radioLabel) : undefined}
           >
             {menu.radioChoices.map((choice) => (
               <DropdownMenuRadioItem key={choice.value} value={choice.value}>
-                {choice.label}
+                {tx(choice.label)}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
@@ -160,7 +164,9 @@ function SidebarSectionHeader({
               type="button"
               data-slot="icon-button"
               className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
+              aria-label={language === "ru"
+                ? (collapsible.open ? `Свернуть ${visibleLabel}` : `Развернуть ${visibleLabel}`)
+                : (collapsible.open ? `Collapse ${label}` : `Expand ${label}`)}
             >
               <ChevronRight className={caretClassName} aria-hidden="true" />
             </button>
@@ -191,6 +197,7 @@ export function SidebarSection({
   headerAction,
 }: SidebarSectionProps) {
   const { collapsed, peeking } = useSidebar();
+  const tx = useTx();
   const forceExpanded = useSidebarNavExpanded();
   const rail = collapsed && !peeking && !forceExpanded;
   const content = <div className="flex flex-col gap-0.5 mt-0.5">{children}</div>;
@@ -209,7 +216,7 @@ export function SidebarSection({
       <div>
         <div className="px-3 py-1.5 pointer-coarse:py-1">
           <div className="flex min-h-6 items-center">
-            <span className="sr-only">{label}</span>
+            <span className="sr-only">{tx(label)}</span>
             <div className="h-px w-full bg-border/60" aria-hidden="true" />
           </div>
         </div>

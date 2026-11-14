@@ -3,6 +3,7 @@ import { useDialogActions, useDialogState } from "../context/DialogContext";
 import { useLocation } from "../lib/router";
 import { isOnboardingPath } from "../lib/onboarding-route";
 import { DeferredOverlay } from "./DeferredOverlay";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 
 const OnboardingWizard = lazy(() => import("./OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })));
 
@@ -19,8 +20,17 @@ export function OnboardingWizardVariant() {
     setOnboardingRouteDismissed(false);
   }, [pathname, setOnboardingRouteDismissed]);
   const requested = onboardingOpen || (isOnboardingPath(pathname) && !onboardingRouteDismissed);
-  return <DeferredOverlay requested={requested} title="Setup" onClose={() => {
-    closeOnboarding();
-    if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
-  }}><OnboardingWizard /></DeferredOverlay>;
+  return (
+    <>
+      {requested ? (
+        <div className="fixed top-4 right-4 z-[200]">
+          <LanguageSwitcher className="border-border bg-background text-foreground shadow-sm" />
+        </div>
+      ) : null}
+      <DeferredOverlay requested={requested} title="Setup" onClose={() => {
+        closeOnboarding();
+        if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
+      }}><OnboardingWizard /></DeferredOverlay>
+    </>
+  );
 }
