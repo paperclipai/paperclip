@@ -29,7 +29,7 @@ function secretFree(value: unknown) {
   expect(containsSecretMaterial(value, [MOCK_SESSION, MOCK_API_HASH, "cloud-password"])).toBe(false);
 }
 
-describe("telegram user-client plugin", () => {
+describe("pc-telegram plugin", () => {
   it("declares QR connect UI, secret-ref app credentials, and the send tool", () => {
     const parsed = manifest;
     expect(parsed.id).toBe(PLUGIN_ID);

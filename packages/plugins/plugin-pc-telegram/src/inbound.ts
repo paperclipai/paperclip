@@ -97,7 +97,7 @@ export async function ingestInboundMessage(
     if (connection.assignedAgentId) {
       await ctx.issues.requestWakeup(current.id, connection.companyId, {
         reason: "telegram-inbound",
-        contextSource: "plugin-telegram-user-client",
+        contextSource: "plugin-pc-telegram",
       });
     }
     return await ctx.issues.get(current.id, connection.companyId) ?? current;
@@ -115,7 +115,7 @@ export async function ingestInboundMessage(
   if (connection.assignedAgentId) {
     await ctx.issues.requestWakeup(created.id, connection.companyId, {
       reason: "telegram-inbound",
-      contextSource: "plugin-telegram-user-client",
+      contextSource: "plugin-pc-telegram",
     });
   }
   return created;

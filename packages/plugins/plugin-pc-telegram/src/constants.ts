@@ -1,6 +1,6 @@
-export const PLUGIN_ID = "paperclip.telegram-user-client";
+export const PLUGIN_ID = "paperclipai.plugin-pc-telegram";
 export const PLUGIN_VERSION = "0.1.0";
-export const PLUGIN_DISPLAY_NAME = "Telegram user client";
+export const PLUGIN_DISPLAY_NAME = "Telegram";
 
 export const ACCOUNT_ENTITY_TYPE = "telegram-account";
 export const DIALOG_ORIGIN_KIND = `plugin:${PLUGIN_ID}:dialog` as const;
