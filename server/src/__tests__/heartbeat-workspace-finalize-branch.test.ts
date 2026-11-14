@@ -33,6 +33,7 @@ import {
   projects,
   projectWorkspaces,
   workspaceOperations,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -310,6 +311,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(workspaceRuntimeServices);
     await db.delete(environments);
     await db.delete(companySkills);
     await db.delete(companyMemberships);
@@ -368,7 +370,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       expect.arrayContaining([
         expect.objectContaining({
           phase: "worktree_prepare",
-          command: `git checkout ${recordedBranch}`,
+          command: `git checkout --no-overwrite-ignore ${recordedBranch}`,
           status: "succeeded",
           executionWorkspaceId,
           metadata: expect.objectContaining({
@@ -407,6 +409,89 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         }),
       },
     });
+  }, 20_000);
+
+  it("surfaces the clean-restore warning on finalize when the restored branch equals the recorded branch", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    const publishBranch = `publish-${issueId.slice(0, 8)}`;
+    let recordedBranch: string | null = null;
+    let executionWorkspaceId: string | null = null;
+    let workspaceCwd: string | null = null;
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      recordedBranch = workspace.branchName;
+      executionWorkspaceId = workspace.executionWorkspaceId;
+      workspaceCwd = workspace.cwd;
+      await runGit(workspace.cwd, ["checkout", "-b", publishBranch]);
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed after switching to a publish branch.",
+        provider: "test",
+        model: "test-model",
+        runtimeServices: [
+          {
+            id: randomUUID(),
+            serviceName: "finalize-warning-preview",
+            url: "https://preview.example.test/finalize-warning",
+            providerRef: "fixture-finalize-warning",
+          },
+        ],
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id, 60_000);
+    expect(finishedRun).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      error: null,
+    });
+    await waitForRuntimeStateLastRun(db, agentId, run!.id, 30_000);
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    await expect(execFileAsync("git", ["branch", "--show-current"], { cwd: workspaceCwd! }))
+      .resolves.toMatchObject({ stdout: `${recordedBranch}\n` });
+
+    const finalizeOps = await listFinalizeOperations(db, run!.id);
+    expect(finalizeOps[0]?.metadata).toMatchObject({
+      managedGitWorktreeBranchRepair: expect.objectContaining({
+        attempted: true,
+        succeeded: true,
+        initial: expect.objectContaining({
+          reasonCode: "branch_mismatch",
+          expectedBranchName: recordedBranch,
+          actualBranchName: publishBranch,
+        }),
+      }),
+    });
+
+    const readyComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) =>
+        rows.filter(
+          (row) =>
+            row.createdByRunId === run!.id &&
+            row.body.startsWith("## Workspace Ready"),
+        ),
+      );
+    expect(readyComments.length).toBeGreaterThan(0);
+    expect(
+      readyComments.some(
+        (row) =>
+          row.body.includes("self-healed by checking out recorded branch") &&
+          row.body.includes(`"${recordedBranch}"`),
+      ),
+    ).toBe(true);
+    expect(executionWorkspaceId).not.toBeNull();
   }, 20_000);
 
   it("adopts unrecorded forward branch drift for finalization without persisting it", async () => {
