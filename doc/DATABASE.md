@@ -1131,6 +1131,21 @@ in the middle, and when the operating system chooses the chunks. Measure it with
 `pnpm --filter @paperclipai/db exec node --expose-gc --import tsx scripts/benchmark-postgres-receive-buffer.ts`
 (`CONNECTIONS` and `ROW_BYTES` are optional).
 
+The patch also keeps the driver's connection queues proportional to the
+connections they hold. Without this fix, the queue of idle connections keeps an
+empty slot for every query it has handed out until it is completely empty. A
+busy pool always has some idle connections, so that queue never empties. Each
+new query then scans one slot for every query the process has already run. In a
+simulation at 1,000 statements per second, dispatching a query used about 15%
+of the main thread after 17 minutes, and the cost kept growing. The patched queue removes
+the empty slots once there are more than 1,024 of them and more empty slots
+than queued connections. It also searches only the queued connections.
+`packages/db/src/postgres-queue.test.ts` checks the queue order and the work per
+query, and `packages/db/src/postgres-queue-pool.test.ts` checks a real pool.
+Measure it with
+`pnpm --filter @paperclipai/db exec tsx scripts/benchmark-postgres-queue.ts`
+(`SIMULATED_QUERIES` and `QUERIES` are optional).
+
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
 idempotent actor synchronization operations, not arbitrary transactions. A

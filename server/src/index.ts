@@ -1303,7 +1303,7 @@ async function startServerWithDatabaseTeardown(
   ) => Promise<unknown>) | null = null;
   let drainHeartbeatExecutionFinalizers: (() => Promise<void>) | null = null;
   let handOffNativeRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<string[]>) | null = null;
-  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM", now?: Date, abort?: AbortSignal) => Promise<{
     skipDrain: boolean;
     drainRunIds?: string[];
   }>) | null = null;
@@ -2281,8 +2281,8 @@ async function startServerWithDatabaseTeardown(
       signal,
       prepareHotRestartShutdown: prepareHotRestart
         ? async (preparationSignal) => {
-          const preparation = await preDrain.run("hot_restart_prepare", () =>
-            prepareHotRestart(preparationSignal));
+          const preparation = await preDrain.run("hot_restart_prepare", abort =>
+            prepareHotRestart(preparationSignal, undefined, abort));
           if (preparation.outcome === "completed") return preparation.value;
           if (preparation.outcome === "failed") throw preparation.error;
           throw new Error("hot-restart shutdown preparation timed out");
