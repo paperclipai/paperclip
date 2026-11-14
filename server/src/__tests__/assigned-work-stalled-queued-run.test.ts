@@ -105,7 +105,7 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
     const continuations = async () => db.select().from(activityLog).where(and(eq(activityLog.entityId, issue.id),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
-    return { companyId, agentId, issue, queuedRun, otherStarts, olderRun, queue, sweep, runsOfTask, readRun, continuations };
+    return { companyId, agentId, issue, other, queuedRun, otherStarts, olderRun, queue, sweep, runsOfTask, readRun, continuations };
   }
 
   async function replacementOf(f: Awaited<ReturnType<typeof seed>>, stalledId: string) {
@@ -202,6 +202,40 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     expect(started).toMatchObject({ outcome: "changed" });
     expect((await f.readRun(stalled.id)).status).toBe("running");
     expect(await f.runsOfTask()).toHaveLength(1);
+    expect(await f.continuations()).toHaveLength(0);
+  }, 60_000);
+
+  it("leaves an automatic run that waits behind work on tasks people created", async () => {
+    // Work people wait on goes first by design; a system run behind it is waiting its turn, not stalled.
+    const f = await seed();
+    await db.update(issues).set({ createdByUserId: "person-1" }).where(eq(issues.id, f.other.id));
+    const waiting = await f.queuedRun({ refused: false });
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 3, 10 * MINUTE);
+    const sweep = f.sweep();
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    expect((await f.readRun(waiting.id)).status).toBe("queued");
+    expect(await f.continuations()).toHaveLength(0);
+  }, 60_000);
+
+  it("leaves an automatic run that waits behind continuations of a person's Retry", async () => {
+    // The dispatcher ranks a recovery run as person work when its source chain leads to a person's request.
+    const f = await seed();
+    const waiting = await f.queuedRun({ refused: false });
+    const personSourceAt = new Date(Date.now() - 30 * MINUTE);
+    const [personSource] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "on_demand",
+      triggerDetail: "manual", status: "failed", createdAt: personSourceAt, startedAt: personSourceAt, finishedAt: personSourceAt,
+      contextSnapshot: { issueId: f.other.id, taskId: f.other.id, wakeReason: "task_retry" } }).returning();
+    for (let index = 0; index < OLDEST_DISPATCH_SHARE + 3; index++) {
+      const startedAt = new Date(Date.now() - 10 * MINUTE + index * 1_000);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "succeeded", createdAt: new Date(startedAt.getTime() - 1_000), startedAt, finishedAt: new Date(startedAt.getTime() + 500),
+        contextSnapshot: { issueId: f.other.id, taskId: f.other.id, wakeReason: "issue_recovery_action_restored", previousRunId: personSource!.id } });
+    }
+    const sweep = f.sweep();
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    expect((await f.readRun(waiting.id)).status).toBe("queued");
     expect(await f.continuations()).toHaveLength(0);
   }, 60_000);
 

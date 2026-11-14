@@ -1,6 +1,6 @@
 {
-  "id": "1f3f1d5d-1541-4fb8-b3d0-a0c5ced25906",
-  "prevId": "657684f0-0891-4707-81b8-cd4eebc5363f",
+  "id": "78d10bc7-b440-4c00-a02e-90111c50071d",
+  "prevId": "9389124c-379a-4b64-9c20-c7b37538e7c8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -36134,28 +36134,6 @@
           "method": "btree",
           "with": {}
         },
-        "heartbeat_runs_company_finished_idx": {
-          "name": "heartbeat_runs_company_finished_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "finished_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"finished_at\" is not null",
-          "concurrently": true,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_company_created_at_desc_idx": {
           "name": "heartbeat_runs_company_created_at_desc_idx",
           "columns": [
@@ -59731,6 +59709,12 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
