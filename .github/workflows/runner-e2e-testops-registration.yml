@@ -94,7 +94,7 @@ jobs:
           REGISTRATION_PLAN: ${{ inputs.plan }}
           REGISTRATION_OPERATION: ${{ inputs.operation }}
         run: node tests/runner-e2e/reliability-testops-registration.mjs testops-registration/receipt.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: reliability-testops-registration-${{ github.run_id }}-${{ github.run_attempt }}

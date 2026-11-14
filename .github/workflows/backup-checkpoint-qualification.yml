@@ -74,7 +74,7 @@ jobs:
         run: pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts
       - name: Attach qualification receipt
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: backup-checkpoint-evidence
           path: backup-checkpoint-evidence/
