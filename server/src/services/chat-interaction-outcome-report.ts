@@ -53,6 +53,10 @@ export async function earlierDeclinedOutcomeReply(tx: Connection, input: {
   if (input.payload.mutation !== "interaction") return null;
   const interactionIds = wakeInteractionIds(input.payload);
   if (interactionIds.length === 0 || interactionIds.length > MAX_INTERACTIONS) return null;
+  // A tool-action batch lists at most eight outcomes inline; when more were recorded, the
+  // omitted ones may be unreported, so the wake must keep its turn.
+  const outcomeCount = input.payload.toolActionOutcomeCount;
+  if (typeof outcomeCount === "number" && outcomeCount > interactionIds.length) return null;
   const [conversation] = await tx.select({ conversationAgentId: issues.conversationAgentId }).from(issues)
     .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
   if (conversation?.conversationAgentId !== input.agentId) return null;

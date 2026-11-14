@@ -33,7 +33,7 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
     await database?.cleanup();
   });
 
-  async function seed(input: { read: boolean; toolAction?: boolean; status?: string; historical?: number }) {
+  async function seed(input: { outcomeCount?: number; read: boolean; toolAction?: boolean; status?: string; historical?: number }) {
     const [issue] = await db.insert(issues).values({ companyId, title: "Chat with CEO", status: "in_progress", assigneeAgentId: agentId,
       conversationAgentId: agentId, conversationUserId: `person-${randomUUID()}`, conversationState: "waiting" }).returning();
     // Older declines come first in the agent's interaction list.
@@ -59,7 +59,8 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await db.update(issues).set({ executionRunId: run.id, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     const context = { issueId: issue.id, taskId: issue.id, interactionId: card.id, interactionIds: [card.id],
-      interactionKind: "request_confirmation", interactionStatus: card.status, wakeReason: "issue_commented", source: "tool_action_review" };
+      interactionKind: "request_confirmation", interactionStatus: card.status, wakeReason: "issue_commented", source: "tool_action_review",
+      ...(input.outcomeCount === undefined ? {} : { toolActionOutcomeCount: input.outcomeCount }) };
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system",
       reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "person",
       payload: { ...context, mutation: "interaction", _paperclipWakeContext: context } }).returning();
@@ -90,6 +91,7 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
     ["the earlier turn never read the decline", { read: false }],
     ["the card is not a tool action", { read: true, toolAction: false }],
     ["the card was accepted", { read: true, status: "accepted" }],
+    ["the batch recorded more outcomes than it lists", { read: true, outcomeCount: 9 }],
   ] as const)("still runs the continuation when %s", async (_label, input) => {
     const { run, wake } = await seed(input);
     const promotion = vi.fn((): never => { throw new Error("promotion reached the host"); });
