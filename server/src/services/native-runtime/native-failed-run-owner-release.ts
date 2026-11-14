@@ -5,6 +5,7 @@ import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recover
 import { settleNativeTerminalWake } from "./native-run-projection.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { unionAll } from "drizzle-orm/pg-core";
 import { activityLog, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
@@ -156,6 +157,37 @@ async function controllerMayBeLive(coordinator: Coordinator, fallbacks: Fallback
     "native_failed_run_controller", fallbacks);
 }
 
+export async function findNewerIssueRun(tx: Db, run: Run, issueId: string): Promise<{ id: string } | undefined> {
+  const since = sql`${heartbeatRuns.createdAt} >= (select source.created_at from ${heartbeatRuns} source
+    where source.id = ${run.id} and source.company_id = ${run.companyId})`;
+  const [newer] = await unionAll(
+    tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.nativeIssueId, issueId),
+      ne(heartbeatRuns.id, run.id),
+      since,
+    )).limit(1),
+    tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+      ne(heartbeatRuns.id, run.id),
+      since,
+    )).limit(1),
+    tx.select({ id: heartbeatRuns.id }).from(nativeRunFinalizations)
+      .innerJoin(heartbeatRuns, and(
+        eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+        eq(heartbeatRuns.companyId, run.companyId),
+      ))
+      .where(and(
+        eq(nativeRunFinalizations.companyId, run.companyId),
+        eq(nativeRunFinalizations.issueId, issueId),
+        ne(heartbeatRuns.id, run.id),
+        since,
+      )).limit(1),
+  ).limit(1);
+  return newer;
+}
+
 async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promise<boolean> {
   const publications: ActivityPublication[] = [];
   const settled = await db.transaction(async transaction => {
@@ -214,16 +246,7 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       if (task.executionRunId === null) {
         // Issue lock serializes admission. A cleared failure pointer does not
         // authorize containment of an older/replaced source.
-        const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, run.companyId),
-          or(eq(heartbeatRuns.nativeIssueId, coordinator.issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${coordinator.issueId}`,
-            sql`exists (select 1 from ${nativeRunFinalizations} newer_owner
-              where newer_owner.run_id = ${heartbeatRuns.id} and newer_owner.company_id = ${run.companyId}
-                and newer_owner.issue_id = ${coordinator.issueId})`),
-          ne(heartbeatRuns.id, run.id),
-          sql`${heartbeatRuns.createdAt} >= (select source.created_at from ${heartbeatRuns} source
-            where source.id = ${run.id} and source.company_id = ${run.companyId})`,
-        )).limit(1);
+        const newer = await findNewerIssueRun(tx, run, coordinator.issueId);
         if (newer) return false;
       }
       const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

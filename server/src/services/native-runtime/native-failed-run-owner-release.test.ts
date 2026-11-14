@@ -27,6 +27,7 @@ import { executionControlSchedule } from "../execution-control-work.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import {
+  findNewerIssueRun,
   nextAbandonedNativeOwnerReleaseAt,
   releaseAbandonedNativeOwners,
   resetAbandonedNativeOwnerReleaseForTests,
@@ -539,5 +540,48 @@ describe("failed native run owner release", () => {
     for (const runId of [cancelledRunId, stoppingRunId]) {
       expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
     }
+  });
+
+  it("finds newer issue runs via nativeIssueId and contextSnapshot without scanning unrelated company runs", async () => {
+    const { runId, issueId } = await nativeRun({ status: "failed", errorCode: "adapter_failed",
+      coordinator: { leaseOwner: `default:resume:${randomUUID()}`, leaseExpiresAt: new Date(0) } });
+    const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(sourceRun).toBeDefined();
+
+    const otherRuns = Array.from({ length: 200 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "succeeded",
+      runtimeMode: "native" as const,
+      createdAt: new Date(sourceRun!.createdAt.getTime() + index + 1),
+    }));
+    await db.insert(heartbeatRuns).values(otherRuns);
+
+    await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toBeUndefined();
+
+    const newerBySnapshotId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newerBySnapshotId,
+      companyId,
+      agentId,
+      status: "queued",
+      runtimeMode: "native",
+      contextSnapshot: { issueId },
+      createdAt: new Date(sourceRun!.createdAt.getTime() + 500),
+    });
+    await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toEqual({ id: newerBySnapshotId });
+
+    const newerByNativeIssueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newerByNativeIssueId,
+      companyId,
+      agentId,
+      nativeIssueId: issueId,
+      status: "queued",
+      runtimeMode: "native",
+      createdAt: new Date(sourceRun!.createdAt.getTime() + 600),
+    });
+    await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toMatchObject({ id: expect.any(String) });
   });
 });
