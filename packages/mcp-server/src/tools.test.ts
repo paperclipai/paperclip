@@ -6,9 +6,9 @@ function makeClient() {
   return new PaperclipApiClient({
     apiUrl: "http://localhost:3100/api",
     apiKey: "token-123",
-    companyId: "11111111-1111-1111-1111-111111111111",
-    agentId: "22222222-2222-2222-2222-222222222222",
-    runId: "33333333-3333-3333-3333-333333333333",
+    companyId: "11111111-1111-4111-8111-111111111111",
+    agentId: "22222222-2222-4222-8222-222222222222",
+    runId: "33333333-3333-4333-8333-333333333333",
   });
 }
 
@@ -38,6 +38,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipUpdateIssue");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       status: "done",
     });
@@ -48,7 +49,7 @@ describe("paperclip MCP tools", () => {
     expect(init.method).toBe("PATCH");
     expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer token-123");
     expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
-      "33333333-3333-3333-3333-333333333333",
+      "33333333-3333-4333-8333-333333333333",
     );
   });
 
@@ -64,7 +65,7 @@ describe("paperclip MCP tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/skills",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/skills",
     );
     expect(response.content[0]?.text).toContain("wireframe");
   });
@@ -81,7 +82,7 @@ describe("paperclip MCP tools", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/issues",
     );
     expect(response.content[0]?.text).toContain("issue-1");
   });
@@ -94,12 +95,13 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipCheckoutIssue");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
-      agentId: "22222222-2222-2222-2222-222222222222",
+      agentId: "22222222-2222-4222-8222-222222222222",
       expectedStatuses: ["todo", "backlog", "blocked"],
     });
   });
@@ -112,20 +114,23 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipCreateIssue");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       title: "Assigned follow-up",
-      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/issues",
     );
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       title: "Assigned follow-up",
+      visibility: "open",
+      allowDuplicate: false,
       workMode: "standard",
       priority: "medium",
-      assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
       requestDepth: 0,
     });
   });
@@ -138,6 +143,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipUpsertIssueDocument");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       key: "plan",
       body: "# Updated",
@@ -176,6 +182,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipControlIssueWorkspaceServices");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       action: "restart",
       workspaceCommandId: "web",
@@ -233,6 +240,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipSuggestTasks");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       idempotencyKey: "run-1:suggest",
       payload: {
@@ -263,6 +271,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipRequestConfirmation");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
       title: "Plan approval",
@@ -317,6 +326,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipRequestCheckboxConfirmation");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       issueId: "PAP-1135",
       idempotencyKey: "confirmation:PAP-1135:files",
       title: "Choose files",
@@ -373,21 +383,22 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipCreateApproval");
     await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       type: "hire_agent",
       payload: { branch: "pap-1167" },
-      issueIds: ["44444444-4444-4444-4444-444444444444"],
+      issueIds: ["44444444-4444-4444-8444-444444444444"],
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe(
-      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
+      "http://localhost:3100/api/companies/11111111-1111-4111-8111-111111111111/approvals",
     );
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       type: "hire_agent",
       payload: { branch: "pap-1167" },
-      issueIds: ["44444444-4444-4444-4444-444444444444"],
+      issueIds: ["44444444-4444-4444-8444-444444444444"],
     });
   });
 
@@ -396,6 +407,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipApiRequest");
     const response = await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       method: "GET",
       path: "issues",
     });
@@ -408,6 +420,7 @@ describe("paperclip MCP tools", () => {
 
     const tool = getTool("paperclipApiRequest");
     const response = await tool.execute({
+      paperclipRunId: "33333333-3333-4333-8333-333333333333",
       method: "GET",
       path: "/../../secret",
     });
