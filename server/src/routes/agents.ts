@@ -52,7 +52,7 @@ import { antigravityConnectionModels } from "../services/antigravity-connection-
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
+import { isAiConnectionCompatible, adapterUsesAiConnection } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
@@ -2676,9 +2676,14 @@ export function agentRoutes(
     throw forbidden("Agent keys cannot configure host-executed process adapters.");
   }
 
+  // External adapters that spawn a host process but do not use the `_local`
+  // type suffix; they must stay behind the same agent-key guard.
+  const HOST_EXECUTING_ADAPTER_TYPES = new Set(["paperclip_runner", "bob_shell"]);
+
   const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
     "command",
     "hermesCommand",
+    "bobCommand",
     "args",
     "extraArgs",
     "cwd",
@@ -2724,7 +2729,7 @@ export function agentRoutes(
     allowPlainCredentials = false,
     harnessConfig = adapterConfig,
   ) {
-    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
+    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && !HOST_EXECUTING_ADAPTER_TYPES.has(adapterType))) return;
     const harness = agentHarnessType(adapterType, harnessConfig);
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
       adapterConfig[key] !== undefined &&
@@ -5814,7 +5819,9 @@ export function agentRoutes(
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig
+      ? requestedRuntimeConfig.aiConnection
+      : (adapterUsesAiConnection(requestedAdapterType) ? existing.runtimeConfig.aiConnection : undefined)).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
       const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
@@ -5844,6 +5851,13 @@ export function agentRoutes(
       }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+    // When switching to an adapter that doesn't use AI connections, clear the
+    // stored aiConnection so it doesn't linger in DB and confuse future saves.
+    if (touchesAdapterConfiguration && !adapterUsesAiConnection(requestedAdapterType) && existing.runtimeConfig.aiConnection) {
+      const rc = asRecord(patchData.runtimeConfig) ?? { ...asRecord(existing.runtimeConfig) ?? {} };
+      delete rc.aiConnection;
+      patchData.runtimeConfig = rc;
+    }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       const nextDefaultEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
         ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)

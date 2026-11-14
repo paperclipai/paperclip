@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -240,7 +240,22 @@ if (existingRunner) {
   process.exit(0);
 }
 
-const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+function resolvePnpmBin(): { bin: string; useShell: boolean } {
+  if (process.platform !== "win32") return { bin: "pnpm", useShell: false };
+  const result = spawnSync("where.exe", ["pnpm"], { encoding: "utf8" });
+  if (result.status === 0 && result.stdout) {
+    // where.exe may return multiple lines. A real .exe can be spawned directly;
+    // .cmd/.bat shims (and extensionless sh shims) cannot, so route those through
+    // a shell, preferring the .cmd over the extensionless shim.
+    const lines = result.stdout.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const exe = lines.find((l) => l.toLowerCase().endsWith(".exe"));
+    if (exe) return { bin: exe, useShell: false };
+    const cmd = lines.find((l) => /\.(cmd|bat)$/i.test(l));
+    if (cmd) return { bin: `"${cmd}"`, useShell: true };
+  }
+  return { bin: "pnpm.cmd", useShell: true };
+}
+const { bin: pnpmBin, useShell: pnpmUseShell } = resolvePnpmBin();
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
 let pendingMigrations: string[] = [];
@@ -380,7 +395,7 @@ async function runPnpm(args: string[], options: {
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
       cwd: options.cwd,
-      shell: process.platform === "win32",
+      shell: pnpmUseShell,
     });
 
     const stdoutBuffer = createCapturedOutputBuffer();
@@ -720,7 +735,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: "inherit", env, shell: pnpmUseShell },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
