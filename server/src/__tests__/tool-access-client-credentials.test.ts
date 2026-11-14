@@ -90,6 +90,8 @@ function fakeProvider() {
     /** Runs once when the server first receives a signed-in request (to stage races). */
     onAuthorizedMcpRequest: null as null | (() => Promise<void>),
     signingAlgorithms: ["RS256", "ES256"],
+    /** Runs once at the start of the next token request (to stage a paused refresh). */
+    onTokenRequest: null as null | (() => Promise<void>),
   };
   const metadata = (issuer: string) => ({
     issuer,
@@ -119,6 +121,11 @@ function fakeProvider() {
     if (url === TOKEN_URL) {
       const body = new URLSearchParams(String(init?.body));
       state.tokenRequests.push({ url, body, authorization: headers.get("authorization") });
+      if (state.onTokenRequest) {
+        const hook = state.onTokenRequest;
+        state.onTokenRequest = null;
+        await hook();
+      }
       if (state.tokenDelayMs) await new Promise((resolve) => setTimeout(resolve, state.tokenDelayMs));
       if (body.get("grant_type") !== "client_credentials") return json({ error: "unsupported_grant_type" }, 400);
       const assertion = body.get("client_assertion");
@@ -710,6 +717,30 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     await abandoned();
     await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
     expect(((await organizationGrant(created.connectionId)).providerTenant?.oauth as Record<string, unknown>).refreshLease).toBeUndefined();
+  });
+
+  it("never saves the token of a refresh whose lease was taken over", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { created } = await setupKeyConnection(company.id, provider);
+    const grant = await organizationGrant(created.connectionId);
+    const input = { companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor };
+    // Refresh A pauses past its lease; refresh B on another server takes over and finishes.
+    provider.state.onTokenRequest = async () => {
+      const current = await organizationGrant(created.connectionId);
+      const oauth = (current.providerTenant ?? {}).oauth as Record<string, unknown>;
+      await db.update(connectionGrants).set({
+        providerTenant: { ...(current.providerTenant ?? {}), oauth: { ...oauth, refreshLease: { ...(oauth.refreshLease as object), expiresAt: "2000-01-01T00:00:00.000Z" } } },
+      }).where(eq(connectionGrants.id, grant.id));
+      await service().refreshOAuthGrantCredentials(input);
+    };
+    const issuedBefore = provider.state.issued;
+    await expect(service().refreshOAuthGrantCredentials(input))
+      .rejects.toMatchObject({ details: expect.objectContaining({ code: "oauth_refresh_superseded" }) });
+    const takeoverToken = `machine-token-${issuedBefore + 1}`;
+    // Normal calls use the takeover's token, not the one the paused refresh received later.
+    await service().checkHealth(created.connectionId, actor);
+    expect(provider.state.mcpRequests.at(-1)!.authorization).toBe(`Bearer ${takeoverToken}`);
   });
 
   it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
