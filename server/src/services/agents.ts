@@ -5,7 +5,7 @@ import { type BudgetServiceHooks } from "./budgets.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, agentConfigRevisions, agentApiKeys, heartbeatRuns } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type AgentApiKeyScope } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, tombstoneOmittedAccessBindings, type AgentApiKeyScope } from "@paperclipai/shared";
 
 import { conflict, notFound, unprocessable } from "../errors.js";
 
@@ -107,6 +107,13 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
+      const current = await getById(id);
+      if (current && patch.adapterConfig && typeof patch.adapterConfig === "object" && !Array.isArray(patch.adapterConfig)) {
+        patch.adapterConfig = tombstoneOmittedAccessBindings(
+          current.adapterConfig,
+          patch.adapterConfig,
+        ) as typeof patch.adapterConfig;
+      }
       return updateAgent(id, patch, {
         recordRevision: {
           createdByAgentId: actor.agentId ?? null,

@@ -13,7 +13,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { agents, assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
-import { normalizeAgentUrlKey, extractAgentMentionIds } from "@paperclipai/shared";
+import { normalizeAgentUrlKey, extractAgentMentionIds, finalizeAccessBindingConfig } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { agentRecordQueries, type UpdateAgentOptions, type AgentConfigurationPatch, type AgentConfigurationRecord, isPlainRecord, buildConfigSnapshot,
@@ -105,9 +105,16 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
     isPlainRecord(normalizedPatch.adapterConfig)
   ) {
+    // Use the locked row. Omitted access.* bindings survive unrelated rewrites,
+    // including a stale snapshot that never saw a binding added underneath it.
+    // Null is the explicit revoke and is removed before persistence.
+    const preservedAccessBindings = finalizeAccessBindingConfig(
+      isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {},
+      normalizedPatch.adapterConfig,
+    );
     const normalizedAdapterConfig = await secretService(db).normalizeAdapterConfigForPersistence(
       existing.companyId,
-      normalizedPatch.adapterConfig,
+      preservedAccessBindings.config,
       { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
     );
     normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(

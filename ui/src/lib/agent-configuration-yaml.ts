@@ -3,6 +3,7 @@ import {
   agentConfigurationInputSchema,
   agentConfigurationSpec,
   canonicalAgentConfiguration,
+  tombstoneOmittedAccessBindings,
   type AgentConfigurationDocument,
   type AgentConfigurationInput,
   type AgentConfigurationSource,
@@ -66,5 +67,13 @@ export function agentConfigurationPatch(document: AgentConfigurationInput, saved
     }
   }
   if (Object.hasOwn(patch, "adapterConfig")) patch.replaceAdapterConfig = true;
+  if (patch.adapterConfig && typeof patch.adapterConfig === "object" && !Array.isArray(patch.adapterConfig)) {
+    // A saved document that drops access.* is an intentional revoke. Send null
+    // so the server does not treat the omission as an unrelated rewrite.
+    patch.adapterConfig = tombstoneOmittedAccessBindings(
+      saved.adapterConfig,
+      patch.adapterConfig as Record<string, unknown>,
+    );
+  }
   return patch;
 }
