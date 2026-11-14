@@ -180,7 +180,9 @@ actual history gap stops in Attention. Initial historical messages establish a
 checkpoint but do not create old tasks automatically.
 
 Pause stops execution and external publication while retaining already accepted
-pending work. Resume establishes a new intake cutoff, so messages deliberately
+pending work. Another authorized operator can resume an existing handoff without
+replacing its original ownership. Connection-management permissions are checked
+for each configuration change. Resume establishes a new intake cutoff, so messages deliberately
 suppressed during pause do not become work. Outage recovery catches up eligible
 missed messages. Disconnect archives the endpoint, stops streams, invalidates
 interaction authority, and removes owned secret bindings. It does not delete the

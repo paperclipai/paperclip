@@ -1,3 +1,4 @@
+import { connectionManagementService } from "../../services/connection-management.js";
 import { currentControllerProcess } from "../../services/controller-process-identity.js";
 import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
 import { readIdleIncomingWakeProof } from "../../services/idle-incoming-wake.js";
@@ -1029,7 +1030,7 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(false, true), 30_000);
   it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
     () => onlinePhotonEnrollment(false, false, true), 30_000);
-  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
@@ -1066,8 +1067,10 @@ describe("iMessage Photon channel control plane", () => {
       return observedOwner;
     });
     const requests: Record<string, unknown>[] = [];
+    const requestSubjects: string[] = [];
     let endpointId: string | undefined, companyId: string | undefined;
-    vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation }) => {
+    vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation, subject }) => {
+      requestSubjects.push(subject);
       requests.push(structuredClone(operation));
       if (!endpointId || !companyId || operation.kind !== "enroll") throw new Error("Unexpected controlled broker operation");
       const retained = readPhotonExternalState(await photonStateFor(db, { companyId, endpointId }).read(PHOTON_EXTERNAL_STATE));
@@ -1104,13 +1107,32 @@ describe("iMessage Photon channel control plane", () => {
     const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
     expect(before.status).toBe("active");
-    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    let operatorUserId = t.userId;
+    if (otherAuthorizedOperator) {
+      operatorUserId = randomUUID();
+      await db.insert(authUsers).values({ id: operatorUserId, name: "Second operator", email: `${operatorUserId}@example.com`,
+        emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: t.companyId, principalType: "user", principalId: operatorUserId,
+        status: "active", membershipRole: "operator" });
+      await db.insert(principalPermissionGrants).values({ companyId: t.companyId, principalType: "user", principalId: operatorUserId,
+        permissionKey: "tools:manage_connections", grantedByUserId: t.userId });
+    }
+    const management = otherAuthorizedOperator ? await connectionManagementService(db).authorize(
+      { type: "board", userId: operatorUserId, source: "session" }, "connections:configure",
+      { type: "connection_management", companyId: t.companyId, connectionId: t.endpoint.connectionId,
+        provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/configure" }, { mutation: true }) : undefined;
+    if (management) {
+      expect(management.responsibleUserId).toBe(operatorUserId);
+      expect(management.decision).toMatchObject({ allowed: true, action: "connections:configure" });
+      expect(operatorUserId).not.toBe(original.identity.subject);
+    }
+    await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
     const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     expect(paused.status).toBe("paused");
     expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
     expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
       .toMatchObject({ phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
-    const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId)
+    const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
       .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
     const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
@@ -1123,6 +1145,12 @@ describe("iMessage Photon channel control plane", () => {
     expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
     expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
     expect(outcome.snapshot).toMatchObject({ status: "active" });
+    if (otherAuthorizedOperator) {
+      expect(Reflect.get(paused.setup, "photonExternalSubject")).toBe(original.identity.subject);
+      expect(Reflect.get(resumed.setup, "photonExternalSubject")).toBe(original.identity.subject);
+      expect(requestSubjects).toEqual([original.identity.subject]);
+      await management!.reauthorize();
+    }
     expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
     expect(requests).toHaveLength(1);
     expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
@@ -1259,6 +1287,8 @@ describe("iMessage Photon channel control plane", () => {
     phase => resumeOriginalHandoff(phase), 30_000);
   it("releases idle Cloud-resume ownership and reacquires it for normal authorized delivery",
     () => resumeOriginalHandoff("enrolling", true), 30_000);
+  it.each(["enrolling", "joining"] as const)("preserves original Photon %s custody when another authorized operator pauses and resumes",
+    phase => resumeOriginalHandoff(phase, false, true), 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
     await t.start();

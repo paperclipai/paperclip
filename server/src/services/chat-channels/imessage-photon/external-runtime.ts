@@ -697,6 +697,15 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
  * retained SDK state is deliberately untouched until its original owner retires. */
 export async function stagePhotonExternalConfiguration(db: Pick<Db, "select" | "update">, endpointId: string, subject: string | null | undefined) {
   if (!subject) return;
-  await db.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{photonExternalSubject}', ${JSON.stringify(subject)}::jsonb)` })
-    .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "imessage-photon")));
+  const [endpoint] = await db.select({ companyId: chatEndpoints.companyId }).from(chatEndpoints)
+    .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "imessage-photon"))).for("no key update");
+  if (!endpoint) return;
+  const [saved] = await db.select({ value: chatSdkState.value }).from(chatSdkState).where(and(
+    eq(chatSdkState.companyId, endpoint.companyId), eq(chatSdkState.endpointId, endpointId), eq(chatSdkState.stateKey, stateKey)));
+  const retained = readPhotonExternalState(saved?.value ?? null);
+  if (retained && (retained.identity.companyId !== endpoint.companyId || retained.identity.endpointId !== endpointId))
+    throw conflict("Photon retained configuration owner changed");
+  const custodySubject = retained && retained.phase !== "retired" ? retained.identity.subject : subject;
+  await db.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{photonExternalSubject}', ${JSON.stringify(custodySubject)}::jsonb)` })
+    .where(and(eq(chatEndpoints.companyId, endpoint.companyId), eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "imessage-photon")));
 }
