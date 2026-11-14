@@ -331,6 +331,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    hidePromptTemplate?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -347,7 +348,7 @@ async function renderForm(
         mode="edit"
         agent={makeAgent(agentOverrides)}
         onSave={onSave}
-        hidePromptTemplate
+        hidePromptTemplate={options.hidePromptTemplate ?? true}
         compactTestFeedback={options.compactTestFeedback}
         content={options.content}
         environmentVariablesPlacement={options.environmentVariablesPlacement}
@@ -1833,6 +1834,21 @@ describe("AgentConfigForm environment selector", () => {
     }).adapterConfig;
     expect(adapterConfig).not.toHaveProperty("model");
     expect(result.container.textContent).not.toContain("Cannot read properties of undefined");
+  });
+
+  it("can expose the prompt template field for non-local adapters", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "hermes_gateway",
+        adapterConfig: {},
+      },
+      { hidePromptTemplate: false },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Prompt Template");
+    expect(result.container.textContent).toContain("The prompt template controls the run framing sent to the adapter");
   });
 
   it("qualifies an existing native runner's saved computer before its normal Test", async () => {
