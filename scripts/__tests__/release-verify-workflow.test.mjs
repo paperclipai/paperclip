@@ -934,7 +934,18 @@ test("release daemon production uses exact-source native hosts and no publisher 
   const release = readWorkflow("release.yml");
   const source = release.split("  release_runner_source:\n")[1].split(/\n  [a-z_]+:\n/)[0];
   const binaries = release.split("  release_runner_binaries:\n")[1].split(/\n  [a-z_]+:\n/)[0];
-  assert.match(source, /needs: \[verify_canary, select_nightly, select_beta, preflight_stable\]/);
+  assert.match(source, /needs: \[select_nightly, select_beta, preflight_stable\]/);
+  const sourceCondition = source.match(/^    if: >-\n((?: {6}.+\n)+)/m)?.[1].replace(/\s+/g, " ").trim();
+  assert.ok(sourceCondition, "release_runner_source needs a condition");
+  const pushGithub = { event_name: "push", repository: "paperclipai/paperclip", repository_id: "1170821064", ref: "refs/heads/master" };
+  const skippedLanes = { select_nightly: { result: "skipped" }, select_beta: { result: "skipped" }, preflight_stable: { result: "skipped" } };
+  const selectsSource = (github) => runInNewContext(sourceCondition, { cancelled: () => false, github, needs: skippedLanes });
+  assert.equal(selectsSource(pushGithub), true, "a canary builds its daemons without waiting for the source proof");
+  for (const change of [{ repository: "someone/paperclip" }, { repository_id: "1" }, { ref: "refs/heads/feature" }, { event_name: "schedule" }]) {
+    assert.equal(selectsSource({ ...pushGithub, ...change }), false, JSON.stringify(change));
+  }
+  const publishCanary = release.split("  publish_canary:\n")[1].split(/\n  [a-z_]+:\n/)[0];
+  assert.match(publishCanary, /needs\.verify_canary\.result == 'success'/, "publication still waits for the source proof");
   assert.match(source, /!cancelled\(\)/);
   assert.match(binaries, /needs: release_runner_source/);
   assert.match(binaries, /ref: \$\{\{ needs\.release_runner_source\.outputs\.sha \}\}/);
@@ -942,7 +953,7 @@ test("release daemon production uses exact-source native hosts and no publisher 
   const condition = binaries.match(/^    if: (.+)$/m)?.[1].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
   assert.match(condition, /^!cancelled\(\) && needs\.release_runner_source\.result == 'success' && needs\.release_runner_source\.outputs\.required == 'true'$/,
     "Native compilation must bypass deliberately skipped channel ancestors and require successful exact-source selection");
-  const laneJobs = ["verify_canary", "select_nightly", "select_beta", "preflight_stable"];
+  const laneJobs = ["select_nightly", "select_beta", "preflight_stable"];
   for (const activeLane of laneJobs) {
     for (const [result, required, cancelled, expected] of [
       ["success", "true", false, true], ["failure", "true", false, false],
@@ -952,7 +963,7 @@ test("release daemon production uses exact-source native hosts and no publisher 
     ]) {
       const needs = Object.fromEntries(laneJobs.map(job => [job, { result: job === activeLane ? "success" : "skipped" }]));
       needs.release_runner_source = { result, outputs: { required } };
-      assert.equal(Object.values(needs).filter(job => job.result === "skipped").length, result === "skipped" ? 4 : 3);
+      assert.equal(Object.values(needs).filter(job => job.result === "skipped").length, result === "skipped" ? 3 : 2);
       assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
         `${activeLane}: source=${result}, required=${required}, cancelled=${cancelled}`);
     }
@@ -987,7 +998,8 @@ test('native dependency caches are target-bound and unmerged master callers cann
   assert.match(cache, /workspaces: \$\{\{ steps.native_rust_workspace.outputs.path \}\} -> target/);
   const key = cache.match(/^\s*shared-key: (.+)$/m)?.[1];
   assert.ok(key?.startsWith("release-native-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', "));
-  assert.ok(key?.endsWith("-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}"));
+  assert.ok(key?.endsWith("-${{ matrix.host }}-${{ matrix.target }}"));
+  assert.doesNotMatch(key, /protocol\/\*\*|src\/\*\*/, "only dependency crates are cached, so runner source must not invalidate them");
   for (const option of ['cache-workspace-crates', 'cache-bin', 'cache-on-failure']) {
     assert.match(cache, new RegExp(option + ': false'));
   }

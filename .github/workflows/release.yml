@@ -345,10 +345,10 @@ jobs:
         run: node scripts/cloud-source-verification.mjs "$SOURCE_SHA"
 
   release_runner_source:
-    needs: [verify_canary, select_nightly, select_beta, preflight_stable]
+    needs: [select_nightly, select_beta, preflight_stable]
     if: >-
       !cancelled() && (
-        (github.event_name == 'push' && needs.verify_canary.result == 'success') ||
+        (github.event_name == 'push' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master') ||
         (needs.select_nightly.result == 'success' && needs.select_nightly.outputs.proceed == 'true') ||
         needs.select_beta.result == 'success' || needs.preflight_stable.result == 'success')
     runs-on: ubuntu-latest

@@ -129,6 +129,14 @@ and the next push publishes. If a canary is missing after a quiet period, look
 at the failed `Reuse exact-source verification` job. It names the readiness run
 and lists each failed job as a lost runner or a failure.
 
+A canary builds its Runner daemons (`release_runner_binaries`) while it waits
+for the source proof. Those jobs only build and upload artifacts.
+`publish_canary` still requires `verify_canary`, so nothing is published from
+unverified source. If verification fails, the daemon builds for that commit are
+discarded. The native daemon build cache holds dependency crates only. Its key
+covers the Cargo manifest, Cargo configuration, host and target, but not the
+Runner's own source, so a Runner change does not discard the dependencies.
+
 After publication, the onboarding smoke checks out the same source SHA and
 installs its test dependencies from the publisher's resolved lockfile with
 `--frozen-lockfile`. The same-run artifact is captured before tracked files are
