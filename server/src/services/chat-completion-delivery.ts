@@ -160,7 +160,7 @@ export async function recordCompletedHandoffRead(db: Db, input: {
 
 /** A reply in this conversation already reported this completion when a turn of the same
  * agent read the task done for this completion and then linked the task in its reply. */
-async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string) {
+async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string | null) {
   const { task, handoff, delivery } = row;
   if (!task.completedAt || !task.identifier) return null;
   // A reopen supersedes this delivery and a new completion gets a higher status
@@ -174,12 +174,45 @@ async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<R
   const replies = await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
     eq(issueComments.companyId, handoff.companyId), eq(issueComments.issueId, handoff.conversationId),
     eq(issueComments.authorAgentId, handoff.agentId), isNull(issueComments.deletedAt),
-    isNotNull(issueComments.createdByRunId), ne(issueComments.createdByRunId, runId),
+    isNotNull(issueComments.createdByRunId), runId ? ne(issueComments.createdByRunId, runId) : undefined,
     gte(issueComments.createdAt, task.completedAt), readThisCompletion,
   )).orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(20);
   const identifier = task.identifier.toUpperCase();
   return replies.find(reply => extractIssueReferenceMatches(reply.body)
     .some(match => match.identifier.toUpperCase() === identifier))?.id ?? null;
+}
+
+/** Marks one delivery delivered by the earlier reply that already reported it. */
+async function deliverByEarlierReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string | null) {
+  const reportedBy = await earlierCompletionReply(tx, row, runId);
+  if (!reportedBy) return false;
+  // An earlier turn already told the person; repeating it would post the same news twice.
+  await tx.update(deliveries).set({ status: "delivered", responseCommentId: reportedBy, error: null })
+    .where(and(eq(deliveries.id, row.delivery.id), inArray(deliveries.status, [...pending])));
+  return true;
+}
+
+/** Before a completion wake becomes a run: settles every undispatched completion of this
+ * conversation that an earlier reply already reported. True only when at least one was
+ * reported and none is left for a completion turn, so the wake needs no run at all. */
+export async function settleReportedChatCompletions(tx: Connection, input: { companyId: string; conversationId: string; agentId: string }) {
+  const [source] = await tx.select().from(issues).where(and(eq(issues.id, input.conversationId), eq(issues.companyId, input.companyId))).for("update");
+  if (!source || source.conversationAgentId !== input.agentId) return false;
+  const rows = await tx.select({ id: deliveries.id }).from(deliveries).innerJoin(handoffs, eq(handoffs.taskId, deliveries.taskId))
+    .where(and(eq(deliveries.companyId, input.companyId), eq(handoffs.conversationId, source.id), eq(handoffs.agentId, input.agentId),
+      eq(handoffs.sessionGeneration, source.conversationSessionGeneration), inArray(deliveries.status, [...pending]), isNull(deliveries.targetRunId)))
+    .orderBy(asc(deliveries.createdAt)).limit(21);
+  if (rows.length === 0 || rows.length > 20) return false;
+  let reported = 0, remaining = 0;
+  for (const { id } of rows) {
+    const row = await loadAudience(tx, id);
+    if (!row || !current(row)) {
+      await tx.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, id));
+      continue;
+    }
+    if (await deliverByEarlierReply(tx, row, null)) reported++; else remaining++;
+  }
+  return reported > 0 && remaining === 0;
 }
 
 /** Freeze the input at turn start. New completions cannot be consumed by an already-running turn. */
@@ -215,10 +248,7 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
         await tx.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, delivery.id));
         continue;
       }
-      const reportedBy = await earlierCompletionReply(tx, row, run.id);
-      if (reportedBy) {
-        // An earlier turn already told the person; repeating it would post the same news twice.
-        await tx.update(deliveries).set({ status: "delivered", responseCommentId: reportedBy, error: null }).where(eq(deliveries.id, delivery.id));
+      if (await deliverByEarlierReply(tx, row, run.id)) {
         reported.push(delivery.id);
         continue;
       }
@@ -367,6 +397,12 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (siblings.some(s => s.run && activeRuns.includes(s.run.status) &&
         !Array.isArray(s.run.contextSnapshot?.chatCompletionUpdates))) return;
       if (siblings.find(s => !s.delivery.targetRunId)?.delivery.id !== id) return;
+      // An earlier reply already reported this completion: no wake and no run.
+      // The next undispatched sibling becomes the head on the following pass.
+      if (await deliverByEarlierReply(db, row, null)) {
+        await notifyDeliveryWork(db, DELIVERY_QUEUES.chatCompletion);
+        return;
+      }
       const run = await heartbeat.wakeup(row.handoff.agentId, {
         source: "automation", triggerDetail: "system", reason: CHAT_COMPLETION_WAKE_REASON, idempotencyKey: key, allowRunCoalescing: false,
         requestedByActorType: "system", requestedByActorId: "chat_completion_delivery",
