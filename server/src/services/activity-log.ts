@@ -15,6 +15,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { hasCloudProductEvent, recordCloudProductEvent } from "./cloud-product-events.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -164,6 +165,17 @@ export function publishActivity(publication: ActivityPublication) {
   } finally { finish(); }
 }
 
+async function recordCloudProductEventBestEffort(db: Db, input: LogActivityInput, responsibleUserId: string | null) {
+  if (!hasCloudProductEvent(input)) return;
+  try {
+    await db.transaction(async (tx) => {
+      await recordCloudProductEvent(tx as unknown as Db, input, responsibleUserId);
+    });
+  } catch (err) {
+    logger.warn({ err, action: input.action }, "cloud product event was not recorded");
+  }
+}
+
 export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
@@ -185,9 +197,14 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
       if (input.runId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
         await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: input.runId });
-      return insert(tx as unknown as Db);
+      const rows = await insert(tx as unknown as Db);
+      await recordCloudProductEventBestEffort(tx as unknown as Db, input, responsibleUserId);
+      return rows;
     })
-    : await insert(db);
+    : await insert(db).then(async (rows) => {
+      await recordCloudProductEventBestEffort(db, input, responsibleUserId);
+      return rows;
+    });
 
   const payload = {
     issueId: input.issueId ?? (input.entityType === "issue" ? input.entityId : null),

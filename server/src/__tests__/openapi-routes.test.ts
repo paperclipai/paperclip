@@ -53,6 +53,7 @@ const apiPrefixes: Record<string, string> = {
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
+  "cloud-product-events.ts": "/",
   "connection-event-wake.ts": "/",
   "ephemeral-enrollment.ts": "/api",
   "costs.ts": "/api",
@@ -197,7 +198,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
-  if (file === "connection-event-wake.ts") return routePath;
+  if (file === "connection-event-wake.ts" || file === "cloud-product-events.ts") return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
