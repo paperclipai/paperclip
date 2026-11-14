@@ -388,6 +388,22 @@ Without a matching successful merge-group
 run, or on any mismatch or error, the push builds from source. The PID 1 probe,
 exact-source gate and signing apply on both paths.
 
+The `master` ruleset requires `ci / verify` and `ci / e2e`, which `pr.yml`
+reports only for pull requests.
+[`merge-queue-checks.yml`](../.github/workflows/merge-queue-checks.yml) reports
+both names on each merge-group commit so the queue does not stall. It runs no
+tests: a pull request enters the queue only after both checks pass on it, and
+the exact-source gate still tests every `master` commit before publication.
+The queue can therefore land a commit while its image is still building. The
+`master` push waits up to 15 minutes for that build before it builds from
+source. Publication waits for the exact-source gate in any case.
+
+To turn the queue on, add **Require merge queue** to the `master` ruleset with
+merge method Squash, build concurrency 5, group size 1 to 5 and a 60 minute
+status check timeout. After the first queued merge, confirm that the `master`
+commit SHA equals the SHA of its merge-group runs; promotion depends on it.
+To turn it off, remove the rule. `master` then builds from source again.
+
 Canary dispatches first look up the full-SHA master image. Reuse requires a
 valid multi-platform index with both `linux/amd64` and `linux/arm64`, a matching
 registry digest, and signed provenance from this repository's `docker.yml`
