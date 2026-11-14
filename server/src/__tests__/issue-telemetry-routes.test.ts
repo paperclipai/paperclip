@@ -120,11 +120,11 @@ function makeIssue(status: "todo" | "done") {
   };
 }
 
-function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
+async function loadAppModules() {
+  return [
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+  ] as const;
 }
 
 async function createApp(actor: Record<string, unknown>) {

@@ -278,10 +278,10 @@ describe("agent skill routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    [{ agentRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    [{ agentRoutes }, { errorHandler }] = [
+      await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
   });
 
   beforeEach(() => {

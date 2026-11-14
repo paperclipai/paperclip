@@ -77,10 +77,10 @@ function createCompany() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ companyRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

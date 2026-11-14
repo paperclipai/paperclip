@@ -174,10 +174,10 @@ describe("adapter auth-signal route", () => {
       effectiveHome: "/tmp/codex-home",
       sharedSourceHome: "/tmp/codex-shared-home",
     });
-    const [routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    const [routes, middleware] = [
+      await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     agentRoutes = routes.agentRoutes;
     errorHandler = middleware.errorHandler;
   });

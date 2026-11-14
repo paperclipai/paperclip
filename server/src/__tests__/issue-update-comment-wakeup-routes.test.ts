@@ -226,10 +226,10 @@ function registerModuleMocks() {
 }
 
 async function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
+  return [
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+  ] as const;
 }
 
 async function createApp(transaction: (callback: (tx: Record<string, never>) => Promise<unknown>) => Promise<unknown> =

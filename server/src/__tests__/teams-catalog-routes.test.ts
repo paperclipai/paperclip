@@ -34,10 +34,10 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ teamsCatalogRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/teams-catalog.js")>("../routes/teams-catalog.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ teamsCatalogRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/teams-catalog.js")>("../routes/teams-catalog.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

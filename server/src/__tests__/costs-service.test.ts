@@ -130,10 +130,10 @@ function registerModuleMocks() {
 
 describe("cost routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [costsRouteModule, middlewareModule] = await Promise.all([
-      vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    const [costsRouteModule, middlewareModule] = [
+      await vi.importActual<typeof import("../routes/costs.js")>("../routes/costs.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     return { ...costsRouteModule, errorHandler: middlewareModule.errorHandler };
   });
 

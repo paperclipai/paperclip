@@ -286,10 +286,10 @@ async function requestApp(
 
 describe("agent permission routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [{ errorHandler }, { agentRoutes }] = await Promise.all([
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    ]);
+    const [{ errorHandler }, { agentRoutes }] = [
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    ];
     return { errorHandler, agentRoutes };
   });
 

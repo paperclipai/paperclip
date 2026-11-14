@@ -72,10 +72,10 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ summarySlotRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/summary-slots.js")>("../routes/summary-slots.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ summarySlotRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/summary-slots.js")>("../routes/summary-slots.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

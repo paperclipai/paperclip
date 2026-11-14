@@ -196,11 +196,11 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
   );
 }
 
-function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+async function loadAppModules() {
+  return [
+    await vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ] as const;
 }
 
 async function createApp(actor: Record<string, unknown> = {}) {

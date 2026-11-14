@@ -217,10 +217,10 @@ async function assertNoBackgroundClearWithinRetryWindow() {
 
 describe("closed isolated workspace issue routes", () => {
   const routeModules = hoistModuleGraph(registerServiceMocks, async () => {
-    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    const [{ issueRoutes }, { errorHandler }] = [
+      await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     return { issueRoutes, errorHandler };
   });
 
