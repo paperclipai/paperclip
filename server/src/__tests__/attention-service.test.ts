@@ -584,6 +584,17 @@ describeEmbeddedPostgres("attention service", () => {
         updatedAt: new Date("2026-07-09T12:09:30.000Z"),
         finishedAt: new Date("2026-07-09T12:09:30.000Z"),
       },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "scheduled_retry",
+        retryOfRunId: transientRunId,
+        contextSnapshot: { issueId: interactionIssueId },
+        createdAt: new Date("2026-07-09T12:09:45.000Z"),
+        updatedAt: new Date("2026-07-09T12:09:45.000Z"),
+      },
     ]);
     await db.insert(heartbeatRunEvents).values({
       companyId,
@@ -1033,25 +1044,34 @@ describeEmbeddedPostgres("attention service", () => {
     // Assert the database result itself: JavaScript feed deduplication used to
     // hide the thousands of full run contexts already loaded into memory.
     const rows = await listAttentionExhaustedRuns(db, companyId);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.find((row) => row.id === failedId)).toMatchObject({
       exhaustionMessage: "Bounded retry exhausted receipt 2500",
       contextSnapshot: { issueId, taskId: null },
+      failedAttemptCount: 1,
     });
     expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(rows.find((row) => row.id === noReceiptId)).toMatchObject({
+      exhaustionMessage: null,
+      failedAttemptCount: 1,
+    });
     expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
 
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
     const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
-    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
+    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId, noReceiptId].sort());
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
+    expect(failures.find((item) => item.subject.id === noReceiptId)?.whyNow)
+      .toBe("Run failed and no newer run replaced it.");
   });
 
   it("orders exhausted runs and reads receipts through the partial index", async () => {
     const { companyId, workerId } = await seedCompany("IDX");
-    const [olderId, tiedLowId, tiedHighId] = Array.from({ length: 3 }, () => randomUUID());
+    const olderId = "00000000-0000-4000-8000-000000000001";
+    const tiedLowId = "00000000-0000-4000-8000-000000000002";
+    const tiedHighId = "00000000-0000-4000-8000-000000000003";
     const older = new Date("2026-07-09T11:00:00.000Z");
     const tied = new Date("2026-07-09T12:00:00.000Z");
     await db.insert(heartbeatRuns).values([
@@ -1075,8 +1095,6 @@ describeEmbeddedPostgres("attention service", () => {
     const rows = await listAttentionExhaustedRuns(db, companyId);
     expect(rows.map((row) => [row.id, row.exhaustionMessage])).toEqual([
       [tiedHighId, "Bounded retry exhausted tied high"],
-      [tiedLowId, "Bounded retry exhausted tied low"],
-      [olderId, "Bounded retry exhausted older"],
     ]);
 
     // The partial index predicate must stay implied by the query predicate;
@@ -1103,6 +1121,38 @@ describeEmbeddedPostgres("attention service", () => {
     });
     expect(JSON.stringify(plans.fresh)).toContain("heartbeat_run_events_retry_exhausted_idx");
     expect(JSON.stringify(plans.generic)).toContain("heartbeat_run_events_retry_exhausted_idx");
+  });
+
+  it("lists the latest crashed run even when no bounded-retry event exists", async () => {
+    const { companyId, workerId } = await seedCompany("CRS");
+    const issueId = await insertIssue({ companyId, identifier: "CRS-1", title: "Crashed task", status: "todo" });
+    const at = new Date("2026-07-09T12:00:00.000Z");
+    const earlier = new Date(at.getTime() - 60_000);
+    const latestRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation",
+        status: "failed", error: "Run failed with exit code 3", errorCode: "adapter_failed",
+        contextSnapshot: { issueId }, createdAt: earlier, updatedAt: earlier, finishedAt: earlier,
+      },
+      {
+        id: latestRunId, companyId, agentId: workerId, invocationSource: "automation",
+        status: "failed", error: "Run failed with exit code 3", errorCode: "adapter_failed",
+        contextSnapshot: { issueId }, createdAt: at, updatedAt: at, finishedAt: at,
+      },
+    ]);
+
+    const rows = await listAttentionExhaustedRuns(db, companyId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: latestRunId, exhaustionMessage: null, failedAttemptCount: 2 });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const card = feed.items.find((item) => item.sourceKind === "failed_run");
+    expect(card).toMatchObject({ subject: { id: latestRunId } });
+    expect(card!.whyNow).toBe("Run failed; the task now has 2 failed runs and no newer run replaced it.");
+    expect(card!.entryRule).toBe("latest failed/timed_out run for the issue/agent pair.");
+    expect(card!.detail).toMatchObject({ kind: "failed_run", failedAttemptCount: 2 });
+    expect(card!.subject.metadata?.failedAttemptCount).toBe(2);
   });
 
   it("keeps SQL statement text saved by older failed runs out of the attention inbox", async () => {
@@ -1311,8 +1361,9 @@ describeEmbeddedPostgres("attention service", () => {
       const feed = await attentionService(db).list(companyId, {
         includeDismissed: true, all: true, allowUnscopedAll: true,
       });
-      expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
-        .toEqual([...keptIds].sort());
+      const failedRunCards = feed.items.filter((item) => item.sourceKind === "failed_run");
+      expect(failedRunCards).toHaveLength(1);
+      expect(keptIds).toContain(failedRunCards[0]!.subject.id);
     } finally { capture.flush(); }
     const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
@@ -1353,8 +1404,9 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
-    expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id).sort())
-      .toEqual([...keptIds].sort());
+    const failedRunCards = feed.items.filter(item => item.sourceKind === "failed_run");
+    expect(failedRunCards).toHaveLength(1);
+    expect(keptIds).toContain(failedRunCards[0]!.subject.id);
   }, 180_000);
 
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {

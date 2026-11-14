@@ -2476,9 +2476,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               errorCode: run.errorCode,
               error: run.error ? withoutSqlStatementText(run.error) : run.error,
               retryExhaustedReason: run.exhaustionMessage,
+              failedAttemptCount: run.failedAttemptCount,
             },
           },
-          whyNow: "Run failed after automatic retries were exhausted.",
+          whyNow: run.exhaustionMessage
+            ? "Run failed after automatic retries were exhausted."
+            : run.failedAttemptCount > 1
+              ? `Run failed; the task now has ${run.failedAttemptCount} failed runs and no newer run replaced it.`
+              : "Run failed and no newer run replaced it.",
           // PAP-749 Rule 7: offer only what works. Retry uses the task retry
           // (POST /issues/:id/retry); reassigning happens on the task; hiding
           // the card is "Archive for me" in the Close… menu.
@@ -2491,7 +2496,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
                 { id: "inspect", label: "Open run", description: "Open the run log to see why it failed." },
               ),
           inlineResolvable: Boolean(issueId),
-          entryRule: "latest failed/timed_out run has a Bounded retry exhausted lifecycle event.",
+          entryRule: run.exhaustionMessage
+            ? "latest failed/timed_out run has a Bounded retry exhausted lifecycle event."
+            : "latest failed/timed_out run for the issue/agent pair.",
           exitRule: "A newer run exists for the same issue/agent pair or the row is dismissed.",
           dedupKey,
           severity: "high",
@@ -2503,6 +2510,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "failed_run",
             agentName: run.agentName,
+            failedAttemptCount: run.failedAttemptCount,
             // Rows saved before SQL text was kept out of run errors still carry it.
             failureReasonExcerpt: excerpt((run.error ? withoutSqlStatementText(run.error) : null) ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
