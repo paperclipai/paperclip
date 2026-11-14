@@ -422,7 +422,7 @@ importers:
         specifier: ^18.1.0-beta.16
         version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
       postgres:
-        specifier: ^3.4.9
+        specifier: 3.4.9
         version: 3.4.9(patch_hash=7s673zkrux4f7d7y4kyzk7opyu)
     devDependencies:
       '@types/node':
