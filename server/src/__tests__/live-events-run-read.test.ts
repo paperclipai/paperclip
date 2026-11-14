@@ -183,6 +183,70 @@ describe("live-event run read boundaries", () => {
     }
   });
 
+  it("delivers run-loop signals to viewers allowed to read the loop's issue", async () => {
+    const companyId = randomUUID(), owner = randomUUID(), viewer = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Loop signals", issuePrefix: `LOOP${companyId.slice(0, 4)}` });
+    await db.insert(authUsers).values([owner, viewer].map(id => ({
+      id, name: "Fixture viewer", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date(),
+    })));
+    await db.insert(companyMemberships).values([owner, viewer].map(principalId => ({
+      companyId, principalType: "user", principalId, membershipRole: "operator", status: "active",
+    })));
+    const [agent] = await db.insert(agents).values({ companyId, name: "Looping agent", adapterType: "process" }).returning();
+    const readableIssueId = randomUUID(), hiddenIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: readableIssueId, companyId, title: "Readable loop", visibility: "private", privacyRootIssueId: readableIssueId, responsibleUserId: owner },
+      { id: hiddenIssueId, companyId, title: "Hidden loop", visibility: "private", privacyRootIssueId: hiddenIssueId, responsibleUserId: owner },
+    ]);
+    await db.insert(issueAccessGrants).values({ issueId: readableIssueId, subjectType: "user", subjectId: viewer, source: "explicit" });
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, db, {
+      deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }),
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    function loopPayload(
+      issueId: string | null,
+      scopeKind: "company" | "issue" = issueId ? "issue" : "company",
+    ): Record<string, unknown> {
+      return {
+        agentId: agent.id, scopeKind, issueId, wakeReason: "issue_commented", recentRunIds: [],
+        count: 5, threshold: 5, windowSec: 1800,
+        firstAt: new Date().toISOString(), lastAt: new Date().toISOString(),
+      };
+    }
+    async function deliver(issueId: string | null, scopeKind?: "company" | "issue") {
+      const start = messages.length, barrier = randomUUID();
+      publishLiveEvent({ companyId, type: "heartbeat.run_loop_suspected", payload: loopPayload(issueId, scopeKind) });
+      publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
+      await expect.poll(() => messages.some(message => message.payload.agentId === barrier)).toBe(true);
+      return messages.slice(start).filter(message => message.type === "heartbeat.run_loop_suspected");
+    }
+    try {
+      await once(socket, "open");
+      // Readable issue-scoped loop reaches the authenticated viewer.
+      expect(await deliver(readableIssueId)).toMatchObject([{ payload: { issueId: readableIssueId, count: 5 } }]);
+      // Company-scope loop (no issueId) reaches any company member.
+      expect(await deliver(null)).toHaveLength(1);
+      // A loop on an issue the viewer cannot read is withheld.
+      expect(await deliver(hiddenIssueId)).toEqual([]);
+      // Fail closed: an issue-scoped signal with no issueId (its issue was
+      // deleted, ON DELETE SET NULL) has no read boundary — never broadcast it
+      // company-wide. The detector drops these, and this WS guard is defense in
+      // depth for any that still reach delivery.
+      expect(await deliver(null, "issue")).toEqual([]);
+    } finally {
+      socket.terminate();
+      await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
+      await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it("delivers a burst of output without one permission read per event, and still stops at a revocation", async () => {
     const companyId = randomUUID(), owner = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Burst reads", issuePrefix: `BR${companyId.slice(0, 6)}` });

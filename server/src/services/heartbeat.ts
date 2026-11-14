@@ -651,6 +651,14 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// The run-loop detector (maybeEmitRunLoopSignal) runs an optional, unbounded
+// history read on the per-agent dispatch path. Awaiting it inline would let one
+// agent's slow read stall every later agent in the same resume pass, so the
+// dispatch path fires it without awaiting. Track those promises here — shared
+// across service instances like the two sets above — so drainActiveRunExecutions
+// (graceful shutdown, and tests tearing down a shared database) still waits for
+// the detector's read/publish to finish and cannot race a late event.
+const activeRunLoopSignalPromises = new Set<Promise<void>>();
 // A native resume dispatch whose timer has fired reads and claims run state
 // before it registers an execution. Track that work too, so a drain cannot
 // return while it is still writing.
@@ -1380,6 +1388,7 @@ export function heartbeatService(
     listCompanyAgentOrgRows,
     executeRun,
     activeRunExecutionPromises,
+    activeRunLoopSignalPromises,
     activeWakeupPromises,
     instanceSettings,
     getRun,
@@ -1836,11 +1845,15 @@ export function heartbeatService(
       if (
         activeWakeupPromises.size > 0 ||
         activeNativeResumeDispatches.size > 0 ||
-        activeRunExecutionPromises.size > 0
+        activeRunExecutionPromises.size > 0 ||
+        activeRunLoopSignalPromises.size > 0
       ) {
         await Promise.allSettled([...activeWakeupPromises]);
         await Promise.allSettled([...activeNativeResumeDispatches]);
         await Promise.all([...activeRunExecutionPromises]);
+        // The detector never rejects (it catches its own errors), but settle
+        // defensively so a drain is never derailed by a background read.
+        await Promise.allSettled([...activeRunLoopSignalPromises]);
         continue;
       }
       // Work that settled during the drain can arm an immediate resume

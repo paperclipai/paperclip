@@ -974,6 +974,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.log",
   "heartbeat.run.activity",
   "heartbeat.run.tool_progress",
+  "heartbeat.run_loop_suspected",
   "agent.session.goal.changed",
   "agent.status",
   "agent.runtime_state.updated",

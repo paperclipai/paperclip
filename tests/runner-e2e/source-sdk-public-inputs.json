@@ -229,7 +229,7 @@
     "packages/shared/src/connector-availability.ts": "82aec0dfb2e9b8cb04e21c4bcd9aab74b087c76a",
     "packages/shared/src/connector-identity.test.ts": "d58357707faefa7c98bb906cdaeb4db39d31081a",
     "packages/shared/src/connector-identity.ts": "5ede83c9c5225dbe8af9cf3a49c74e477ef5b955",
-    "packages/shared/src/constants.ts": "47973de810c0dfac21625e2687af80b37e8da00c",
+    "packages/shared/src/constants.ts": "031a6114b4713785c69f1e01859ad3b48ecc5068",
     "packages/shared/src/crash-point-registry.ts": "3cbf2d290bc111061376b43020848623e493737c",
     "packages/shared/src/crash-points.test.ts": "3564a1f62d22f54a3c2fb0a72b3a6cde17c957d2",
     "packages/shared/src/crash-points.ts": "c15259f39610e352eac5423a491548ec1bae94fe",
