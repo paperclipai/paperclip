@@ -39,12 +39,12 @@ describe.skipIf(!support.supported)("native provider-turn wait control-plane hoo
       body: "The install finished, please continue.", ...(createdAt ? { createdAt } : {}) }).returning();
     if (queued) {
       await db.transaction(async tx => {
+        await notifyDeferredExecutionWork(tx, { companyId: f.companyId });
         await tx.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
           triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
           requestedByActorType: "user", requestedByActorId: USER,
           payload: { issueId: f.issueId, commentId: saved!.id, _paperclipWakeContext: { issueId: f.issueId, taskId: f.issueId,
             wakeReason: "issue_commented", source: "issue.comment", wakeCommentId: saved!.id, wakeCommentIds: [saved!.id] } } });
-        await notifyDeferredExecutionWork(tx, { companyId: f.companyId });
       });
     }
     return saved!.id;
