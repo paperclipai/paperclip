@@ -113,13 +113,16 @@ const support = await getEmbeddedPostgresTestSupport();
     await lockedOwner;
     const saved = f.write(f.checkpoint(new Map([["event:1", "{}"], ["cursor", "{\"ackedSourceSeq\":1}"]]), false))
       .then(() => "saved", (error: Error) => error.message);
-    await vi.waitFor(async () => {
-      const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
-        where datname = current_database() and wait_event_type = 'Lock' and query like '%with locked_owner as%'`);
-      expect(waiting?.count).toBe(1);
-    }, { timeout: 10_000, interval: 20 });
-    release();
-    await holder;
+    try {
+      await vi.waitFor(async () => {
+        const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%with locked_owner as%'`);
+        expect(waiting?.count).toBe(1);
+      }, { timeout: 10_000, interval: 20 });
+    } finally {
+      release();
+      await holder;
+    }
     expect(await saved).toBe("native_runner_checkpoint_owner_lost");
     expect(await parts(f.runId)).toEqual(race === "takeover" ? ["cursor", "header"] : ["header"]);
   });
@@ -141,14 +144,17 @@ const support = await getEmbeddedPostgresTestSupport();
     await lockedOwner;
     const saved = f.write(f.checkpoint(new Map([["event:1", "{}"], ["cursor", "{\"ackedSourceSeq\":1}"]]), false))
       .then(() => "saved", (error: Error) => error.message);
-    await vi.waitFor(async () => {
-      const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
-        where datname = current_database() and wait_event_type = 'Lock' and query like '%with locked_owner as%'`);
-      expect(waiting?.count).toBe(1);
-    }, { timeout: 10_000, interval: 20 });
-    await otherDb.execute(sql`select pg_sleep(1.2)`);
-    release();
-    await holder;
+    try {
+      await vi.waitFor(async () => {
+        const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%with locked_owner as%'`);
+        expect(waiting?.count).toBe(1);
+      }, { timeout: 10_000, interval: 20 });
+      await otherDb.execute(sql`select pg_sleep(1.2)`);
+    } finally {
+      release();
+      await holder;
+    }
     expect(await saved).toBe("native_runner_checkpoint_owner_lost");
     expect(await parts(f.runId)).toEqual(["cursor", "header"]);
   });
