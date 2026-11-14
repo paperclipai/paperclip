@@ -3,7 +3,7 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from 
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
-import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
+import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryBackstopHint, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
   from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { workSignalDebug } from "@paperclipai/db/work-signal-debug";
@@ -71,6 +71,7 @@ export function registerIssueRecoveryWork(
     scope.wholeCompany = ids === null;
   }
   async function toCompany(scope: IssueRecoveryScope | undefined, worker: { invalidate(hint?: string): void }) {
+    if (scope && isGraph(scope)) worker.invalidate(issueRecoveryBackstopHint(scope.companyId));
     await resolveGraph(scope);
     if (!scope?.wholeCompany) return false;
     worker.invalidate(JSON.stringify({ companyId: scope.companyId }));
