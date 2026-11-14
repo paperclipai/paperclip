@@ -145,6 +145,16 @@ Code state moves between runs through the local execution-workspace cwd alone â€
 
 The invariant is enforced by the "no-remote-git contract" case in `packages/adapter-utils/src/ssh-fixture.test.ts`, which asserts a remote-only commit reaches the local worktree with no remote configured at any point.
 
+## Stopping SSH runs
+
+An SSH run is stopped through its remote session, the way a local run is stopped through its process group.
+
+- sshd starts each command in a new session. Before the agent command starts, Paperclip records that session under `~/.paperclip/run-sessions/<runId>/` on the SSH host. Records untouched for 30 days are pruned when a lease is acquired.
+- When a run's lease is left in `pending_cleanup`, the sweep connects to the host recorded on the lease. It stops every process in the run's session, plus every process of the SSH user whose environment still holds the run's `PAPERCLIP_RUN_ID` (TERM, then KILL). Then it confirms none remain. Only then does it record that the run's remote execution stopped, which lets the run's queued messages continue.
+- If the host can't be reached or processes survive, the lease stays in `pending_cleanup` for the next attempt.
+- When nothing can confirm the stop, the lease is released without that confirmation. That covers a missing or unreadable record, a host without `/proc` (for example macOS), and `/proc` mounted with `hidepid`.
+- A process that starts its own session (`setsid`) is still stopped if it keeps the run's environment. A process that both starts its own session and clears its environment is not stopped.
+
 ## Current implementation guarantees
 
 With the current implementation:
