@@ -71,7 +71,7 @@ export function daytonaClient(headers: Record<string, string>, request: DaytonaR
       let proxy: URL;
       try { proxy = new URL(String(proxyValue)); }
       catch { throw failure(502, "daytona_proxy_invalid", "Daytona returned an invalid toolbox address."); }
-      if (proxy.protocol !== "https:" || !/^proxy(?:-[a-z0-9-]+)?\.app\.daytona\.io$/.test(proxy.hostname)
+      if (proxy.protocol !== "https:" || !/^proxy(?:-[a-z0-9-]+)?\.app(?:-[a-z0-9]+)?\.daytona\.io$/.test(proxy.hostname)
         || proxy.username || proxy.password || (proxy.port && proxy.port !== "443")
         || !/^\/toolbox\/?$/.test(proxy.pathname) || proxy.search || proxy.hash) {
         throw failure(502, "daytona_proxy_invalid", "Daytona returned an unrecognized toolbox address. No credentials were forwarded.");
