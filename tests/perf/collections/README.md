@@ -61,6 +61,18 @@ navigation start to the first Mine row (two frames after mount) over
 a native scenario without request interception and a separate diagnostic scenario that delays
 workspace reads by 3 seconds. The timings are attached evidence, not budgets.
 
+`shell-read-waves.spec.ts` hard loads Mine with every API response delayed
+300 ms and counts the shell and inbox reads that used to repeat about 1.5–2.5 s
+after load (session, health, company list, agents, inbox dismissals, user
+directory, approvals, execution workspaces). With the saved query cache
+(`paperclip:query-cache:v1:<user>:<company>`, primed by one earlier visit in
+the same browser context) each read happens at most once and the live socket
+opens once. Without it, the socket's catch-up read may repeat reads that
+answered before the subscription, but never the session or health read. The
+fixture (`returning-visit-fixture.ts`) is a company with 24 Mine tasks and
+three pending board approvals, retained in
+`test-results/collections/mine-returning-visit-fixture.json`.
+
 `recent-task-open.spec.ts` covers opening a task from the sidebar's Recents.
 It gives eight fixture tasks twelve saved comments each and seeds them as the
 account's Recents. An idle Projects page must make exactly one
@@ -74,6 +86,22 @@ click to the latest comment on screen over at least 5 fresh browser contexts
 (empty HTTP cache and storage apart from Recents), natively and with 150 ms
 added to every API response. They also record the idle page's API request
 count. The timings are attached evidence, not budgets.
+
+`mine-returning-visit.spec.ts` hard loads Mine with the saved query cache
+(`paperclip:query-cache:v1:<user>:<company>`, primed by one earlier visit in
+the same browser context). Its fixture (`returning-visit-fixture.ts`) is a
+company with 24 Mine tasks and three pending board approvals, retained in
+`test-results/collections/mine-returning-visit-fixture.json`. With every read
+of that company held, Mine must show its task rows and saved approvals before
+any of those reads answers. An approval dismissed after the cache was saved
+stands in until the reads answer and then leaves. Another company's Mine never
+shows the saved company's rows. Its timing case records time from navigation
+start to the first Mine row with the saved cache and with it cleared, with
+every API response delayed `PAPERCLIP_COLLECTION_PERF_API_DELAY_MS` (default
+300 ms), over `PAPERCLIP_COLLECTION_PERF_TIMING_RUNS` alternating runs (default
+and minimum 5). Each sample names the last API response before the rows and
+counts the load's requests; `PAPERCLIP_COLLECTION_PERF_OUTPUT` writes the
+report to a file. The timings are attached evidence, not budgets.
 
 Run these focused browser checks before the full collection suite:
 

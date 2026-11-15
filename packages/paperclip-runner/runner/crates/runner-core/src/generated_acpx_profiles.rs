@@ -1,5 +1,5 @@
 // Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.
-pub(crate) const QUALIFIED_ACPX_VERSION: &str = "0.13.1";
+pub(crate) const QUALIFIED_ACPX_VERSION: &str = "0.22.0";
 pub(crate) const ACPX_DRIVER_KIND: &str = "acpx_runtime";
 
 #[derive(Debug)]

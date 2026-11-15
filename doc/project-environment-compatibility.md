@@ -2,8 +2,9 @@
 
 A repository project belongs to one storage owner. Creation shows **Available in**
 when the configured environments require more than one owner. Each choice names
-all environments that use that owner. An environment choice selects storage; it
-is not an allowlist or an override of an agent's run environment.
+all environments that use that owner. The choice selects storage only. It is not
+an allowlist, and it does not override an agent's run environment. A project has
+no run environment of its own.
 
 ## Compatibility rule
 
@@ -47,9 +48,9 @@ provider configs, credentials, endpoints, or host paths. A cold worker does not
 change a durable storage choice.
 
 `POST /api/companies/:companyId/projects` accepts an optional `environmentId`.
-The server validates the choice again and stores its storage owner. The project
-is then available to the compatible environments in that group; no single run
-environment is pinned. An explicit `executionWorkspacePolicy.storageProviderPluginId`
+The server validates the choice again and stores only its storage owner. The
+project is then available to the compatible environments in that group; no single
+run environment is saved. An explicit `executionWorkspacePolicy.storageProviderPluginId`
 continues to work. The UI sends both the environment and its observed storage
 owner in `expectedStorageProviderPluginId`, so a changed environment cannot
 silently select different storage. This guard does not create a workspace-mode
@@ -62,9 +63,31 @@ The hidden repository-free “My private tasks” project is independent of
 environment/storage availability, so creating a private note never requires
 repairing an environment.
 
-An unavailable configured default produces an error and permits an explicit
-available choice. It does not silently select another storage owner. Existing
+When the configured default is unavailable and only one storage owner is
+available, that owner becomes the default, because there is nothing to choose.
+When two or more owners are available, an unavailable default produces an error
+and permits an explicit available choice. It does not silently select another
+storage owner. The UI shows the **Available in** selector only when there are two
+or more storage owners. Existing
 projects keep their stored owner. This change does not migrate managed storage
 or detach projects that contain existing work. A managed project run in an
 incompatible environment fails with `project_environment_incompatible` before a
 workspace provider operation, with a message naming the storage and environment.
+
+## Project Configuration
+
+Storage is fixed when the project is created. `PATCH /api/projects/:id` rejects a
+change of `executionWorkspacePolicy.storageProviderPluginId` with `409`
+`project_storage_locked`, in both directions: core to plugin and plugin to core.
+A policy update that omits the storage owner keeps the stored owner.
+
+Project Configuration has no storage or environment control. When a storage plugin
+is installed, or the project uses one, it shows an advisory **Available in** list:
+the environments that can use the project's storage. If the project's storage
+plugin is no longer installed, it shows **Storage plugin unavailable**. Without a
+storage plugin, the advisory is hidden.
+
+Runs use the agent default, then the instance default, then local execution. An
+operator-selected low-trust task sandbox and enforced sandbox policies retain
+precedence. A project does not change run placement. Older clients may still send
+`executionWorkspacePolicy.environmentId`; the service drops it.

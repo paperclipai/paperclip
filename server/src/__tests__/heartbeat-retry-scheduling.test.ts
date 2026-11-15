@@ -30,7 +30,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
-import { INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
+import { INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -610,7 +610,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", resultJson })
       .where(eq(heartbeatRuns.id, runId));
     let predecessor = runId;
-    for (const attempt of [1, 2]) {
+    // A restart is not a failure: these continue in the server-restart lane
+    // until its window bound, never through the failure budget.
+    for (let attempt = 1; attempt <= SERVER_RESTART_RETRY_MAX_ATTEMPTS; attempt += 1) {
       const restarted = heartbeatService(db);
       const outcomes = await Promise.all([
         restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
@@ -619,15 +621,22 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
       const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
       expect(children).toHaveLength(1);
-      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt });
+      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt, scheduledRetryReason: "server_restart" });
+      expect(children[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, serverRestarts: attempt });
       predecessor = children[0]!.id;
-      await db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: now, resultJson })
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: now, resultJson })
         .where(eq(heartbeatRuns.id, predecessor));
     }
     expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now }))
-      .toMatchObject({ outcome: "retry_exhausted" });
+      .toMatchObject({ outcome: "retry_exhausted", maxAttempts: SERVER_RESTART_RETRY_MAX_ATTEMPTS });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toHaveLength(SERVER_RESTART_RETRY_MAX_ATTEMPTS + 1);
+    // The fixture's clock is long past: on the sweep, that window has closed,
+    // so the chain opens a new window with one continuation, not a loop.
     await heartbeatService(db).reconcileStrandedAssignedIssues();
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor)))
+      .toEqual([expect.objectContaining({ scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
     // Exhaustion leaves the task available to a new explicit request.
     const { getExecutionBlocker } = await import("../services/execution-blocker.js");
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();

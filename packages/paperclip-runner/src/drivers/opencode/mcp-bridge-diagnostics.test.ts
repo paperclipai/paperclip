@@ -44,7 +44,7 @@ it("binds closed rejection shapes to the actual offered finish schema without re
   });
   expect(unrelated.result.isError).toBe(true);
   expect(handler).toHaveBeenCalledTimes(2);
-  expect(messages.map(message => JSON.parse(message))).toEqual([
+  expect(messages.map(message => JSON.parse(message)).filter(message => message.schema === "paperclip.opencode.finish-input-diagnostic/v1")).toEqual([
     { schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "offered", schemaSha256: digest },
     ...["string", "array", "number", "boolean"].map((continuationShape, index) => ({
       schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "input_rejected",
@@ -63,7 +63,7 @@ it("reports the effective supplied schema and bounds diagnostics without admitti
   const inputSchema = { type: "object", required: ["continuation"], properties: { continuation: { type: "object" } } };
   const bridge = await startOpenCodeMcpBridge({
     tools: [{ name: "paperclip_finish", inputSchema }], handler,
-    onDiagnostic: message => messages.push(message),
+    onDiagnostic: message => { if (message.includes("finish-input-diagnostic")) messages.push(message); },
   });
   bridges.push(bridge);
   for (let index = 0; index < 12; index++) {

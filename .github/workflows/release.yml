@@ -322,10 +322,14 @@ jobs:
     name: Reuse exact-source verification
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    # The source wait allows 90 minutes: a deferred full readiness run plus two
+    # retries of jobs whose Spot runner was reclaimed.
+    timeout-minutes: 100
     permissions:
       contents: read
+      # Also re-runs readiness jobs whose runner was lost, never a failed check.
       actions: write # restart only an exact-source push deferred before admission
+      checks: read # runner-loss evidence (annotations) for readiness retries
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

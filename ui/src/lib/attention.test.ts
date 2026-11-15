@@ -45,6 +45,10 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     createdAt: "2026-07-09T12:00:00Z",
     updatedAt: "2026-07-09T12:00:00Z",
     relatedIssue: null,
+    audience: { kind: "pool", userId: null, reason: "none" },
+    stale: null,
+    required: false,
+    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,
@@ -104,9 +108,16 @@ describe("isInlineResolvable", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: false }))).toBe(false);
   });
 
-  it("deep-links recovery/failure/budget rows rather than inlining", () => {
-    for (const kind of ["recovery_action", "failed_run", "budget_alert", "blocker_attention"] as AttentionSourceKind[]) {
+  it("deep-links recovery/blocker/agent-error rows rather than inlining", () => {
+    for (const kind of ["recovery_action", "blocker_attention", "agent_error_alert"] as AttentionSourceKind[]) {
       expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(false);
+    }
+  });
+
+  it("inlines failed-run Retry and budget verbs only when the server flags them (PAP-749 Rule 7)", () => {
+    for (const kind of ["failed_run", "budget_alert"] as AttentionSourceKind[]) {
+      expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(true);
+      expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: false }))).toBe(false);
     }
   });
 });
@@ -118,6 +129,7 @@ describe("attentionBadgeCount", () => {
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
       deskBadgeCount: 2,
+      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 0, all: 3 },
       nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],
@@ -400,6 +412,16 @@ describe("attentionDetailLine (§7)", () => {
     );
     expect(line).toContain("Deployer");
     expect(line).toContain("exit code 1");
+  });
+
+  it("shows budget amounts as dollars, not cents (PAP-767)", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "budget_alert",
+        detail: { kind: "budget", observedPercent: 100, amountObserved: 10000, amountLimit: 10000, images: [] },
+      }),
+    );
+    expect(line).toBe("100% of budget used ($100.00 / $100.00)");
   });
 
   it("returns null when there is no detail block", () => {

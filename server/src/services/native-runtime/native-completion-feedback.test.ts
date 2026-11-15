@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
+import { agents, approvals, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueApprovals, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { documentService } from "../documents.js";
@@ -44,6 +44,24 @@ describe("native final-response feedback", () => {
     } }) as { downloadPath: string };
     return { ...done, evidence: [{ ref: `${receipt.downloadPath}#download` }] };
   }
+  // Cohort 15 (agents.hire-needs-approval): the agent copied "/approvals/<id>" from this feedback into its reply.
+  // Board routes live under the company prefix, so the feedback gives the canonical prefixed links.
+  it("links pending approvals and the task on their company-prefixed board routes", async () => {
+    const value = await fixture(); const prefix = `FB${value.companyId.slice(0, 8).toUpperCase()}`;
+    const [approval] = await db.insert(approvals).values({ companyId: value.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId: value.companyId, issueId: value.issueId, approvalId: approval!.id });
+    const waiting = await nativeCompletionFeedback(db, value.runId, done);
+    expect(waiting).toContain(`[the pending approval](/${prefix}/approvals/${approval!.id})`);
+    expect(waiting).not.toContain("](/approvals/");
+    await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approval!.id));
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Reviewer", adapterType: "paperclip_runner", status: "active" });
+    await db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: otherAgentId }, returnAssignee: { type: "agent", agentId: value.agentId }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(eq(issues.id, value.issueId));
+    const review = await nativeCompletionFeedback(db, value.runId, done);
+    expect(review).toContain(`[this task](/${prefix}/issues/${prefix}-1)`);
+    expect(review).not.toContain("](/issues/");
+  });
   it("sends the active review participant to record its stage decision before reporting", async () => {
     const value = await fixture(), stageId = randomUUID(), otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Implementer", adapterType: "paperclip_runner", status: "active" });
@@ -409,6 +427,36 @@ describe("native final-response feedback", () => {
     await db.insert(heartbeatRuns).values({ id: newerRunId, companyId: value.companyId, agentId: value.agentId, nativeIssueId: value.issueId, status: "running", runtimeMode: "native" });
     await db.update(issues).set({ status: "in_progress", executionRunId: newerRunId }).where(eq(issues.id, value.issueId));
     await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("newer run owns");
+  });
+  it("asks once to re-check Paperclip instead of resting blocked on its own stall", async () => {
+    // Chaos run 2b600576: a SIGSTOPped server left write_document/read_document
+    // unanswered; the agent reported the Paperclip document service as an
+    // external outage and the task rested blocked with no Retry.
+    const value = await fixture();
+    const report: PrpStructuredRunResult = { ...done, reportedWorkDisposition: "blocked",
+      completionClaim: { ...done.completionClaim, objectiveSatisfied: false },
+      blocker: { reasonCode: "external_service_unavailable", owner: { kind: "system", name: "Paperclip document service" },
+        scope: "task_wide", unblockAction: "Restore document API responsiveness" } };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow(/Paperclip answered this report[\s\S]*same idempotencyKey/);
+    // Once per run: a Paperclip failure that persists after the re-check rests blocked.
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+    // Concatenated names such as "PaperclipAI document service" also name a Paperclip service.
+    const concatenated = await fixture();
+    await expect(nativeCompletionFeedback(db, concatenated.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "PaperclipAI document service" } } }))
+      .rejects.toThrow("Paperclip answered this report");
+    const runnerNamed = await fixture();
+    await expect(nativeCompletionFeedback(db, runnerNamed.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "paperclip_runner" } } }))
+      .rejects.toThrow("Paperclip answered this report");
+    // A genuinely external service, a non-system owner, or a finished run is not re-checked.
+    const other = await fixture();
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "GitHub API" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "user", name: "Paperclip admin" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, reasonCode: "missing_access" } }))
+      .resolves.toContain("Blocker report accepted");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other.runId));
+    await expect(nativeCompletionFeedback(db, other.runId, report)).resolves.toContain("Blocker report accepted");
   });
   it("asks a blocked provider to explain the cause and action instead of describing completed work", async () => {
     const value = await fixture();

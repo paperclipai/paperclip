@@ -1571,6 +1571,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/agents/me/mcp-skills/skill-1/files" },
       { method: "GET", path: "/api/companies/co-1/email/inboxes" },
       { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },

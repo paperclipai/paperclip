@@ -1,0 +1,484 @@
+diff --git a/dist/queue-owner-runtime-ucHvXJ33.js b/dist/queue-owner-runtime-ucHvXJ33.js
+index dc63642..39e5ca6 100644
+--- a/dist/queue-owner-runtime-ucHvXJ33.js
++++ b/dist/queue-owner-runtime-ucHvXJ33.js
+@@ -1869,7 +1869,7 @@ function observeAcpStream(base, options) {
+ 		return options.suppressReplaySessionUpdates() && isSessionUpdateNotification(message);
+ 	};
+ 	const observeInbound = (message) => {
+-		const requestId = elicitationRequestId(message);
++		const requestId = elicitationRequestId(message) ?? options.extensionRequestId?.(message);
+ 		if (requestId !== void 0) {
+ 			elicitationRequestIds.add(requestId);
+ 			return;
+@@ -1884,16 +1884,21 @@ function observeAcpStream(base, options) {
+ 					const { value, done } = await reader.read();
+ 					if (done) break;
+ 					if (!value) continue;
++					options.enforceProtocol?.("inbound", value);
+ 					observeInbound(value);
++					if (options.routeInbound?.(value)) continue;
+ 					if (isExtensionNotification(value)) continue;
+ 					controller.enqueue(value);
+ 				}
++				controller.close();
++			} catch (error) {
++				controller.error(error);
+ 			} finally {
+ 				reader.releaseLock();
+-				controller.close();
+ 			}
+ 		} }),
+ 		writable: new WritableStream({ async write(message) {
++			options.enforceProtocol?.("outbound", message);
+ 			const promptOwner = promptRequestOwner(message);
+ 			const activePrompt = promptOwner ? options.bindPromptOwner(promptOwner) : void 0;
+ 			const id = responseId(message);
+@@ -2572,6 +2577,32 @@ function childProcessIsRunning(agent) {
+ function cancelledPermissionResponse() {
+ 	return { outcome: { outcome: "cancelled" } };
+ }
++function boundedExtensionRecord(value) {
++	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("ACP extension payload must be an object");
++	const prototype = Object.getPrototypeOf(value);
++	if (prototype !== Object.prototype && prototype !== null) throw new TypeError("ACP extension payload must be a plain object");
++	const serialized = JSON.stringify(value);
++	if (Buffer.byteLength(serialized) > 256 * 1024) throw new TypeError("ACP extension payload exceeds its bounded size");
++	return JSON.parse(serialized);
++}
++function closedExtensionMethods(value) {
++	if (value === void 0) return Object.freeze([]);
++	if (!Array.isArray(value) || value.length > 64) throw new TypeError("ACP extension methods must be a bounded allowlist");
++	for (const method of value) if (typeof method !== "string" || !/^[A-Za-z_][A-Za-z0-9._/-]{1,255}$/.test(method) || !method.includes("/") || /^(?:session|fs|terminal|elicitation|notifications)\//.test(method)) throw new TypeError("ACP extension method cannot override a standard method");
++	return Object.freeze([...new Set(value)]);
++}
++function mergeRuntimeClientCapabilities(base, extra) {
++	if (extra === void 0) return base;
++	const additional = boundedExtensionRecord(extra);
++	return {
++		...additional,
++		...base,
++		_meta: {
++			...additional._meta,
++			...base._meta
++		}
++	};
++}
+ var AcpClient = class {
+ 	options;
+ 	connection;
+@@ -2615,7 +2646,9 @@ var AcpClient = class {
+ 			agentProcessEnvBlock: snapshotEnvNames("agentProcessEnvBlock", options.agentProcessEnvBlock),
+ 			authPolicy: options.authPolicy ?? "skip",
+ 			permissionPolicy: snapshotPermissionPolicy(options.permissionPolicy),
+-			elicitationModes: normalizeElicitationModes(options.elicitationModes)
++			elicitationModes: normalizeElicitationModes(options.elicitationModes),
++			extensionMethods: closedExtensionMethods(options.extensionMethods),
++			clientCapabilities: options.clientCapabilities === void 0 ? void 0 : boundedExtensionRecord(options.clientCapabilities)
+ 		};
+ 		this.eventHandlers = {
+ 			onAcpMessage: this.options.onAcpMessage,
+@@ -2764,12 +2797,12 @@ var AcpClient = class {
+ 			this.rejectPendingConnectionRequests(error);
+ 			connection?.close(error);
+ 		}));
+-		const capabilities = resolveClientCapabilities({
++		const capabilities = mergeRuntimeClientCapabilities(resolveClientCapabilities({
+ 			devinAcp: launch.devinAcp,
+ 			fs: this.options.fs !== false,
+ 			terminal: this.options.terminal !== false,
+ 			elicitationModes: this.options.elicitationModes
+-		});
++		}), this.options.clientCapabilities);
+ 		connection = this.createConnection(stream, launch, capabilities);
+ 		const onConnectionClose = () => {
+ 			this.handleAgentDisconnect(child, "connection_close", child.exitCode ?? null, child.signalCode ?? null);
+@@ -2876,10 +2909,15 @@ var AcpClient = class {
+ 		assertControlAuthority(authority);
+ 		let spawnedChild;
+ 		try {
+-			spawnedChild = spawn(launch.command, [...launch.args], {
++			const spawnOptions = {
+ 				...plan.spawnOptions,
+ 				windowsVerbatimArguments: prepared.windowsVerbatimArguments
+-			});
++			};
++			spawnedChild = this.options.spawnAgent ? this.options.spawnAgent({
++				command: launch.command,
++				args: [...launch.args],
++				options: spawnOptions
++			}) : spawn(launch.command, [...launch.args], spawnOptions);
+ 			await waitForSpawn(spawnedChild);
+ 		} catch (error) {
+ 			const spawnError = new AgentSpawnError(this.options.agentCommand, error, {
+@@ -3004,6 +3042,9 @@ var AcpClient = class {
+ 		}).onRequest(methods.client.elicitation.create, async ({ params, requestId, signal }) => {
+ 			return await this.handleElicitationRequest(params, requestId, signal);
+ 		});
++		if (this.options.onExtensionRequest) for (const method of this.options.extensionMethods) app.onRequest(method, boundedExtensionRecord, async ({ params, requestId, signal }) => {
++			return await this.handleExtensionRequest(method, params, requestId, signal);
++		});
+ 		if (capabilities.fs?.readTextFile) app.onRequest(methods.client.fs.readTextFile, async ({ params, signal }) => {
+ 			return await this.handleReadTextFile(params, signal);
+ 		});
+@@ -3061,7 +3102,37 @@ var AcpClient = class {
+ 		throw normalizedError;
+ 	}
+ 	createTappedStream(base) {
++		// Policy admission is distinct from best-effort observation. Each new
++		// stdio connection gets fresh authority and a violation tears it down.
++		const protocolGuard = this.options.protocolGuardFactory?.();
++		const enforceProtocol = (direction, message) => {
++			try {
++				protocolGuard?.(direction, message);
++			} catch (error) {
++				this.rejectPendingConnectionRequests(error);
++				this.activePrompt?.elicitationController.abort(error);
++				try {
++					this.agent?.kill("SIGTERM");
++				} catch {}
++				throw error;
++			}
++		};
++		const cursorSubagentOwner = {
++			active: null,
++			children: /* @__PURE__ */ new Map()
++		};
++		this.cursorSubagentStreamOwner = cursorSubagentOwner;
+ 		return observeAcpStream(base, {
++			enforceProtocol,
++			extensionRequestId: (message) => "id" in message && this.options.extensionMethods.includes(message.method) ? message.id : void 0,
++			routeInbound: (message) => {
++				if (this.handleCursorSubagentNotification(message, cursorSubagentOwner)) return true;
++				if (isExtensionNotification(message)) {
++					this.handleExtensionNotification(message);
++					return true;
++				}
++				return false;
++			},
+ 			onMessage: (direction, message) => {
+ 				this.eventHandlers.onAcpOutputMessage?.(direction, message);
+ 				this.eventHandlers.onAcpMessage?.(direction, message);
+@@ -3278,6 +3349,13 @@ var AcpClient = class {
+ 		});
+ 		return resolveRequestedModelId(params);
+ 	}
++	async requestExtension(method, params, authority) {
++		closedExtensionMethods([method]);
++		const payload = boundedExtensionRecord(params);
++		const connection = this.getConnection();
++		const result = await this.runConnectionRequest(() => connection.agent.request(method, payload), authority);
++		return boundedExtensionRecord(result);
++	}
+ 	async setSessionModelThroughConfig(sessionId, modelId, configId, authority) {
+ 		const connection = this.getConnection();
+ 		return normalizeConfigOptionAcknowledgement(await this.runConnectionRequest(() => connection.agent.request(methods.agent.session.setConfigOption, {
+@@ -3649,6 +3727,89 @@ var AcpClient = class {
+ 	hasPermissionOwner(sessionId) {
+ 		return !this.pendingPromptOwners.some((owner) => owner.permissionHandler !== void 0) || this.pendingPromptOwners.some((owner) => owner.sessionId === sessionId);
+ 	}
++	async handleExtensionRequest(method, params, requestId, requestSignal) {
++		const active = this.activePrompt;
++		const connection = this.connection;
++		if (!this.options.extensionMethods.includes(method) || !this.options.onExtensionRequest) throw new Error("ACP extension method is not enabled");
++		if (!active || !connection || this.closing || params.sessionId !== void 0 && params.sessionId !== active.sessionId) throw new Error("ACP extension request has no matching active prompt");
++		if (!(typeof requestId === "string" || typeof requestId === "number" && Number.isFinite(requestId))) throw new Error("ACP extension request id is invalid");
++		const signal = AbortSignal.any([
++			requestSignal,
++			connection.signal,
++			active.elicitationController.signal
++		]);
++		signal.throwIfAborted();
++		let onAbort;
++		const aborted = new Promise((_, reject) => {
++			onAbort = () => reject(/* @__PURE__ */ new Error("ACP extension request was cancelled"));
++			signal.addEventListener("abort", onAbort, { once: true });
++		});
++		try {
++			const result = await Promise.race([Promise.resolve().then(() => this.options.onExtensionRequest(method, boundedExtensionRecord(params), {
++				requestId,
++				signal
++			})), aborted]);
++			signal.throwIfAborted();
++			if (this.activePrompt !== active || this.connection !== connection) throw new Error("ACP extension request outlived its prompt");
++			return boundedExtensionRecord(result);
++		} finally {
++			signal.removeEventListener("abort", onAbort);
++		}
++	}
++	handleCursorSubagentNotification(message, owner) {
++		// Keep the SDK's standard union closed. Cursor child transcripts use
++		// their own session IDs and must never be flattened into the parent.
++		const method = "cursor/subagent_update";
++		if (!this.options.extensionMethods.includes(method) || this.options.clientCapabilities?._meta?.subagents !== true) return false;
++		if (message?.method !== "session/update" || "id" in message) return false;
++		const lifecycle = ["subagent_spawned", "subagent_state_update"].includes(message?.params?.update?.sessionUpdate);
++		const active = this.activePrompt;
++		const connection = this.connection;
++		if (this.cursorSubagentStreamOwner !== owner || this.closing || connection?.signal.aborted) return true;
++		if (!active || !connection || active.elicitationController.signal.aborted) return lifecycle || owner.children.has(message?.params?.sessionId);
++		if (owner.active !== active) {
++			owner.active = active;
++			owner.children.clear();
++		}
++		if (!lifecycle && message?.params?.sessionId === active.sessionId) return false;
++		try {
++			const params = boundedExtensionRecord(message.params);
++			if (lifecycle) {
++				if (params.sessionId !== active.sessionId && !owner.children.has(params.sessionId)) return true;
++				const child = params.update?.subagentSessionId;
++				if (typeof child !== "string" || !child || child.length > 1e3 || child === active.sessionId) return true;
++				if (params.update.sessionUpdate === "subagent_spawned") {
++					if (owner.children.has(child) || owner.children.size >= 256) return true;
++					owner.children.set(child, params.sessionId);
++				} else if (owner.children.get(child) !== params.sessionId) return true;
++				this.options.onExtensionNotification?.(method, {
++					sessionId: active.sessionId,
++					parentSessionId: params.sessionId,
++					update: params.update
++				});
++			} else if (owner.children.has(params.sessionId)) this.options.onExtensionNotification?.(method, {
++				sessionId: active.sessionId,
++				parentSessionId: owner.children.get(params.sessionId),
++				childSessionId: params.sessionId,
++				update: params.update
++			});
++		} catch {
++			this.log("Cursor child activity notification was rejected");
++		}
++		return true;
++	}
++	handleExtensionNotification(message) {
++		if (!this.options.extensionMethods.includes(message.method) || !this.options.onExtensionNotification || this.closing) return;
++		const active = this.activePrompt;
++		if (!active || active.elicitationController.signal.aborted) return;
++		try {
++			const params = boundedExtensionRecord(message.params);
++			if (params.sessionId !== void 0 && params.sessionId !== active.sessionId) return;
++			this.options.onExtensionNotification(message.method, params);
++		} catch {
++			this.log("ACP extension notification was rejected");
++		}
++	}
+ 	async handleElicitationRequest(request, requestId, requestSignal) {
+ 		const resolved = this.resolveElicitationOwner(request);
+ 		if ("response" in resolved) return resolved.response;
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index 861fc88..da53821 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -3,6 +3,7 @@ import { C as PermissionMode, D as PromptInput, E as SessionRecord, S as NonInte
+ import { n as AcpControlAuthority, t as AcpClient } from "./client-BqZW_W14.js";
+ import { z } from "zod";
+ import { SetSessionConfigOptionResponse, ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ export declare const REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE: "ACP_MODEL_UNSUPPORTED";
+ type RequestedModelUnsupportedErrorCode = typeof REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE;
+ export declare const REQUESTED_MODEL_UNSUPPORTED_REASONS: readonly ["missing-capability", "unadvertised-model"];
+@@ -267,6 +268,11 @@ type AcpRuntimeEvent = {
+    * Replace the displayed plan when present, including clearing it for [].
+    */
+   entries?: AcpRuntimePlanEntry[];
++  /**
++   * Paperclip patch: the ACP update's `_meta`, forwarded unvalidated.
++   * Producer-controlled; consumers must bound and allowlist it.
++   */
++  _meta?: Record<string, unknown>;
+ } | {
+   type: "tool_call";
+   text: string;
+@@ -279,6 +285,11 @@ type AcpRuntimeEvent = {
+   rawInput?: unknown;
+   rawOutput?: unknown;
+   content?: ToolCallContent[];
++  /**
++   * Paperclip patch: the ACP update's `_meta`, forwarded unvalidated.
++   * Producer-controlled; consumers must bound and allowlist it.
++   */
++  _meta?: Record<string, unknown>;
+ } |
+ /**
+  * Compatibility terminal event emitted by runTurn(...). startTurn(...).events
+@@ -472,6 +483,24 @@ type AcpRuntimeOptions = {
+    * sandbox for the agent's own process access. The setting is not persisted.
+    */
+   terminal?: boolean;
++  /** Ephemeral initialize capabilities; mandatory base capabilities take precedence. */
++  clientCapabilities?: Record<string, unknown>;
++  /** Closed list of inbound extension request and notification method names. */
++  extensionMethods?: readonly string[];
++  /** Bound to the current connection and active prompt; never persisted. */
++  onExtensionRequest?: (method: string, params: Record<string, unknown>, context: {
++    requestId: string | number;
++    signal: AbortSignal;
++  }) => Promise<Record<string, unknown>>;
++  onExtensionNotification?: (method: string, params: Record<string, unknown>) => void;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
+ };
+ type AcpFileSessionStoreOptions = {
+   stateDir: string;
+diff --git a/dist/runtime.js b/dist/runtime.js
+index 006b80c..1b08b54 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -192,7 +192,7 @@ function resolveTextChunk(params) {
+ 		const contentType = asTrimmedString(contentRaw.type);
+ 		if (contentType && contentType !== "text") return null;
+ 		const text = asString(contentRaw.text);
+-		if (text && text.length > 0) return {
++		if (typeof text === "string" && (text.length > 0 || origin.messageId)) return {
+ 			type: "text_delta",
+ 			text,
+ 			stream: params.stream,
+@@ -201,7 +201,7 @@ function resolveTextChunk(params) {
+ 		};
+ 	}
+ 	const text = asString(params.payload.text);
+-	if (!text || text.length === 0) return null;
++	if (typeof text !== "string" || text.length === 0 && !origin.messageId) return null;
+ 	return {
+ 		type: "text_delta",
+ 		text,
+@@ -350,6 +350,7 @@ function assignForwardedToolPayload(event, payload) {
+ 	if (Object.prototype.hasOwnProperty.call(snapshot, "rawInput")) event.rawInput = snapshot.rawInput;
+ 	if (Object.prototype.hasOwnProperty.call(snapshot, "rawOutput")) event.rawOutput = snapshot.rawOutput;
+ 	if (Array.isArray(snapshot.content)) event.content = snapshot.content;
++	if (isRecord(snapshot._meta)) event._meta = snapshot._meta;
+ }
+ function runtimeEventFromMessage(message) {
+ 	if (!isRecord(message)) return null;
+@@ -397,11 +398,12 @@ function usageUpdateEvent(payload) {
+ 		used,
+ 		size,
+ 		cost: normalizeUsageCost(payload.cost),
+-		breakdown: normalizeUsageBreakdown(meta?.usage)
++		breakdown: normalizeUsageBreakdown(meta?.usage),
++		meta
+ 	});
+ }
+ function buildUsageUpdateEvent(parts) {
+-	const { used, size, cost, breakdown } = parts;
++	const { used, size, cost, breakdown, meta } = parts;
+ 	return {
+ 		type: "status",
+ 		text: used != null && size != null ? `usage updated: ${used}/${size}` : "usage updated",
+@@ -409,7 +411,8 @@ function buildUsageUpdateEvent(parts) {
+ 		...used != null ? { used } : {},
+ 		...size != null ? { size } : {},
+ 		...cost ? { cost } : {},
+-		...breakdown ? { breakdown } : {}
++		...breakdown ? { breakdown } : {},
++		...meta ? { _meta: meta } : {}
+ 	};
+ }
+ function availableCommandsUpdateEvent(payload) {
+@@ -483,7 +486,8 @@ function statusUpdateEvent(tag, payload) {
+ 	return {
+ 		type: "status",
+ 		text,
+-		tag
++		tag,
++		...isRecord(payload._meta) ? { _meta: payload._meta } : {}
+ 	};
+ }
+ function clientOperationEvent(payload) {
+@@ -950,6 +954,12 @@ var AcpRuntimeManager = class {
+ 			agentProcessEnv: this.options.agentProcessEnv,
+ 			agentProcessEnvAllow: this.options.agentProcessEnvAllow,
+ 			agentProcessEnvBlock: this.options.agentProcessEnvBlock,
++			spawnAgent: this.options.spawnAgent,
++			clientCapabilities: this.options.clientCapabilities,
++			protocolGuardFactory: this.options.protocolGuardFactory,
++			extensionMethods: this.options.extensionMethods,
++			onExtensionRequest: this.options.onExtensionRequest,
++			onExtensionNotification: this.options.onExtensionNotification,
+ 			processLifecycle: {
+ 				...options.processLifecycle,
+ 				onBeforeSpawn: async (launch) => {
+@@ -1842,7 +1852,11 @@ var AcpRuntimeManager = class {
+ 			setSessionConfigOption: async (configId, value, authority) => {
+ 				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value, authority)).response;
+ 			},
+-			setResolvedSessionConfigOption: async (configId, value, authority) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value, authority)
++			setResolvedSessionConfigOption: async (configId, value, authority) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value, authority),
++			requestExtension: async (method, params, authority) => {
++				await this.waitForRuntimeControlSession(task, turn);
++				return await turn.client.requestExtension(method, params, authority);
++			}
+ 		};
+ 	}
+ 	async waitForRuntimeControlSession(task, turn) {
+@@ -2100,6 +2114,16 @@ var AcpRuntimeManager = class {
+ 			resolve: (connectedRecord) => resolveSupportedConfigOptionId(connectedRecord, key)
+ 		} }, authority);
+ 	}
++	async requestExtension(input) {
++		const recordId = input.handle.acpxRecordId ?? input.handle.sessionKey;
++		return await this.withManagerLock(this.runtimeOperationLocks, recordId, async () => {
++			const record = await this.requireRecord(recordId);
++			assertControlAuthority(input);
++			const controller = this.activeControllers.get(record.acpxRecordId);
++			if (controller) return await controller.requestExtension(input.method, input.params, input);
++			return await this.withRuntimeControlSession(record, input.sessionMode ?? "persistent", async ({ client }) => await client.requestExtension(input.method, input.params, input), void 0, input);
++		}, input);
++	}
+ 	async cancel(handle) {
+ 		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
+ 	}
+@@ -2779,6 +2803,14 @@ var AcpxRuntime = class {
+ 		const { handle, state } = this.resolveManagerHandle(input.handle);
+ 		return await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode, input);
+ 	}
++	async requestExtension(input) {
++		const { handle, state } = this.resolveManagerHandle(input.handle);
++		return await (await this.getManager()).requestExtension({
++			...input,
++			handle,
++			sessionMode: input.sessionMode ?? state.mode
++		});
++	}
+ 	async cancel(input) {
+ 		const { handle } = this.resolveManagerHandle(input.handle);
+ 		await (await this.getManager()).cancel(handle);
+diff --git a/dist/session-options-D9KL7-d8.d.ts b/dist/session-options-D9KL7-d8.d.ts
+index d6d04c0..c8dda13 100644
+--- a/dist/session-options-D9KL7-d8.d.ts
++++ b/dist/session-options-D9KL7-d8.d.ts
+@@ -1,4 +1,5 @@
+ import { AgentCapabilities, AnyMessage, ContentBlock, CreateElicitationRequest, ElicitationContentValue, JsonRpcId, McpServer, McpServer as McpServer$1, RequestPermissionRequest, SessionConfigOption, SessionNotification, SetSessionConfigOptionResponse, ToolKind } from "@agentclientprotocol/sdk";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ type PromptInput = ContentBlock[];
+ type AcpPermissionRequest = {
+   sessionId: string;
+@@ -177,6 +178,24 @@ type AcpClientOptions = {
+   onSessionUpdate?: (notification: SessionNotification) => void;
+   onClientOperation?: (operation: ClientOperation) => void;
+   onPermissionEscalation?: (event: PermissionEscalationEvent) => void;
++  /** Ephemeral initialize capabilities; mandatory base capabilities take precedence. */
++  clientCapabilities?: Record<string, unknown>;
++  /** Closed list of inbound extension request and notification method names. */
++  extensionMethods?: readonly string[];
++  /** Bound to the current connection and active prompt; never persisted. */
++  onExtensionRequest?: (method: string, params: Record<string, unknown>, context: {
++    requestId: string | number;
++    signal: AbortSignal;
++  }) => Promise<Record<string, unknown>>;
++  onExtensionNotification?: (method: string, params: Record<string, unknown>) => void;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
++  /** Synchronous admission guard. Exceptions fail the connection, never an observer. */
++  protocolGuardFactory?: () => (direction: "inbound" | "outbound", message: unknown) => void;
+   onPermissionRequest?: AcpPermissionHandler;
+ };
+ declare const SESSION_RECORD_SCHEMA: "acpx.session.v1";

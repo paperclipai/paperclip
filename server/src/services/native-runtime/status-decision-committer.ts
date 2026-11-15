@@ -1,4 +1,5 @@
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { forbidden, HttpError } from "../../errors.js";
 import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_DELIVERY_DENIED, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
@@ -26,6 +27,7 @@ import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../ve
 import { readNativeMonitorDelivery, readNativePreservedMonitorWait, readNativeSupersededMonitorWait, type NativeSupersededMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { questionsAwaitedByAgentBlock } from "../blocked-question-answer.js";
 import { isConversation } from "../agent-conversations.js";
 import { hasPendingNativeChildCompletion, type NativeChildCompletionRecipient } from "./native-child-completion-delivery.js";
 import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
@@ -73,6 +75,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -458,7 +461,7 @@ function failAt(
     throw new Error(`native_status_failpoint:${actual}`);
 }
 
-async function enqueueWake(input: {
+export async function enqueueWake(input: {
   tx: Db;
   companyId: string;
   issueId: string;
@@ -793,7 +796,7 @@ async function materializeDecisionEffect(input: {
     if (
       effect.idempotencyKey.startsWith(
         `connection-intent:tools:${input.runId}:`,
-      )
+      ) || effect.idempotencyKey === toolCallLoopContinuationKey(input.runId)
     ) {
       const [refresh] = await input.tx
         .select({ id: agentWakeupRequests.id })
@@ -1696,7 +1699,8 @@ export async function commitNativeStatusDecision(input: {
   if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
     throw new Error("native_model_rejection_owner_required");
   }
-  if (reasonCode.startsWith("native_provider_overloaded") && !input.requireProviderFailureOwner) {
+  if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted")
+      && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
   }
   const publications: ActivityPublication[] = [];
@@ -1845,7 +1849,16 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
-    if (input.decision.statusAction === "done" && !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
+    if ((input.decision.statusAction === "done" || input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON ||
+        input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REJECTED_REASON) &&
+        !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
+      throw new NativeStatusRaceError();
+    }
+    // Every Done path (finalizer, reassessment, retired review) passes this
+    // lock. A policy that now requires or refuses review cannot be closed by a
+    // decision made without it; the finalizer recomputes against the policy.
+    if (input.decision.statusAction === "done" && !isConversation(issue) &&
+        completionReviewStageEntry(issue, originRun?.agentId ?? "").kind !== "none") {
       throw new NativeStatusRaceError();
     }
     if (input.decision.statusAction === "done") {
@@ -1905,6 +1918,10 @@ export async function commitNativeStatusDecision(input: {
           issue.executionRunId === input.runId || issue.checkoutRunId === input.runId ||
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
           input.decision.effects.length !== 0) throw new NativeStatusRaceError();
+    }
+    if (reasonCode === "monitor_wait_authority_lost" && issue.executionRunId !== input.runId &&
+        issue.checkoutRunId !== input.runId && await readNativeMonitorDelivery(tx as unknown as Db, input)) {
+      throw new NativeStatusRaceError();
     }
     if (reasonCode === "scheduled_monitor_superseded") {
       const expected = input.requireSupersededMonitorWait;
@@ -2158,12 +2175,18 @@ export async function commitNativeStatusDecision(input: {
         })
         .where(eq(nativeRunFinalizations.runId, input.runId));
     };
+    const awaitingInteractionIds = await questionsAwaitedByAgentBlock(tx as unknown as Db, {
+      companyId: input.companyId, issueId: input.issueId, agentId: originRun?.agentId, reasonCode,
+      toStatus: input.decision.toStatus, unblockOwner: input.decision.unblockDescriptor?.owner,
+      blockerOwnerKind: input.decision.blockerOwnerKind,
+    });
     const decisionJson = {
       statusAction: input.decision.statusAction,
       toStatus: input.decision.toStatus,
       reasonCode,
       unblockDescriptor: input.decision.unblockDescriptor,
       effects: input.decision.effects,
+      ...(awaitingInteractionIds.length ? { awaitingInteractionIds } : {}),
       ...(externalChatReviewPresentation
         ? { externalChatReviewPresentation }
         : {}),
@@ -2336,9 +2359,15 @@ export async function commitNativeStatusDecision(input: {
       if (!updated) throw new NativeStatusRaceError();
     } else {
       failAt("status_projection", input.failpoint);
+      // Start the configured review stage from the locked task, as the issue
+      // route does; a changed policy makes the saved decision stale.
+      const reviewStage = input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON
+        ? completionReviewStageEntry(issue, originRun?.agentId ?? "") : null;
+      if (reviewStage && reviewStage.kind !== "starts") throw new NativeStatusRaceError();
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
+          ...(reviewStage?.kind === "starts" ? reviewStage.patch : {}),
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
@@ -2351,6 +2380,21 @@ export async function commitNativeStatusDecision(input: {
       );
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
+      // The route wakes an agent participant when its stage starts; a person
+      // acts from the task. This is a workflow wake, not the worker's message.
+      const participant = reviewStage?.kind === "starts" ? reviewStage.state.currentParticipant : null;
+      if (reviewStage?.kind === "starts" && participant?.type === "agent" && participant.agentId) {
+        const state = reviewStage.state;
+        const reason = state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+        const executionStage = { wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
+          stageId: state.currentStageId, stageType: state.currentStageType, currentParticipant: participant,
+          returnAssignee: state.returnAssignee, reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome, allowedActions: ["approve", "request_changes"] };
+        await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId, issueId: input.issueId,
+          agentId: participant.agentId, reason, idempotencyKey: `native-status:${decisionRow.id}:execution-stage`,
+          payload: { mutation: "update", executionStage },
+          contextSnapshot: { executionStage, executionStageSource: "issue.execution_stage" } });
+      }
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
       }

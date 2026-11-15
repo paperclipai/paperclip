@@ -37,3 +37,7 @@ export function acquireRunnerApiResponseSlot(companyId: string): () => void {
     else activeByCompany.delete(companyId);
   };
 }
+
+export class RunnerApiCaptureReservationReclaimedError extends Error {
+  constructor() { super("The saved API response expired before it could be stored. Run the read again."); }
+}

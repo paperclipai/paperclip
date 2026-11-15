@@ -12,6 +12,9 @@ import {
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
 import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
+import { TailscaleConnectorCard } from "./TailscaleConnector";
+import { useTailscaleConnections } from "@/hooks/useTailscaleConnections";
+import type { TailscaleConnection } from "@/api/tailscale";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
 import { AiDefaultCrown, AiDefaultError, AiDefaultMenuItem } from "@/components/ai-connections/AiConnectionDefault";
@@ -130,6 +133,7 @@ type ConnectorRowModel = {
   applications: ToolApplication[];
   connections: ToolConnection[];
   chatEndpoints: ChatEndpoint[];
+  networkConnections?: TailscaleConnection[];
   aggregatorApp?: AggregatorAppCatalogEntry;
   upstreamApps?: (ComposioAppSnapshot & Partial<Pick<AggregatorAppSnapshot, "provider" | "appSlug" | "appName" | "freshness">>)[];
   upstreamCatalogApp?: AggregatorAppCatalogEntry;
@@ -288,6 +292,7 @@ function rowRank(row: ConnectorRowModel): number {
   if (
     row.chatEndpoints.some((endpoint) => endpoint.status !== "draft") ||
     row.connections.some((connection) => connectionRank(connection) === 1) ||
+    row.networkConnections?.some(connection => connection.status === "connected") ||
     row.upstreamApps?.some((app) => app.status === "connected")
   )
     return 2;
@@ -295,7 +300,7 @@ function rowRank(row: ConnectorRowModel): number {
 }
 
 function isInstalled(row: ConnectorRowModel) {
-  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0));
+  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0)) || Boolean(row.networkConnections?.some(connection => connection.status === "connected"));
 }
 
 function connectorAction(
@@ -390,6 +395,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
   const assistantConnections = useAssistantConnections();
+  const tailscaleConnections = useTailscaleConnections(selectedCompanyId);
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
   const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
@@ -634,6 +640,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ]),
     );
     const rowsBySlug = new Map<string, ConnectorRowModel>();
+    if (tailscaleConnections.canManage) rowsBySlug.set("tailscale", { key: "network:tailscale", slug: "tailscale", name: "Tailscale",
+      description: "Connect your tailnet to use its machines in SSH environments.", brandKey: "tailscale", entry: null,
+      applications: [], connections: [], chatEndpoints: [], networkConnections: tailscaleConnections.data ?? [] });
     for (const entry of gallery) {
       const slug = appDefinitionSlug(entry);
       rowsBySlug.set(slug, {
@@ -899,6 +908,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     chatConnectorsEnabled,
     githubEnabled,
     connectionsQuery.data,
+    tailscaleConnections.data,
+    tailscaleConnections.canManage,
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,
@@ -925,6 +936,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     return scoped.filter((row) => {
       const text = normalizeConnectionQuery([row.name, row.slug, row.description,
         ...(row.aggregatorApp?.aliases ?? []), ...row.connections.map((connection) => connection.name),
+        ...(row.networkConnections ?? []).map(connection => connection.name),
         ...(row.upstreamApps ?? []).flatMap(app => app.accounts.map(account => account.alias)),
         ...row.chatEndpoints.map((endpoint) => endpoint.assignedAgentName)].join(" "));
       return terms.every((term) => text.includes(term));
@@ -1039,7 +1051,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         <div className="space-y-3" role="list" aria-label="Connector list">
           {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
           {paginatedRows.map((row) => (
-            <ConnectorCard
+            row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <ConnectorCard
               renderAccountDetails={renderAccountDetails}
               aiDefaults={aiDefaults}
               key={row.key}

@@ -81,6 +81,27 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     return { companyId, workspaceId, issueId: issue!.id, cwd };
   }
   async function workspace(id: string) { return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!; }
+  it("keeps provider-owned Runner task paths out of offline workspace migration", async () => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
+    const owner = { agentId, environmentId, pluginKey: "fixture.task-storage", driverKey: "tasks" };
+    await db.insert(companies).values({ id: companyId, name: "Provider-owned migration", issuePrefix: "PROV" });
+    await db.insert(environments).values({ id: environmentId, name: `Provider ${environmentId}`, driver: "plugin",
+      config: { pluginKey: owner.pluginKey, driverKey: owner.driverKey } });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Provider Runner", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Provider task" }).returning();
+    const [retained] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issue.id,
+      name: "Provider path", mode: "shared_workspace", strategyType: "project_primary", providerType: "adapter_managed",
+      cwd: `/workspaces/provider-only-${randomUUID()}`, metadata: { runnerTaskWorkspaceOwner: owner } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: retained.id }).where(eq(issues.id, issue.id));
+    const phase = vi.fn();
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase })).resolves.toBe(0);
+    expect(phase).not.toHaveBeenCalled();
+    expect(await workspace(retained.id)).toEqual(retained);
+    await db.update(executionWorkspaces).set({ metadata: { runnerTaskWorkspaceOwner: {} } }).where(eq(executionWorkspaces.id, retained.id));
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase }))
+      .rejects.toThrow("workspace_provider_unsupported");
+  });
   async function queuedFixture() {
     const original = await seed();
     vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));

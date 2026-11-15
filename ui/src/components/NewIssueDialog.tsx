@@ -44,14 +44,14 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "./task-chat/
 import { useSidebar } from "../context/SidebarContext";
 import { InlineBanner } from "./InlineBanner";
 import { PendingSendNotice } from "./PendingSendNotice";
-import { useDurableSubmit } from "../hooks/useDurableSubmit";
+import { useBackgroundSubmitQueue } from "../hooks/useBackgroundSubmitQueue";
 import { describeError, type ErrorDescription } from "../api/errors";
-import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend, PendingSendAccountChangedError } from "../lib/pending-send";
+import { clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend, PendingSendAccountChangedError, type PendingSend } from "../lib/pending-send";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
 import { useStagedIssueFiles } from "../hooks/useStagedIssueFiles";
-import type { StagedIssueFile } from "../lib/staged-issue-files";
+import { readStagedIssueFiles, writeStagedIssueFiles, type StagedIssueFile } from "../lib/staged-issue-files";
 import { isImageAttachment } from "./task-chat/task-chat-attachments";
 
 const DRAFT_KEY = "paperclip:issue-draft";
@@ -62,7 +62,7 @@ const PENDING_CREATE_KEY = "paperclip:issue-draft:pending-create";
  * The create request keeps file names for reconciliation. File bytes are stored
  * separately in the account- and company-scoped browser draft.
  */
-type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[] };
+type PendingCreate = { fingerprint: string; data: Record<string, unknown>; stagedFileNames?: string[]; draft?: IssueDraft; requiresOriginalFiles?: boolean };
 
 function isPendingCreate(value: unknown): value is PendingCreate {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -71,6 +71,8 @@ function isPendingCreate(value: unknown): value is PendingCreate {
     typeof row.fingerprint === "string" &&
     !!row.data && typeof row.data === "object" && !Array.isArray(row.data) &&
     typeof (row.data as Record<string, unknown>).companyId === "string" &&
+    (row.requiresOriginalFiles === undefined || typeof row.requiresOriginalFiles === "boolean") &&
+    (row.draft === undefined || (isRecord(row.draft) && typeof row.draft.title === "string" && typeof row.draft.description === "string")) &&
     (row.stagedFileNames === undefined ||
       (Array.isArray(row.stagedFileNames) && row.stagedFileNames.every((name) => typeof name === "string")))
   );
@@ -181,6 +183,7 @@ function useVisualViewportLayout(enabled: boolean) {
 }
 
 interface IssueDraft {
+  pendingCreateKey?: string;
   isPrivate?: boolean;
   title: string;
   description: string;
@@ -447,7 +450,7 @@ export function NewIssueDialog() {
 
 function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) {
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
-  const { newIssueOpen, newIssueDefaults: sharedDefaults, closeNewIssue } = useDialog();
+  const { newIssueOpen, newIssueDefaults: sharedDefaults, closeNewIssue, openNewIssue } = useDialog();
   const newIssueDefaults = useMemo(() => ignoreDefaults ? {} as typeof sharedDefaults : sharedDefaults, [ignoreDefaults, sharedDefaults]);
   const readOwner = useDraftOwnerReader();
   const active = useRef(true);
@@ -494,14 +497,23 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   // sent or cancelled, whatever the files and fields look like when resubmitted.
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string; recovering?: boolean; payload?: PendingCreate } | null>(null);
   const draftOwner = useDraftOwner();
+  const [recoveredCreate, setRecoveredCreate] = useState<PendingSend<PendingCreate> | null>(null);
+  const recoveryDefaultsRef = useRef<typeof newIssueDefaults | null>(null);
+  const visibleRequestKey = useRef<string | null>(null);
+  const navigationRequestKey = useRef<string | null>(null);
+  useEffect(() => { if (newIssueOpen) navigationRequestKey.current = null; }, [newIssueOpen, newIssueDefaults]);
+  const submittedFileWrites = useRef(new Map<string, Promise<void>>());
   const { files: stagedFiles, setFiles: setStagedFiles, restoring: filesRestoring, error: filesStorageError } = useStagedIssueFiles(draftOwner, effectiveCompanyId);
-  const [restoredLaunch, setRestoredLaunch] = useState<{ owner: string | undefined; parentId?: string; goalId?: string } | null>(null);
+  const [restoredLaunch, setRestoredLaunch] = useState<({ owner: string | undefined } & Pick<typeof newIssueDefaults, "parentId" | "goalId" | "projectId" | "projectWorkspaceId" | "executionWorkspaceId">) | null>(null);
   const savedLaunch = restoredLaunch?.owner === draftOwner ? restoredLaunch : null;
   const parentId = savedLaunch ? savedLaunch.parentId : newIssueDefaults.parentId;
   const goalId = savedLaunch ? savedLaunch.goalId : newIssueDefaults.goalId;
   const restoreLaunch = (payload: PendingCreate) => setRestoredLaunch({ owner: draftOwner,
     ...(typeof payload.data.parentId === "string" ? { parentId: payload.data.parentId } : {}),
     ...(typeof payload.data.goalId === "string" ? { goalId: payload.data.goalId } : {}),
+    ...(typeof payload.data.projectId === "string" ? { projectId: payload.data.projectId } : {}),
+    ...(typeof payload.data.projectWorkspaceId === "string" ? { projectWorkspaceId: payload.data.projectWorkspaceId } : {}),
+    ...(typeof payload.data.executionWorkspaceId === "string" ? { executionWorkspaceId: payload.data.executionWorkspaceId } : {}),
   });
   const awaitingFilesKey = draftOwner !== undefined ? pendingSendKeyFor(CREATE_AWAITING_FILES_KEY, draftOwner) : null;
 
@@ -629,9 +641,9 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       });
 
       assertVerifiedOwner();
-      return { issue, companyId, failures, navigateOnCreate };
+      return { issue, companyId, failures, navigateOnCreate, requestKey: data.idempotencyKey };
     },
-    onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
+    onSuccess: ({ issue, companyId, failures, navigateOnCreate, requestKey }) => {
       assertCurrentOwner();
       trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
@@ -642,7 +654,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
-      if (draftTimer.current) clearTimeout(draftTimer.current);
       const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
       const issueRef = issue.identifier ?? issue.id;
       const openIssueAction = prefix
@@ -662,19 +673,13 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           action: openIssueAction,
         });
       }
-      clearDraft(draftOwner);
-      reset();
-      closeNewIssue();
-      if (navigateOnCreate) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
+      if (navigateOnCreate && navigationRequestKey.current === requestKey) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
     },
   });
 
   // Issue create is keyed: the server replays the original issue for a known
   // idempotency key, so an outage or a lost response resends safely.
   const stagedFilesByKey = useRef(new Map<string, StagedIssueFile[]>());
-  // The composer shows a rejection of the first attempt; later (automatic or
-  // Resend now) rejections show here.
-  const firstAttemptKey = useRef<string | null>(null);
   const [resendError, setResendError] = useState<ErrorDescription | null>(null);
   // Once the account is known, a create still waiting for its files keeps its
   // key and asks for the files again.
@@ -692,15 +697,67 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const names = awaiting.payload.stagedFileNames;
     if (names?.length) setResendError((current) => current ?? stagedFilesMissingDescription(names));
   }, [awaitingFilesKey]);
-  const durableCreate = useDurableSubmit<PendingCreate, unknown>({
+  const stagedFilesStorageKey = (key: string, companyId: unknown) => JSON.stringify([draftOwner, companyId, "submitted-task", key]);
+  const restoreBackgroundCreate = (pending: PendingSend<PendingCreate>, error: ErrorDescription | null) => {
+    if (!active.current || readOwner() !== draftOwner) return;
+    if (visibleRequestKey.current === pending.idempotencyKey) {
+      setResendError(error);
+      return;
+    }
+    // Queue recovery can run before the form's initialization effect. Inspect
+    // persisted text and launch defaults as well as the mounted field refs.
+    const savedDraft = loadDraft(draftOwner);
+    const sameDraft = savedDraft?.pendingCreateKey === pending.idempotencyKey;
+    const differentLaunch = (["title", "description", "parentId", "goalId", "projectId"] as const).some(key =>
+      newIssueDefaults[key] !== undefined && (key === "title" || key === "description"
+        ? newIssueDefaults[key]?.trim() !== String(pending.payload.data[key] ?? "").trim()
+        : newIssueDefaults[key] !== pending.payload.data[key]));
+    const hasOtherDraft = differentLaunch || (!sameDraft && (titleRef.current.trim() || descriptionRef.current.trim()
+      || savedDraft?.title.trim() || savedDraft?.description.trim()));
+    if (pending.payload.data.companyId !== effectiveCompanyId || hasOtherDraft) {
+      pushToast({ title: "A task could not be saved", body: "Open New task to recover the saved request.", tone: "warn" });
+      return;
+    }
+    if (pending.payload.draft) {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      visibleRequestKey.current = pending.idempotencyKey;
+      setRecoveredCreate(pending);
+      recoveryDefaultsRef.current = newIssueDefaults;
+      createRequestRef.current = { fingerprint: pending.payload.fingerprint, idempotencyKey: pending.idempotencyKey, payload: pending.payload,
+        recovering: pending.payload.requiresOriginalFiles || (createRequestRef.current?.idempotencyKey === pending.idempotencyKey && createRequestRef.current.recovering) };
+      const files = stagedFilesByKey.current.get(pending.idempotencyKey);
+      if (!files && pending.payload.stagedFileNames?.length) {
+        void readStagedIssueFiles(stagedFilesStorageKey(pending.idempotencyKey, pending.payload.data.companyId)).then(saved => {
+          if (active.current && visibleRequestKey.current === pending.idempotencyKey) setStagedFiles(saved);
+        }).catch(() => {});
+      }
+      restoreLaunch(pending.payload);
+      if (draftOwner !== undefined) saveDraft(draftOwner, { ...(sameDraft ? savedDraft : pending.payload.draft), pendingCreateKey: pending.idempotencyKey });
+      setStagedFiles(stagedFilesByKey.current.get(pending.idempotencyKey) ?? []);
+      openNewIssue();
+    }
+    setResendError(error);
+  };
+  const durableCreate = useBackgroundSubmitQueue<PendingCreate, unknown>({
     sourceId: "new-issue-dialog",
     storageKey: PENDING_CREATE_KEY,
     isPayload: isPendingCreate,
     action: "create the task",
     send: async (payload, idempotencyKey) => {
-      const stagedFiles = stagedFilesByKey.current.get(idempotencyKey);
+      await submittedFileWrites.current.get(idempotencyKey);
+      let stagedFiles = stagedFilesByKey.current.get(idempotencyKey);
+      if (stagedFiles?.length && payload.draft && !submittedFileWrites.current.has(idempotencyKey)) {
+        await writeStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId), stagedFiles, []).catch(() => {});
+      }
+      if (!stagedFiles && payload.draft && payload.stagedFileNames?.length) {
+        stagedFiles = await readStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId)).catch(() => []);
+        if (!active.current) throw new PendingSendAccountChangedError();
+        if (stagedFiles.length !== payload.stagedFileNames.length) stagedFiles = undefined;
+        else stagedFilesByKey.current.set(idempotencyKey, stagedFiles);
+      }
       // Never create a restored task without the files it was submitted with.
       if (!stagedFiles && payload.stagedFileNames?.length) {
+        payload.requiresOriginalFiles = true;
         throw new StagedFilesMissingError(payload.stagedFileNames);
       }
       const result = await createIssue.mutateAsync({
@@ -708,12 +765,24 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         stagedFiles: stagedFiles ?? [],
         idempotencyKey,
       });
+      if (payload.draft && stagedFiles?.length) {
+        await writeStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, payload.data.companyId), [], stagedFiles.map(file => file.id)).catch(() => {});
+      }
       stagedFilesByKey.current.delete(idempotencyKey);
+      submittedFileWrites.current.delete(idempotencyKey);
       clearCreateUploadReceipts(idempotencyKey);
       return result;
     },
+    onSent: (_result, pending) => {
+      if (visibleRequestKey.current !== pending.idempotencyKey) return;
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      clearDraft(draftOwner);
+      reset();
+      closeNewIssue();
+    },
+    onAttention: restoreBackgroundCreate,
     onRejected: (error, description, pending) => {
-      if (error instanceof StagedFilesMissingError) {
+      if (error instanceof StagedFilesMissingError && !pending.payload.draft) {
         // Reattaching the same files resubmits under the original key, so a
         // create that already reached the server is replayed, not duplicated.
         createRequestRef.current = {
@@ -725,11 +794,14 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         restoreLaunch(pending.payload);
         if (awaitingFilesKey) writePendingSend(awaitingFilesKey, pending);
       }
-      if (pending.idempotencyKey !== firstAttemptKey.current) setResendError(description);
+      if (!pending.payload.draft || visibleRequestKey.current === pending.idempotencyKey) setResendError(description);
     },
   });
   // A create restored after reload without its files cannot be sent; say so
   // now rather than after the first resend delay. Nothing reaches the network.
+  const visiblePending = durableCreate.pending && (!durableCreate.pending.payload.draft || visibleRequestKey.current === durableCreate.pending.idempotencyKey)
+    ? durableCreate.pending : null;
+  const submittingRecoveredCreate = Boolean(visiblePending && durableCreate.status === "sending");
   const pendingCreate = durableCreate.pending;
   const { resendNow: resendCreateNow } = durableCreate;
   useEffect(() => {
@@ -737,6 +809,22 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       resendCreateNow();
     }
   }, [pendingCreate, resendCreateNow]);
+
+  function discardCreate(idempotencyKey: string, payload?: PendingCreate) {
+    durableCreate.discard(idempotencyKey);
+    const files = stagedFilesByKey.current.get(idempotencyKey);
+    const write = submittedFileWrites.current.get(idempotencyKey);
+    stagedFilesByKey.current.delete(idempotencyKey);
+    submittedFileWrites.current.delete(idempotencyKey);
+    clearCreateUploadReceipts(idempotencyKey);
+    if (draftOwner !== undefined && payload?.draft && payload.stagedFileNames?.length) {
+      const storageKey = stagedFilesStorageKey(idempotencyKey, payload.data.companyId);
+      void Promise.resolve(write).then(async () => {
+        const saved = files ?? await readStagedIssueFiles(storageKey);
+        await writeStagedIssueFiles(storageKey, [], saved.map(file => file.id));
+      }).catch(() => {});
+    }
+  }
 
   // Debounced draft saving
   const scheduleSave = useCallback((draft: IssueDraft) => {
@@ -765,6 +853,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       const nextTitle = overrides.title ?? titleRef.current;
       const nextDescription = overrides.description ?? descriptionRef.current;
       scheduleSave({
+        pendingCreateKey: visibleRequestKey.current ?? undefined,
         title: nextTitle,
         description: nextDescription,
         status,
@@ -812,6 +901,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
 
   const handleDescriptionChange = useCallback(
     (nextDescription: string) => {
+      navigationRequestKey.current = null;
       descriptionRef.current = nextDescription;
       setDescription(nextDescription);
 
@@ -845,6 +935,61 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     queueDraftSave,
   ]);
 
+  function restoreSubmittedDraft(draft: IssueDraft, defaults: typeof newIssueDefaults = {}) {
+    defaultAssigneePendingRef.current = false;
+    defaultProjectPendingRef.current = false;
+    const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
+    const restoredProjectId = defaults.projectId ?? draft.projectId;
+    const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+    const hasExplicitProjectWorkspaceId = defaults.projectWorkspaceId !== undefined;
+    const hasExplicitExecutionWorkspaceId = defaults.executionWorkspaceId !== undefined;
+    const hasExplicitExecutionWorkspaceMode = defaults.executionWorkspaceMode !== undefined;
+    setIsPrivate(draft.isPrivate ?? false);
+    setIssueText(draft.title, draft.description);
+    setComposerSettings(draft.composerSettings ?? null);
+    setStatus(draft.status || "todo");
+    setPriority(draft.priority);
+    setAssigneeValue(
+      defaults.assigneeAgentId || defaults.assigneeUserId
+        ? assigneeValueFromSelection(defaults)
+        : (draft.assigneeValue ?? draft.assigneeId ?? ""),
+    );
+    setReviewerValue(draft.reviewerValue ?? "");
+    setApproverValue(draft.approverValue ?? "");
+
+    setWatchdogAgentId(draft.watchdogAgentId ?? "");
+    setWatchdogInstructions(draft.watchdogInstructions ?? "");
+
+    setProjectId(restoredProjectId);
+    setProjectWorkspaceId(
+      hasExplicitProjectWorkspaceId
+        ? (defaults.projectWorkspaceId ?? "")
+        : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+    );
+    setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
+    setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
+    setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
+    setAssigneeChrome(draft.assigneeChrome ?? false);
+    setExecutionWorkspaceMode(
+      hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
+        ? defaultExecutionWorkspaceModeForIssueDefaults(defaults, restoredProject)
+        : (draft.executionWorkspaceMode ??
+          (draft.useIsolatedExecutionWorkspace
+            ? "isolated_workspace"
+            : defaultExecutionWorkspaceModeForProject(restoredProject))),
+    );
+    setWorkMode(nextWorkMode);
+    setSelectedExecutionWorkspaceId(
+      hasExplicitExecutionWorkspaceId
+        ? (defaults.executionWorkspaceId ?? "")
+        : (draft.selectedExecutionWorkspaceId ?? ""),
+    );
+    executionWorkspaceDefaultProjectId.current =
+      hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
+        ? restoredProjectId || null
+        : null;
+  }
+
   // Restore draft or apply defaults when dialog opens
   useEffect(() => {
     if (!newIssueOpen) {
@@ -853,7 +998,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       defaultProjectPendingRef.current = false;
       return;
     }
-    const initializationKey = `${draftOwner ?? "unknown"}:${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
+    const initializationKey = `${draftOwner ?? "unknown"}:${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}:${recoveredCreate?.idempotencyKey ?? ""}`;
     if (initializationKeyRef.current === initializationKey) return;
     initializationKeyRef.current = initializationKey;
     if (draftTimer.current) {
@@ -862,6 +1007,16 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     }
 
     executionWorkspaceDefaultProjectId.current = null;
+    // A later explicit launch starts its own draft. A plain reopen restores
+    // the saved fields below, including edits made after the first recovery.
+    if (recoveredCreate && newIssueDefaults !== recoveryDefaultsRef.current
+      && Object.keys(newIssueDefaults).length > 0) {
+      setRecoveredCreate(null);
+      visibleRequestKey.current = null;
+      createRequestRef.current = null;
+      setRestoredLaunch(null);
+      setResendError(null);
+    }
 
     if (draftOwner !== undefined && unboundFormDraft.current) {
       if (unboundFormDraft.current.title.trim() || unboundFormDraft.current.description.trim()) saveDraft(draftOwner, unboundFormDraft.current);
@@ -929,58 +1084,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           ? defaultProjectId || null
           : null;
     } else if (draft && (draft.title.trim() || draft.description.trim())) {
-      defaultAssigneePendingRef.current = false;
-      defaultProjectPendingRef.current = false;
-      const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
-      const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
-      const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
-      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
-      const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
-      const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
-      setIsPrivate(draft.isPrivate ?? false);
-      setIssueText(draft.title, draft.description);
-      setComposerSettings(draft.composerSettings ?? null);
-      setStatus(draft.status || "todo");
-      setPriority(draft.priority);
-      setAssigneeValue(
-        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
-          ? assigneeValueFromSelection(newIssueDefaults)
-          : (draft.assigneeValue ?? draft.assigneeId ?? ""),
-      );
-      setReviewerValue(draft.reviewerValue ?? "");
-      setApproverValue(draft.approverValue ?? "");
-
-      setWatchdogAgentId(draft.watchdogAgentId ?? "");
-      setWatchdogInstructions(draft.watchdogInstructions ?? "");
-
-      setProjectId(restoredProjectId);
-      setProjectWorkspaceId(
-        hasExplicitProjectWorkspaceId
-          ? (newIssueDefaults.projectWorkspaceId ?? "")
-          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
-      );
-      setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
-      setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
-      setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
-      setAssigneeChrome(draft.assigneeChrome ?? false);
-      setExecutionWorkspaceMode(
-        hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
-          ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
-          : (draft.executionWorkspaceMode ??
-              (draft.useIsolatedExecutionWorkspace
-                ? "isolated_workspace"
-                : defaultExecutionWorkspaceModeForProject(restoredProject))),
-      );
-      setWorkMode(nextWorkMode);
-      setSelectedExecutionWorkspaceId(
-        hasExplicitExecutionWorkspaceId
-          ? (newIssueDefaults.executionWorkspaceId ?? "")
-          : (draft.selectedExecutionWorkspaceId ?? ""),
-      );
-      executionWorkspaceDefaultProjectId.current =
-        hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
-          ? restoredProjectId || null
-          : null;
+      restoreSubmittedDraft(draft, newIssueDefaults);
     } else {
       setWorkMode(isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -1008,7 +1112,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           ? defaultProjectId || null
           : null;
     }
-  }, [newIssueOpen, newIssueDefaults, orderedProjects, effectiveCompanyId, setIssueText, draftOwner]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects, effectiveCompanyId, setIssueText, draftOwner, recoveredCreate]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -1019,6 +1123,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
 
   function reset() {
     unboundFormDraft.current = null;
+    setRecoveredCreate(null); visibleRequestKey.current = null;
+    setResendError(null);
     createRequestRef.current = null; setRestoredLaunch(null);
     if (awaitingFilesKey) clearPendingSend(awaitingFilesKey);
     setIssueText("", "");
@@ -1053,7 +1159,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   async function handleSubmit(body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) {
     const currentTitle = titleRef.current.trim();
     const currentDescription = body.trim();
-    if (!effectiveCompanyId || filesRestoring || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
+    if (!effectiveCompanyId || filesRestoring || (!currentTitle && !currentDescription) || visiblePending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeChrome ? "custom" : assigneeModelLane,
@@ -1077,16 +1183,17 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
+    const workspaceLaunch = savedLaunch ?? newIssueDefaults;
     const requestedProjectWorkspaceId = !workspaceIsolationControlsVisible
-      ? (newIssueDefaults.projectId === projectId ? newIssueDefaults.projectWorkspaceId : undefined)
+      ? (workspaceLaunch.projectId === projectId ? workspaceLaunch.projectWorkspaceId : undefined)
       : canChooseWorktrees && executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace
         ? selectedReusableExecutionWorkspace.projectWorkspaceId
         : projectWorkspaceId;
     // A task launched from a workspace (or its parent task) keeps that explicit
     // context. Draft-only choices are ignored while the selector is hidden.
     const contextualWorkspaceId =
-      !workspaceIsolationControlsVisible && newIssueDefaults.projectId === projectId
-        ? newIssueDefaults.executionWorkspaceId
+      !workspaceIsolationControlsVisible && workspaceLaunch.projectId === projectId
+        ? workspaceLaunch.executionWorkspaceId
         : undefined;
     const executionPolicy = buildExecutionPolicy({
       reviewerValues: reviewerValue ? [reviewerValue] : [],
@@ -1134,11 +1241,16 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const createFiles = request?.recovering ? restoreStagedDocumentKeys(stagedFiles, request.payload?.fingerprint) : stagedFiles;
     const fingerprint = JSON.stringify({ ...createData, stagedFiles: createFiles.map(stagedFileIdentity).sort() });
     if (!request || (!request.recovering && request.fingerprint !== fingerprint)) {
+      if (request) discardCreate(request.idempotencyKey, request.payload);
       request = { fingerprint, idempotencyKey: createUuid() };
       createRequestRef.current = request;
     }
     let createPayload: PendingCreate = {
       fingerprint, data: { ...createData, allowDuplicate: true, navigateOnCreate: newIssueDefaults.navigateOnCreate === true },
+      draft: { title: currentTitle, description: currentDescription, status, priority, assigneeValue,
+        reviewerValue, approverValue, watchdogAgentId, watchdogInstructions, projectId, projectWorkspaceId,
+        assigneeModelLane, assigneeModelOverride, assigneeThinkingEffort, assigneeChrome,
+        executionWorkspaceMode, selectedExecutionWorkspaceId, workMode: mode, isPrivate: effectivePrivate, composerSettings: settings },
       ...(stagedFiles.length ? { stagedFileNames: stagedFiles.map(file => file.file.name) } : {}),
     };
     if (request.recovering) {
@@ -1167,18 +1279,17 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     }
     request.payload = createPayload;
     const { idempotencyKey } = request;
+    navigationRequestKey.current = idempotencyKey;
     stagedFilesByKey.current.set(idempotencyKey, createFiles);
-    firstAttemptKey.current = idempotencyKey;
-    setResendError(null);
-    let result;
-    try {
-      result = await durableCreate.submit(createPayload, { idempotencyKey });
-    } finally {
-      firstAttemptKey.current = null;
+    if (draftOwner !== undefined && createFiles.length) {
+      submittedFileWrites.current.set(idempotencyKey,
+        writeStagedIssueFiles(stagedFilesStorageKey(idempotencyKey, createPayload.data.companyId), createFiles, []).catch(() => {}));
     }
-    // A transient failure keeps the request and shows the pending notice; a
-    // rejection goes back to the composer with readable copy.
-    if (result.kind === "rejected") throw result.error;
+    durableCreate.enqueue(createPayload, idempotencyKey);
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    clearDraft(draftOwner);
+    reset();
+    closeNewIssue();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -1190,7 +1301,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   }
 
   function stageFiles(files: File[]) {
-    if (files.length === 0 || filesRestoring || createIssue.isPending || durableCreate.pending) return;
+    if (files.length === 0 || filesRestoring || visiblePending) return;
     setStagedFiles((current) => {
       const next = [...current];
       for (const file of files) {
@@ -1373,11 +1484,17 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     chrome: assigneeChrome,
   });
 
+  const otherFailedCreates = durableCreate.rejected.filter(item => item.idempotencyKey !== visibleRequestKey.current && item.payload.data.companyId === effectiveCompanyId);
+  const otherPending = durableCreate.pending && durableCreate.status !== "sending" && !visiblePending && durableCreate.pending.payload.data.companyId === effectiveCompanyId ? durableCreate.pending : null;
+  const otherCreates: Array<PendingSend<PendingCreate> & { rejection?: ErrorDescription }> = [
+    ...otherFailedCreates, ...(otherPending ? [otherPending] : []),
+  ];
+
   return (
     <Dialog
       open={newIssueOpen}
       onOpenChange={(open) => {
-        if (!open && !createIssue.isPending) closeNewIssue();
+        if (!open && !submittingRecoveredCreate) closeNewIssue();
       }}
     >
       <DialogContent
@@ -1395,12 +1512,12 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
           if (isWorkModeEscapeShortcut(event)) {
             event.preventDefault();
             setWorkMode((current) => nextWorkMode(current));
-          } else if (createIssue.isPending) event.preventDefault();
+          } else if (submittingRecoveredCreate) event.preventDefault();
         }}
         onPointerDownOutside={(event) => {
           const target = event.detail.originalEvent.target as HTMLElement | null;
           if (
-            createIssue.isPending ||
+            submittingRecoveredCreate ||
             target?.closest("[data-radix-popper-content-wrapper], [data-paperclip-floating-ui]")
           ) {
             event.preventDefault();
@@ -1417,7 +1534,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
             <TaskChatComposer
               workMode={workMode}
               onWorkModeChange={setWorkMode}
-              disabled={createIssue.isPending || !effectiveCompanyId}
+              disabled={Boolean(visiblePending) || !effectiveCompanyId}
               placeholder="Describe a task…"
               mobile={isMobile}
               mentions={mentionOptions}
@@ -1466,9 +1583,19 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode || (durableCreate.pending && durableCreate.status !== "sending") || resendError ? (
+                  hasTitle || isSubIssueMode || (visiblePending && durableCreate.status !== "sending") || otherFailedCreates.length > 0 || otherPending || resendError ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
-                      {durableCreate.pending && durableCreate.status !== "sending" ? (
+                      {otherCreates.map(item => (
+                        <div key={item.idempotencyKey}>
+                          <p role="alert" className="text-sm text-destructive">{item.rejection ? `${item.rejection.title}. ${item.rejection.body}` : "This task is waiting to be saved."}</p>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => {
+                            if (!titleRef.current.trim() && !descriptionRef.current.trim()) restoreBackgroundCreate(item, item.rejection ?? null);
+                            else if (item.idempotencyKey === durableCreate.pending?.idempotencyKey) durableCreate.resendNow();
+                            else durableCreate.enqueue(item.payload, item.idempotencyKey);
+                          }}>Retry saved task: {String(item.payload.data.title ?? item.payload.data.description ?? "New task").slice(0, 80)}</Button>
+                        </div>
+                      ))}
+                      {visiblePending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice
                           noun="task"
                           persisted={durableCreate.persisted}
@@ -1478,23 +1605,24 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           onCancel={() => {
                             // The draft (title and description) is still saved; only the send stops.
                             const cancelledKey = durableCreate.pending?.idempotencyKey;
-                            const cancelled = durableCreate.cancel();
+                            const cancelled = durableCreate.pending?.payload;
+                            if (cancelledKey) discardCreate(cancelledKey, cancelled);
                             if (cancelled) {
-                              createRequestRef.current = null; setRestoredLaunch(null);
+                              createRequestRef.current = null; visibleRequestKey.current = null; setRecoveredCreate(null); setRestoredLaunch(null);
                               if (awaitingFilesKey) clearPendingSend(awaitingFilesKey, cancelledKey);
                               if (cancelledKey) clearCreateUploadReceipts(cancelledKey);
                             }
                           }}
                         />
                       ) : null}
-                      {resendError && !durableCreate.pending ? (
+                      {resendError && !visiblePending ? (
                         <div>
                           <p role="alert" className="text-sm text-destructive">{resendError.title}. {resendError.body}</p>
-                          {createRequestRef.current?.recovering ? <Button type="button" size="sm" variant="ghost" onClick={() => {
+                          {createRequestRef.current ? <Button type="button" size="sm" variant="ghost" onClick={() => {
                             const key = createRequestRef.current?.idempotencyKey;
                             if (awaitingFilesKey && key) clearPendingSend(awaitingFilesKey, key);
-                            if (key) { stagedFilesByKey.current.delete(key); clearCreateUploadReceipts(key); }
-                            createRequestRef.current = null; setRestoredLaunch(null); setResendError(null);
+                            if (key) discardCreate(key, createRequestRef.current?.payload);
+                            createRequestRef.current = null; visibleRequestKey.current = null; setRecoveredCreate(null); setRestoredLaunch(null); setResendError(null);
                           }}>Cancel saved request</Button> : null}
                         </div>
                       ) : null}
@@ -1503,7 +1631,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                           aria-label="Task title"
                           value={title}
                           // The waiting request is what gets created; later edits would be lost.
-                          disabled={createIssue.isPending || Boolean(durableCreate.pending)}
+                          disabled={submittingRecoveredCreate || Boolean(visiblePending)}
                           className="w-full bg-transparent text-sm text-foreground outline-none"
                           onChange={(event) => {
                             titleRef.current = event.target.value;
@@ -1575,7 +1703,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                                     size="icon-xs"
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
-                                    disabled={createIssue.isPending}
+                                    disabled={submittingRecoveredCreate}
                                     title="Remove document"
                                   >
                                     <X className="h-3.5 w-3.5" />
@@ -1609,7 +1737,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                                     size="icon-xs"
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
-                                    disabled={createIssue.isPending}
+                                    disabled={submittingRecoveredCreate}
                                     title="Remove attachment"
                                   >
                                     <X className="h-3.5 w-3.5" />
@@ -1667,8 +1795,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                     ) : null}
                   </>
                 ),
-                submitDisabled: filesRestoring || worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(durableCreate.pending),
-                readOnly: filesRestoring || Boolean(durableCreate.pending),
+                submitDisabled: filesRestoring || worktreeSelectionIncomplete || parentPrivacyUnresolved || Boolean(visiblePending),
+                readOnly: filesRestoring || Boolean(visiblePending),
                 contextBar: (
                   <>
                     <InlineEntitySelector
@@ -1679,7 +1807,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       mobileTitle="Select project"
                       modal
                       className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
-                      disabled={createIssue.isPending}
+                      disabled={submittingRecoveredCreate}
                       triggerDataSlot="new-issue-compact-control"
                       contentStyle={entityPickerViewportStyle}
                       noneLabel="No project"
@@ -1734,7 +1862,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                         loading={worktreesLoading}
                         error={worktreesError}
                         onRetry={() => void refetchWorktrees()}
-                        disabled={createIssue.isPending}
+                        disabled={submittingRecoveredCreate}
                         mobile={isMobile}
                         contentStyle={entityPickerViewportStyle}
                       />

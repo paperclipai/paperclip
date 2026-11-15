@@ -100,6 +100,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stdinPrefix?: string;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -552,6 +553,8 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
+export const PAPERCLIP_EARLIER_READ_COMMENT_NOTE = "An earlier turn already read this comment and may have applied it. Check the current task state first, and do not repeat work that is already done.";
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -560,6 +563,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  readByEarlierTurn: boolean;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -943,6 +947,7 @@ function normalizePaperclipWakeComment(
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    readByEarlierTurn: asBoolean(comment.readByEarlierTurn, false),
   };
 }
 
@@ -2300,6 +2305,8 @@ export function renderPaperclipWakePrompt(
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
     asString(parseObject(parseObject(value).connectionInstructions).text, "").trim(),
+    // Server-rendered and labelled untrusted: what MCP Apps widgets in the task reported.
+    asString(parseObject(value).mcpAppContext, "").trim(),
   ]);
 }
 
@@ -2443,6 +2450,9 @@ function renderPaperclipWakePromptBody(
             ]),
         "The harness owns task state and persists your final assistant response. If the runtime offers a semantic completion operation, emit exactly one semantic completion and do not duplicate that response in a Paperclip comment or status update.",
         "The semantic completion summary is the user-visible final answer. Include every requested answer, exact value, description, and any actionable file-access or delivery limitation there; a statement that you read, checked, or prepared something is not a substitute. Private progress commentary is not delivered as the final answer.",
+        ...(normalized.externalChatProvider === "slack"
+          ? ["Give a brief public update when you change approach or learn something useful. Say what changed and what you will check next. Slack can show this public commentary as progress. Keep it suitable for the current conversation's audience; do not include internal reasoning or raw tool output."]
+          : []),
         ...(normalized.externalChatProvider === "github"
           ? [
               "GitHub publication uses the task-scoped bot tools when they are available. Paperclip creates one working comment for this request. You may and should periodically edit that same comment with update_comment during longer work, reporting brief, factual progress or blockers before the final result. Use a distinct stable idempotency key for each update and reuse it for retries. Publish the final answer with comment, or a requested review with begin_review and submit_review; these replace the same working comment. This is the provider reply, not a Paperclip progress or completion comment. Your semantic completion remains internal to Paperclip and does not post another GitHub reply. Never substitute personal credentials or choose another comment, connection, or repository.",
@@ -2477,6 +2487,9 @@ function renderPaperclipWakePromptBody(
       : [];
   const wakeSummaryLines = [
     `- reason: ${normalized.reason ?? "unknown"}`,
+    ...(normalized.executionContinuation?.trigger?.retriedReason
+      ? [`- retried wake: ${normalized.executionContinuation.trigger.retriedReason} (this Retry re-delivers the wake the failed run did not finish; handle it as that wake)`]
+      : []),
     `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
     ...(hasWakeCommentBatch
       ? [
@@ -2586,6 +2599,11 @@ function renderPaperclipWakePromptBody(
         ? "These are new or edited messages since the named run; earlier history remains in this session."
         : "History is complete through the coverage cursor. Prefer source messages over summaries.",
       "humanResponses contains server-verified user answers and decisions; apply each only to its question or approval scope.");
+    const earlierRead = normalized.comments.filter((comment) => comment.readByEarlierTurn && comment.id
+      && continuation.messages.some((message) => message.id === comment.id && !message.deleted)).map((comment) => comment.id);
+    if (earlierRead.length > 0) {
+      lines.push(`Messages ${earlierRead.join(", ")}: ${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}`);
+    }
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, objective, objectiveSource, ...requestContextBase } = continuation;
     const objectiveOwnedByDisplayedSource = continuation.objectiveSource?.kind === "comment" &&
       continuation.issueId === normalized.issue?.id &&
@@ -3200,6 +3218,9 @@ function renderPaperclipWakePromptBody(
       if (comment.bodyTruncated) {
         lines.push("[comment body truncated]");
       }
+      if (comment.readByEarlierTurn) {
+        lines.push(`[${PAPERCLIP_EARLIER_READ_COMMENT_NOTE}]`);
+      }
       lines.push("");
     }
   };
@@ -3736,6 +3757,7 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stdinPrefix: spawnTarget.stdinPrefix,
     };
   }
 
@@ -4826,6 +4848,22 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Strip systemd service-manager vars so the spawned agent process can't
+    // reach the Paperclip server's own readiness/socket-activation channel.
+    // NOTIFY_SOCKET in particular lets any process with it in its env call
+    // sd_notify on the server's readiness socket; systemd only accepts
+    // notifications from the service's registered main PID, so an agent
+    // subprocess inheriting it just spams "reception only permitted for
+    // main PID" warnings, but it's still an unintended channel and must not
+    // be handed to child processes. These vars can arrive either via
+    // process.env (systemd sets them on the server process) or via
+    // opts.env (adapters that build their env as `{ ...process.env, ... }`),
+    // so strip them after the merge, not just from the process.env side.
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    for (const key of SERVICE_MANAGER_VARS) {
+      delete rawMerged[key];
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     if (opts.localProcessSandbox?.homeDir) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;
@@ -4836,6 +4874,7 @@ export async function runChildProcess(
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
+        const processStdin = target.stdinPrefix ? target.stdinPrefix + (opts.stdin ?? "") : opts.stdin;
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
@@ -4845,7 +4884,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [processStdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -4999,7 +5038,7 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if (processStdin != null && stdin) {
           let stdinFailureHandled = false;
           const handleStdinFailure = (err: unknown) => {
             if (!err || stdinFailureHandled) return;
@@ -5019,7 +5058,7 @@ export async function runChildProcess(
             )
               return;
             try {
-              stdin.write(opts.stdin as string, handleStdinFailure);
+              stdin.write(processStdin, handleStdinFailure);
               stdin.end();
             } catch (err) {
               handleStdinFailure(err);

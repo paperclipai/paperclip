@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issues, statusDecisions, type Db } from "@paperclipai/db";
-import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
+import { readInheritedGitHubReviewWaits } from "../chat-channels/github/review-wait.js";
 import { authorizeChatConversationsForBoundRuns } from "./chat-attachment-reuse.js";
 import { EXTERNAL_CHAT_QUESTION_RESPONSE_KEY } from "./external-chat-question-response.js";
 
@@ -61,15 +61,19 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
       eq(chatEndpoints.status, "active"),
     ))
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), eq(issues.status, "in_review")));
-  const authorizable = (await Promise.all(candidates.map(async ({ runId, agentId, contextSnapshot, responsibleUserId, activeIdentityContextId, ...wait }) => {
-    const inheritedWait = await readInheritedGitHubReviewWait(db, {
-      id: runId, companyId, agentId, responsibleUserId, activeIdentityContextId,
-      nativeIssueId: wait.issueId, issueId: wait.issueId, contextSnapshot,
-    });
-    if (inheritedWait?.kind === "revoked") return null;
-    return { wait, binding: { companyId, issueId: wait.issueId, runId, agentId },
-      contextSnapshot: inheritedWait?.context ?? contextSnapshot };
-  }))).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+  // One review read and one publication read for every wait of the page, not
+  // two reads per wait. Each wait gets the same inherited result as before.
+  const inheritedWaits = await readInheritedGitHubReviewWaits(db, candidates.map(candidate => ({
+    id: candidate.runId, companyId, agentId: candidate.agentId, responsibleUserId: candidate.responsibleUserId,
+    activeIdentityContextId: candidate.activeIdentityContextId, nativeIssueId: candidate.issueId,
+    issueId: candidate.issueId, contextSnapshot: candidate.contextSnapshot,
+  })));
+  const authorizable = candidates.flatMap(({ runId, agentId, contextSnapshot, responsibleUserId: _user, activeIdentityContextId: _context, ...wait }, index) => {
+    const inheritedWait = inheritedWaits[index];
+    if (inheritedWait?.kind === "revoked") return [];
+    return [{ wait, binding: { companyId, issueId: wait.issueId, runId, agentId },
+      contextSnapshot: inheritedWait?.context ?? contextSnapshot }];
+  });
   // One authorization read for every wait of the page, not one per wait: the
   // per-wait reads each held a pool connection at the same moment.
   const authorized = await authorizeChatConversationsForBoundRuns(db, companyId, authorizable);
