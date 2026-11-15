@@ -14,5 +14,6 @@ export function changedTaskCondition(since: Date) {
       and t.issue_id = ${issues.id} and t.updated_at >= ${at})
     or exists (select 1 from issue_comments c where c.company_id = ${issues.companyId}
       and c.issue_id = ${issues.id} and c.created_at >= ${at})
-    or exists (select 1 from agents ag where ag.id = ${issues.assigneeAgentId} and ag.updated_at >= ${at}))`;
+    or exists (select 1 from agents ag where ag.id = ${issues.assigneeAgentId} and ag.updated_at >= ${at}
+      and (ag.last_heartbeat_at is null or ag.last_heartbeat_at < ag.updated_at)))`;
 }

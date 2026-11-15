@@ -1793,16 +1793,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               run.contextCommentId.length > 0
             ? run.contextCommentId
             : null;
-      // Messages posted while the run was starting, which its first turn took.
-      const firstTurnIds = Array.isArray(run.firstTurnCommentIds)
-        ? run.firstTurnCommentIds.filter(
-            (value): value is string => typeof value === "string" && value.length > 0,
-          )
-        : [];
-      const inputIds = [...new Set([
-        ...(batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : []),
-        ...firstTurnIds,
-      ])];
+      const inputIds =
+        batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : [];
       const anchorAt = run.startedAt ?? run.createdAt;
       const anchorMs = new Date(anchorAt).getTime();
       inputIds.forEach((commentId, sequence) => {

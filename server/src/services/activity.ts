@@ -1,7 +1,6 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
-import { acceptedFirstTurnCommentIdsSql } from "./queued-comment-delivery.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -550,8 +549,6 @@ export function activityService(db: Db) {
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
           wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
-          // Queued messages this run's own accepted first turn took.
-          firstTurnCommentIds: acceptedFirstTurnCommentIdsSql(heartbeatRuns),
           queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,

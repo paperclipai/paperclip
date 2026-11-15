@@ -13027,7 +13027,7 @@ async function executePaperclipNativeSessionAttempt(
             eq(nativeRunFinalizations.runId, input.execution.binding.runId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
           ),
-        ), { companyId: input.execution.binding.companyId });
+        ), { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
 
       const failedAtMs = Date.now();
       const executionFailureMessage = redactOutputText(
@@ -13092,7 +13092,7 @@ async function executePaperclipNativeSessionAttempt(
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
             isNull(nativeRunFinalizations.resultId),
-          )).returning({ runId: nativeRunFinalizations.runId }), { companyId: input.execution.binding.companyId });
+          )).returning({ runId: nativeRunFinalizations.runId }), { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
           if (settled) {
             await stoppedLeaseRenewal;
             if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
@@ -13281,7 +13281,7 @@ async function executePaperclipNativeSessionAttempt(
         // Issue → coordinator → run, as below. A lease that lapsed untouched
         // (host sleep) is still this owner's to settle; see the held condition.
         await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
-        await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
+        await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
           .update(nativeRunFinalizations)
