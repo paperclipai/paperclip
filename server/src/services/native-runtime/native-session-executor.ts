@@ -743,12 +743,15 @@ type WarmNativeSession = {
   controllerDetachedForRestart?: boolean;
   finishRelease?: () => Promise<void>;
   closeOnReleaseReason?: string;
+  idleCloseRetries?: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastActivityAt: string;
 };
 
 const WARM_CLOSE_FAILURE_DETAIL_MAX = 2_000;
 const WARM_NATIVE_SESSION_CLOSE_CONCURRENCY = 4;
+export const WARM_IDLE_CLOSE_RETRY_MS = 5_000;
+export const WARM_IDLE_CLOSE_MAX_RETRIES = 3;
 
 export function describeWarmCloseFailure(error: unknown): string {
   const describe = (value: unknown): string => {
@@ -757,8 +760,10 @@ export function describeWarmCloseFailure(error: unknown): string {
     const code = "code" in value && typeof value.code === "string" ? `${value.code}: ` : "";
     const settlement = value instanceof NativeSessionCloseUnrecoverableError && value.settlement
       ? ` ${JSON.stringify(value.settlement)}` : "";
+    const remote = readRemoteRunnerRecoveryError(value);
+    const recovery = remote ? ` [${remote.stage}/${remote.reason}${remote.runnerLifecycle ? `/${remote.runnerLifecycle}` : ""}]` : "";
     const cause = value.cause === undefined ? "" : ` (cause: ${describe(value.cause)})`;
-    return `${code}${value.message}${settlement}${cause}`;
+    return `${code}${value.message}${recovery}${settlement}${cause}`;
   };
   const text = describe(error).replaceAll(/[\r\n]+/g, " ");
   return text.length > WARM_CLOSE_FAILURE_DETAIL_MAX ? `${text.slice(0, WARM_CLOSE_FAILURE_DETAIL_MAX)}…` : text;
@@ -1129,6 +1134,19 @@ async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<b
     && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
 }
 
+/** A failed close is complete when its Runner is proven gone or its sandbox is stopped or destroyed. */
+async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb): Promise<boolean> {
+  const diagnostic = readRemoteRunnerRecoveryError(error);
+  if (diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running") return true;
+  try {
+    if (await warmSandboxGivenUpByHost(entry)) return true;
+    return db ? await warmSandboxDestroyed(db, entry) : false;
+  } catch (proofError) {
+    logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
+    return false;
+  }
+}
+
 /** Detach released owners and checkpoint unreleased owners before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<WarmNativeSessionCloseResult> {
@@ -1195,16 +1213,10 @@ async function closeIdleWarmNativeSessions(input: {
         busy += 1;
         return;
       }
-      const destroyed = !detach && input.forceStopUnsettled && input.db
-        ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
-          logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
-          return false;
-        })
-        : false;
-      if (destroyed) {
+      if (!detach && await warmCloseFailureProvesOwnerGone(entry, error, input.db ?? entry.sandboxLeaseDb)) {
         logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
           providerLeaseId: entry.providerLeaseId ?? null, reason: input.reason, closeFailure: describeWarmCloseFailure(error) },
-        "warm native session's sandbox was already destroyed; released its owner");
+        "warm native session's Runner or sandbox is gone; released its owner");
         forgetWarmNativeSession(sessionId, entry);
         closed += 1;
         return;
@@ -8860,17 +8872,21 @@ function armWarmNativeSessionIdleTimer(
           return;
         }
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
-          providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
+          providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error),
+          closeAttempt: (current.idleCloseRetries ?? 0) + 1 },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
         if (released) return;
-        return warmSandboxGivenUpByHost(current).then(givenUp => {
-          if (!givenUp) return;
-          logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
-            providerLeaseId: current.providerLeaseId ?? null },
-          "warm native session's sandbox was stopped by the host; released its owner");
-          forgetWarmNativeSession(sessionId, current);
-        }, proofError => {
-          logger.warn({ err: proofError, runId: current.runId }, "could not read the warm session's sandbox lease");
+        return warmCloseFailureProvesOwnerGone(current, error).then(gone => {
+          if (gone) {
+            logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
+              providerLeaseId: current.providerLeaseId ?? null },
+            "warm native session's Runner or sandbox is gone; released its owner");
+            forgetWarmNativeSession(sessionId, current);
+            return;
+          }
+          if ((current.idleCloseRetries ?? 0) >= WARM_IDLE_CLOSE_MAX_RETRIES) return;
+          current.idleCloseRetries = (current.idleCloseRetries ?? 0) + 1;
+          armWarmNativeSessionIdleTimer(sessionId, current, WARM_IDLE_CLOSE_RETRY_MS);
         });
       })
       .finally(() => {
