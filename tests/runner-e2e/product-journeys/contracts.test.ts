@@ -195,7 +195,7 @@ describe("deployment journey contracts", () => {
     let assigned = false;
     let panelOpen = false;
     let propertiesSelected = false;
-    const chain = <T extends object>(target: T): T => Object.assign(target, { filter: vi.fn(() => target), first: vi.fn(() => target) });
+    const chain = <T extends object>(target: T) => Object.assign(target, { filter: vi.fn(() => target), first: vi.fn(() => target) });
     const hidden = chain({ isVisible: vi.fn(async () => false), click: vi.fn() });
     const link = chain({ click: vi.fn() });
     const opener = chain({ isVisible: vi.fn(async () => !panelOpen), click: vi.fn(async () => { panelOpen = true; }) });
