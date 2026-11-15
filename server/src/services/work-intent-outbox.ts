@@ -71,6 +71,7 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
     .select({ id: budgetPolicies.id }).from(budgetPolicies).where(and(eq(budgetPolicies.companyId, input.companyId),
       eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true))).limit(1)).length > 0 : true;
   const scope = input.trigger === "lock_released" && input.issueId ? { companyId: input.companyId, issueId: input.issueId }
+    : input.trigger === "lock_released" && input.runId ? { companyId: input.companyId, runId: input.runId }
     : input.trigger === "accounting_settled" && input.runId && !hardStop ? { companyId: input.companyId, runId: input.runId } : null;
   // Register the work signals before the write they announce.
   await notifyRunDispatch(tx, scope ?? { companyId: input.companyId });

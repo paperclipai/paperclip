@@ -610,7 +610,7 @@ export async function reconcileSafeNativeReplacements(
             (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           await tx
             .update(nativeRunFinalizations)
             .set({
