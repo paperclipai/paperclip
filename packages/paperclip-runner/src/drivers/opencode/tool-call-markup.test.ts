@@ -72,6 +72,8 @@ describe("model control tokens", () => {
   it.each([
     ["the recorded degenerate reply", degenerateReply, 0],
     ["a ChatML turn after an answer", "The fact changed twice.\n<|im_start|>user\nthanks", 24],
+    ["a token after an escaped backtick", "Use \\`code. <|im_end|> then `x`.", 12],
+    ["a token after an unmatched backtick", "One ` tick. <|eot_id|>", 12],
     ["a trailing end-of-sentence token", "Riley changed it.<｜end▁of▁sentence｜>", 17],
     ["a Llama end-of-turn token", "Done.<|eot_id|>", 5],
   ])("finds %s", (_label, text, start) => {
@@ -82,6 +84,8 @@ describe("model control tokens", () => {
     ["an XML answer", "The export is XML:\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<case id=\"COM-C1\">\n  <fact name=\"diagnosis\">overlay</fact>\n</case>"],
     ["an answer about an <output> tag", "The tool wraps results in an <output> element, and </output> closes it."],
     ["an answer explaining chat templates in inline code", "ChatML starts a turn with `<|im_start|>` and ends it with `<|im_end|>`."],
+    ["a double-backtick code span", "Write ``<|im_start|>`` with two backticks, then `x`."],
+    ["a code span across lines", "The template opens with `<|im_start|>\nuser<|im_end|>` and so on."],
     ["control tokens in a fence", "The template looks like this:\n```\n<|im_start|>user\nhi<|im_end|>\n```"],
     ["HTML", "<div>\n<p>Hello</p>\n</div>"],
     ["comparison operators", "Use x < 3 and y > 2."],

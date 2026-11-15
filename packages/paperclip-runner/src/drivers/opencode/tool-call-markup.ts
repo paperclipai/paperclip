@@ -32,14 +32,55 @@ function couldBecomeLineForm(rest: string): boolean {
 
 const SENTINEL_OPENING = /<\/?[|｜]/;
 
+/**
+ * Inline code spans as [start, end) offsets: a backtick run closes at the next
+ * run of the same length within its paragraph. An escaped backtick opens
+ * nothing, and an unmatched run is literal text.
+ */
+function codeSpans(content: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  if (!content.includes("`")) return spans;
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char !== "`") continue;
+    let length = 1;
+    while (content[index + length] === "`") length += 1;
+    const paragraphEnd = content.indexOf("\n\n", index);
+    const limit = paragraphEnd < 0 ? content.length : paragraphEnd;
+    let close = -1;
+    for (let at = index + length; at < limit; at += 1) {
+      if (content[at] !== "`") continue;
+      let run = 1;
+      while (content[at + run] === "`") run += 1;
+      if (run === length) {
+        close = at;
+        break;
+      }
+      at += run - 1;
+    }
+    if (close < 0) {
+      index += length - 1;
+      continue;
+    }
+    spans.push([index, close + length]);
+    index = close + length - 1;
+  }
+  return spans;
+}
+
 /** First sentinel on the line that is not inside an inline code span. */
-function firstSentinel(line: string, forms: readonly string[]): number {
+function firstSentinel(line: string, lineStart: number, spans: Array<[number, number]>, forms: readonly string[]): number {
   // Every sentinel starts with `<|`, `<｜`, `</|` or `</｜`.
   if (!SENTINEL_OPENING.test(line)) return -1;
+  const inCode = (offset: number) => spans.some(([start, end]) => offset >= start && offset < end);
   let first = -1;
   for (const form of forms) {
     for (let index = line.indexOf(form); index >= 0 && (first < 0 || index < first); index = line.indexOf(form, index + 1)) {
-      if ((line.slice(0, index).match(/`/g)?.length ?? 0) % 2 === 0) {
+      if (!inCode(lineStart + index)) {
         first = index;
         break;
       }
@@ -66,6 +107,7 @@ export function controlTokenStart(content: string, options: { streaming?: boolea
 
 function scaffoldingStart(content: string, forms: readonly string[], lineForms: boolean, streaming: boolean): number {
   if (!content.includes("<")) return -1;
+  const spans = codeSpans(content);
   let offset = 0;
   let openFence: { indent: number; char: string; length: number } | null = null;
   const lines = content.split("\n");
@@ -83,7 +125,7 @@ function scaffoldingStart(content: string, forms: readonly string[], lineForms: 
       continue;
     }
     if (!line.trim()) continue;
-    const sentinel = firstSentinel(line, forms);
+    const sentinel = firstSentinel(line, lineStart, spans, forms);
     if (sentinel >= 0) return lineStart + sentinel;
     if (lineForms) {
       const indent = line.length - line.trimStart().length;
