@@ -45,7 +45,7 @@ import { closeIdleWarmNativeSessionsForRestart, closeWarmNativeSessionsForEnviro
   readNativeSessionIdleWork } from "./native-session-executor.js";
 import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
-type Successor = "own_runner" | "own_runner_resumed" | "own_runner_reconciled" | "other_sandbox" | "start_requested_only" | "inherited_events" | "events_before_owner_finished";
+type Successor = "own_runner" | "owner_clock_ahead" | "own_runner_resumed" | "own_runner_reconciled" | "other_sandbox" | "start_requested_only" | "inherited_events" | "events_before_owner_finished";
 
 describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", () => {
   const environment = nativeRestartFixture();
@@ -118,7 +118,9 @@ describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", (
     });
     expect(owner.exitCode).toBe(0);
     expect(readNativeSessionIdleWork()).toBe("present");
-    const ownerFinishedAt = new Date(Date.now() - 1_000);
+    await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 1_000_000, eventType: "turn.completed",
+      sourceInstanceId: fixture.native.runnerInstanceId, sourceEventId: `owner-terminal-${fixture.runId}`, sourceSeq: 1_000_000 });
+    const ownerFinishedAt = new Date(Date.now() + (successorKind === "owner_clock_ahead" ? 10 * 60_000 : -1_000));
     await fixture.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: ownerFinishedAt }).where(eq(heartbeatRuns.id, fixture.runId));
     const [finalized] = await fixture.db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.runId)).returning();
@@ -133,7 +135,7 @@ describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", (
     await fixture.db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.issueId, heartbeatRunId: successorRunId,
       status: "active", leasePolicy: "reuse_by_environment", provider: "fixture",
       providerLeaseId: successorKind === "other_sandbox" ? randomUUID() : providerLeaseId });
-    const eventAt = successorKind === "events_before_owner_finished" ? new Date(ownerFinishedAt.getTime() - 60_000) : new Date();
+    const eventAt = successorKind === "events_before_owner_finished" ? new Date(Date.now() - 60_000) : undefined;
     await fixture.db.insert(heartbeatRunEvents).values([
       { companyId, runId: successorRunId, agentId, seq: 1, createdAt: eventAt,
         eventType: successorKind === "start_requested_only" ? PROCESS_START_REQUESTED : PROCESS_IDENTITY_RECORDED,
@@ -158,6 +160,7 @@ describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", (
   it.each<{ successor: Successor; released: boolean }>([
     { successor: "own_runner", released: true },
     { successor: "own_runner_resumed", released: true },
+    { successor: "owner_clock_ahead", released: true },
     { successor: "own_runner_reconciled", released: false },
     { successor: "other_sandbox", released: false },
     { successor: "start_requested_only", released: false },
