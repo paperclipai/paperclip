@@ -116,12 +116,13 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection admission", () =>
   });
 
   it.each([200, 1_000])("bounds the sessions of a %i-run restart burst whose source lock nests a lifecycle lock", async runs => {
-    const db = owner();
+    const limit = 24;
+    const db = owner({ dedicatedConnectionMax: limit });
     const result = await restartBurst(db, runs, 40);
-    console.info(JSON.stringify({ metric: "dedicated_connection_restart_burst", limit: DEFAULT_DEDICATED_CONNECTION_MAX, ...result }));
+    console.info(JSON.stringify({ metric: "dedicated_connection_restart_burst", limit, ...result }));
     expect(result.failures).toBe(0);
-    expect(result.peakInUse).toBeLessThanOrEqual(2 * DEFAULT_DEDICATED_CONNECTION_MAX);
-    expect(result.peakSessions).toBeLessThanOrEqual(2 * DEFAULT_DEDICATED_CONNECTION_MAX + DEDICATED_CONNECTION_IDLE_MAX);
+    expect(result.peakInUse).toBeLessThanOrEqual(2 * limit);
+    expect(result.peakSessions).toBeLessThanOrEqual(2 * limit + DEDICATED_CONNECTION_IDLE_MAX);
     expect(dedicatedDbConnectionStats(db)).toMatchObject({ inUse: 0, waiting: 0, overLimit: 0 });
   }, 120_000);
 
