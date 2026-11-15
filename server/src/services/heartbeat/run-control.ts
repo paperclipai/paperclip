@@ -232,10 +232,18 @@ export async function terminateHeartbeatRunProcess(input: {
   processGroupId: number | null | undefined;
   graceMs?: number;
   signal?: NodeJS.Signals;
+  processStartedAt?: Date | string | null;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
   if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+
+  const processCreatedAt =
+    input.processStartedAt instanceof Date
+      ? input.processStartedAt.toISOString()
+      : typeof input.processStartedAt === "string"
+        ? input.processStartedAt
+        : null;
 
   await terminateLocalService(
     {
@@ -249,6 +257,7 @@ export async function terminateHeartbeatRunProcess(input: {
         processGroupId > 0
           ? processGroupId
           : null,
+      ...(processCreatedAt ? { processCreatedAt } : {}),
     },
     { forceAfterMs: input.graceMs, signal: input.signal },
   );
@@ -1518,6 +1527,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                   running.graceSec,
                   options.terminationGraceMs,
                 ),
+                processStartedAt:
+                  run.processPid === running.child.pid ? run.processStartedAt : null,
               });
             }
             terminationSettled = true;

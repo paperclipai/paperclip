@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readWindowsProcessCreatedAtMs } from "@paperclipai/adapter-utils/windows-process-ownership";
 import {
   resetRuntimeServicesForTests,
   startRuntimeServicesForWorkspaceControl,
@@ -192,7 +193,16 @@ describe("local service supervision", () => {
       });
       expect(isPidAlive(grandchildPid)).toBe(true);
 
-      await terminateLocalService({ pid: wrapper.pid!, processGroupId: wrapper.pid! });
+      const rootCreatedAtMs = await readWindowsProcessCreatedAtMs(wrapper.pid!);
+      expect(rootCreatedAtMs).not.toBeNull();
+
+      await terminateLocalService({
+        pid: wrapper.pid!,
+        processGroupId: wrapper.pid!,
+        ...(rootCreatedAtMs === null
+          ? {}
+          : { processCreatedAt: new Date(rootCreatedAtMs).toISOString() }),
+      });
 
       const deadline = Date.now() + 30_000;
       while (Date.now() < deadline && isPidAlive(grandchildPid)) {
@@ -231,6 +241,9 @@ describe("local service supervision", () => {
       });
       expect(isPidAlive(grandchildPid)).toBe(true);
 
+      const rootCreatedAtMs = await readWindowsProcessCreatedAtMs(wrapper.pid!);
+      expect(rootCreatedAtMs).not.toBeNull();
+
       wrapper.kill("SIGKILL");
       const rootDeadline = Date.now() + 15_000;
       while (Date.now() < rootDeadline && isPidAlive(wrapper.pid!)) {
@@ -239,7 +252,13 @@ describe("local service supervision", () => {
       expect(isPidAlive(wrapper.pid!)).toBe(false);
       expect(isPidAlive(grandchildPid)).toBe(true);
 
-      await terminateLocalService({ pid: wrapper.pid!, processGroupId: wrapper.pid! });
+      await terminateLocalService({
+        pid: wrapper.pid!,
+        processGroupId: wrapper.pid!,
+        ...(rootCreatedAtMs === null
+          ? {}
+          : { processCreatedAt: new Date(rootCreatedAtMs).toISOString() }),
+      });
 
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline && isPidAlive(grandchildPid)) {
@@ -254,6 +273,48 @@ describe("local service supervision", () => {
       }
       try {
         wrapper.kill("SIGKILL");
+      } catch {}
+    }
+  }, 120_000);
+
+  it("refuses to kill an unrelated process that reuses a recorded pid on Windows", async () => {
+    if (process.platform !== "win32") return;
+    const foreign = spawn(process.execPath, ["-e", [
+      "const { spawn } = require('node:child_process');",
+      "const c = spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], { stdio:['ignore','inherit','inherit'] });",
+      "process.stdout.write(String(c.pid));",
+      "setInterval(()=>{},1000);",
+    ].join(" ")], { stdio: ["ignore", "pipe", "pipe"] });
+    let foreignChildPid: number | null = null;
+    try {
+      foreignChildPid = await new Promise<number>((resolve, reject) => {
+        foreign.stdout!.on("data", (d) => {
+          const pid = Number.parseInt(String(d).trim(), 10);
+          if (Number.isInteger(pid) && pid > 0) resolve(pid);
+        });
+        foreign.on("error", reject);
+      });
+      expect(isPidAlive(foreign.pid!)).toBe(true);
+      expect(isPidAlive(foreignChildPid)).toBe(true);
+
+      await expect(
+        terminateLocalService({
+          pid: foreign.pid!,
+          processGroupId: foreign.pid!,
+          processCreatedAt: new Date(Date.now() - 3_600_000).toISOString(),
+        }),
+      ).rejects.toThrow(/Failed to terminate local service process tree/);
+
+      expect(isPidAlive(foreign.pid!)).toBe(true);
+      expect(isPidAlive(foreignChildPid)).toBe(true);
+    } finally {
+      if (foreignChildPid) {
+        try {
+          process.kill(foreignChildPid, "SIGKILL");
+        } catch {}
+      }
+      try {
+        foreign.kill("SIGKILL");
       } catch {}
     }
   }, 120_000);

@@ -6,9 +6,10 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
-  launchWindowsProcessTreeKill,
-  type WindowsProcessTreeKillOutcome,
-} from "@paperclipai/adapter-utils/server-utils";
+  parseProcessCreatedAtMs,
+  readWindowsProcessCreatedAtMs,
+  terminateWindowsOwnedTree,
+} from "@paperclipai/adapter-utils/windows-process-ownership";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { processExists } from "./controller-process-identity.js";
 
@@ -26,6 +27,7 @@ export interface LocalServiceRegistryRecord {
   url: string | null;
   pid: number;
   processGroupId: number | null;
+  processCreatedAt?: string | null;
   provider: "local_process";
   runtimeServiceId: string | null;
   reuseKey: string | null;
@@ -127,6 +129,7 @@ function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | nul
     url: typeof rec.url === "string" ? rec.url : null,
     pid: rec.pid,
     processGroupId: typeof rec.processGroupId === "number" ? rec.processGroupId : null,
+    processCreatedAt: typeof rec.processCreatedAt === "string" ? rec.processCreatedAt : null,
     provider: "local_process",
     runtimeServiceId: typeof rec.runtimeServiceId === "string" ? rec.runtimeServiceId : null,
     reuseKey: typeof rec.reuseKey === "string" ? rec.reuseKey : null,
@@ -209,6 +212,14 @@ export async function listLocalServiceRegistryRecords(filter?: {
   }
 }
 
+export async function readLocalServiceProcessCreatedAt(pid: number): Promise<string | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const createdAtMs = await readWindowsProcessCreatedAtMs(pid);
+  if (createdAtMs === null) return null;
+  const iso = new Date(createdAtMs).toISOString();
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+
 export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   runtimeServiceId: string;
   profileKind?: string;
@@ -230,6 +241,7 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
       ...candidate,
       pid: ownerPid,
       processGroupId: candidate.processGroupId && isPidAlive(candidate.processGroupId) ? candidate.processGroupId : ownerPid,
+      processCreatedAt: await readLocalServiceProcessCreatedAt(ownerPid),
       lastSeenAt: new Date().toISOString(),
     };
     await writeLocalServiceRegistryRecord(candidate);
@@ -512,6 +524,7 @@ async function adoptLocalServiceFromPortOwner(input: {
     url: input.url ?? null,
     pid,
     processGroupId: processGroupId ?? pid,
+    processCreatedAt: await readLocalServiceProcessCreatedAt(pid),
     provider: "local_process",
     runtimeServiceId: null,
     reuseKey: input.envFingerprint ?? null,
@@ -542,124 +555,9 @@ export async function touchLocalServiceRegistryRecord(
   return next;
 }
 
-const WINDOWS_TREE_ENUMERATION_TIMEOUT_MS = 60_000;
-
-async function awaitWindowsProcessTreeKill(
-  rootPid: number,
-  timeoutMs: number,
-): Promise<WindowsProcessTreeKillOutcome> {
-  return await new Promise<WindowsProcessTreeKillOutcome>((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve({ succeeded: false, exitCode: null });
-    }, timeoutMs);
-    const settle = (outcome: WindowsProcessTreeKillOutcome) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(outcome);
-    };
-    if (!launchWindowsProcessTreeKill(rootPid, (outcome) => settle(outcome))) {
-      settle({ succeeded: false, exitCode: null });
-    }
-  });
-}
-
-async function readWindowsProcessParentMap(): Promise<Map<number, number> | null> {
-  const script =
-    'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId):$($_.ParentProcessId)" }';
-  try {
-    const { stdout } = await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      {
-        timeout: WINDOWS_TREE_ENUMERATION_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
-      },
-    );
-    const parents = new Map<number, number>();
-    for (const rawLine of stdout.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const separator = line.indexOf(":");
-      if (separator <= 0) continue;
-      const pid = Number.parseInt(line.slice(0, separator), 10);
-      const parentPid = Number.parseInt(line.slice(separator + 1), 10);
-      if (!Number.isInteger(pid) || !Number.isInteger(parentPid)) continue;
-      parents.set(pid, parentPid);
-    }
-    return parents;
-  } catch {
-    return null;
-  }
-}
-
-function collectWindowsDescendantPids(
-  parents: Map<number, number>,
-  rootPid: number,
-): number[] {
-  const childrenByParent = new Map<number, number[]>();
-  for (const [pid, parentPid] of parents) {
-    const siblings = childrenByParent.get(parentPid);
-    if (siblings) siblings.push(pid);
-    else childrenByParent.set(parentPid, [pid]);
-  }
-  const descendants: number[] = [];
-  const seen = new Set<number>([rootPid]);
-  const queue: number[] = [rootPid];
-  while (queue.length > 0) {
-    const current = queue.shift() as number;
-    for (const child of childrenByParent.get(current) ?? []) {
-      if (seen.has(child)) continue;
-      seen.add(child);
-      descendants.push(child);
-      queue.push(child);
-    }
-  }
-  return descendants;
-}
-
-async function readWindowsAliveTreePids(rootPid: number): Promise<number[] | null> {
-  const parents = await readWindowsProcessParentMap();
-  if (!parents) return null;
-  const alive: number[] = [];
-  if (isPidAlive(rootPid)) alive.push(rootPid);
-  for (const pid of collectWindowsDescendantPids(parents, rootPid)) {
-    if (isPidAlive(pid)) alive.push(pid);
-  }
-  return alive;
-}
-
-async function forceKillWindowsProcessTree(
-  rootPid: number,
-  verifyMs: number,
-): Promise<boolean> {
-  if (!Number.isInteger(rootPid) || rootPid <= 0) return true;
-  for (let pass = 0; pass < 3; pass += 1) {
-    const alive = await readWindowsAliveTreePids(rootPid);
-    if (!alive) return false;
-    if (alive.length === 0) return true;
-    for (const pid of alive) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    }
-    const deadline = Date.now() + Math.max(verifyMs, 5_000);
-    while (Date.now() < deadline) {
-      if (alive.every((pid) => !isPidAlive(pid))) break;
-      await delay(100);
-    }
-    if (alive.some((pid) => isPidAlive(pid))) return false;
-  }
-  return true;
-}
-
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> &
-    Partial<Pick<LocalServiceRegistryRecord, "port">>,
+    Partial<Pick<LocalServiceRegistryRecord, "port" | "processCreatedAt">>,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; verifyAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
@@ -687,16 +585,19 @@ export async function terminateLocalService(
   };
 
   if (process.platform === "win32" && Number.isInteger(record.pid) && record.pid > 0) {
-    const treeWaitMs = Math.max(opts?.forceAfterMs ?? 2_000, 25_000);
-    const outcome = await awaitWindowsProcessTreeKill(record.pid, treeWaitMs);
-    if (outcome.succeeded && (await waitUntilGone(opts?.verifyAfterMs ?? 2_000))) return;
-    const treeStopped = await forceKillWindowsProcessTree(
-      record.pid,
-      opts?.verifyAfterMs ?? 2_000,
-    );
-    if (treeStopped && (await waitUntilGone(opts?.verifyAfterMs ?? 2_000))) return;
+    const rootCreatedAtMs = parseProcessCreatedAtMs(record.processCreatedAt ?? null);
+    const result = await terminateWindowsOwnedTree({
+      rootPid: record.pid,
+      ...(rootCreatedAtMs === null ? {} : { rootCreatedAtMs }),
+    });
+    if (result.status === "terminated" || result.status === "already_gone") {
+      if (await waitUntilGone(opts?.verifyAfterMs ?? 2_000)) return;
+    }
     const listener = record.port ? ` and listener on port ${record.port}` : "";
-    throw new Error(`Failed to terminate local service process tree ${record.pid}${listener}`);
+    const reason = result.reason ? ` (${result.reason})` : "";
+    throw new Error(
+      `Failed to terminate local service process tree ${record.pid}${listener}: ${result.status}${reason}`,
+    );
   }
 
   try {
