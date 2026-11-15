@@ -86,6 +86,12 @@ export function firstTurnClaimedCommentIds(run: { id: string; status?: string | 
  * chat-conversation wakes keep their own delivery contracts. Only the run's
  * responsible user's own messages qualify, so taking them cannot change the
  * run's execution authority.
+ *
+ * A user's message can join an earlier automatic wake that was already waiting
+ * behind the task, which keeps that wake's system requester. The messages, not
+ * the wake's origin, carry the authority: every caller also requires each one
+ * to be the responsible user's own (`firstTurnEligibleComment`). Another
+ * user's or an agent's wake keeps its own delivery.
  */
 export function deferredWakeJoinsFirstTurn(
   wake: { agentId: string; status: string; requestedByActorType: string | null; requestedByActorId: string | null; reason: string | null; payload: unknown },
@@ -94,10 +100,12 @@ export function deferredWakeJoinsFirstTurn(
   const payload = record(wake.payload);
   const context = record(payload[DEFERRED_WAKE_CONTEXT_KEY]);
   const reason = nonEmptyString(context.wakeReason) ?? nonEmptyString(wake.reason);
+  const requester = wake.requestedByActorType === "user"
+    ? wake.requestedByActorId === run.responsibleUserId
+    : wake.requestedByActorType === "system" || wake.requestedByActorType === null;
   return wake.status === DEFERRED_WAKE_STATUS &&
     wake.agentId === run.agentId &&
-    wake.requestedByActorType === "user" &&
-    Boolean(run.responsibleUserId) && wake.requestedByActorId === run.responsibleUserId &&
+    Boolean(run.responsibleUserId) && requester &&
     reason !== null && COMMENT_WAKE_REASONS.has(reason) &&
     !payload.interactionId && !context.interactionId && !context.interactionStatus &&
     !payload.queuedCommentInterrupt && context.resumeIntent !== true &&
