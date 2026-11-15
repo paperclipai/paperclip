@@ -10,6 +10,7 @@ import type { createDeliveryWorkCoordinator } from "../../../services/delivery-w
 import { createDb, closeRegisteredClients, authUsers, agents } from "@paperclipai/db";
 import { prepareOwnedLinuxDistribution } from "./normal-distribution-bootstrap.js";
 import { heartbeatService } from "../../../services/heartbeat.js";
+import { registerEnvironmentCleanupWork } from "../../../services/environment-cleanup-work.js";
 import { setupRunnerPrpWebSocketServer } from "../../../realtime/runner-prp-ws.js";
 import { migrateCloudConfiguration } from "../../../services/cloud-configuration-migration.js";
 import { initializeAdapterSettings } from "../../../services/adapter-settings.js";
@@ -50,23 +51,47 @@ export async function startNormalDotAppGeneration(input: {
   let appServer:ReturnType<typeof createServer>|undefined;
   let stopping:Promise<void>|undefined;
   const stop=()=>stopping??=(async()=>{
-    // Same real owner order, with no signals or broad process cleanup. A child
-    // must not exit0 until all normal execution/plugin/DB/socket owners close.
-    await dispatchWork?.stop();
-    if(owner){
-      const ownedAgents=await db.select({id:agents.id}).from(agents).where(eq(agents.companyId,input.companyId));
-      await owner.stopInvocationsForAgents(ownedAgents.map(agent=>agent.id),"Owned physical App generation shutdown");
-      await owner.drainActiveRunExecutions();
+    const shutdownErrors:unknown[]=[];
+    const attempt=async(stage:string,action:()=>unknown|Promise<unknown>)=>{
+      try{await action();}catch(error){
+        shutdownErrors.push(error);
+        try{
+        const knownNames=new Set(["Error","TypeError","RangeError","AssertionError","AggregateError","AbortError"]);
+        const name=error instanceof Error?error.name:"non_error";
+        const code=error&&typeof error==="object"&&"code" in error?String(error.code):undefined;
+        const knownCodes=new Set(["ERR_ASSERTION","ERR_IPC_CHANNEL_CLOSED","ABORT_ERR","ETIMEDOUT","ECONNRESET","ENOENT"]);
+        const sourceFrame=error instanceof Error?error.stack?.split("\n").slice(1).map(line=>line.match(/([A-Za-z0-9_./:-]+\.(?:ts|js|mjs):\d+:\d+)\)?$/)?.[1]).find(Boolean):undefined;
+        process.stderr.write(JSON.stringify({kind:"owned_normal_app_shutdown_stage_failed",stage,errorName:knownNames.has(name)?name:"other",errorCode:code&&knownCodes.has(code)?code:undefined,otherCodePresent:code!==undefined&&!knownCodes.has(code),sourceFrame})+"\n");
+        }catch{}
+      }
+    };
+    try{
+      await attempt("dispatch_stop",()=>dispatchWork?.stop());
+      if(owner){
+        await attempt("stop_invocations",async()=>{
+          const ownedAgents=await db.select({id:agents.id}).from(agents).where(eq(agents.companyId,input.companyId));
+          await owner!.stopInvocationsForAgents(ownedAgents.map(agent=>agent.id),"Owned physical App generation shutdown");
+        });
+        await attempt("execution_drain",()=>owner!.drainActiveRunExecutions());
+      }
+    }finally{
+      await attempt("budget_stop",()=>stopBudgetOwners?.());
+      await attempt("app_shutdown",()=>app?.locals.paperclipShutdown?.());
+      await attempt("plugin_workers_stop",()=>linuxBootstrap.workerManager.stopAll());
+      await attempt("http_socket_join",async()=>{
+        if(appServer){
+          const joins=[...nativeSockets].map(socket=>once(socket,"close"));
+          await Promise.all([new Promise<void>((resolve,reject)=>appServer!.close(error=>error?reject(error):resolve())),...joins]);
+        }
+      });
+      await attempt("socket_assertion",()=>assert.equal(nativeSockets.size,0,"all actual owned close events must be joined"));
+      await attempt("main_database_end",()=>db.$client.end({timeout:1}));
+      await attempt("registered_database_end",()=>closeRegisteredClients(input.databaseUrl,{scope:"database"}));
+      await attempt("decision_wake_assertion",()=>assert.equal(unexpectedDecisionWakes,0));
+      await attempt("owner_error_assertion",()=>assert.deepEqual(errors,[]));
     }
-    await stopBudgetOwners?.();await app?.locals.paperclipShutdown?.();
-    await linuxBootstrap.workerManager.stopAll();
-    if(appServer){
-      const joins=[...nativeSockets].map(socket=>once(socket,"close"));
-      await Promise.all([new Promise<void>((resolve,reject)=>appServer!.close(error=>error?reject(error):resolve())),...joins]);
-    }
-    assert.equal(nativeSockets.size,0,"all actual owned close events must be joined");
-    await db.$client.end({timeout:1});await closeRegisteredClients(input.databaseUrl,{scope:"database"});
-    assert.equal(unexpectedDecisionWakes,0);assert.deepEqual(errors,[]);
+    if(shutdownErrors.length===1)throw shutdownErrors[0];
+    if(shutdownErrors.length>1)throw new AggregateError(shutdownErrors,"owned_normal_app_shutdown_failed",{cause:shutdownErrors[0]});
   })();
   try{
     await migrateCloudConfiguration(db);await initializeAdapterSettings(db);await initializeCloudRuntimeConfig(db);
@@ -133,6 +158,11 @@ export async function startNormalDotAppGeneration(input: {
       await normalOwner.registerExternalConversationSettlementWork(coordinator,canRun).ready;
       await normalOwner.registerNativeRecoveryNoticeWork(coordinator,canRun).ready;
       await normalOwner.registerNativeEnvironmentSettlementWork(coordinator,canRun).ready;
+      const environmentCleanup=registerEnvironmentCleanupWork(db,coordinator,{
+        sweepPending:backoffMs=>normalOwner.sweepPendingCleanupLeases({backoffMs}),canRun,
+      });
+      appServer.once("close",environmentCleanup.stop);
+      await environmentCleanup.ready;
       await normalOwner.registerNativeRunProjectionWork(coordinator,canRun).ready;
       await normalOwner.registerNativeResultCommitWork(coordinator,canRun).ready;
       await normalOwner.registerNativeStatusReassessmentWork(coordinator,canRun).ready;
