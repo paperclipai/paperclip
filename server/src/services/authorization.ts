@@ -726,14 +726,21 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
 }
 
 /** Filter every externally reachable task query with the same privacy predicate. */
+export async function readInstanceAdmin(db: Db | DbTransaction, userId: string): Promise<boolean> {
+  return db
+    .select({ id: instanceUserRoles.id })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+}
+
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   if (actor.authorizingUserId) return issuePrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
-    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0))) return sql<boolean>`true`;
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return sql<boolean>`true`;
   return issuePrivacyCondition(actor);
 }
 
@@ -746,15 +753,7 @@ export async function projectReadSqlCondition(db: Db | DbTransaction, actor: Aut
     actor.type === "board"
     && !actor.ignoreInstanceAdmin
     && actor.source !== "cloud_tenant"
-    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(
-        eq(instanceUserRoles.userId, actor.userId ?? ""),
-        eq(instanceUserRoles.role, "instance_admin"),
-      ))
-      .limit(1)
-      .then((rows) => rows.length > 0))
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))
   ) return sql<boolean>`true`;
   return projectPrivacyCondition(actor);
 }
@@ -929,18 +928,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
-    return batchRead(`admin:${userId}`, () => readOncePerRequest(`admin:${userId}`, async () => {
-      if (
-        await db
-          .select({ id: instanceUserRoles.id })
-          .from(instanceUserRoles)
-          .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-          .then((rows) => rows[0] ?? null)
-      ) {
-        return true;
-      }
-      return false;
-    }));
+    return batchRead(`admin:${userId}`, () => readOncePerRequest(`admin:${userId}`, () => readInstanceAdmin(db, userId)));
   }
 
   async function getActiveMembership(
