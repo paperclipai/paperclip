@@ -275,7 +275,8 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
           sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
         return rows.length > 0;
       }
-      const pendingPasses = options?.pendingReason ? (agent.lifecycleOperation?.pendingPasses ?? 0) + 1 : undefined;
+      const previousPasses = (agent.lifecycleOperation as { pendingPasses?: unknown } | null)?.pendingPasses;
+      const pendingPasses = options?.pendingReason ? (typeof previousPasses === "number" ? previousPasses : 0) + 1 : undefined;
       const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && ["verifying", "resuming"].includes(agent.lifecycleState)
         ? { retryRequired: true }
         : { retryAt: new Date(now.getTime() + (error ? 60_000 : pendingPasses ? lifecyclePendingRetryDelayMs(pendingPasses) : 2_000)).toISOString() };
