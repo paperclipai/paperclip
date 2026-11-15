@@ -33,6 +33,7 @@ function queue(seed: number, size: number): QueuedRunDispatchFacts[] {
       requestedByUser: next() < 0.15,
       sourceEndedAt: next() < 0.5 ? new Date(createdAt.getTime() - Math.floor(next() * 4) * 20 * 60_000) : null,
       readinessRank: pick([0, 0, 1, 2, 3]),
+      rework: next() < 0.2,
       priorityRank: pick([0, 1, 2, 3, 4]),
       shareDeferred: next() < 0.1,
       personTask: next() < 0.3,
