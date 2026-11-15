@@ -143,9 +143,10 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
   const lastActivityAgeMs = task.now !== undefined && liveActivity.length ? task.now - Math.max(...liveActivity) : null;
   const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail, label: label(value), lastActivityAgeMs });
   const stale = staleRuns(task);
+  const heldByRun = task.runs.some(run => LIVE_RUN.has(run.status));
   const idle = task.now === undefined ? [] : [
     ...stale.map(run => `run ${run.runId} ${run.status} with no activity for ${Math.round((task.now! - (run.lastActivityAt ?? run.createdAt ?? 0)) / 60_000)} min`),
-    ...(task.queuedWakes ? [`${task.queuedWakes} queued wake(s) never dispatched`] : []), ...(task.scheduledRetry ? ["a scheduled retry that never ran"] : []),
+    ...(task.queuedWakes && !heldByRun ? [`${task.queuedWakes} queued wake(s) never dispatched`] : []), ...(task.scheduledRetry ? ["a scheduled retry that never ran"] : []),
     ...(task.interruption && (task.interruption.state === "working" || task.interruption.state === "retry_scheduled" || task.interruption.retryWait)
       ? [`the board shows ${task.interruption.retryWait ? "a Retry waiting on the system" : task.interruption.state}`] : []),
     ...(task.activeRecoveryOwner && task.activeRecoveryOwner !== "board" ? [`a ${task.activeRecoveryOwner} recovery action that made no progress`] : [])];
