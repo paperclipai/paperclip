@@ -433,7 +433,10 @@ above `--spend-threshold-usd` (default $5) unless `--confirm-spend <max USD>`
 is at least the estimate. It never creates more tasks than the printed cap,
 and it stops when the model spend the runs record passes the confirmed
 amount. It reads recorded spend from Paperclip's cost records for the run's
-agents (`/api/companies/<id>/costs/by-agent`); run rows carry no cost. The
+agents (`/api/companies/<id>/costs/by-agent?period=all`); run rows carry no
+cost. When some cost events have no known price, it prints a warning, grades
+the run incomplete, and checks the cap against tasks created times the
+per-task assumption as well. The
 defaults are assumptions: $0.02 model spend per task and $0.10
 per sandbox-hour (`PAPERCLIP_SCALE_MODEL_USD_PER_TASK`,
 `PAPERCLIP_SCALE_SANDBOX_USD_PER_HOUR`). Correct them from the recorded spend

@@ -32,6 +32,7 @@ export interface RampResult {
   tasksCreated: number;
   taskCapReached: boolean;
   recordedSpendUsd: number | null;
+  unpricedCostEvents: number;
   sources: Record<string, string>;
   cleanup: CleanupReport | null;
   requests: { total: number; failed: number };
@@ -104,6 +105,7 @@ export function buildResult(input: {
     tasksCreated: outcome?.tasksCreated ?? 0,
     taskCapReached: outcome?.taskCapReached ?? false,
     recordedSpendUsd: outcome ? outcome.recordedSpendUsd : null,
+    unpricedCostEvents: outcome?.unpricedCostEvents ?? 0,
     sources: {
       runsAndTasks: outcome?.runsListTruncated ? "API (company run list was full; open tasks without a listed run were read one by one)" : "API",
       boardLatency: "harness GET mix (dashboard, issues, agents, live runs, sidebar badges), with a distribution per route",
@@ -136,7 +138,8 @@ export function summaryLines(result: RampResult): string[] {
     "",
     `Verdict: **${result.verdict}**. Target ${result.target.baseUrl} (${result.target.kind}).`,
     result.stop ? `Stopped at step ${result.stop.stepIndex + 1}: ${result.stop.reason}.` : "No stop.",
-    `Tasks created: ${result.tasksCreated}${result.taskCapReached ? " (task cap reached)" : ""}. Recorded model spend: ${result.recordedSpendUsd === null ? "not measured" : `$${result.recordedSpendUsd}`}; estimate was $${result.plan.estimate.totalUsd}.`,
+    `Tasks created: ${result.tasksCreated}${result.taskCapReached ? " (task cap reached)" : ""}. Recorded model spend: ${result.recordedSpendUsd === null ? "not measured" : `$${result.recordedSpendUsd}`}`
+      + `${result.unpricedCostEvents ? ` (incomplete: ${result.unpricedCostEvents} cost events have no known price)` : ""}; estimate was $${result.plan.estimate.totalUsd}.`,
     "",
   ];
   for (const step of result.steps) {

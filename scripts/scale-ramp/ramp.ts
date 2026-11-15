@@ -389,6 +389,11 @@ export class Ramp {
     if ((this.spendUsd ?? 0) > this.deps.spendCapUsd) {
       return { stepIndex, reason: `recorded model spend $${this.spendUsd!.toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
     }
+    const bound = this.unpricedSpendBoundUsd();
+    if (bound !== null && bound > this.deps.spendCapUsd) {
+      return { stepIndex, reason: `${this.unpricedCostEvents} cost events have no known price, so the spend cap uses tasks created x $${this.deps.options.pricing.modelUsdPerTask}`
+        + ` per task: $${bound.toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
+    }
     if (this.spendReadFailures >= SPEND_READ_FAILURES_TO_STOP) {
       return { stepIndex, reason: `recorded model spend could not be read ${this.spendReadFailures} times in a row, so the spend cap cannot be enforced: ${this.spendReadError}`,
         criterion: "spend_unreadable" };
@@ -402,6 +407,11 @@ export class Ramp {
 
   private openTasks(): TaskRecord[] {
     return [...this.tasks.values()].filter(task => task.outcome === "open");
+  }
+
+  private unpricedSpendBoundUsd(): number | null {
+    if (this.unpricedCostEvents === 0) return null;
+    return Math.round(this.tasks.size * this.deps.options.pricing.modelUsdPerTask * 100) / 100;
   }
 
   private async readSpend(): Promise<boolean> {
@@ -424,6 +434,10 @@ export class Ramp {
       if (!agentIds.has(String(row.agentId))) continue;
       cents += num(row.costCents) ?? 0;
       unpriced += num(row.unpricedEventCount) ?? 0;
+    }
+    if (unpriced > 0 && this.unpricedCostEvents === 0) {
+      this.deps.log(`Warning: ${unpriced} cost events of this run have no known price. Recorded spend is a lower bound, so the spend cap now uses`
+        + ` tasks created x $${this.deps.options.pricing.modelUsdPerTask} per task (PAPERCLIP_SCALE_MODEL_USD_PER_TASK)`);
     }
     this.unpricedCostEvents = unpriced;
     this.spendUsd = Math.round(cents) / 100;

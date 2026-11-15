@@ -714,6 +714,25 @@ describe("ramp against the fake API", () => {
     assert.equal(result.verdict, "incomplete");
     assert.ok(result.incompleteReasons.some(reason => /2 cost events have no known price/.test(reason)), result.incompleteReasons.join("; "));
     assert.match(result.sources.modelSpend!, /no known price/);
+    assert.equal(result.unpricedCostEvents, 2);
+    assert.match(await readFile(path.join(out, "scale-test-run", "SUMMARY.md"), "utf8"), /incomplete: 2 cost events have no known price/);
+    assert.ok(h.out.some(line => /^Warning: \d+ cost events of this run have no known price/.test(line)));
+  });
+
+  it("stops on a conservative spend bound when cost events have no known price", async () => {
+    const out = await tempDir();
+    const h = harness({ costPerRunUsd: 0, unpricedEventsPerAgent: 1 }, { PAPERCLIP_SCALE_MODEL_USD_PER_TASK: "0.5" });
+    const options = parseOptions(baseArgs(out, ["--steps", "2", "--hold-minutes", "20"]), h.deps.env, h.clock.now());
+    const api = new PaperclipClient(options.target, TOKEN, h.deps.fetcher, h.clock, new Redactor([TOKEN]));
+    const state: RunState = emptyState(options.label, options.target.baseUrl, h.clock.now());
+    const store = fileStateStore(options.outDir);
+    await prepareCompany({ api, options, state, store, credential: PROVIDER_KEY, log: () => {} });
+    const outcome = await new Ramp({ api, clock: h.clock, fetcher: h.deps.fetcher, options, state, store, maxTasks: 100, spendCapUsd: 2, metricsToken: null,
+      log: () => {}, shouldStop: () => false }).run();
+    assert.equal(outcome.recordedSpendUsd, 0);
+    assert.equal(outcome.stop!.criterion, "spend_cap");
+    assert.match(outcome.stop!.reason, /no known price.*passed the cap of \$2/);
+    assert.ok(outcome.tasksCreated >= 5 && outcome.tasksCreated <= 6, `tasks: ${outcome.tasksCreated}`);
   });
 
   it("stops when recorded spend cannot be read, and reports spend as not measured", async () => {
