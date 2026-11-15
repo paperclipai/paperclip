@@ -273,7 +273,7 @@ import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
-import { RepeatedToolFailureGuard } from "./repeated-tool-failure-guard.js";
+import { RepeatedToolFailureGuard, ToolCallLoopError, toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { dispatchToolCallback, recoverToolCallback, type SemanticInputAdmission } from "../../vendor/paperclip-runner/index.js";
@@ -1935,6 +1935,29 @@ export function nativeToolsRefreshWaitResult(input: {
   };
 }
 
+export function nativeToolCallLoopWaitResult(input: {
+  wakeId: string;
+  key: string;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult {
+  const ref = `wakeup:${input.wakeId}`;
+  return {
+    ...nativeToolsRefreshWaitResult(input),
+    summary: "Paperclip stopped a tool call that kept failing the same way. The task continues in a fresh session.",
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [ref],
+      })),
+      remainingWork: [{ description: "Continue the task in a fresh session.", blocksCompletion: true }],
+    },
+    continuation: { kind: "same_agent", summary: "Continue the task in a fresh session.", idempotencyKey: input.key },
+  };
+}
+
 /**
  * Partial item-verdict responses deliberately leave their original durable
  * interaction pending. They are already authority-checked before entering the
@@ -2295,7 +2318,14 @@ export class SessionAuthorityEpoch {
 
   async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     this.#assertCurrent();
-    const execute = () => this.#repeatedFailures.run(call, () => this.#authority.execute(call));
+    const execute = () => this.#repeatedFailures.run(call, () => this.#authority.execute(call)).catch(async (error: unknown) => {
+      if (error instanceof ToolCallLoopError) {
+        await this.#authority.scheduleToolCallLoopContinuation?.(error).catch((scheduleError: unknown) => {
+          logger.warn({ err: scheduleError, runId: this.runId, tool: error.tool }, "tool-call loop continuation was not queued");
+        });
+      }
+      throw error;
+    });
     return dispatchToolCallback(this.runId, call.callId, async () => this.toolTrace
       ? await this.toolTrace.execute(call, execute)
       : await execute());
@@ -12273,10 +12303,28 @@ async function executePaperclipNativeSessionAttempt(
         ),
       )
       .limit(1);
-    return refresh?.key
-      ? nativeToolsRefreshWaitResult({
-          wakeId: refresh.id,
-          key: refresh.key,
+    if (refresh?.key)
+      return nativeToolsRefreshWaitResult({
+        wakeId: refresh.id,
+        key: refresh.key,
+        completionContract: input.execution.completionContract.contract,
+      });
+    const loopKey = toolCallLoopContinuationKey(input.execution.binding.runId);
+    const [loop] = await input.db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.execution.binding.companyId),
+          eq(agentWakeupRequests.idempotencyKey, loopKey),
+          notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return loop
+      ? nativeToolCallLoopWaitResult({
+          wakeId: loop.id,
+          key: loopKey,
           completionContract: input.execution.completionContract.contract,
         })
       : null;
