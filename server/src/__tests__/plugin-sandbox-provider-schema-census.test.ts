@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +17,7 @@ import type { Environment, PaperclipPluginManifestV1, PluginEnvironmentDriverDec
 import { environmentRuntimeService } from "../services/environment-runtime.ts";
 import { resolveSandboxProviderSecretRefPaths } from "../services/environment-config.ts";
 import { pluginRegistryService } from "../services/plugin-registry.ts";
+import { pluginLoader } from "../services/plugin-loader.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -181,6 +185,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads on the live r
   }
 
   it("reads the provider schema at most once per bound across a whole remote run, not once per operation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const driverKey = `census-${randomUUID().slice(0, 8)}`;
     const { pluginId } = await seedPlugin(driverKey);
     const seeded = await seedCompanyEnvironment(driverKey, "company-a-key");
@@ -254,6 +259,45 @@ describe.skipIf(!support.supported)("sandbox provider schema reads on the live r
         metadata: { provider: driverKey, pluginId, sandboxProviderPlugin: true, template: "base", apiKey: first.secretId } } as never,
       command: "true", args: [], cwd: "/workspace", env: {},
     })).rejects.toThrow("Secret must belong to same company");
+  });
+
+  it("applies a plugin reinstall only after its install transaction commits", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const driverKey = `census-${randomUUID().slice(0, 8)}`;
+    const pluginKey = `test.census.reinstall${randomUUID().slice(0, 8)}`;
+    await seedDb.insert(plugins).values({
+      pluginKey, packageName: pluginKey, version: "1.0.0", installOrder: 0, status: "uninstalled",
+      manifestJson: manifest(pluginKey, [declaration(driverKey, ["apiKey"])]),
+    });
+    const upgraded = manifest(pluginKey, [declaration(driverKey, ["apiKey", "token"])], "2.0.0");
+    const packageRoot = await mkdtemp(path.join(os.tmpdir(), "census-plugin-"));
+    try {
+      await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({
+        name: pluginKey, version: upgraded.version, type: "module", paperclipPlugin: { manifest: "./manifest.js" },
+      }));
+      await writeFile(path.join(packageRoot, "manifest.js"), `export default ${JSON.stringify(upgraded)};\n`);
+      await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+      await writeFile(path.join(packageRoot, "dist", "worker.js"), "export {};\n");
+      const { client: observer } = meteredClient();
+      expect(await resolveSandboxProviderSecretRefPaths(observer, driverKey)).toEqual(new Set(["apiKey"]));
+      const installer = createDb(database.connectionString);
+      clients.push(installer);
+      const readBeforeCommit = new Proxy(installer, {
+        get(target, property, receiver) {
+          if (property !== "transaction") return Reflect.get(target, property, receiver);
+          return (work: (tx: unknown) => Promise<unknown>) => target.transaction(async tx => {
+            const result = await work(tx);
+            expect(await resolveSandboxProviderSecretRefPaths(observer, driverKey)).toEqual(new Set(["apiKey"]));
+            return result;
+          });
+        },
+      });
+      await pluginLoader(readBeforeCommit, { enableLocalFilesystem: false, enableNpmDiscovery: false })
+        .installPlugin({ localPath: packageRoot });
+      expect(await resolveSandboxProviderSecretRefPaths(observer, driverKey)).toEqual(new Set(["apiKey", "token"]));
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+    }
   });
 
   it("starts cold on a new process, as before", async () => {
