@@ -24,6 +24,7 @@ interface ExeDevDriverConfig {
   apiKey: string | null;
   apiUrl: string;
   namePrefix: string;
+  sourceVm: string | null;
   image: string | null;
   command: string | null;
   cpu: number | null;
@@ -246,6 +247,7 @@ function parseDriverConfig(raw: Record<string, unknown>): ExeDevDriverConfig {
     apiKey: parseOptionalString(raw.apiKey),
     apiUrl: normalizeApiUrl(parseOptionalString(raw.apiUrl)),
     namePrefix: normalizeNamePrefix(parseOptionalString(raw.namePrefix)),
+    sourceVm: parseOptionalString(raw.sourceVm),
     image: parseOptionalString(raw.image),
     command: parseOptionalString(raw.command),
     cpu: parseOptionalInteger(raw.cpu),
@@ -313,10 +315,23 @@ function resolveSetupScript(config: ExeDevDriverConfig): string | null {
   return trimmed.length > 0 ? config.setupScript : null;
 }
 
+function buildCopyCommand(sourceVm: string, config: ExeDevDriverConfig, vmName: string): string {
+  return [
+    "cp",
+    shellQuote(sourceVm),
+    shellQuote(vmName),
+    "--json",
+    ...buildFlag("cpu", config.cpu),
+    ...buildFlag("memory", config.memory),
+    ...buildFlag("disk", config.disk),
+  ].join(" ");
+}
+
 function buildCreateCommand(
   config: ExeDevDriverConfig,
   vmName: string,
 ): string {
+  if (config.sourceVm) return buildCopyCommand(config.sourceVm, config, vmName);
   return [
     "new",
     "--json",
@@ -774,6 +789,23 @@ const plugin = definePlugin({
     warnings.push(
       "The Paperclip host must have SSH access to the created exe.dev VM, and its SSH key must be registered with exe.dev. The API token only covers provisioning.",
     );
+    if (config.sourceVm) {
+      const ignored = Object.entries({
+        image: config.image,
+        command: config.command,
+        comment: config.comment,
+        env: Object.keys(config.env).length > 0,
+        integrations: config.integrations.length > 0,
+        tags: config.tags.length > 0,
+        setupScript: config.setupScript,
+        prompt: config.prompt,
+      }).filter(([, value]) => value).map(([key]) => key);
+      if (ignored.length > 0) {
+        errors.push(
+          `sourceVm copies an existing VM with \`exe.dev cp\`, which cannot apply ${ignored.join(", ")}. Clear these settings or clear sourceVm.`,
+        );
+      }
+    }
     if (config.reuseLease) {
       warnings.push("reuseLease keeps the VM alive between runs; this provider does not suspend retained VMs.");
     }

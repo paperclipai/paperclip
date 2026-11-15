@@ -676,11 +676,9 @@ server/src/routes/issues.ts
 server/src/routes/agents.ts
 server/src/routes/openapi.ts
 server/src/__tests__/native-runner-standalone.integration.test.ts             (new)
-server/src/__tests__/heartbeat-native-runner-selection.test.ts            (new)
 server/src/__tests__/heartbeat-native-runner-cancellation.test.ts         (new)
 server/src/__tests__/heartbeat-run-event-sequencing.test.ts               (new)
 server/src/__tests__/native-runner-input-boundary.test.ts                  (new)
-server/src/__tests__/native-run-finalizer.test.ts                          (new)
 server/src/__tests__/native-status-arbiter-corpus.test.ts                  (new)
 server/src/__tests__/native-finalization-recovery.test.ts                  (new)
 server/src/__tests__/native-finalization-migration.test.ts                 (new)
@@ -988,13 +986,11 @@ packages/shared/src/validators/native-finalization.ts
 scripts/check-runner-sdk-spec.mjs
 server/package.json
 server/src/__tests__/heartbeat-native-runner-cancellation.test.ts
-server/src/__tests__/heartbeat-native-runner-selection.test.ts
 server/src/__tests__/heartbeat-run-event-sequencing.test.ts
 server/src/__tests__/legacy-finalization-regression.test.ts
 server/src/__tests__/native-finalization-migration.test.ts
 server/src/__tests__/native-finalization-recovery.test.ts
 server/src/__tests__/native-interaction-bridge.test.ts
-server/src/__tests__/native-run-finalizer.test.ts
 server/src/__tests__/native-runner-input-boundary.test.ts
 server/src/__tests__/native-runner-standalone.integration.test.ts
 server/src/__tests__/native-session-resumption.test.ts
@@ -1065,11 +1061,12 @@ Targeted real integration proof:
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
   src/__tests__/native-runner-standalone.integration.test.ts \
-  src/__tests__/heartbeat-native-runner-selection.test.ts \
+  src/services/native-runtime/runtime-mode.test.ts \
   src/__tests__/heartbeat-native-runner-cancellation.test.ts \
   src/__tests__/heartbeat-run-event-sequencing.test.ts \
   src/__tests__/native-runner-input-boundary.test.ts \
-  src/__tests__/native-run-finalizer.test.ts \
+  src/services/native-runtime/paperclip-control-plane-port.test.ts \
+  src/services/native-runtime/evidence-classifier.test.ts \
   src/__tests__/native-status-arbiter-corpus.test.ts \
   src/__tests__/native-finalization-recovery.test.ts \
   src/__tests__/native-finalization-migration.test.ts \

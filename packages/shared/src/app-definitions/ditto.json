@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "slug": "ditto",
+  "name": "Ditto",
+  "description": "Search and reuse approved product copy, follow your style guide, and edit and translate text.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/ditto.png"
+  },
+  "urlPatterns": [
+    "https://api.dittowords.com/*"
+  ],
+  "docsUrl": "https://developer.dittowords.com/guides/connect-the-mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.dittowords.com/v2/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Connect Ditto in the browser. The connection acts as the Ditto user who signs in. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S4",
+      "label": "Sign in with Ditto",
+      "consoleLinks": {
+        "docs": "https://developer.dittowords.com/guides/connect-the-mcp"
+      },
+      "warnings": [
+        "A Ditto account in the workspace whose text and style guides agents should use. API keys require developer integrations on the Ditto plan.",
+        "Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended."
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read style guide rules and search product text, and create, edit and translate text, components, variants and style guides. Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended."
+      }
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a Ditto workspace API key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://api.dittowords.com/v2/mcp"
+      },
+      "guidanceMd": "In Ditto, open Developers → API keys, create a key for Paperclip, and paste it below.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Ditto API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Ditto API key",
+          "secret": true,
+          "helperMd": "Ditto API keys are not scoped: a key reaches all data in its workspace, including permanent deletes, and actions are attributed to the user who created the key. Create a separate key for Paperclip so it can be removed independently, and set delete and link actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "token "
+      },
+      "consoleLinks": {
+        "keys": "https://app.dittowords.com/developers",
+        "docs": "https://developer.dittowords.com/guides/connect-the-mcp"
+      },
+      "warnings": [
+        "A Ditto account in the workspace whose text and style guides agents should use. API keys require developer integrations on the Ditto plan.",
+        "Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended."
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read style guide rules and search product text, and create, edit and translate text, components, variants and style guides. Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended."
+      }
+    }
+  ]
+}

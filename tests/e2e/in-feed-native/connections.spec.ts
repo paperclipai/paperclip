@@ -25,7 +25,7 @@ for (const journey of ['connect', 'decline', 'restart'] as const) test(`fresh na
   });
   try {
     const port = await listenOnFetchAllowedPort(fixture);
-    const env = { ...process.env, IN_FEED_FIXTURE_KEY: 'not-a-real-model-key', NODE_ENV: 'test', PAPERCLIP_TEST_CONNECTION_DELIVERY_HOLD: journey === 'restart' ? '1' : '0', PATH: `${root}/tests/e2e/fixtures/in-feed-bin:${process.env.PATH}` };
+    const env: NodeJS.ProcessEnv = { ...process.env, IN_FEED_FIXTURE_KEY: 'not-a-real-model-key', NODE_ENV: 'test', PAPERCLIP_TEST_CONNECTION_DELIVERY_HOLD: journey === 'restart' ? '1' : '0', PATH: `${root}/tests/e2e/fixtures/in-feed-bin:${process.env.PATH}` };
     delete env.DATABASE_URL; delete env.DATABASE_MIGRATION_URL;
     processHandle = spawn(process.execPath, ['cli/node_modules/tsx/dist/cli.mjs', 'cli/src/index.ts', 'test-drive', '--harness', 'codex', '--api-key-env', 'IN_FEED_FIXTURE_KEY', '--company-name', 'In-feed native fixture', '--no-browser'], { cwd: root, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     processHandle.stdout!.on('data', (chunk) => { logs += chunk.toString(); });
@@ -71,11 +71,11 @@ for (const journey of ['connect', 'decline', 'restart'] as const) test(`fresh na
     await custom.getByRole('button', { name: 'Connect your own MCP server' }).click();
     await page.getByPlaceholder('https://example.com/actions').fill(`http://127.0.0.1:${port}/`);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await page.getByRole('button', { name: 'Change', exact: true }).click();
     await page.getByRole('radio', { name: 'Just agents I pick' }).click();
     await page.getByRole('button', { name: /Select agents/ }).click();
     await page.getByRole('checkbox', { name: /Archive holder/ }).check();
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Save and continue' }).click();
     await page.getByRole('button', { name: /Check link/i }).click();
     await expect(page.getByRole('heading', { name: /is ready/i })).toBeVisible({ timeout: 30_000 });
     const [connection] = (await api(`/companies/${company.id}/tools/connections`)).connections;

@@ -70,7 +70,7 @@ export function ProviderConnectionPreview({ provider, initialMethod = "subscript
       </div>}
     </motion.div>
     <FooterNav onBack={phase !== "idle" ? cancel : undefined}
-      primaryLabel={connecting ? "Connecting" : phase === "idle" ? "Next" : method === "api" ? "Connect" : value.trim() ? "Connect" : phase === "waiting" ? "Waiting for code" : `Sign in to ${provider}`}
+      primaryLabel={connecting ? "Connecting" : phase === "idle" ? "Next" : method === "api" ? "Connect" : value.trim() ? "Connect" : phase === "waiting" ? provider === "OpenAI" ? "Waiting for auth…" : "Waiting for code" : `Sign in to ${provider}`}
       primaryDisabled={phase === "idle" || phase === "collapsing" || phase === "opening" || (method === "api" && !value.trim()) || (phase === "waiting" && !value.trim())}
       loading={connecting} primaryIcon={connecting || phase === "waiting" && !value.trim() ? "spinner" : method === "api" ? "arrow" : "none"}
       onPrimary={() => method === "api" || value.trim() ? finish() : setPhase("waiting")} />

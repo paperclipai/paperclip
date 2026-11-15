@@ -94,7 +94,11 @@ export function isUnrunnableWorktreeCombo(input: {
   resolvedStrategy: string | null | undefined;
   reusableExecutionWorkspaceAvailable?: boolean | null;
   hasResolvablePriorSessionWorkspace?: boolean | null;
+  /** The wake continues a cut-off run in a new isolated workspace that the run
+   * prepares itself (`create_new`); it never needs the task's old binding. */
+  freshIsolatedContinuation?: boolean | null;
 }): boolean {
+  if (input.freshIsolatedContinuation === true) return false;
   if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") return false;
   if (input.resolvedStrategy !== "git_worktree") return false;
   if (input.issue.projectId || input.issue.projectWorkspaceId) return false;
@@ -130,6 +134,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
+    ...(typeof parsed.storageProviderPluginId === "string" || parsed.storageProviderPluginId === null ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
@@ -272,6 +277,8 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
+  | "run"
   | "agent"
   | "instance"
   | "default"
@@ -294,6 +301,8 @@ export class ManagedSandboxUnavailableError extends Error {
 }
 
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  /** Explicit operator-selected sandbox for a task with a low-trust boundary. */
+  lowTrustIssueEnvironmentId?: string | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -309,6 +318,9 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.lowTrustIssueEnvironmentId) {
+      return {environmentId: input.lowTrustIssueEnvironmentId, source: "issue"};
+    }
     if (input.agentDefaultEnvironmentId) {
       return {
         environmentId: input.agentDefaultEnvironmentId,
@@ -338,7 +350,7 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
 export function defaultIssueExecutionWorkspaceSettingsForProject(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
 ): IssueExecutionWorkspaceSettings | null {
-  if (!projectPolicy?.enabled) return null;
+  if (!projectPolicy?.enabled || projectPolicy.defaultMode === undefined) return null;
   return {
     mode:
       projectPolicy.defaultMode === "isolated_workspace"
@@ -387,6 +399,31 @@ export function resolveExecutionWorkspaceMode(input: {
   return "shared_workspace";
 }
 
+interface ParsedIssueAssigneeAdapterOverrides {
+  adapterConfig: Record<string, unknown> | null;
+  useProjectWorkspace: boolean | null;
+}
+
+export function parseIssueAssigneeAdapterOverrides(
+  raw: unknown,
+): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseObject(raw);
+  const parsedAdapterConfig = Object.fromEntries(
+    Object.entries(parseObject(parsed.adapterConfig)).filter(([key]) => key !== "homeMode"),
+  );
+  const adapterConfig =
+    Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const useProjectWorkspace =
+    typeof parsed.useProjectWorkspace === "boolean"
+      ? parsed.useProjectWorkspace
+      : null;
+  if (!adapterConfig && useProjectWorkspace === null) return null;
+  return {
+    adapterConfig,
+    useProjectWorkspace,
+  };
+}
+
 function parseSharedWorkspaceConcurrency(raw: unknown): SharedWorkspaceConcurrency | undefined {
   return raw === "auto" || raw === "serialize" || raw === "allow" ? raw : undefined;
 }
@@ -402,6 +439,7 @@ export function resolveSharedWorkspaceConcurrency(input: {
 
 export function buildExecutionWorkspaceAdapterConfig(input: {
   agentConfig: Record<string, unknown>;
+  adapterConfigOverrides?: Record<string, unknown> | null;
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   mode: ParsedExecutionWorkspaceMode;
@@ -417,7 +455,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
 
   if (hasWorkspaceControl) {
-    if (input.mode === "isolated_workspace") {
+    if (input.mode === "isolated_workspace" ||
+        (projectHasPolicy && input.projectPolicy?.storageProviderPluginId && input.mode !== "agent_default")) {
       const projectStrategy = projectHasPolicy ? input.projectPolicy?.workspaceStrategy : undefined;
       const issueStrategy = input.issueSettings?.workspaceStrategy;
       // An issue that changes its branch still needs the project's setup hooks.
@@ -425,8 +464,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
       const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
         ? { ...projectStrategy, ...issueStrategy }
         : issueStrategy ?? projectStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
-        ({ type: "git_worktree" } satisfies ExecutionWorkspaceStrategy);
+        (input.mode === "isolated_workspace" ? parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) : undefined) ??
+        ({ type: input.mode === "isolated_workspace" ? "git_worktree" : "project_primary" } satisfies ExecutionWorkspaceStrategy);
       if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
         delete strategy.branchTemplate;
       }
@@ -444,5 +483,21 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return nextConfig;
+  return { ...nextConfig, ...input.adapterConfigOverrides };
+}
+
+export function taskWorkspaceRuntimeSelectionEnabled(input: {
+  legacyUiEnabled: boolean;
+  hasTypedSelection: boolean;
+  hasBinding: boolean;
+}): boolean {
+  return input.legacyUiEnabled || input.hasTypedSelection || input.hasBinding;
+}
+
+export function canApplyTaskWorkspaceSelectionAtAdmission(input: {
+  admittedInput: unknown;
+  restarting: boolean;
+  hasLeaseOwner: boolean;
+}): boolean {
+  return input.admittedInput == null && !input.restarting && !input.hasLeaseOwner;
 }

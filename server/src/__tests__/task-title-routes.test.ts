@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as chat from "chat";
+
+vi.mock("chat", async importOriginal => {
+  const original = await importOriginal<typeof import("chat")>();
+  return {
+    ...original,
+    parseMarkdown: vi.fn(original.parseMarkdown),
+    markdownToPlainText: vi.fn(original.markdownToPlainText),
+  };
+});
 import { and, eq } from "drizzle-orm";
 import { activityLog, externalObjectMentions, heartbeatRuns, issues } from "@paperclipai/db";
 import { createChildIssueSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
@@ -47,6 +57,52 @@ describe("task titles", () => {
     expect(createIssueSchema.safeParse({ description: "A request" }).success).toBe(true);
     expect(setIssueTitleSchema.safeParse({ title: "  " }).success).toBe(false);
     expect(setIssueTitleSchema.safeParse({ title: "x".repeat(241) }).success).toBe(false);
+  });
+
+  it("removes leading Markdown before truncating a provisional title", async () => {
+    const f = await server.fixture();
+    const description = [
+      "![Screenshot](https://example.com/a-very-long-image-name.png)",
+      "# Fix the [sign-in redirect](https://example.com/issues/42)",
+      "Keep `returnTo` working with **saved sessions**.",
+    ].join("\n\n");
+    const result = await issueService(server.db).create(f.companyId, { description });
+    expect(result).toMatchObject({
+      title: "Fix the sign-in redirect Keep returnTo working with saved sessions.",
+      description,
+      titleNeedsGeneration: true,
+    });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Error dialog](https://example.com/error.png)",
+    })).resolves.toMatchObject({ title: "Error dialog", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![](https://example.com/image.png)",
+    })).resolves.toMatchObject({ title: "Image", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Map](https://example.com/Map_(1).png)",
+    })).resolves.toMatchObject({ title: "Map", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "Fix `set_task_title`",
+    })).resolves.toMatchObject({ title: "Fix set_task_title", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Screenshot][img]\n\n[img]: https://example.com/image.png\n\nFix login",
+    })).resolves.toMatchObject({ title: "Fix login", titleNeedsGeneration: true });
+  });
+
+  it.each(["parseMarkdown", "markdownToPlainText"] as const)("falls back to a simple title if %s throws", async parser => {
+    const f = await server.fixture();
+    const description = `  Fix the login flow after a failed parser\n${"long ".repeat(30)}`;
+    vi.mocked(chat[parser]).mockImplementationOnce(() => { throw new Error("parser failed"); });
+    try {
+      const result = await issueService(server.db).create(f.companyId, { description });
+      expect(result).toMatchObject({
+        title: description.trim().replace(/\s+/g, " ").slice(0, 120),
+        description,
+        titleNeedsGeneration: true,
+      });
+    } finally {
+      vi.mocked(chat[parser]).mockClear();
+    }
   });
 
   it("creates prompt-only children and still accepts explicit child titles", async () => {

@@ -176,6 +176,106 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
 }
 
 #[test]
+fn native_boundaries_keep_progress_but_never_promote_tool_narration_or_history() {
+    for (boundary_field, history_field) in [
+        ("piMessageBoundary", "piMessageHistory"),
+        ("assistantMessageBoundary", "assistantMessageHistory"),
+    ] {
+        for final_reason in ["stop", "length", "toolUse", "error", "aborted", "empty"] {
+            let mut state = AcpxProviderState::new("run-1").unwrap();
+            state.begin_turn("turn-1").unwrap();
+            let mut messages = vec![
+                json!({"type":"text_delta","messageId":"history","text":"Earlier session answer",(history_field):true}),
+                json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"start"}}),
+                json!({"type":"text_delta","messageId":"first","text":"Calling finish."}),
+                json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"end","stopReason":"toolUse"}}),
+                json!({"type":"text_delta","messageId":"last","text":"",(boundary_field):{"phase":"start"}}),
+            ];
+            if final_reason != "empty" {
+                messages
+                    .push(json!({"type":"text_delta","messageId":"last","text":"EXACT_MARKER"}));
+            }
+            messages.push(json!({"type":"text_delta","messageId":"last","text":"",(boundary_field):{"phase":"end","stopReason":if final_reason == "empty" { "stop" } else { final_reason }}}));
+            let count = messages.len() as u64;
+            for (index, payload) in messages.into_iter().enumerate() {
+                state
+                    .accept_event(&event(
+                        index as u64 + 1,
+                        GeneratedAcpxSidecarEventType::RuntimeEvent,
+                        Some("turn-1"),
+                        payload,
+                    ))
+                    .unwrap();
+            }
+            let terminal = state
+                .accept_event(&event(
+                    count + 1,
+                    GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                    Some("turn-1"),
+                    json!({"status":"completed"}),
+                ))
+                .unwrap();
+            let replies: Vec<_> = terminal
+                .iter()
+                .filter_map(|entry| {
+                    if let AcpxProviderStateEvent::AssistantMessage { text, .. } = entry {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                replies,
+                if matches!(final_reason, "stop" | "length") {
+                    vec!["EXACT_MARKER"]
+                } else {
+                    vec![]
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn native_boundary_order_and_terminal_completeness_fail_closed() {
+    for (boundary_field, _history_field) in [
+        ("piMessageBoundary", "piMessageHistory"),
+        ("assistantMessageBoundary", "assistantMessageHistory"),
+    ] {
+        for malformed in [
+            json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"start"}}),
+            json!({"type":"text_delta","messageId":"other","text":"",(boundary_field):{"phase":"end","stopReason":"stop"}}),
+            json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"end","stopReason":"invented"}}),
+            json!({"type":"text_delta","messageId":"other","text":"Out of order"}),
+        ] {
+            let mut state = AcpxProviderState::new("run-1").unwrap();
+            state.begin_turn("turn-1").unwrap();
+            state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"start"}}))).unwrap();
+            assert!(state
+                .accept_event(&event(
+                    2,
+                    GeneratedAcpxSidecarEventType::RuntimeEvent,
+                    Some("turn-1"),
+                    malformed
+                ))
+                .is_err());
+        }
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"",(boundary_field):{"phase":"start"}}))).unwrap();
+        assert!(state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":"completed"})
+            ))
+            .is_err());
+    }
+}
+
+#[test]
 fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
@@ -488,14 +588,20 @@ fn terminal_events_retain_dispatched_tools_and_reject_late_turn_events() {
     assert!(state.begin_turn("turn-2").is_err());
     state.complete_tool("call-1", "issues.read").unwrap();
     assert!(state.pending_tool("call-1").is_none());
-    assert!(state
+    // A late event for the settled turn is history: recorded, never applied.
+    let late = state
         .accept_event(&event(
             3,
             GeneratedAcpxSidecarEventType::RuntimeEvent,
             Some("turn-1"),
             json!({"type":"text_delta","text":"late"}),
         ))
-        .is_err());
+        .unwrap();
+    assert!(matches!(
+        late.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+    assert_eq!(state.active_turn_id(), None);
 }
 
 #[test]
@@ -540,42 +646,36 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
     );
 
-    for (operation, field, prose, preserved) in [
+    for (operation, field, prose) in [
         (
             "write_document",
             "body",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "create_project",
             "description",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "get_task_context",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "mcp__untrusted__create_task",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "create_task",
             "description",
             "Authorization: Bearer actual-credential",
-            false,
         ),
         (
             "create_task",
             "initialPlan",
             "access token actual-credential",
-            false,
         ),
     ] {
         let mut candidate = AcpxProviderState::new("run-1").unwrap();
@@ -586,14 +686,6 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
             Some("turn-1"),
             json!({"callId":"call-1", "operationId":operation, "input":{field:prose}}),
         ));
-        if !preserved {
-            assert!(emitted
-                .unwrap_err()
-                .to_string()
-                .contains("refusing to execute altered arguments"));
-            assert!(candidate.pending_tool("call-1").is_none());
-            continue;
-        }
         let events = emitted.unwrap();
         let AcpxProviderStateEvent::ToolCall { input, .. } = &events[0] else {
             panic!("expected tool call");
@@ -660,13 +752,170 @@ fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_ne
         assert!(state
             .complete_input(projected_id.as_str().unwrap())
             .is_err());
-        assert!(state
+        // A replayed terminal for the settled turn is history and never
+        // replays the terminal or its request expiry.
+        let replay = state
             .accept_event(&event(
                 4,
                 GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
                 Some("turn-1"),
-                json!({"status":status})
+                json!({"status":status}),
             ))
-            .is_err());
+            .unwrap();
+        assert!(matches!(
+            replay.as_slice(),
+            [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+        ));
     }
+}
+
+#[test]
+fn cursor_plan_parent_identity_survives_decode_pending_and_terminal_projection() {
+    use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+    use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
+    for id in [
+        "x".repeat(160),
+        "x".repeat(161),
+        "x".repeat(240),
+        "é".repeat(120),
+    ] {
+        for status in ["completed", "cancelled", "failed"] {
+            let mut state = AcpxProviderState::new("run-1").unwrap();
+            state.begin_turn("turn-1").unwrap();
+            let context = AcpxEventProjectionContext {
+                run_id: "run-1".into(),
+                normalized_session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                provider_turn_id: None,
+                item_id: "item-1".into(),
+            };
+            let input = state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}}))).unwrap();
+            let created = project_acpx_state_event(&context, &input[0]).unwrap();
+            let tool = normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ToolCall,
+                &json!({"type":"tool_call","toolCallId":id,"kind":"execute","status":"pending"}),
+                Some("execute"),
+                "item-1",
+                "turn-1",
+                0,
+            );
+            assert_eq!(
+                created[0].payload["request"]["itemId"],
+                tool[0].payload["executionId"]
+            );
+            let ended = state
+                .accept_event(&event(
+                    2,
+                    GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                    Some("turn-1"),
+                    json!({"status":status}),
+                ))
+                .unwrap();
+            let terminal = project_acpx_state_event(&context, &ended[0]).unwrap();
+            assert_eq!(
+                terminal[0].payload["request"]["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+            assert_eq!(
+                terminal[0].payload["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+        }
+    }
+    for id in ["x".repeat(241), format!("{}x", "é".repeat(120))] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        assert!(state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"provider":"cursor","method":"cursor/create_plan"}}))).is_err());
+    }
+}
+
+// Section G: a late sidecar event for a turn that already settled is history.
+// It is recorded as a bounded diagnostic and never fails the current turn,
+// whether it arrives between turns or after the next turn started. An event
+// for an unknown turn still fails closed.
+#[test]
+fn records_late_events_for_a_settled_turn_as_history() {
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state
+        .accept_event(&event(
+            1,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"}),
+        ))
+        .unwrap();
+    let late = |sequence| {
+        event(
+            sequence,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-1"),
+            json!({"type":"text_delta","text":"late"}),
+        )
+    };
+    let between = state.accept_event(&late(2)).unwrap();
+    assert!(matches!(
+        between.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+
+    state.begin_turn("turn-2").unwrap();
+    let during = state.accept_event(&late(3)).unwrap();
+    assert!(matches!(
+        during.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { code, .. }] if code == "stale_generation_event"
+    ));
+    let late_terminal = state
+        .accept_event(&event(
+            4,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"failed"}),
+        ))
+        .unwrap();
+    assert!(matches!(
+        late_terminal.as_slice(),
+        [AcpxProviderStateEvent::Diagnostic { .. }]
+    ));
+    assert_eq!(state.active_turn_id(), Some("turn-2"));
+
+    // The current turn continues normally.
+    let current = state
+        .accept_event(&event(
+            5,
+            GeneratedAcpxSidecarEventType::RuntimeEvent,
+            Some("turn-2"),
+            json!({"type":"text_delta","text":"current"}),
+        ))
+        .unwrap();
+    assert!(!current
+        .iter()
+        .any(|event| matches!(event, AcpxProviderStateEvent::Diagnostic { .. })));
+
+    // History diagnostics are bounded.
+    for sequence in 6..60 {
+        state.accept_event(&late(sequence)).unwrap();
+    }
+    assert!(state.accept_event(&late(59)).unwrap().is_empty());
+
+    // History still passes payload admission.
+    let oversized = state.accept_event(&event(
+        60,
+        GeneratedAcpxSidecarEventType::RuntimeEvent,
+        Some("turn-1"),
+        json!({"type":"text_delta","text":"x".repeat(300 * 1024)}),
+    ));
+    assert!(oversized
+        .unwrap_err()
+        .to_string()
+        .contains("256 KiB admission limit"));
+
+    // A turn this scope never saw is not history.
+    let unknown = state.accept_event(&event(
+        61,
+        GeneratedAcpxSidecarEventType::RuntimeEvent,
+        Some("turn-unknown"),
+        json!({"type":"text_delta","text":"foreign"}),
+    ));
+    assert!(unknown.unwrap_err().to_string().contains("stale turn"));
 }

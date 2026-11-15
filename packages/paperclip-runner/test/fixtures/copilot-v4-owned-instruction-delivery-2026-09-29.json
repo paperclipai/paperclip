@@ -1,0 +1,69 @@
+{
+  "schema": "paperclip.copilot-v4-owned-instruction-delivery.v1",
+  "date": "2026-09-29",
+  "candidateBaseRevision": "0f33a9080ab05f92b909261a20d79ca487889346",
+  "profileIdentity": {
+    "commandDigest": "sha256:ce58142849d196faee8898f34c7149b4fbeb7b09966bb523b9cdf39c2ff66a6f",
+    "declaration": {
+      "schema": "paperclip.acpx_profile_declaration.v1",
+      "agent": "copilot",
+      "agentProfileVersion": 4,
+      "acpxVersion": "0.13.1",
+      "agentServerVersion": "1.0.88",
+      "protocolPolicyRevision": "copilot-agent-manual-v1",
+      "acpxPatchSha256": "a64405199b381688ffd72fdbb88396e423394cb407813d7b6f1db43bae9c3933",
+      "policySha256": "a4be69be43db84052560420a3ca546a665c9165573c24d543eb33d144ba138a3",
+      "distributionSourceSha256": "bb3dcf14972e82f6578c8250540cfbc6ec2ad953bea5d4f10d28c8b461011f3f",
+      "agentFilesBinding": "registered-runtime-context-v1",
+      "systemInstructionDelivery": "COPILOT_HOME/copilot-instructions.md:replace-under-lifetime-lease-before-launch:v1"
+    }
+  },
+  "sourceSha256": {
+    "packages/paperclip-runner/src/drivers/acpx/runtime-sandbox.ts": "d78b859d170b931b8fc310577e6d1d01a1c20f168ad48c5de84bca2ea325aad9",
+    "packages/paperclip-runner/src/drivers/acpx/copilot-profile.ts": "b74133bd72f92d6bd0652c1772a45227f6a549232554528fef2761b17b8f02e7",
+    "packages/paperclip-runner/src/drivers/acpx/qualified-profiles.ts": "d1f788e475b420cb247484709ea09416261676e611ce9cb439e989e804e716f9",
+    "packages/paperclip-runner/src/drivers/acpx/runtime-host.ts": "229dd5cbbc3ea22dcda8bb10dc7b6096324b713e33ebd52bd6f691e35ceff24b"
+  },
+  "nativeVersion": "1.0.88",
+  "nativeBinarySha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "actualProductionSandboxWriter": true,
+  "providerMode": "agent",
+  "allowAll": "off",
+  "fixtureMechanism": "env -i; synthetic credential; COPILOT_OFFLINE=true; exactly two requested turns to loopback OpenAI fixture. Imports actual candidate TypeScript runtime host/sandbox/adapter via tsx, with already verified patched ACPX dependency from frozen 3d0 archive. No manual instruction file write. Test-only offline model metadata injection remains; not authenticated model qualification or final frozen-pack proof.",
+  "loopbackModelResponses": 2,
+  "paidProviderCalls": 0,
+  "nativeLoadObserved": true,
+  "staleDirectoryFailurePreserved": "ENOENT",
+  "continuationResult": {
+    "status": "completed",
+    "stopReason": "end_turn"
+  },
+  "modelRequestProjection": [
+    {
+      "request": 1,
+      "paperclipPromptInSystem": true,
+      "oldRegisteredRootInSystem": true,
+      "currentRegisteredRootInSystem": false,
+      "originalCustomEntryInSystem": true,
+      "updatedCustomEntryInSystem": false
+    },
+    {
+      "request": 2,
+      "paperclipPromptInSystem": true,
+      "oldRegisteredRootInSystem": false,
+      "currentRegisteredRootInSystem": true,
+      "originalCustomEntryInSystem": false,
+      "updatedCustomEntryInSystem": true
+    }
+  ],
+  "rawPrivateEvidenceSha256": "880c9dc05686c47c3afcbb351b3cb8d3c9b94db8165e873af06a07e97605d58e",
+  "probeScriptSha256": "ae433c1415514a97157e80e7196d99550294e49ffba8149176cb3307d5b303a8",
+  "instructionRefreshUnderLifetimeLease": true,
+  "priorAdmissionFailure": {
+    "stage": "provider lifetime lease acquisition",
+    "reason": "kernel-port quorum admission rejected before model call",
+    "loopbackModelResponses": 0,
+    "paidProviderCalls": 0,
+    "rawPrivateEvidenceSha256": "d20d6d412e7ffe441670fd0df937a33e4f35fe8e3fb9c0e9a9b91fc265b5d814"
+  }
+}

@@ -18,7 +18,7 @@ export function FinanceBillerCard({ row }: FinanceBillerCardProps) {
             </CardDescription>
           </div>
           <div className="text-right">
-            <div className="text-lg font-semibold tabular-nums">{formatCents(row.netCents)}</div>
+            <div className="text-lg font-semibold tabular-nums">{formatCents(row.netCents, row.currency)}</div>
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">net</div>
           </div>
         </div>
@@ -27,15 +27,15 @@ export function FinanceBillerCard({ row }: FinanceBillerCardProps) {
         <div className="grid gap-2 text-sm sm:grid-cols-3">
           <div className="border border-border p-3">
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">debits</div>
-            <div className="mt-1 font-medium tabular-nums">{formatCents(row.debitCents)}</div>
+            <div className="mt-1 font-medium tabular-nums">{formatCents(row.debitCents, row.currency)}</div>
           </div>
           <div className="border border-border p-3">
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">credits</div>
-            <div className="mt-1 font-medium tabular-nums">{formatCents(row.creditCents)}</div>
+            <div className="mt-1 font-medium tabular-nums">{formatCents(row.creditCents, row.currency)}</div>
           </div>
           <div className="border border-border p-3">
             <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">estimated</div>
-            <div className="mt-1 font-medium tabular-nums">{formatCents(row.estimatedDebitCents)}</div>
+            <div className="mt-1 font-medium tabular-nums">{formatCents(row.estimatedDebitCents, row.currency)}</div>
           </div>
         </div>
       </CardContent>

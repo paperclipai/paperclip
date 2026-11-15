@@ -1,0 +1,65 @@
+{
+  "schema": "paperclip.copilot.production-readiness-current/v1",
+  "updatedAt": "2026-10-08T14:45:17.483258+00:00",
+  "runtimeSourceRevision": "4acb084fc5b6805a483bf419c2cdc6de3f7ec13d",
+  "ordinaryInstallationSourceRevision": "d99959f00b62ad2099b5cdaca3f7656dcb88a8e8",
+  "profileVersion": 31,
+  "profileDigest": "sha256:4a22e4c50fd213c79cd02fd3c5369aef2256ac719762c62f5b70c691cd47e76b",
+  "copilotVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "historicalFullCampaign": {
+    "record": "2026-10-08-copilot-qualification-v30.json",
+    "profileVersion": 30,
+    "productCells": 20,
+    "daytonaCells": 10,
+    "protocolCases": 7,
+    "unchangedBoundInputsExceptSavedPromptCompatibility": true,
+    "currentProfileFullCampaignClaimed": false
+  },
+  "currentProfile": {
+    "installedPlatforms": [
+      "darwin-arm64",
+      "darwin-x64-via-rosetta",
+      "linux-x64-via-local-emulation"
+    ],
+    "authenticatedMetadata": true,
+    "ordinaryLocalCanary": true,
+    "ordinaryLocalCanaryProofSha256": "sha256:fd0b914d0d787c906c054ffb425de1bdc1b3b1684c2e1ec20eadeabeafbbd4d0",
+    "ordinaryLocalFinalResponseCount": 1,
+    "ordinaryLocalArtifactBytes": 30,
+    "ordinaryLocalCleanupConfirmed": true,
+    "ordinaryDaytonaCanary": false,
+    "exactImagePublicationApprovalPending": true
+  },
+  "reviewRepairs": {
+    "attachedEarlyFinish": {
+      "independentRetainedLiveTraces": 2,
+      "newProviderCalls": 0,
+      "historicalResultsRewritten": false,
+      "proofSha256": "sha256:994c80a8e288815efdbb15688b2fc96e61ffa8f905e9e3735e3ba13dd9fcafd9"
+    },
+    "smokeProviderSigkillFallback": true,
+    "closedObserverFailureCodesRetained": true,
+    "focusedProductTests": 214,
+    "existingProductSkips": 1,
+    "smokeCleanupTests": 7,
+    "productTypecheck": true
+  },
+  "dependencyPrerequisite": {
+    "pullRequest": "https://github.com/paperclipai/paperclip/pull/15572",
+    "mergedRevision": "941a3fa991aeb97eb1ac390c65b7973b5f6de1ad",
+    "generatedLockSha256": "sha256:13ea85cd23a3772889a083020918646ff68231eeace607ab50d2093bc33e3201",
+    "currentHeadCiPassed": true,
+    "greptileScore": "5/5"
+  },
+  "billing": {
+    "entity": "github",
+    "nativeUsd": null,
+    "budgetReset": false,
+    "remainingApprovedUsd": 30.68
+  },
+  "release": {
+    "currentStackCiReviewPending": true,
+    "shipped": false
+  }
+}

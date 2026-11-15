@@ -69,7 +69,7 @@ const NEW_TOKENS = [
   { name: "hex-64748b", value: "#64748b", comment: "ActivityCharts.tsx status 'backlog'; also the widely-repeated 'no project assigned' muted-slate fallback color (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections." },
 
   // --- Project-color-fallback indigo cluster (TOKEN-AUDIT.md 1.3) ---
-  { name: "hex-6366f1", value: "#6366f1", comment: "Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3." },
+  { name: "hex-6366f1", value: "#6366f1", comment: "Project-color-fallback indigo seed default (ProjectDetail/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3." },
 
   // --- Gradient tokens (verbatim, one per distinct gradient string; DESIGN.md: mint, don't collapse) ---
   { name: "gradient-extract-1", value: "linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))", comment: "Dashboard.tsx budget-alert card gradient." },
@@ -192,13 +192,6 @@ const SITES = [
     file: "pages/ProjectDetail.tsx",
     replaceAll: [
       ['backgroundColor: project.color ?? "#6366f1"', 'backgroundColor: project.color ?? "var(--hex-6366f1)"'],
-    ],
-  },
-  {
-    file: "pages/PipelineSettings.tsx",
-    replaceAll: [
-      ['backgroundColor: selectedAutomationProject.color ?? "#6366f1"', 'backgroundColor: selectedAutomationProject.color ?? "var(--hex-6366f1)"'],
-      ['backgroundColor: project?.color ?? "#6366f1"', 'backgroundColor: project?.color ?? "var(--hex-6366f1)"'],
     ],
   },
   {

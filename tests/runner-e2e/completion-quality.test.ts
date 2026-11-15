@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { runsCompletionUpdateProbe, COMPLETION_QUALITY_CONFIG, completionQualityControls, completionQualityStatus, completionQualityRequest, judgeCompletionQuality, reserveCompletionQuality, validateCompletionQuality } from "./completion-quality.js";
 import { runnerMatrix } from "./catalog.js";
+import { MANAGED_FIRST_TASK_CELL } from "./first-task-fixtures.js";
 const observation = { sourceId: "chat", marker: "REF", worker: { id: "task", title: "Welcome", status: "done", completedAt: "2026-09-01T00:00:00Z" }, documents: [{ id: "doc", issueId: "task", key: "welcome", body: "Welcome to the garden. Meet at 10:30." }], comments: [{ id: "reply", issueId: "chat", authorAgentId: "agent", createdAt: "2026-09-01T00:01:00Z", body: "The note is ready at /issues/task", createdByRunId: "run" }], runs: [] };
 const criteria = Object.keys(COMPLETION_QUALITY_CONFIG.rubric).map(id => ({ id, passed: true, rationale: "Supported by the saved note and reply", evidenceIds: ["reply", "doc"] }));
 const reports = [{ replyId: "reply", rationale: "Reports the completed task", completedTaskIdsReferenced: ["task"], resultAccessTaskIds: ["task"], correctsReplyIds: [] as string[] }];
 describe("completion semantic qualification", () => {
   it.each(["runner-codex", "runner-acpx-claude"])("requires a completion judge only for accepted work on %s", profile => {
-    const cells = runnerMatrix.filter(e => e.suite.id === "confirmation-replies" && e.profile.id === profile);
+    const cells = runnerMatrix.filter(e => e.suite.id === "confirmation-replies" && e.profile.id === profile && e.environment.id === "local");
     expect(cells).toHaveLength(6);
     expect(cells.filter(runsCompletionUpdateProbe).map(e => e.task.id).sort()).toEqual([
       "interview-plan-accept", "task-card-accept", "task-reply-accept",
     ]);
+  });
+  it("requires the existing completion judge for accepted managed onboarding work", () => {
+    const managed = runnerMatrix.find(e => e.id === MANAGED_FIRST_TASK_CELL);
+    expect(managed).toBeDefined();
+    expect(runsCompletionUpdateProbe(managed!)).toBe(true);
   });
   it("retains the completion suite's gate and excludes ordinary chat journeys", () => {
     const completion = runnerMatrix.filter(e => e.suite.id === "completion-updates");

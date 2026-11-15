@@ -15,9 +15,10 @@ export const CHAT_CASES = [
   ["continuity-restart", "Conversation continuity across restart", 3],
   ["new-session", "Fresh context within preserved history", 2],
   ["stop-new-resume", "Stop, reset, and resume", 3],
-  ["plan-handoff", "Draft, revise, approve, and hand off a plan", 4],
-  ["clarify-reuse", "Clarify and reuse an existing project", 3],
-  ["multi-repository", "Create a project with multiple repository URLs", 2],
+  // Handoff cases include the source chat's one completion-reply turn.
+  ["plan-handoff", "Draft, revise, approve, and hand off a plan", 5],
+  ["clarify-reuse", "Clarify and reuse an existing project", 4],
+  ["multi-repository", "Create a project with multiple repository URLs", 3],
 ] as const;
 export type ChatCase = (typeof CHAT_CASES)[number][0];
 const HARDENING_CASES = [
@@ -54,10 +55,10 @@ export const chatStoryTasks = buildChatTasks([
 ]).map(task => ({ ...task, ...(task.id === "enable-disable-resume" ? {} : { minimumExpectedRunCount: 1 }) }));
 
 export function chatNeedsApiTools(suiteId: string, caseId: string): boolean {
-  return (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
+  return suiteId === "hiring-templates" || (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
 }
 export function isManagedHiringCase(suiteId: string, caseId: string): boolean {
-  return (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
+  return (suiteId === "hiring-templates" && caseId === "hire-coder-template-reuse") || (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
     (suiteId === "agent-chat-hardening" && caseId === "hire-delegate-reuse");
 }
 

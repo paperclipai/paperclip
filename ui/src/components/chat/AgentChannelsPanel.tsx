@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, MessageSquarePlus } from "lucide-react";
 import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
+import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   slack: "Slack",
   github: "GitHub Code Review Bot",
   discord: "Discord",
@@ -24,16 +25,15 @@ export function AgentChannelsPanel({
   companyId: string;
   agentId: string;
 }) {
-  const { enabled } = useChatConnectorsEnabled();
+  const { enabled, githubEnabled } = useChatConnectorsEnabled();
   const query = useQuery({
     queryKey: queryKeys.chatEndpoints.list(companyId),
     queryFn: () => chatEndpointsApi.list(companyId),
-    enabled,
+    enabled: Boolean(companyId),
   });
-  if (!enabled) return null;
   const endpoints = (query.data ?? []).filter(
     (endpoint) =>
-      endpoint.assignedAgentId === agentId && endpoint.status !== "archived",
+      endpoint.assignedAgentId === agentId && endpoint.status !== "archived" && chatProviderVisible(endpoint.provider, enabled, githubEnabled),
   );
   return (
     <section className="max-w-3xl space-y-5">
@@ -57,8 +57,7 @@ export function AgentChannelsPanel({
         <div className="rounded-lg border border-dashed border-border p-5">
           <p className="text-sm font-medium">No channels connected</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Connect AgentMail, Slack, GitHub Code Review Bot, Discord, Microsoft Teams, or Telegram from
-            Connectors.
+            {enabled || githubEnabled ? "Connect an agent identity from Connectors." : "Connect AgentMail from Connectors."}
           </p>
           <Button asChild className="mt-3" variant="outline" size="sm">
             <Link to="/apps">Open Connectors</Link>
@@ -81,7 +80,7 @@ export function AgentChannelsPanel({
                     "Provider identity"}
                 </p>
               </div>
-              <StatusBadge status={endpoint.status} />
+              <Badge variant="outline">{endpoint.status.replace(/[_-]/g, " ")}</Badge>
               <Button asChild size="sm" variant="outline">
                 <Link to={`/apps/chat/${endpoint.id}/settings`}>
                   Open connection <ExternalLink />

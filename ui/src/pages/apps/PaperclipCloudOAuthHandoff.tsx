@@ -7,6 +7,7 @@ import {
   prepareOAuthNavigation,
   readPendingCloudHandoff,
 } from "@/lib/oauthHandoff";
+import { describeError } from "@/api/errors";
 
 export type ManagedOAuthHandoffPhase = "loading" | "reauthenticating" | "error";
 
@@ -80,7 +81,7 @@ export function PaperclipCloudOAuthHandoffPage() {
       navigateTopLevel(target.url);
     } catch (caught) {
       setPhase("error");
-      setError(caught instanceof Error ? caught.message : "Paperclip couldn’t prepare secure sign-in.");
+      setError(describeError(caught).body);
     }
   }, []);
 

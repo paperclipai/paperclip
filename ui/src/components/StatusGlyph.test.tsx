@@ -17,6 +17,7 @@ const STATUS_ICON_CLASS: Record<string, string> = {
   backlog: "lucide-circle-dashed",
   todo: "lucide-circle",
   in_progress: "lucide-task-progress-spinner",
+  monitoring: "lucide-clock",
   in_review: "lucide-circle-dot",
   done: "lucide-circle-check",
   blocked: "lucide-circle-minus",

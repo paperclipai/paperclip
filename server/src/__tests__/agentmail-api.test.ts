@@ -24,6 +24,43 @@ const message = (extra = {}) =>
     ...extra,
   });
 describe("AgentMail protocol boundary", () => {
+  it("checks the visible inbox list without probing an uncreated address", async () => {
+    const fetcher = vi.fn(async () => Response.json({ inboxes: [{ inbox_id: "Ralph@agentmail.to" }] }));
+    await expect(agentmailApi("private-key", fetcher).checkAddress("ralph@agentmail.to"))
+      .resolves.toEqual({ address: "ralph@agentmail.to", status: "taken" });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledWith("https://api.agentmail.to/v0/inboxes?limit=100", expect.objectContaining({ method: "GET", body: undefined }));
+  });
+  it("never treats an unlisted inbox as proof that an address is available", async () => {
+    const fetcher = vi.fn(async () => Response.json({ inboxes: [], next_page_token: "more-inboxes" }));
+    await expect(agentmailApi("private-key", fetcher).checkAddress("ralph@agentmail.to"))
+      .resolves.toEqual({ address: "ralph@agentmail.to", status: "unknown" });
+  });
+  it("can create the checked address and its access key when the provider caches missing inbox lookups", async () => {
+    let created = false;
+    let negativeLookupCached = false;
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v0/inboxes" && init?.method === "GET") return Response.json({ inboxes: [] });
+      if (path === "/v0/inboxes" && init?.method === "POST") {
+        created = true;
+        return Response.json({ inbox_id: "ralph@agentmail.to" });
+      }
+      if (path === "/v0/inboxes/ralph%40agentmail.to" && !created) negativeLookupCached = true;
+      if (!created || negativeLookupCached) return Response.json({ code: "not_found" }, { status: 404 });
+      return Response.json({ api_key: "test-runtime-key", api_key_id: "runtime-id" });
+    });
+    const api = agentmailApi("test-account-key", fetcher);
+    await expect(api.checkAddress("ralph@agentmail.to")).resolves.toMatchObject({ status: "unknown" });
+    const inbox = await api.createInbox({ username: "ralph" });
+    await expect(api.createInboxKey(inbox.inbox_id)).resolves.toMatchObject({ api_key_id: "runtime-id" });
+    expect(negativeLookupCached).toBe(false);
+  });
+  it.each([401, 403, 404, 429, 503])("preserves lookup errors (%s) rather than claiming an address is taken or free", async status => {
+    const fetcher = vi.fn(async () => Response.json({ code: "missing_permission" }, { status }));
+    await expect(agentmailApi("private-key", fetcher).checkAddress("ralph@agentmail.to"))
+      .rejects.toMatchObject({ status, operation: "list_inboxes" });
+  });
   it("verifies the exact raw body and rejects forged or stale Svix signatures", () => {
     const secret = `whsec_${Buffer.from("a-test-secret-only").toString("base64")}`;
     const body = JSON.stringify({
@@ -322,6 +359,10 @@ describe("AgentMail protocol boundary", () => {
     expect(send?.responses).toHaveProperty("202");
     const setup = operations.find(o => o.path === "/api/companies/{companyId}/email/inspect");
     expect(JSON.stringify(setup?.authorization)).toContain("board");
+    const check = operations.find(o => o.path === "/api/companies/{companyId}/email/connections/{connectionId}/check-address");
+    expect(check?.requestBody).toBeDefined();
+    expect(JSON.stringify(check?.authorization)).toContain("board");
+    expect(check?.responses).toHaveProperty("429");
   });
 
 });

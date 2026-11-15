@@ -6,9 +6,8 @@ import type {
   EmailPublicationSummary,
   EmailThreadSummary,
 } from "@paperclipai/shared";
-import { emailApi } from "@/api/email";
+import { useEmailThread } from "@/hooks/useEmailThread";
 import { issuesApi } from "@/api/issues";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 const EmailContext = createContext<EmailThreadSummary | null>(null);
 export function EmailThreadProvider({
   companyId,
@@ -19,13 +18,7 @@ export function EmailThreadProvider({
   issueId: string;
   children: ReactNode;
 }) {
-  const { enabled } = useChatConnectorsEnabled();
-  const thread = useQuery({
-    queryKey: ["email-thread", companyId, issueId],
-    queryFn: () => emailApi.thread(companyId, issueId),
-    enabled,
-    refetchInterval: enabled ? 3000 : false,
-  });
+  const thread = useEmailThread(companyId, issueId);
   return (
     <EmailContext.Provider value={thread.data ?? null}>
       {children}
@@ -49,7 +42,9 @@ export function EmailMessageCard({
   message,
   publication,
   issueId,
+  contextNotice = false,
 }: {
+  contextNotice?: boolean;
   message: EmailMessage;
   publication?: EmailPublicationSummary;
   issueId: string;
@@ -64,7 +59,7 @@ export function EmailMessageCard({
       aria-label={
         message.direction === "inbound" ? "Email received" : "Email sent"
       }
-      className="space-y-4 rounded-xl border border-border bg-card p-5"
+      className={contextNotice ? "task-context-notice space-y-3" : "space-y-4 rounded-xl border border-border bg-card p-5"}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-2 text-sm font-semibold">

@@ -1,0 +1,221 @@
+{
+  "audit": {
+    "file": "ui/src/components/IssueFiltersPopover.test.tsx",
+    "base": "2e76f5157240ee8b2d42adbdcd4c345aea07c013",
+    "originalSha256": "bc64ad73ccd00e837e92a2ddf0309cf063e30e6a55704b0e8031a6c95d697688",
+    "candidateSha256": "6bdb383ad113f555c1208bbdb1bda2203e027a059751fb9fa7b405d5e9c7f8ef",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 1,
+    "renderInvocationsRemoved": 1,
+    "setupInvocationsRemoved": 1,
+    "netTestLinesRemoved": 22,
+    "migrations": [
+      {
+        "retired": "hides the Priority filter section while priority UI is off (PAP-411)",
+        "keeper": "uses a scrollable popover and a three-column desktop grid",
+        "exactLeadingStatements": 4,
+        "sameEnclosingHooks": true,
+        "explicitCleanupAstEqual": false,
+        "kind": "normal",
+        "exactMigratedStatements": [
+          "expect(popoverContent?.textContent).toContain(\"Status\");",
+          "expect(popoverContent?.textContent).not.toContain(\"Priority\");"
+        ],
+        "alreadyExactKeeperStatementsOrBindings": [],
+        "registeredInvocationsRemoved": 1,
+        "renderInvocationsRemoved": 1,
+        "setupInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "ff07f5e2e308cfc0f26584a6cd6599bcd98665e79d7f4782ed5bb36b35cb8cb9",
+  "mutationVerifierSha256": "676b973d4838ed130c5ae92d4bc50fb32a65309af8c858450ec34bcce13729e9",
+  "runs": [
+    {
+      "kind": "baseline",
+      "total": 5,
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "04cc18d7e6470f2861ac1d76af11bef0e60492f45dd94685df4efe078436bee4",
+      "logSha256": "05761c256ebb185006c0a3fc406347c46ef9543ba1ddcf5242e8f6e8f775356f"
+    },
+    {
+      "kind": "candidate",
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "4deabc223e9f57bacf81f0c7d87b621c1eb620f397b54c1b49a876b3603810d0",
+      "logSha256": "d4a57beb3f938c21882056691d74fcb1bfc3db84656987cd3aaa5de8737fdbde"
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "status",
+      "owner": "ui/src/components/IssueFiltersPopover.tsx",
+      "sourceSha256": "ea92ceec823ad162f6fd843d094c849b9cd535aba1721059f7ea6d8c780d734b",
+      "title": "uses a scrollable popover and a three-column desktop grid",
+      "mutation": {
+        "before": ">Status</span>",
+        "after": ">Missing status</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(popoverContent?.textContent).toContain(\"Status\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "03e26e0e193e289480f5ee00500ec4d4e0e4d1de112ef708d7754a712fdadacc",
+        "logSha256": "de89d91b9b7e15774cc570b6fed343ace6fe6468c32f62045c4439061400b53e",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "81b7e1eb1de267f667c001ed838b65523fa8015f4265c84d82c19b9dd847d172",
+        "logSha256": "8f981560c571bacd648edcc6322ceee073cad7039085186a8381aa62f447b2be",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'FiltersQuick filtersAllActiveBacklogD\u2026' to contain 'Status'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueFiltersPopover.test.tsx:76:41\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "priority",
+      "owner": "ui/src/components/IssueFiltersPopover.tsx",
+      "sourceSha256": "ea92ceec823ad162f6fd843d094c849b9cd535aba1721059f7ea6d8c780d734b",
+      "title": "uses a scrollable popover and a three-column desktop grid",
+      "mutation": {
+        "before": "{SHOW_TASK_PRIORITY_UI && (",
+        "after": "{true && (",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(popoverContent?.textContent).not.toContain(\"Priority\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "2b9d14ef5dba8d78ca254915e80969abb778dce7b6648548cc9684b3c79b698c",
+        "logSha256": "381ff350cd72e952c86246a8dd06867cd766e776fd6f471b71e220b312799866",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "d816a0329a953d6dd71e16eca02e95439534e24e753d50f1ea742ad43d9e9396",
+        "logSha256": "3fc77abdcbcedc235471237fdbb6a7d36caf9aa765193a9c62ffee4d39b99bb3",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'FiltersQuick filtersAllActiveBacklogD\u2026' not to contain 'Priority'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/IssueFiltersPopover.test.tsx:77:45\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-agentconfig-controls.json",
+      "sha256": "cfb4357610beaa464cdb26848f74a7b8d967d6409c63dbd6821c92886a9cf980"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-agentconfig.md",
+      "sha256": "ea6d5dfc8cedcd653edd55ca9d77568431413a351f4de5db77ca6ac8f22b051a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary-controls.json",
+      "sha256": "bad49e7bc92dea919df6b980bfa45e7452984cf31a6fd4655b355ba0444ff9a6"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary.md",
+      "sha256": "cd6f173584db0d485004af6f85b1ce78fa65b19d8c6ef582b061f0d232c6c1ed"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments-controls.json",
+      "sha256": "c4ff66a3226e1edafd286cad0ca45c9445795b46944cf70d606c59a754913f3a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments.md",
+      "sha256": "d38715393c95306d10e871a5a2c9a32f105fa1452871cd7ad030d86dbbdb7416"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-experimental-controls.json",
+      "sha256": "9c72abee7ee1a937fdbd6ccee870320308bc7ce06b4fc1e338cd9bd3b0efba6b"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-experimental.md",
+      "sha256": "93b7583a8ebba39dc97e390918fd62029955a00beda22756f55bd6374acc3737"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-inline-controls.json",
+      "sha256": "af9d3f115e6e0518c2c0a2e11b8913e7aa82a35c848f114e6750884323601e17"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-inline.md",
+      "sha256": "52d8e27970bd1c091ae7edf403b2331e921081da9198270df65ff779a8efc1bc"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuechat-controls.json",
+      "sha256": "45d86fa901c8ab40bc3fe98d266e3ba1a7bbc93edb7bc2aae60ccd9bfa130c37"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuechat.md",
+      "sha256": "15e84a553c5a468aea013941f68d3aa517bfb5a13ae296a90e1a39586f85de8e"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuedetail-controls.json",
+      "sha256": "a56f183f1c6b940662db0c4bfb62457eda0cec453c2019b439ec716ed9d2a3e1"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuedetail.md",
+      "sha256": "e137af5b991c936a167d6ad6f3c710b99688e939f839b163b203259fc998ded8"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route-controls.json",
+      "sha256": "0a72a7770ec749f2c0507a74d395e65d70b722d0b9d2a767a2c066a67ed46382"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route.md",
+      "sha256": "9b5e1543163d6c9d0958aa3e377a593ec458f6674ce1ddb2bf3ca158786f09c4"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar-controls.json",
+      "sha256": "ae9f24746e67432cf6247c5da130b9c1bba46fc85112c0610d3f18545dfce326"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar.md",
+      "sha256": "5e267441c43aa8375fa5c54edcbd2879428d657708be9a2ab372aa66e4792886"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline-controls.json",
+      "sha256": "6a86b07770f1cd8d758334fb61c46254197a7f533d24c056fc9a52c317488291"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline.md",
+      "sha256": "612dc3ec4c3d435888055ba20a7f28230ce89ea8b071b8c38d1ea2c147074a96"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

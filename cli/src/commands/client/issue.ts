@@ -59,6 +59,7 @@ interface IssueCreateOptions extends BaseClientOptions {
   projectId?: string;
   goalId?: string;
   parentId?: string;
+  standalone?: boolean;
   requestDepth?: string;
   billingCode?: string;
 }
@@ -286,10 +287,17 @@ export function registerIssueCommands(program: Command): void {
       .option("--project-id <id>", "Project ID")
       .option("--goal-id <id>", "Goal ID")
       .option("--parent-id <id>", "Parent issue ID")
+      .option(
+        "--standalone",
+        "Create a top-level issue. Without --parent-id, an agent run's issue otherwise becomes the parent.",
+      )
       .option("--request-depth <n>", "Request depth integer")
       .option("--billing-code <code>", "Billing code")
       .action(async (opts: IssueCreateOptions) => {
         try {
+          if (opts.standalone && opts.parentId) {
+            throw new Error("--standalone cannot be combined with --parent-id");
+          }
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const payload = createIssueSchema.parse({
             title: opts.title,
@@ -299,7 +307,7 @@ export function registerIssueCommands(program: Command): void {
             assigneeAgentId: opts.assigneeAgentId,
             projectId: opts.projectId,
             goalId: opts.goalId,
-            parentId: opts.parentId,
+            parentId: opts.standalone ? null : opts.parentId,
             requestDepth: parseOptionalInt(opts.requestDepth),
             billingCode: opts.billingCode,
           });

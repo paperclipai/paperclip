@@ -1,0 +1,79 @@
+{
+  "kind": "independent-drafting-simulation",
+  "date": "2026-10-02",
+  "scope": "Three synthetic hire requests; read-only. No API calls, permanent hires, provider campaign, or live harness qualification.",
+  "skillSources": [
+    {
+      "path": "skills/paperclip-create-agent/SKILL.md",
+      "sha256": "00e3063a40bbe32592171fa613956bc1b503fe0a41c4973c8dae7b8cdf8c148a"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/agent-instruction-templates.md",
+      "sha256": "9ce87fc420b41e951cab664655886d0ee50fa253cb5b8647b4a7afa4a6082d2d"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/baseline-role-guide.md",
+      "sha256": "0841c5c483526d8d64c7217df7164bca7f3f03edcf4578f2baefcca01cd156b0"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/draft-review-checklist.md",
+      "sha256": "1cbe0577a9888f31467f5c7beea01d0aa6435da2a0f577b5fdd3b5fe773984ad"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/agents/coder.md",
+      "sha256": "e04a25fbc8bb29910b2f4a3719730b8840553b0524ce1ec570617701aca20650"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/agents/securityengineer.md",
+      "sha256": "9eecf981844ab1f5896dd1bae6b76acce8471c448841608c5655497d691ba1a0"
+    },
+    {
+      "path": "skills/paperclip-create-agent/references/api-reference.md",
+      "sha256": "f43bd2f74d60a9f019af1c037584f2cb4bb2b1f66f503a60eca80278676bded1"
+    }
+  ],
+  "observed": [
+    {
+      "request": "Backend engineer Ada; legacy Claude; repo-maintenance skill; CTO reporting line",
+      "instructions": "You are agent Ada, a backend software engineer at Northstar. You own implementation of assigned backend service changes.",
+      "desiredSkills": [
+        "northstar/repo-maintenance"
+      ],
+      "adapterType": "claude_local",
+      "model": "claude-sonnet-4-6",
+      "timerEnabled": false,
+      "literalCredentials": false
+    },
+    {
+      "request": "Release Coordinator Riley; native Codex; no schedule",
+      "instructions": "You are agent Riley, a Release Coordinator at Northstar. You own coordination of release readiness and publication requests.",
+      "desiredSkills": [],
+      "adapterType": "paperclip_runner",
+      "provider": "codex",
+      "model": "gpt-5.4",
+      "timerEnabled": false,
+      "literalCredentials": false
+    },
+    {
+      "request": "Security Engineer Sam; legacy Claude; exact user instruction; confidential workflow installed",
+      "instructions": "Review only the authentication service. Keep private findings in the incident-review workflow. Do not edit code.",
+      "requestedInstructionsPreservedExactly": true,
+      "desiredSkills": [
+        "northstar/incident-review"
+      ],
+      "adapterType": "claude_local",
+      "model": "claude-sonnet-4-6",
+      "timerEnabled": false,
+      "literalCredentials": false
+    }
+  ],
+  "remainingBeforeMutation": [
+    "Confirm live endpoint and adapter schemas.",
+    "Submit through authorized hire API and reconcile returned pending approval; no hire may be claimed from this simulation."
+  ],
+  "limits": [
+    "Outcome projection of independent subagent drafting, not a live full-stack measurement.",
+    "No baseline drafting simulation, timing, billing, or downstream work comparison.",
+    "Does not establish non-regression for removed workflow or domain policies."
+  ]
+}

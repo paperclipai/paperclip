@@ -26,7 +26,7 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
     {
       "id": "mgr-1",
       "name": "EngineeringLead",
-      "role": "manager",
+      "role": "cto",
       "title": "VP Engineering"
     },
     {
@@ -106,6 +106,12 @@ POST /api/companies/company-1/exports
   ]
 }
 ```
+
+**Issue Activity (`GET /api/issues/:issueId/activity`)**
+
+Returns the issue's activity history, including actor, action, timestamp, and sanitized details. Sandbox agents can call this read-only route for issues their identity may read. Company boundaries and issue-read authorization still apply; this does not grant company-wide audit access.
+
+An automatic stale-recovery cancellation has `action: "issue.recovery_action_resolved"` and `details.source: "source_revalidation"`. Page reads use `details.trigger: "read_projection"`. These cancellations belong to the system. Historical reader-attributed rows with that source and trigger do not count as inbox participation or recent issue activity.
 
 ### Issue with Ancestors (`GET /api/issues/:issueId`)
 
@@ -588,7 +594,7 @@ Paperclip converts that into a `changes_requested` decision, reassigns the issue
 ```
 # 1. Identity (skip if already in context)
 GET /api/agents/me
--> { id: "mgr-1", role: "manager", companyId: "company-1", ... }
+-> { id: "mgr-1", role: "cto", companyId: "company-1", ... }
 
 # 2. Check team status
 GET /api/companies/company-1/agents
@@ -612,7 +618,7 @@ GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progres
 POST /api/issues/issue-30/checkout
 { "agentId": "mgr-1", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
-# 6. Create subtasks and delegate.
+# 6. Task creation with an optional parent and assignee.
 POST /api/companies/company-1/issues
 { "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
 
@@ -930,7 +936,7 @@ Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy
 
 **Text answer (copy this complete payload)**
 
-For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. The REST API still requires matching `payload.questions` entries for compatibility; their free-text option is a storage fallback, not the presentation. Keep question IDs and prompts identical in both fields. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
+For an open-ended answer, render a text field using `payload.questionSet` with `answerMode: "text"`, no options, and no `customAnswer`. Send one complete `payload.questionSet` containing every text and choice question. When you need several independent inputs, ask them together in one card instead of one card per question; ask a follow-up card only when it depends on an earlier answer. If the user asks for one question at a time, ask only the next unanswered question. The server generates matching `payload.questions` entries for storage and answer compatibility. Legacy choice-only payloads remain supported. If both fields are supplied, their IDs, prompts, required flags, modes, and visible options must agree. Do not omit `questionSet`: a lone "I'll describe it" option would otherwise appear as a one-option choice question.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -942,13 +948,6 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "questions": [{
-      "id": "responsibility",
-      "prompt": "What should the new agent be responsible for?",
-      "selectionMode": "single",
-      "required": true,
-      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
-    }],
     "questionSet": {
       "schema": "paperclip.question_set.v1",
       "questions": [{
@@ -964,7 +963,7 @@ POST /api/issues/{issueId}/interactions
 
 **Multiple choice**
 
-Use `ask_user_questions` for a short question card. Each `payload.questions` entry requires `id`, `prompt`, `selectionMode`, and options with `id` and `label`. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+Use `ask_user_questions` for a short question card. Use `payload.questionSet` with `answerMode: "single_select"` or `"multi_select"`, an explicit `required` flag, and options with `id` and `label`. Use `customAnswer: { "enabled": true }` to offer a written alternative. Choice questions must offer at least two distinct, meaningful choices; use the canonical text presentation above for open-ended questions. Do not send `question`/`type: "text"` or an empty options array in a `payload.questions` entry. Set `resolverPolicy: "human_only"` when the answer must come from the user.
 
 ```json
 POST /api/issues/{issueId}/interactions
@@ -976,20 +975,24 @@ POST /api/issues/{issueId}/interactions
   "continuationPolicy": "wake_assignee",
   "payload": {
     "version": 1,
-    "questions": [{
-      "id": "responsibility",
-      "prompt": "What should the new agent be responsible for?",
-      "selectionMode": "single",
-      "required": true,
-      "allowOther": true,
-      "options": [
-        { "id": "research", "label": "Research", "description": "Find and summarize information." },
-        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
-      ]
-    }]
+    "questionSet": {
+      "schema": "paperclip.question_set.v1",
+      "questions": [{
+        "id": "responsibility",
+        "prompt": "What should the new agent be responsible for?",
+        "answerMode": "single_select",
+        "required": true,
+        "customAnswer": { "enabled": true },
+        "options": [
+          { "id": "research", "label": "Research", "description": "Find and summarize information." },
+          { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+        ]
+      }]
+    }
   }
 }
 ```
+
 
 After verifying the interaction was saved and is pending, record the waiting state:
 
@@ -1081,11 +1084,11 @@ Rules:
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
-- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before implementation.
 
 ### Conversational confirmation answers
 
-To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: `human_only`, independent-review restrictions, named addressees, and governed-action controls still apply. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
+To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: independent-review restrictions, named addressees, and governed-action controls still apply. A `human_only` card accepts this relay only when its creator requested `human_only` itself and the comment's author is the user the run or conversation serves; company-capped, governed-action and quality-review cards still require the human to use the card. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
 
 Read current cards and comments before interpreting the reply. Resolve the specific proposal before performing the approved work. Ask for clarification when a reply is ambiguous among multiple proposals or checkbox choices; do not approve all of them. Requested revisions are not acceptance. If the write is interrupted, retry the same card/message/decision: matching retries return `deduplicated: true` without another wake. Conflicting, stale, deleted, superseded, wrong-user, and previous-session answers fail. Do not ask the user to clear a card after their decision is saved.
 
@@ -1192,7 +1195,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 Other outcomes match `request_confirmation`:
 
 - `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
-- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `cancelled` expires all pending interactions without continuation wakes. Transitioning to `done` expires current questions and governed requests, but retains ordinary historical questions that precede newer human direction. An authorized human can answer a retained question after completion; this records history without reopening work or creating a response wake. Listing a terminal issue also applies these rules in its catch-up sweep.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
@@ -1362,6 +1365,8 @@ Terminal states: `done`, `cancelled`
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
+- Agent-created task trees are at most two levels deep (a top-level task and its children). A create or move that would make a grandchild is not rejected: the task is placed under the requested parent's parent, and the response carries `parentAdjusted` (`reason`, `requestedParent`, `effectiveParent`, `applied`). Moving a task that has children is skipped with `reason: "has_children"`. Board users are not limited, and existing deeper trees stay valid.
+- `originIssueId` (read-only, server-set) records the task whose work created this one: the task your run was on, otherwise the chat that handed it off or the requested parent. It is an audit trail, not hierarchy. `originRunId` is the run that created it.
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
@@ -1669,10 +1674,42 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
-| Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
+| Omit a required parent relationship         | The task appears outside its intended hierarchy      | Set `parentId` when a parent relationship is intended   |
 | Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | Expect an @-mention to dispatch work        | Mentions are context only                            | Assign a task or request an explicit review             |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Record the blocker and use a saved interaction or dependency |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+
+**Run-scoped agent connection access.**
+
+`POST /api/runtime-tools/connections/request` uses the injected runtime tool
+capability, not a board session or ordinary agent key. Input:
+`{service, connectionId?, toolNames?, selectionInteractionId?, targetService?}`.
+`toolNames` contains 1–20 unique indexed names; company, agent, user, and task
+identity come from the active run. Missing access to an eligible saved connection
+creates a server-owned `connection_intent` with `payload.accessRequest` containing
+the connection ID/name and immutable catalog IDs, names, version hashes, and
+Allowed/Ask-first settings. The addressed human connection manager accepts via
+`POST /api/connection-intents/:id/complete` with `{connectionId}` or declines via
+`POST /api/connection-intents/:id/decline`. Acceptance atomically installs the
+connection for the requesting agent, grants only the listed tools, retains
+per-call write approval, records activity, and dispatches the existing continuation.
+An unauthorized approver receives 403; changed tool definitions, assignment,
+identity, or a closed task receive 409; unrelated connections receive 404.
+No credentials or provider authorization URL appear in the card payload.
+
+For sandbox run inspection, see [Run diagnostics from a sandbox](run-diagnostics.md).
+
+**Sandbox task context routes.**
+
+The queue and HTTP/2 callback bridges admit company skill detail and file reads,
+`GET /api/assets/{assetId}/content`, `GET /api/issues/{id}/diagnostics/wakes`,
+and `POST /api/issues/{id}/monitor/check-now`. Use the asset URL embedded in the
+task to read its screenshot. Use the skill files route with a `path` query
+parameter to read a referenced script or instruction file.
+
+Bridge admission does not grant resource access. The controller rechecks company,
+task and skill visibility, and monitor-management permission. Asset mutations,
+skill-file mutations and recovery-action resolution remain restricted.

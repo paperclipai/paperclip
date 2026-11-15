@@ -12,6 +12,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
   try {
     const tests = path.join(root, "server/src/__tests__");
     mkdirSync(tests, { recursive: true });
+    mkdirSync(path.join(root, "server/scripts"), { recursive: true });
     symlinkSync(path.join(repoRoot, "node_modules"), path.join(root, "node_modules"), "junction");
     writeFileSync(path.join(root, "package.json"), JSON.stringify({ private: true }));
     writeFileSync(path.join(root, "vitest.config.mjs"), `export default {
@@ -27,6 +28,8 @@ it("runs every active nested/parameterized fixture case exactly once through the
       afterEach(() => { active = false; });
       function record(id) { expect(active).toBe(true); appendFileSync(${JSON.stringify(trace)}, JSON.stringify(id) + "\\n"); }
       it("top-level", () => record("top"));
+      it("second top-level", () => record("top-second"));
+      it("third top-level", () => record("top-third"));
       describe("nested", () => {
         it("first", () => record("nested-first"));
         it("second", () => record("nested-second"));
@@ -36,7 +39,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
     const run = (index: number, count: number) => spawnSync(process.execPath, [
       path.join(repoRoot, "scripts/run-vitest-stable.mjs"), "--mode", "general", "--group", "general-chat",
       "--shard-index", String(index), "--shard-count", String(count),
-    ], { cwd: root, env: { ...process.env, CI: "true" }, encoding: "utf8", timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
+    ], { cwd: root, env: { ...process.env, CI: "true", PAPERCLIP_CI_PROFILE: "false" }, encoding: "utf8", timeout: 45_000, maxBuffer: 4 * 1024 * 1024 });
     for (const index of [0, 1]) {
       const result = run(index, 2);
       expect(result.error, result.stderr).toBeUndefined();
@@ -44,7 +47,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
       expect(result.stdout).toContain("exact filter coverage verified");
     }
     const executed = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(executed.sort()).toEqual(["a", "b", "c", "d", "nested-first", "nested-second", "top"]);
+    expect(executed.sort()).toEqual(["a", "b", "c", "d", "nested-first", "nested-second", "top", "top-second", "top-third"]);
 
     // A real assertion failure must still fail the wrapper after successful
     // collection and filter validation.
