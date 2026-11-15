@@ -60,12 +60,23 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       let timer: ReturnType<typeof setTimeout>;
       let previous = cached;
       const checkedAt = now();
+      let providerStarted = false;
+      let storeWriteStarted = false;
+      let timeoutWrite: Promise<void> | undefined;
       const fallback = (): LinkPreviewResult => ({ preview: cache.get(key)?.result.preview ?? previous?.result.preview ?? null, maxAgeMs: 60_000 });
       const deadline = new Promise<LinkPreviewResult>(resolve => {
         timer = setTimeout(() => {
-          controller.abort();
           const current = cache.get(key);
-          resolve(current && current.expiresAt > now() ? remaining(current) : fallback());
+          const result = current && current.expiresAt > now() ? remaining(current) : fallback();
+          const entry = { result, expiresAt: now() + result.maxAgeMs };
+          remember(key, entry);
+          // Publish timeout freshness without delaying the caller. The lookup
+          // keeps its slot until both the provider and this write settle.
+          if (options.store && providerStarted && !storeWriteStarted) {
+            timeoutWrite = Promise.resolve().then(() => options.store!.write(scope, target, entry, checkedAt)).catch(() => {});
+          }
+          controller.abort();
+          resolve(result);
         }, options.timeoutMs ?? 5_000);
       });
       // All underlying work, including uncancellable SQL, retains its slot until
@@ -77,15 +88,19 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
         }
         if (controller.signal.aborted) return fallback();
         if (previous && previous.expiresAt > now()) { remember(key, previous); return remaining(previous); }
+        providerStarted = true;
         const result = await provider.resolve(target, scope, controller.signal).catch(() => UNAVAILABLE);
         if (controller.signal.aborted) return fallback();
         const bounded = { ...result, maxAgeMs: Math.max(1_000, Math.min(result.maxAgeMs, 60 * 60_000)) };
         if (!bounded.preview && previous?.result.preview) bounded.preview = previous.result.preview;
         const entry = { result: bounded, expiresAt: now() + bounded.maxAgeMs };
         remember(key, entry);
-        if (options.store) await options.store.write(scope, target, entry, checkedAt).catch(() => {});
+        if (options.store) {
+          storeWriteStarted = true;
+          await options.store.write(scope, target, entry, checkedAt).catch(() => {});
+        }
         return remaining(entry);
-      }).catch(fallback).finally(() => { activeOperations--; });
+      }).catch(fallback).finally(async () => { await timeoutWrite; activeOperations--; });
       const request = Promise.race([operation, deadline]).then(result => {
         const current = cache.get(key);
         if (!current || current.expiresAt <= now()) remember(key, { result, expiresAt: now() + result.maxAgeMs });

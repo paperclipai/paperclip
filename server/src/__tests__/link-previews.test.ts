@@ -103,6 +103,19 @@ describe("demand-driven link preview cache", () => {
     await service.get(scope, url + "1");
     expect(resolve).toHaveBeenCalledTimes(2);
   });
+  it("keeps timeout persistence inside the concurrency budget after the provider aborts", async () => {
+    vi.useFakeTimers();
+    let finishWrite!: () => void;
+    const write = vi.fn(async () => {}).mockImplementationOnce(() => new Promise<void>(done => { finishWrite = done; }));
+    const resolve = vi.fn(async (_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: typeof scope, signal: AbortSignal) => unavailable)
+      .mockImplementationOnce((_target, _scope, signal) => new Promise((_done, reject) => signal.addEventListener("abort", () => reject(new Error("timeout")))));
+    const service = createLinkPreviewService([{ key: "github", resolve }], { store: { read: async () => new Map(), write }, timeoutMs: 20, maxConcurrent: 1 });
+    const first = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(21); expect(await first).toEqual(unavailable);
+    await service.get(scope, url + "1"); expect(resolve).toHaveBeenCalledTimes(1);
+    finishWrite(); await vi.advanceTimersByTimeAsync(1);
+    await service.get(scope, url + "1"); expect(resolve).toHaveBeenCalledTimes(2);
+  });
   it("aborts a real stalled HTTP read while an unrelated lookup remains responsive", async () => {
     const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write("{"); });
     server.listen(0, "127.0.0.1");

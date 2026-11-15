@@ -55,6 +55,23 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     expect(resolve).toHaveBeenCalledTimes(3);
     expect((await make().cached(scope, [missing])).results[missing].preview).toBeNull();
   });
+  it("persists provider timeout freshness across service restarts without extending the response", async () => {
+    const scope = await fixture();
+    const database = createLinkPreviewStore(context.db);
+    let saved!: () => void;
+    const persisted = new Promise<void>(done => { saved = done; });
+    const store = { ...database, write: async (...args: Parameters<typeof database.write>) => { await database.write(...args); saved(); } };
+    const resolve = vi.fn((_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: import("../services/link-previews.js").LinkPreviewScope, signal: AbortSignal) => new Promise<never>((_done, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("timeout")));
+    }));
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store, timeoutMs: 100 });
+    expect((await first.get(scope, url)).preview).toBeNull();
+    await persisted;
+    const restarted = createLinkPreviewService([{ key: "github", resolve }], { store });
+    expect((await restarted.get(scope, url)).preview).toBeNull();
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect((await restarted.cached(scope, [url])).results[url].maxAgeMs).toBeGreaterThan(0);
+  });
   it("reads a 50-link page in one indexed select and does not require task relationships", async () => {
     const scope = await fixture();
     const store = createLinkPreviewStore(context.db);
