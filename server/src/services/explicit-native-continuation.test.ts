@@ -1039,7 +1039,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const f = await seedLeaseCancelledTurn(), stageId = randomUUID(), decisionId = randomUUID();
     const role = mode === "reviewer" ? "reviewer" : "executor";
     const stage = buildExecutionStageWakeContext({state: {status: role === "reviewer" ? "pending" : "changes_requested",
-      currentStageId: stageId, currentStageType: "review", currentParticipant: {type: "agent", agentId: f.agentId},
+      currentStageId: stageId, currentStageIndex: null, reviewRequest: null, currentStageType: "review", currentParticipant: {type: "agent", agentId: f.agentId},
       returnAssignee: {type: "agent", agentId: f.agentId}, lastDecisionId: decisionId, lastDecisionOutcome: "changes_requested",
       changesRequestedCount: 1, completedStageIds: []}, wakeRole: role, allowedActions: []});
     await db.update(heartbeatRuns).set({contextSnapshot: {...f.source.contextSnapshot, executionStage: stage}}).where(eq(heartbeatRuns.id, f.source.id));
