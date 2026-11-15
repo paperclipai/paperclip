@@ -95,6 +95,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     githubBroker: githubBroker.optional(),
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
+    preparationDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+    runDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),
   z.object({
@@ -186,7 +188,8 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict(),
   z.object({ kind: z.literal("state"), taskId: providerId, state: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch, projectAuthCheckAtSubmit: z.literal(true).optional() }).strict(),
+  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch, projectAuthCheckAtSubmit: z.literal(true).optional(),
+    projectAuthChecked: z.literal(true).optional() }).strict(),
   z.object({ kind: z.literal("credentials"), taskId: providerId, /** Null proves that cancellation fenced admission before the task could start. It must not mean an unavailable export. */
     credential: environmentTaskCredentialSchema.nullable() }).strict(),
   z.object({ kind: z.literal("description"), taskId: providerId,
@@ -205,6 +208,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     githubCredentialBrokerVersion: z.literal(1).optional(),
     configuredEnvironmentVersion: z.literal(1).optional(),
     resumeLaunchInputsVersion: z.literal(1).optional(),
+    launchDigestVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

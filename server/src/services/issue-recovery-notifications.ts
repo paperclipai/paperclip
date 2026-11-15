@@ -26,6 +26,10 @@ export async function notifyIssueRecovery(transaction: object, scope?: IssueReco
   }
 }
 
+export function issueRecoveryBackstopHint(companyId: string) {
+  return JSON.stringify({ companyId, backstop: true });
+}
+
 export function decodeIssueRecoveryHint(hint: string): IssueRecoveryScope | undefined {
   return hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope;
 }
@@ -44,10 +48,7 @@ export async function notifyIssueGraphRecovery(transaction: object,
   const companyHint = JSON.stringify({ companyId: scope.companyId });
   for (const queue of COMPANY_QUEUES) await notifyDeliveryWork(transaction, queue, companyHint);
   const graphHint = JSON.stringify({ companyId: scope.companyId, graphRunId: scope.runId ?? undefined, graphIssueId: scope.issueId ?? undefined });
-  for (const queue of TASK_QUEUES) {
-    await notifyDeliveryWork(transaction, queue, graphHint);
-    await notifyDeliveryWork(transaction, queue, JSON.stringify({ companyId: scope.companyId, backstop: true }));
-  }
+  for (const queue of TASK_QUEUES) await notifyDeliveryWork(transaction, queue, graphHint);
 }
 
 export async function resolveIssueGraph(db: Db, scope: { companyId: string; runId?: string; issueId?: string }): Promise<string[] | null> {

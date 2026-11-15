@@ -39,7 +39,7 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, terminalWorkspaceTargetsFromHints, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
@@ -3688,16 +3688,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         : undefined;
       const scanFilter = targets ? and(baseCandidateFilter, terminalWorkspaceTargetFilter(targets))
         : and(baseCandidateFilter, boundaryFilter, cursorFilter);
-      const candidates = await db
+      const candidateQuery = db
         .select({ workspace: executionWorkspaces, cursorAt: sql<string>`${executionWorkspaces.updatedAt}::text` })
         .from(executionWorkspaces)
         .where(scanFilter)
-        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
-        .limit(limit);
+        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id));
+      const candidates = await (targets ? candidateQuery : candidateQuery.limit(limit));
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
-      if (targets && candidates.length >= limit) terminalSweepRescanRequested = true;
       if (!targets && candidates.length < limit) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
@@ -4398,8 +4397,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (!options.targets) {
           terminalSweepCursor = previousCursor;
           terminalSweepBoundary = previousBoundary;
+          terminalSweepRescanRequested = true;
         }
-        terminalSweepRescanRequested = true;
         throw error;
       } finally {
         terminalSweepInProgress = false;
@@ -4409,7 +4408,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     hasTerminalWorkspaceSweepContinuation: () => terminalSweepCursor !== null || terminalSweepRescanRequested,
 
     terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>, options: { targeted?: boolean } = {}) => {
-      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !(options.targeted && terminalWorkspaceTargetsFromHints(hints))) {
+      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !options.targeted) {
         terminalSweepRescanRequested = true;
       }
       pullRequestStateCache.clear();
@@ -4432,11 +4431,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
     },
 
+    listPluginTerminalWorkspaceIds: async () => {
+      const rows = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.providerType, "plugin"),
+        sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
+        or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
+          and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`)),
+      ));
+      return rows.map(row => row.id);
+    },
+
     takeDueTerminalWorkspaceTargets: (): { workspaceIds: string[]; rotation: boolean } => {
       const at = now().getTime();
       const due = (deadlines: Map<string, number>) => [...deadlines].filter(([, deadline]) => deadline <= at).map(([id]) => id);
-      const rotation = due(isolatedRehomeDeadlines).length + due(nestedCloneMigrationDeadlines).length + due(taskDirectoryDeadlines).length > 0;
-      return { workspaceIds: due(terminalWorkspaceDeadlines), rotation };
+      const workspaceKey = (key: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+      const migrations = [...due(isolatedRehomeDeadlines), ...due(nestedCloneMigrationDeadlines)];
+      const rotation = due(taskDirectoryDeadlines).length > 0 || migrations.some(key => !workspaceKey(key));
+      return { workspaceIds: [...new Set([...due(terminalWorkspaceDeadlines), ...migrations.filter(workspaceKey)])], rotation };
     },
 
     nextTerminalWorkspaceSweepAt: async () => {

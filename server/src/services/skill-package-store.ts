@@ -101,6 +101,9 @@ const coldResponses: PackageIoQueue = { active: 0, waiting: [] };
 // Bound local response buffers independently so stalled storage does not prevent
 // verified cached reads, including reads inside an existing DB transaction.
 const inventoryIo: PackageIoQueue = { active: 0, waiting: [] };
+export function skillPackageStorageIoDepth() {
+  return { active: storageIo.active, waiting: storageIo.waiting.length };
+}
 async function withPackageIo<T>(action: () => Promise<T>, signal: AbortSignal, queue = storageIo): Promise<T> {
   signal.throwIfAborted();
   if (queue.active >= 2) {
@@ -353,16 +356,14 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     // the ordinary pool connection needed by an active cold response.
     const row = await descriptor(companyId, id);
     const manifest = await manifestFor(row, signal);
-    const read = () => withDedicatedDbConnection(cacheOwner, database =>
-      readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead, database));
+    const read = () => readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead);
     return cacheRead ? withPackageIo(read, signal, coldResponses) : read();
   }
   async function readIsolatedPackage<T>(row: Descriptor, manifest: SkillPackageManifest,
-    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean,
-    database: Db) {
+    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean) {
     const { companyId, id } = row;
     let published = false;
-    const result = await withPackageIo(async () => {
+    const result = await withPackageIo(() => withDedicatedDbConnection(cacheOwner, async database => {
       const parent = skillPackagePaths(companyId, id).parent;
       await ensureSkillCacheDirectory(parent, true);
       const staging = await fs.mkdtemp(path.join(parent, ".verify-"));
@@ -391,8 +392,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         }
         return result;
       } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archive, { force: true }); }
-    }, signal);
-    if (published) {
+    }, { admitWithoutWaiting: true }), signal);
+    if (published) await withDedicatedDbConnection(cacheOwner, async database => {
       // Verify possible eviction candidates outside both the preparation lock
       // and the storage slot used for this fill; take the lock only to remove.
       const reader = skillPackageStore(database, storage(), cacheOwner);
@@ -402,7 +403,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           try { await withSkillVersionCacheLock(cacheOwner, companyId, remove, true); }
           catch (error) { if (!(error instanceof SkillCacheBusy)) throw error; }
         }, signal);
-    }
+    }, { admitWithoutWaiting: cacheRead });
     signal.throwIfAborted();
     return result;
   }
