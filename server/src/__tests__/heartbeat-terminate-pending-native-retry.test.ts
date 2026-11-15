@@ -103,7 +103,7 @@ describeEmbeddedPostgres("terminating an agent whose failed run has a scheduled 
   }
 
   it.each([
-    ["in_progress", "blocked"],
+    ["in_progress", "in_progress"],
     ["cancelled", "cancelled"],
   ] as const)("cancels the pending retry and releases its sandbox at once (task %s)", async (issueStatus, finalStatus) => {
     const fixture = await seed(issueStatus);
@@ -134,5 +134,7 @@ describeEmbeddedPostgres("terminating an agent whose failed run has a scheduled 
       eq(heartbeatRuns.retryOfRunId, fixture.runId)))).toHaveLength(0);
     const [task] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
     expect(task!.status).toBe(finalStatus);
+    expect(run!.resultJson).toMatchObject({ pauseStop: { holds: ["manual"] },
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [fixture.leaseId] } });
   }, 60_000);
 });

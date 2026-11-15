@@ -1702,7 +1702,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
     await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
       status: run.status, failureReason: run.error ?? undefined,
-      providerResourceDisposition: deferral?.providerResourceDisposition ?? "destroy" });
+      providerResourceDisposition: deferral ? deferral.providerResourceDisposition ?? undefined : "destroy" });
     const [after] = await db.select({ status: environmentLeases.status, metadata: environmentLeases.metadata })
       .from(environmentLeases).where(eq(environmentLeases.id, lease.id));
     if (after?.status !== "active") return true;

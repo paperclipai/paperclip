@@ -23,7 +23,7 @@ import {
   type WakeupOptions,
 } from "./run-preparation.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
-import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { preserveNativeFailedWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
@@ -413,17 +413,23 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (cancelledRun?.runtimeMode === "native" && status === "cancelled"
       && readNativeWorkspaceSyncReference(cancelledRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
       && !nativeRunHasNoWorkspaceAccess(cancelledRun) && !await runnerNeverLaunched()) {
-      try {
-        await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
-      } catch (error) {
-        const ownerHeldUntil = error instanceof NativeWorkspaceFinalizationBusyError
-          ? await nativeFinalizationOwnerLeaseExpiry(input.runId, input.companyId) : undefined;
-        if (!(error instanceof NativeWorkspaceFinalizationBusyError) || ownerHeldUntil) {
-          // Keep the active source eligible for the bounded retention sweep.
-          // Teardown must not release it after retention lost a lock or DB write.
-          logger.warn({ runId: input.runId }, "Deferred cancelled workspace teardown until file retention is recorded");
-          return await defer(ownerHeldUntil ? "workspace_owner_active" : "workspace_retention_busy");
+      let deferral: string | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const preserved = await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
+          deferral = preserved && hasRequiredWorkspaceRecovery(preserved.resultJson) ? null : "workspace_retention_pending";
+          break;
+        } catch (error) {
+          const busy = error instanceof NativeWorkspaceFinalizationBusyError;
+          deferral = busy ? "workspace_owner_active" : "workspace_retention_busy";
+          if (!busy || attempt > 0 || !await clearExpiredNativeFinalizationOwner(input.runId, input.companyId)) break;
         }
+      }
+      if (deferral) {
+        // Keep the active source eligible for the bounded retention sweep.
+        // Teardown must not release it after retention lost a lock or DB write.
+        logger.warn({ runId: input.runId }, "Deferred cancelled workspace teardown until file retention is recorded");
+        return await defer(deferral);
       }
       providerResourceDisposition = "stop_and_retain";
     }
@@ -523,11 +529,15 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     await acknowledgeRemoteStop(input.runId, input.companyId);
   }
 
-  async function nativeFinalizationOwnerLeaseExpiry(runId: string, companyId: string) {
-    const [owner] = await db.select({ leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
-      .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, runId), eq(nativeRunFinalizations.companyId, companyId)));
-    return owner?.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt.getTime() > Date.now())
-      ? owner.leaseExpiresAt ?? new Date(Date.now() + leaseReleaseRetryDelayMs(1)) : undefined;
+  async function clearExpiredNativeFinalizationOwner(runId: string, companyId: string) {
+    const cleared = await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+      .where(and(eq(nativeRunFinalizations.runId, runId), eq(nativeRunFinalizations.companyId, companyId),
+        isNotNull(nativeRunFinalizations.leaseOwner), lte(nativeRunFinalizations.leaseExpiresAt, new Date()),
+        isNull(nativeRunFinalizations.resultId),
+        sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId}
+          and ${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.status} = 'cancelled')`))
+      .returning({ runId: nativeRunFinalizations.runId });
+    return cleared.length > 0;
   }
 
   async function deferEnvironmentLeaseRelease(input: { runId: string; companyId: string }, reason: string,
@@ -543,7 +553,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const attempts = (readLeaseReleaseDeferral(lease.metadata)?.attempts ?? 0) + 1;
       const deferral: LeaseReleaseDeferral = { reason, attempts,
         retryAt: new Date(Date.now() + leaseReleaseRetryDelayMs(attempts)).toISOString(),
-        ...(providerResourceDisposition ? { providerResourceDisposition } : {}) };
+        providerResourceDisposition: providerResourceDisposition ?? null };
       const recorded = await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.orphanActiveLeases,
           JSON.stringify({ companyId: input.companyId, runId: input.runId, leaseId: lease.id }));
@@ -1784,8 +1794,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         and(
           eq(heartbeatRuns.agentId, agentId),
           or(inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
-            and(pendingFailedNativeRetryCancellationCondition(),
-              sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'nativeCancellation')`)),
+            pendingFailedNativeRetryCancellationCondition()),
         ),
       );
 

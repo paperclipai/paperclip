@@ -885,7 +885,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
         status: "cancelled", providerResourceDisposition: "stop_and_retain" });
       expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
-        .toMatchObject({ status: "active", leasePolicy });
+        .toMatchObject({ status: "active", leasePolicy, metadata: expect.objectContaining({ releaseDeferral: expect.objectContaining({
+          reason: "workspace_retention_busy", attempts: 1, providerResourceDisposition: "stop_and_retain" }) }) });
     } finally { release(); await holding; }
     await preserveCancelledNativeWorkspaces(db);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
@@ -899,6 +900,48 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect((await deps.getRun(runId))?.status).toBe("cancelled");
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("in_progress");
   }, 15_000);
+
+  async function deferralFixture(runtimeMode: "legacy" | "native") {
+    const { company, agent } = await fixture();
+    const runId = randomUUID(), leaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id, agentId: agent.id, runtimeMode,
+      status: "cancelled", finishedAt: new Date() });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, heartbeatRunId: runId,
+      provider: "daytona", providerLeaseId: randomUUID(), status: "active", leasePolicy: "ephemeral",
+      metadata: { driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true } });
+    if (runtimeMode === "native") await db.insert(heartbeatRunEvents).values({ companyId: company.id, runId, agentId: agent.id,
+      seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "Runner launch requested" });
+    const deferral = async () => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]!
+      .metadata?.releaseDeferral as { reason: string; attempts: number; retryAt: string; providerResourceDisposition: string | null };
+    return { company, agent, runId, deferral };
+  }
+
+  it("records a failed release with its disposition and a growing retry time", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("legacy");
+    const deps = callbacks(db);
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockResolvedValue({ released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] });
+    const control = createHeartbeatRunControl(db, deps);
+    const before = Date.now();
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    const first = await deferral();
+    expect(first).toMatchObject({ reason: "release_failed", attempts: 1, providerResourceDisposition: null });
+    expect(Date.parse(first.retryAt) - before).toBeGreaterThanOrEqual(30_000);
+    expect(Date.parse(first.retryAt) - before).toBeLessThan(40_000);
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    const second = await deferral();
+    expect(second).toMatchObject({ reason: "release_failed", attempts: 2 });
+    expect(Date.parse(second.retryAt) - before).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("records a destroy held back by a busy warm session", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("native");
+    const deps = callbacks(db);
+    deps.options.closeWarmNativeSessionsForRun.mockResolvedValue({ closed: 0, busy: 1, failed: 0 });
+    await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId, companyId: company.id,
+      agentId: agent.id, status: "cancelled", providerResourceDisposition: "destroy" });
+    expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+    expect(await deferral()).toMatchObject({ reason: "warm_session_busy", attempts: 1, providerResourceDisposition: "destroy" });
+  });
 
   it("reports a missing run without entering cancellation", async () => {
     const deps = callbacks(db);

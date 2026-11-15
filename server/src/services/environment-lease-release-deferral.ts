@@ -11,7 +11,7 @@ export type LeaseReleaseDeferral = {
   reason: string;
   attempts: number;
   retryAt: string;
-  providerResourceDisposition?: ProviderResourceDisposition;
+  providerResourceDisposition: ProviderResourceDisposition | null;
 };
 
 export function readLeaseReleaseDeferral(metadata: Record<string, unknown> | null | undefined): LeaseReleaseDeferral | null {
