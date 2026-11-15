@@ -6,6 +6,7 @@ export const aiProviderRoutingSchema = z
     kind: z.enum(["openrouter", "bedrock", "gateway", "local"]),
     protocol: z.enum(["responses", "messages", "chat", "bedrock"]),
     baseUrl: z.string().trim().max(2048).optional(),
+    allowPrivateHttp: z.boolean().optional(),
     auth: z
       .enum(["bearer", "api_key", "none"])
       .default("bearer"),
@@ -54,23 +55,31 @@ export const aiProviderRoutingSchema = z
     if (route.kind === "gateway" || route.kind === "local") {
       try {
         const url = new URL(route.baseUrl ?? "");
-        const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
-          url.hostname,
-        );
+        const host = url.hostname;
+        const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(host);
+
+        const privateLan =
+          /^10\.(?:\d{1,3}\.){2}\d{1,3}$/.test(host) ||
+          /^192\.168\.(?:\d{1,3}\.)\d{1,3}$/.test(host) ||
+          /^172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3}$/.test(host);
+
+        const allowHttp = loopback || (route.allowPrivateHttp && privateLan);
+
         if (
           url.username ||
           url.password ||
           url.search ||
           url.hash ||
-          (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
-        )
+          (url.protocol !== "https:" && !(url.protocol === "http:" && allowHttp))
+        ) {
           throw new Error();
-        if (route.kind === "local" && !loopback)
-          invalid("A local endpoint must use localhost or a loopback address.");
+        }
+
+        if (route.kind === "local" && !loopback && !privateLan) {
+          invalid("A local endpoint must use a loopback or private LAN address.");
+        }
       } catch {
-        invalid(
-          "Enter an HTTPS base URL without credentials, query parameters, or a fragment. Local endpoints may use HTTP.",
-        );
+        invalid("Use HTTPS, or explicitly allow HTTP for a private LAN endpoint.",);
       }
     }
   });

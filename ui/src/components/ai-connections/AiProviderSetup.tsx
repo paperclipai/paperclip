@@ -116,6 +116,9 @@ export function AiProviderSetup({
     reconnect?.routing?.auth ?? "bearer",
   );
   const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const [allowPrivateHttp, setAllowPrivateHttp] = useState(
+    reconnect?.routing?.allowPrivateHttp ?? false,
+  );
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
@@ -185,7 +188,7 @@ export function AiProviderSetup({
           ...(provider === "bedrock"
             ? { region }
             : provider === "gateway" || provider === "local"
-              ? { baseUrl }
+              ? { baseUrl, allowPrivateHttp }
               : {}),
           models: models
             .split(",")
@@ -345,6 +348,22 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect)}
                 />
               </label>
+              {baseUrl.toLowerCase().startsWith("http://") && (
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={allowPrivateHttp}
+                    onChange={(e) => setAllowPrivateHttp(e.target.checked)}
+                    disabled={Boolean(reconnect)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Allow HTTP to a private-network model server.
+                    Traffic, including prompts, responses, and API keys, is not encrypted.
+                    Enable only for a trusted network.
+                  </span>
+                </label>
+              )}  
               <label className="block space-y-2 text-xs text-muted-foreground">
                 API format
                 <Select
