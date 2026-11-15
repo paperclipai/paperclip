@@ -106,7 +106,9 @@ export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity,
   /** When the original run's unresolved cost events occurred. An empty list means the run is pending with no cost event,
    * so only reports that include pending runs (summary, data-quality) or the run record can show it. Left out, every
    * company report counts (the post-retry check, which reads after the person recorded the cost). */
-  costEventTimes?: readonly string[] }
+  costEventTimes?: readonly string[];
+  /** When the reading run started and finished; month-relative reads are compared with it. */
+  readingRunWindow?: { startedAt: string; finishedAt: string } }
 export interface RunListPosition { agentId: string; companyAhead: number; agentAhead: number }
 const RUN_LIST_OPERATION = "GET /api/companies/{companyId}/heartbeat-runs";
 const runListCache = new Map<string, ReadonlySet<string>>();
@@ -190,9 +192,20 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   const segments = pending ? PENDING_RUN_SEGMENTS : COMPANY_COST_SEGMENTS;
   const window = !target.costEventTimes ? target.originalRunWindow : pending ? target.originalRunWindow
     : { startedAt: new Date(Math.min(...eventTimes)).toISOString(), finishedAt: new Date(Math.max(...eventTimes)).toISOString() };
-  const companyDigests = companyId ? apiReadDigests(segments.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
-    // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
-    pathParams: [...recordParams("companyId", companyId), undefined], queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
+  // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
+  const reportReads = (queries: Array<Record<string, unknown>>) => companyId ? apiReadDigests(segments.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
+    pathParams: [...recordParams("companyId", companyId), undefined], queries }))) : new Set<string>();
+  // An unranged read and period=month cover the current UTC month when the read ran. They count only when the target's
+  // cost event (or the pending run) falls in that month for the whole reading run, so a month rollover cannot pass.
+  const monthDigests = reportReads([{ period: "month" }]);
+  const monthCovers = (() => {
+    if (!("readingRunWindow" in target)) return true;
+    if (!target.readingRunWindow || !window) return false;
+    const month = (text: string) => { const at = new Date(text); return Number.isNaN(at.getTime()) ? "" : `${at.getUTCFullYear()}-${at.getUTCMonth()}`; };
+    const months = new Set([window.startedAt, window.finishedAt, target.readingRunWindow.startedAt, target.readingRunWindow.finishedAt].map(month));
+    return months.size === 1 && !months.has("");
+  })();
+  const companyDigests = new Set([...[...reportReads([{ period: "all" }])].filter(digest => !monthDigests.has(digest)), ...(monthCovers ? monthDigests : [])]);
   // A task's cost summary sums cost events, so it cannot show a pending run either.
   const taskDigests = task && !pending ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
   const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
@@ -287,7 +300,7 @@ export function gradeAccounting(value: unknown) {
     c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
       && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
         citedRunReads: citedRunReads(run), savedRunRecords, runListPosition: runListPosition(o.runs, String(o.state.originalRunId ?? ""), run),
-        originalRunWindow: runWindow(o.state.originalRun as HeartbeatRun | undefined),
+        originalRunWindow: runWindow(o.state.originalRun as HeartbeatRun | undefined), readingRunWindow: runWindow(run as unknown as HeartbeatRun),
         costEventTimes: (quality?.events ?? []).filter(row => row.runId === o.state.originalRunId).map(row => row.occurredAt) })),
       "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {

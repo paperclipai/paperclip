@@ -103,6 +103,19 @@ describe("actual saved native accounting contexts", () => {
       expect(grade(pendingTarget([ranged(week, "answer", 200, operationId)])).passed, operationId).toBe(true);
     const targetRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "original" } }));
     expect(grade(pendingTarget([targetRecord])).passed).toBe(true);
+    // Unranged and period=month reads cover the UTC month when the read ran. In-month they count; across a month
+    // rollover (event on Oct 31, read on Nov 1) they do not, while an all-time read still does.
+    const monthRead = (query: { period?: string } | undefined, eventAt: string, readStart: string, readEnd: string) => {
+      const o = cohort16([costRead("answer", byAgent, 200, callApiInputDigest({ operationId: byAgent, pathParams: { companyId: "company" }, ...(query ? { query } : {}) }))]);
+      Object.assign(o.state.originalRun as object, { startedAt: eventAt, finishedAt: eventAt });
+      o.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: eventAt }] };
+      Object.assign(o.runs.find(run => run.id === "answer")!, { startedAt: readStart, finishedAt: readEnd }); return o; };
+    for (const query of [{ period: "month" }, undefined]) {
+      expect(grade(monthRead(query, "2026-11-15T11:43:40.000Z", "2026-11-15T11:50:00.000Z", "2026-11-15T11:52:00.000Z")).passed, JSON.stringify(query)).toBe(true);
+      expect(grade(monthRead(query, "2026-10-31T23:58:00.000Z", "2026-11-01T00:01:00.000Z", "2026-11-01T00:03:00.000Z")).passed, JSON.stringify(query)).toBe(false);
+      expect(grade(monthRead(query, "2026-10-31T23:58:00.000Z", "2026-10-31T23:59:00.000Z", "2026-11-01T00:01:00.000Z")).passed, JSON.stringify(query)).toBe(false);
+    }
+    expect(grade(monthRead({ period: "all" }, "2026-10-31T23:58:00.000Z", "2026-11-01T00:01:00.000Z", "2026-11-01T00:03:00.000Z")).passed).toBe(true);
     // The answering run reads a different run's record but links the target run's id: still no read of its accounting.
     const otherRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "answer" } }));
     expect(grade(cohort16([otherRecord, list("page-one")])).passed).toBe(false);
