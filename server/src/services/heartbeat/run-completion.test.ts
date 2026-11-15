@@ -840,11 +840,12 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     f.agent.adapterType = adapterType;
     f.input.sessionCodec = getAdapterSessionCodec(adapterType);
     await db.update(agents).set({ adapterType }).where(eq(agents.id, f.agent.id));
+    const sessionId = randomUUID();
     const params = attachPaperclipSessionMetadataToSessionParams(
-      { sessionId: randomUUID(), cwd: "/tmp/checkpoint-workspace" }, "test-model", f.input.session.sessionConfigMetadata)!;
+      { sessionId, cwd: "/tmp/checkpoint-workspace" }, "test-model", f.input.session.sessionConfigMetadata)!;
     await f.deps.upsertTaskSession({ companyId: f.run.companyId, agentId: f.agent.id,
       adapterType: f.agent.adapterType, taskKey: "completion-task", sessionParamsJson: params,
-      sessionDisplayId: params.sessionId, lastRunId: f.run.id, lastError: null });
+      sessionDisplayId: sessionId, lastRunId: f.run.id, lastError: null });
     Object.assign(f.input.adapterResult, { exitCode: 1, sessionId: null, sessionParams: null,
       sessionDisplayId: null, ...(outcome === "cancelled" ? { resultJson: { status: "cancelled" } } : {}) });
     await f.completion.completeRun(f.input);
