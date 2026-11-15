@@ -26,9 +26,9 @@ import { pathToFileURL } from "node:url";
 import request from "supertest";
 import { startMinio, objectStoreServerEnvironment, type ObjectStore } from "../../../tests/restart-chaos/object-store.js";
 import { startStorageFaultProxy } from "../../../tests/restart-chaos/storage-proxy.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, createDb, closeRegisteredClients, authUsers, companies, mcpOauthGrants, agents, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, mcpOauthRequests, mcpOauthTokens, mcpOauthClientChanges, mcpOauthClientMirrorState, mcpOauthDeviceRequests, heartbeatRuns, agentWakeupRequests, completionContracts, nativeRunResults, nativeRunFinalizations, issues, mcpEventDeliveries, mcpEventSubscriptions } from "@paperclipai/db";
+import { applyPendingMigrations, createDb, closeRegisteredClients, authUsers, companies, mcpOauthGrants, agents, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, mcpOauthRequests, mcpOauthTokens, mcpOauthClientChanges, mcpOauthClientMirrorState, mcpOauthDeviceRequests, heartbeatRuns, agentWakeupRequests, completionContracts, workAssessments, statusDecisions, nativeRunResults, nativeRunFinalizations, issues, mcpEventDeliveries, mcpEventSubscriptions } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../lib/dedicated-test-database-url.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -116,6 +116,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   let physicalApp:Awaited<ReturnType<typeof forkNormalDotApp>>|undefined;
   let childControl:ReturnType<typeof attachDotChild>|undefined;
   let childSnapshot:ChildSnapshot|undefined;
+  const committedStatusSchema=z.object({kind:z.literal("native-status-committed"),companyId:z.uuid(),issueId:z.uuid(),runId:z.uuid(),decisionId:z.uuid(),assessmentId:z.uuid(),toStatus:z.string()});
+  type CommittedStatus=z.infer<typeof committedStatusSchema>;
+  let statusDecisionWaiter:{companyId:string;issueId:string;runId:string;resolve:(value:CommittedStatus)=>void}|undefined;
   const retiredChildren:ChildSnapshot[]=[];
   const physicalOwners:Array<Awaited<ReturnType<typeof forkNormalDotApp>>>=[];
   const knownChildProcesses:Array<{child:import("node:child_process").ChildProcess;owner:ReturnType<typeof import("../../../tests/runner-e2e/process-tree-owner.js")["createProcessTreeOwner"]>}>=[];
@@ -466,7 +469,10 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         registerActualChild:(child,owner)=>{
           knownChildProcesses.push({child,owner});
           childControl=attachDotChild(child,event=>{
-            if(event.kind==="dcr-committed"){
+            if(event.kind==="native-status-committed"){
+              const value=committedStatusSchema.parse(event),waiting=statusDecisionWaiter;
+              if(waiting&&value.companyId===waiting.companyId&&value.issueId===waiting.issueId&&value.runId===waiting.runId)waiting.resolve(value);
+            }else if(event.kind==="dcr-committed"){
               actualDeviceRegistrationCalls++;actualDeviceClientId=z.string().min(1).parse(event.clientId);
               const revision=z.number().int().positive().parse(event.revision);
               if(holdDeviceMirrorAck){deviceAckTargetRevision=revision;resolveDeviceAckTarget?.(revision);}
@@ -917,9 +923,28 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const conflict=await tool(raw,"paperclip_dot_tool",{assignmentId:assignment.id,requestId:writeId,...writeArgs,arguments:{...writeArgs.arguments,body:"changed"}});expect(conflict.body.result.isError).toBe(true);expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");
     const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));const [contract]=await db.select().from(completionContracts).where(eq(completionContracts.id,run.completionContractId!));const specification=z.object({revision:z.string(),criteria:z.array(z.object({id:z.string()}))}).passthrough().parse(contract.contractJson);
     const result={reportedWorkDisposition:"completed",summary:"Saved the arithmetic report.",completionClaim:{contractRevision:specification.revision,objectiveSatisfied:true,criteria:specification.criteria.map(criterion=>({criterionId:criterion.id,status:"passed",evidenceRefs:[]})),remainingWork:[]},evidence:[],verification:[{commandOrCheck:"Read the persisted report: 17 + 25 = 42.",status:"pass"}]};
-    expect((await operation("paperclip_dot_tool",{name:"paperclip_finish",arguments:result})).receipt).toMatchObject({status:"completed",isError:false});
-    await operation("paperclip_dot_finish",{result});await childControl!.request({command:"drain-run",runId},childDeadline());
-    const [settledAssignment]=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id));expect(settledAssignment.status).toBe("settled");const successorResults=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId));expect(successorResults).toHaveLength(1);const [settledTask]=await db.select().from(issues).where(eq(issues.id,task.id));expect(settledTask.status).toBe("done");
+    const committedStatus=await(async()=>{
+      const committed=new Promise<CommittedStatus>(resolve=>{statusDecisionWaiter={companyId,issueId:task.id,runId,resolve};});
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      try{
+        await childControl!.request({command:"observe-status-decision",issueId:task.id,runId},childDeadline());
+        expect((await operation("paperclip_dot_tool",{name:"paperclip_finish",arguments:result})).receipt).toMatchObject({status:"completed",isError:false});
+        await operation("paperclip_dot_finish",{result});
+        await childControl!.request({command:"drain-run",runId},childDeadline()); // Execution drain is distinct from the committed domain decision.
+        const remaining=caseStarted+90_000-performance.now();expect(remaining).toBeGreaterThan(0);
+        return await Promise.race([committed,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("No matching committed native status decision within the original case deadline")),remaining);})]);
+      }finally{clearTimeout(timer);statusDecisionWaiter=undefined;}
+    })();
+    const [settledAssignment]=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id));expect(settledAssignment.status).toBe("settled");
+    // Enrich the existing one result read; no extra query or polling owner.
+    const committedRows=await db.select({result:nativeRunResults,assessment:workAssessments,decision:statusDecisions}).from(nativeRunResults)
+      .leftJoin(workAssessments,and(eq(workAssessments.id,committedStatus.assessmentId),eq(workAssessments.resultId,nativeRunResults.id)))
+      .leftJoin(statusDecisions,and(eq(statusDecisions.id,committedStatus.decisionId),eq(statusDecisions.assessmentId,workAssessments.id)))
+      .where(eq(nativeRunResults.runId,runId));
+    const successorResults=committedRows.map(row=>row.result);expect(successorResults).toHaveLength(1);
+    expect(committedRows[0].assessment).toMatchObject({id:committedStatus.assessmentId,companyId,issueId:task.id,runId,resultId:successorResults[0].id});
+    expect(committedRows[0].decision).toMatchObject({id:committedStatus.decisionId,companyId,issueId:task.id,runId,assessmentId:committedStatus.assessmentId,applicationState:"applied",toStatus:committedStatus.toStatus});
+    const [settledTask]=await db.select().from(issues).where(eq(issues.id,task.id));expect(settledTask.status).toBe("done");
     const passiveConnectionSnapshot=async(deadline=childDeadline())=>{
       const child=await syncChildObservation(deadline),all=[...retiredChildren,child];
       return{clients:databaseObservation.clients+all.reduce((n,v)=>n+v.database.clients,0),

@@ -23,6 +23,7 @@ let ports:Awaited<ReturnType<typeof installDotChildPorts>>;
 try{ports=await installDotChildPorts({...input,deviceStage:()=>stage,emit:send,probeWitnessRoot:input.linuxInput.providerRoot});}
 catch(primary){try{restoreCA();}catch(cleanup){throw new AggregateError([primary,cleanup],"owned_dot_child_port_setup_failed");}throw primary;}
 let owner:Awaited<ReturnType<typeof import("./normal-app-generation.js")["startNormalDotAppGeneration"]>>|undefined;
+let stopStatusDecisionEvents=()=>{};
 let shutting:Promise<void>|undefined;
 const shutdown=()=>shutting??=(async()=>{
   try{const nativeRecovery=owner?.snapshot().nativeRecovery;
@@ -30,7 +31,7 @@ const shutdown=()=>shutting??=(async()=>{
     await owner?.stop();const snapshot=ports.snapshot();assert.equal(snapshot.connections,0);assert.equal(snapshot.dedicated,0);assert.equal(snapshot.listeners,0);
     assert.equal(snapshot.observerPending,0);assert.equal(snapshot.observerFailures,0);assert.equal(snapshot.overflow,0);
     send({kind:"stopped",pid:process.pid,owner:owner?.snapshot(),snapshot});
-  }finally{try{ports.restore();}finally{restoreCA();}}
+  }finally{try{stopStatusDecisionEvents();}finally{try{ports.restore();}finally{restoreCA();}}}
 })();
 try{
   const {startNormalDotAppGeneration}=await import("./normal-app-generation.js");
@@ -42,6 +43,7 @@ try{
         z.object({command:z.literal("snapshot"),id:z.number().int()}).strict(),
         z.object({command:z.literal("health"),id:z.number().int(),value:z.enum(["ready","unavailable","wake-once-then-unavailable"])}).strict(),
         z.object({command:z.literal("device-stage"),id:z.number().int(),value:z.enum(["first-select","retry-select","none"])}).strict(),
+        z.object({command:z.literal("observe-status-decision"),id:z.number().int(),issueId:z.uuid(),runId:z.uuid()}).strict(),
         z.object({command:z.literal("drain-run"),id:z.number().int(),runId:z.uuid()}).strict(),
         z.object({command:z.literal("stop-checkpointed"),id:z.number().int(),runId:z.uuid(),environmentId:z.uuid()}).strict(),
         z.object({command:z.literal("inspect"),id:z.number().int()}).strict(),
@@ -51,6 +53,20 @@ try{
       if(message.command==="health")health=message.value;
       if(message.command==="device-stage")stage=message.value==="none"?undefined:message.value;
       let result:unknown;
+      if(message.command==="observe-status-decision"){
+        stopStatusDecisionEvents();
+        const {subscribeCompanyLiveEvents}=await import("../../../services/live-events.js");
+        const statusDecisionEvent=z.object({action:z.enum(["issue.updated","issue.status_decision_recorded"]),entityType:z.literal("issue"),entityId:z.uuid(),issueId:z.uuid(),runId:z.uuid(),
+          details:z.object({source:z.literal("native_status_decision"),decisionId:z.uuid(),assessmentId:z.uuid(),toStatus:z.string()}).passthrough()}).passthrough();
+        stopStatusDecisionEvents=subscribeCompanyLiveEvents(input.companyId,event=>{
+          if(event.type!=="activity.logged"||event.companyId!==input.companyId)return;
+          const parsed=statusDecisionEvent.safeParse(event.payload);if(!parsed.success)return;
+          const value=parsed.data;if(value.entityId!==message.issueId||value.issueId!==message.issueId||value.runId!==message.runId)return;
+          stopStatusDecisionEvents(); // Exact commit removes the observer BEFORE publication to the parent and quiet checks.
+          send({kind:"native-status-committed",companyId:input.companyId,issueId:value.issueId,runId:value.runId,
+            decisionId:value.details.decisionId,assessmentId:value.details.assessmentId,toStatus:value.details.toStatus});
+        });
+      }
       if(message.command==="drain-run")await owner!.heartbeat.waitForRunExecutionDrain(message.runId,{timeoutMs:15000});
       if(message.command==="stop-checkpointed"){
         const {stopCheckpointedOwnedRun}=await import("./checkpointed-fault.js");

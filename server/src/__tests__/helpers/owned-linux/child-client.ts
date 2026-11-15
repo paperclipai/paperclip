@@ -6,6 +6,7 @@ export type ChildSnapshot={owner:ReturnType<Awaited<ReturnType<typeof startNorma
   database:ReturnType<Awaited<ReturnType<typeof installDotChildPorts>>["snapshot"]>};
 export type ChildControl={command:"snapshot"|"inspect"}|{command:"health";value:"ready"|"unavailable"|"wake-once-then-unavailable"}
   |{command:"device-stage";value:"first-select"|"retry-select"|"none"}
+  |{command:"observe-status-decision";issueId:string;runId:string}
   |{command:"drain-run";runId:string}|{command:"stop-checkpointed";runId:string;environmentId:string};
 export function attachDotChild(child:ChildProcess,onEvent:(event:Record<string,unknown>)=>void){
   let serial=0,failures=0;const pending=new Map<number,{resolve:(value:ChildSnapshot&{result?:unknown})=>void;reject:(error:Error)=>void}>();
