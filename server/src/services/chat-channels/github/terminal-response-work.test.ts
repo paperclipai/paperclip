@@ -166,6 +166,33 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     expect(acknowledged).toEqual([target.deliveryId]);
   }, 300_000);
 
+  it("still settles a response after a restart lost the hint of the reply publication it waited for", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const target = f.stale[9]!;
+    const [response] = await db.select().from(chatActions).where(eq(chatActions.id, target.actionId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, nativeIssueId: target.issueId,
+      issueId: target.issueId, scopeKind: "issue", status: "failed",
+      contextSnapshot: { issueId: target.issueId, wakeCommentId: target.commentId }, createdAt: new Date() });
+    // The owning run's formal review is still being published.
+    const [publication] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: response!.conversationId, deliveryId: target.deliveryId, kind: "github_review_publication",
+      providerActionId: `github_review:${runId}`, status: "processing",
+      payload: { operation: "formal_review", session: { companyId: f.companyId, issueId: target.issueId, runId, agentId: f.agentId } } })
+      .returning();
+    await start(); await advance(5_000);
+    expect(acknowledged).toEqual([]);
+    // The publication commits, and the server stops before its lease release
+    // sends the targeted hint. The next start runs only a broad load.
+    await db.update(chatActions).set({ status: "processed", updatedAt: new Date(),
+      result: { id: "77", url: "https://github.com/paperclipai/paperclip/pull/1#pullrequestreview-77" } })
+      .where(eq(chatActions.id, publication!.id));
+    await coordinator!.stop(); coordinator = undefined;
+    await start(); await advance(5_000);
+    expect(acknowledged).toEqual([target.deliveryId]);
+  }, 300_000);
+
   it("still pauses waiting responses once their task is blocked", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     const f = await seed();

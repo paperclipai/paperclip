@@ -42,11 +42,10 @@ export function registerGitHubTerminalResponseWork(
         and r.agent_id = ${chatEndpoints.assignedAgentId}
       order by r.created_at desc, r.id desc limit 1)) latest`)
     .orderBy(sql`latest.created_at desc, latest.id desc`).limit(1).as("latest_issue_run");
-  // Whether a request can progress depends on the task's latest run, the task's
-  // status and the request's own row. A request that has to wait records this
-  // key, and a broad rebuild skips it until one of them changes. A reply
-  // publication changes none of them, but releasing its lease sends a targeted
-  // hint, and a targeted load always reads its requests again.
+  // A request whose latest run does not own it (or whose pause is already
+  // shown) can progress only once the task's latest run, the task's status or
+  // the request's own row changes. Such a request records this key, and a broad
+  // rebuild skips it until one of them changes. A targeted load still reads it.
   const actionVersion = sql<string>`extract(epoch from ${chatActions.updatedAt})::text`;
   const waitKey = sql<string>`coalesce(${latestIssueRun.version}, 'none') || '|' || ${issues.status} || '|' || ${actionVersion}`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
@@ -84,14 +83,19 @@ export function registerGitHubTerminalResponseWork(
       )).orderBy(asc(chatActions.id)).limit(100);
   }
   type Row = Awaited<ReturnType<typeof page>>[number];
-  async function entry(row: Row): Promise<Entry | null> {
+  /** The request's entry when it is owed now, else whether its wait may be
+   * recorded. A wait on the owning run's reply or presentation is never
+   * recorded: a publication that commits it changes no wait-key input, and a
+   * restart can lose the hint that its lease release sends. */
+  async function entry(row: Row): Promise<Entry | { parkable: boolean }> {
     const pending: Entry = { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
       issueId: row.issueId, conversationId: row.conversationId, repositoryId: row.repositoryId,
       number: row.number ? Number(row.number) : null, dueAt: row.leaseExpiresAt ? Date.parse(row.leaseExpiresAt) : 0 };
     try {
       const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! });
       if (execution.body === undefined || execution.reply === "unsettled" ||
-          (execution.paused && row.result?.pausedVersion === execution.version)) return null;
+          (execution.paused && row.result?.pausedVersion === execution.version))
+        return { parkable: !execution.presentationPending && execution.reply === "none" };
     } catch (error) {
       if (!(error instanceof HttpError) || error.status !== 403) throw error;
       // Keep this request eligible for the acknowledgement owner's authority
@@ -116,8 +120,9 @@ export function registerGitHubTerminalResponseWork(
     const [row] = await page(undefined, undefined, actionId);
     if (!row) return null;
     const value = await entry(row);
-    if (!value) await park([row]);
-    return value;
+    if (!("parkable" in value)) return value;
+    if (value.parkable) await park([row]);
+    return null;
   }
 
   return registerScopedDeadlineWork(coordinator, {
@@ -137,7 +142,8 @@ export function registerGitHubTerminalResponseWork(
         const waiting: Row[] = [];
         for (const row of rows) {
           if (!canRun() || signal?.aborted) throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
-          const value = await entry(row); if (value) entries.push(value); else waiting.push(row);
+          const value = await entry(row);
+          if (!("parkable" in value)) entries.push(value); else if (value.parkable) waiting.push(row);
         }
         await park(waiting);
         if (rows.length < 100) return entries;
