@@ -3,6 +3,7 @@
   "companyId": "<id:1>",
   "conversationAgentId": null,
   "conversationUserId": null,
+  "conversationDefault": true,
   "conversationState": null,
   "conversationSessionGeneration": 0,
   "conversationBoundaryCommentId": null,
