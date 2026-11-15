@@ -183,11 +183,13 @@ export function acceptedFirstTurnCommentIdsSql(run: { id: typeof heartbeatRuns.i
       and exists (select 1 from ${heartbeatRunEvents} accepted
         where accepted.company_id = ${run.companyId} and accepted.run_id = ${run.id}
           and accepted.event_type in ('turn.accepted', 'turn.started'))
-    then (select jsonb_agg(sealed.id order by sealed.position)
-      from jsonb_array_elements_text(${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}')
-        with ordinality as sealed(id, position)
-      join ${issueComments} sealed_comment on sealed_comment.company_id = ${run.companyId}
-        and sealed_comment.id::text = sealed.id
+    then (select jsonb_agg(sealed_comment.id::text order by sealed.position)
+      from (select case when raw.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          then raw.id::uuid end as id, raw.position
+        from jsonb_array_elements_text(${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}')
+          with ordinality as raw(id, position)) sealed
+      join ${issueComments} sealed_comment on sealed_comment.id = sealed.id
+        and sealed_comment.company_id = ${run.companyId}
       where (${run.contextSnapshot} #>> '{firstTurnQueuedInput,claimedAt}')::timestamptz
         >= date_trunc('milliseconds', sealed_comment.updated_at)) end`;
 }
