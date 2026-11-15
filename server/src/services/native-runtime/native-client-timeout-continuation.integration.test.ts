@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, completionContracts, createDb, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations,
+  activityLog, agents, companies, completionContracts, createDb, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations,
 } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -17,6 +17,9 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "../execution-recovery-resolution.js";
+import { executionControlSchedule } from "../execution-control-work.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION } from "../recovery/continuation-ledger.js";
+import { FRESH_CONTINUATION_WINDOW_MS } from "../fresh-continuation-fallback.js";
 
 const DAYTONA_CLIENT_TIMEOUT = "HTTP request timed out after 300000ms waiting for a response. This is a client-side deadline "
   + "(DaytonaConfig.requestTimeoutMs, or the per-call operation/execution timeout); any operation already started on the "
@@ -121,5 +124,31 @@ describe("a native turn cut off by a sandbox client timeout", () => {
     expect(wake).toHaveBeenCalledOnce();
     expect(wake).toHaveBeenCalledWith(agentId, expect.objectContaining({
       payload: expect.objectContaining({ issueId }) }));
+  }, 120_000);
+
+  it("registers the capped continuation's next check with the disposition worker and continues the task when it is due", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Build the capped feature", status: "in_progress",
+      workMode: "standard", assigneeAgentId: agentId });
+    const runId = await failTurnWithClientTimeout(issueId);
+    const firstAt = new Date(Date.now() - 10 * 60_000);
+    const capped = await db.insert(activityLog).values(Array.from({ length: 6 }, (_, index) => ({ companyId, actorId: "test",
+      action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: issueId, details: { outcome: "queued" },
+      createdAt: new Date(firstAt.getTime() + index * 1_000) }))).returning({ id: activityLog.id });
+
+    await settleUnrecoverableExecutions(db);
+    expect(await continuationsOf(runId)).toHaveLength(0);
+    const [hold] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
+      eq(issueRecoveryActions.status, "active")));
+    const nextCheckAt = firstAt.getTime() + FRESH_CONTINUATION_WINDOW_MS;
+    expect(hold?.evidence).toMatchObject({ freshContinuationCheck: { kind: "backoff", nextCheckAt } });
+    expect(await executionControlSchedule(db).disposition()).toBe(nextCheckAt);
+
+    await db.delete(activityLog).where(sql`${activityLog.id} in ${capped.map(row => row.id)}`);
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+      '{freshContinuationCheck,nextCheckAt}', to_jsonb(${Date.now() - 1}::bigint))` }).where(eq(issueRecoveryActions.id, hold!.id));
+    await settleUnrecoverableExecutions(db);
+    expect(await continuationsOf(runId)).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "todo" });
   }, 120_000);
 });

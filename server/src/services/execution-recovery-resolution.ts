@@ -43,8 +43,7 @@ import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
 import { continuationDeliveryDue, deferForUnwakeableAssignee, recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
-import { RESTART_CLASS_FAILURE_CODES, isRestartClassFailureCode } from "./continuation-cause.js";
-import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
+import { continueNativeInterruption, nativeInterruptionHold } from "./native-interruption-continuation.js";
 import { alias } from "drizzle-orm/pg-core";
 import { RECOVERY_BACKLOG_AGE_MS, RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
 import { agentRecoveryQueueIsFull } from "./recovery-queue-admission.js";
@@ -645,21 +644,6 @@ function supersedingNativeWorkspaceHold(db: Db, input: {
   ));
 }
 
-function nativeInterruptionHold() {
-  return and(
-    inArray(issueRecoveryActions.cause, [...RESTART_CLASS_FAILURE_CODES]),
-    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
-    eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
-    not(nativeReplacementPending()!),
-  );
-}
-
-function isNativeInterruptionHold(action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect,
-  coordinator: typeof nativeRunFinalizations.$inferSelect | undefined) {
-  return isRestartClassFailureCode(action.cause) && run.runtimeMode === "native" && run.nativePhase === "terminal_failure"
-    && coordinator?.phase === "terminal_failure" && !coordinator.nextAttemptAt && !coordinator.leaseOwner && !coordinator.resultId;
-}
-
 export function unresolvedExecutionDispositions(db: Db, limit: number) {
   return db
     .select({ action: issueRecoveryActions })
@@ -842,13 +826,7 @@ export async function settleUnrecoverableExecutions(
           const [hold] = resumeHold ? await supersedingNativeWorkspaceHold(tx as unknown as Db, {
             companyId: run.companyId, issueId: task.id, runId: run.id,
           }).limit(1).for("update") : [];
-          if (!hold) {
-            if (!isNativeInterruptionHold(action, run, coordinator)) return;
-            const fresh = await continueFreshInTransaction(tx as unknown as Db, { companyId: task.companyId, runId: run.id,
-              trigger: "recovery_refused", now });
-            await recordFreshContinuationCheck(tx as unknown as Db, { companyId: task.companyId, actionId: action.id }, fresh, now);
-            return;
-          }
+          if (!hold) return void await continueNativeInterruption(tx as unknown as Db, { action, run, coordinator, now });
           await notifyExecutionRunWork(tx, { companyId: run.companyId });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
