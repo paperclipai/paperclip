@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
-import { ObjectJournalBusyError } from "./object-byte-journal.js";
+import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
+import { OBJECT_JOURNAL_IO_CEILING, OBJECT_JOURNAL_READ_IO_RESERVE, OBJECT_JOURNAL_UPLOAD_SLOTS, ObjectJournalBusyError,
+  objectJournalIOSlots, objectJournalUploadSlots } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -568,5 +570,58 @@ describe("S3 run log store", () => {
       open();
       await Promise.allSettled([...polls, excess, ...(internal ? [internal] : [])]);
     }
+  });
+
+  it("keeps the object storage sockets the journal may use within the storage client's budget", () => {
+    expect(OBJECT_JOURNAL_UPLOAD_SLOTS.ceiling + OBJECT_JOURNAL_READ_IO_RESERVE).toBeLessThanOrEqual(OBJECT_JOURNAL_IO_CEILING);
+    expect(OBJECT_JOURNAL_IO_CEILING).toBeLessThanOrEqual(S3_CLIENT_MAX_SOCKETS / 2);
+  });
+
+  async function uploadsInFlightWithOpenRuns(runs: number) {
+    const m = memory(),
+      store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 30_000,
+        assertWriterAuthority: async () => undefined });
+    const slotsBefore = objectJournalUploadSlots();
+    const handles = [];
+    for (let run = 0; run < runs; run++) handles.push(await store.begin({ ...input, runId: `run-${run}` }));
+    const put = m.provider.putObjectConditional!.bind(m.provider);
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    let inFlight = 0, peak = 0;
+    m.provider.putObjectConditional = async value => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      try {
+        await gate;
+        return await put(value);
+      } finally {
+        inFlight--;
+      }
+    };
+    const appended = await Promise.all(handles.map(handle => store.enqueue!(handle, event(1))));
+    const flushes = handles.map(handle => store.flush!(handle));
+    await vi.waitFor(() => expect(inFlight).toBe(Math.min(runs, objectJournalUploadSlots())));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const waiting = { slotsBefore, slots: objectJournalUploadSlots(), ioSlots: objectJournalIOSlots() };
+    open();
+    await Promise.all(flushes);
+    await Promise.all(appended.map(entry => entry.committed));
+    await Promise.all(handles.map(handle => store.finalize(handle, { computeDigest: false })));
+    return { ...waiting, peak, slotsAfterFinalize: objectJournalUploadSlots() };
+  }
+
+  it("gives a log upload slot to each ten open runs, so 200 runs upload at least twenty logs at once", async () => {
+    const result = await uploadsInFlightWithOpenRuns(200);
+    expect(result.slotsBefore).toBe(OBJECT_JOURNAL_UPLOAD_SLOTS.floor);
+    expect(result.peak).toBeGreaterThanOrEqual(20);
+    expect(result.peak).toBeLessThanOrEqual(result.ioSlots);
+  });
+
+  it("caps log uploads at the storage budget with 1,000 open runs and finishes every run's upload", async () => {
+    const result = await uploadsInFlightWithOpenRuns(1_000);
+    expect(result.slots).toBe(OBJECT_JOURNAL_UPLOAD_SLOTS.ceiling);
+    expect(result.peak).toBeLessThanOrEqual(result.ioSlots);
+    expect(result.ioSlots).toBeLessThanOrEqual(S3_CLIENT_MAX_SOCKETS / 2);
+    expect(result.slotsAfterFinalize).toBeLessThan(result.slots);
   });
 });

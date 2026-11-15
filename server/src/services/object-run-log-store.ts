@@ -2,7 +2,8 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, objectJournalUploadSlots, trackObjectJournalWriter,
+  type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 import { notFound } from "../errors.js";
 
@@ -39,6 +40,7 @@ interface WriterState {
   admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
+  releaseUploadDemand: () => void;
   sourcePrefixVerified: boolean;
   coverageEligible: boolean;
   admittedSourceCursor: number;
@@ -67,9 +69,17 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   };
   let activeUploads = 0;
   const uploadWaiters: Array<() => void> = [];
+  function grantWaitingUploads() {
+    while (activeUploads < objectJournalUploadSlots()) {
+      const next = uploadWaiters.shift();
+      if (!next) return;
+      activeUploads++;
+      next();
+    }
+  }
   async function acquireUpload(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (activeUploads >= 4)
+    if (activeUploads >= objectJournalUploadSlots())
       await new Promise<void>((resolve, reject) => {
         const enter = () => {
           signal?.removeEventListener("abort", abort);
@@ -85,9 +95,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       });
     else activeUploads++;
     return () => {
-      const next = uploadWaiters.shift();
-      if (next) next();
-      else activeUploads--;
+      activeUploads--;
+      grantWaitingUploads();
     };
   }
   function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
@@ -278,10 +287,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         closed: false,
         admitting: new Set(),
         signal: input.signal,
+        releaseUploadDemand: trackObjectJournalWriter(),
         sourcePrefixVerified,
         coverageEligible: true,
         admittedSourceCursor: writer.head.sourceCursor,
       });
+      grantWaitingUploads();
       return handle;
     },
     enqueue,
@@ -352,6 +363,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         return { bytes: null, sha256: null, compressed: false };
       } finally {
         writers.delete(handle);
+        state.releaseUploadDemand();
       }
     },
     async read(handle, opts = {}) {
