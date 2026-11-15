@@ -1913,6 +1913,8 @@ export interface IssueFilters {
   touchedCandidates?: "participation";
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  /** Read projection only; never filters the result set by participation. */
+  readStateForUserId?: string;
   projectId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -2969,9 +2971,9 @@ function myLastReadAtExpr(companyId: string, userId: string) {
   `;
 }
 
-function myLastTouchAtExpr(companyId: string, userId: string) {
-  const myLastCommentAt = myLastCommentAtExpr(companyId, userId);
-  const myLastReadAt = myLastReadAtExpr(companyId, userId);
+function myLastTouchAtExpr(companyId: string, userId: string, facts?: UnreadCommentFacts) {
+  const myLastCommentAt = facts?.lastCommentAt ?? myLastCommentAtExpr(companyId, userId);
+  const myLastReadAt = facts?.lastReadAt ?? myLastReadAtExpr(companyId, userId);
   return sql<Date | null>`
     GREATEST(
       COALESCE(${myLastCommentAt}, to_timestamp(0)),
@@ -3029,17 +3031,21 @@ function issueCanonicalLastActivityAtExpr(companyId: string) {
   `;
 }
 
-function unreadForUserCondition(companyId: string, userId: string) {
-  const touchedCondition = touchedByUserCondition(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
+type UnreadCommentFacts = { lastCommentAt: SQL; lastReadAt: SQL; lastExternalCommentAt: SQL };
+
+/** Batch callers can supply the same facts once; the unread rules stay here. */
+export function unreadForUserCondition(companyId: string, userId: string, facts?: UnreadCommentFacts) {
+  const touchedCondition = touchedByUserCondition(companyId, userId,
+    facts ? sql<boolean>`${facts.lastCommentAt} is not null` : undefined);
+  const myLastTouchAt = myLastTouchAtExpr(companyId, userId, facts);
   const myLastRequestReadAt = sql`GREATEST(
-    COALESCE(${myLastCommentAtExpr(companyId, userId)}, to_timestamp(0)),
-    COALESCE(${myLastReadAtExpr(companyId, userId)}, to_timestamp(0))
+    COALESCE(${facts?.lastCommentAt ?? myLastCommentAtExpr(companyId, userId)}, to_timestamp(0)),
+    COALESCE(${facts?.lastReadAt ?? myLastReadAtExpr(companyId, userId)}, to_timestamp(0))
   )`;
   return sql<boolean>`
     (
       ${touchedCondition}
-      AND (EXISTS (
+      AND (${facts ? sql`${facts.lastExternalCommentAt} > ${myLastTouchAt}` : sql`EXISTS (
         SELECT 1
         FROM ${issueComments}
         WHERE ${issueComments.issueId} = ${issues.id}
@@ -3050,7 +3056,7 @@ function unreadForUserCondition(companyId: string, userId: string) {
             OR ${issueComments.authorUserId} <> ${userId}
           )
           AND ${issueComments.createdAt} > ${myLastTouchAt}
-      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)}
+      )`} OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)}
       OR ${withdrawnForUserCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
@@ -3061,7 +3067,7 @@ function unreadForUserCondition(companyId: string, userId: string) {
  * Each UNION member is one branch of `touchedByUserCondition`, so membership
  * equals that condition. The result is aliased `mine_participants` (`id`).
  */
-function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
+export function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
   const directlyParticipated = or(
     and(eq(issues.createdByUserId, userId), humanCreatedIssueCondition()),
     eq(issues.assigneeUserId, userId),
@@ -6685,7 +6691,7 @@ async function blockedInboxIssueConditions(
     filters?.inboxArchivedByUserId?.trim() || undefined;
   const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
   const contextUserId =
-    unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+    unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? filters?.readStateForUserId;
 
   if (filters?.createdFromIssueId) {
     conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
@@ -8559,7 +8565,9 @@ export function issueService(db: Db) {
       }
       if (!filters?.q?.trim() && !filters?.issueIds) {
         conditions.push(isNull(issues.conversationAgentId));
-        if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+        // Explicit child navigation includes waiting chat tasks, just like
+        // readable-child counts. Ambient lists still omit idle conversations.
+        if (!filters?.parentId && !filters?.parentIds && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }
@@ -8584,7 +8592,7 @@ export function issueService(db: Db) {
         filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
       const contextUserId =
-        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? filters?.readStateForUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention =
         filters?.includeBlockedInboxAttention === true;
@@ -8948,7 +8956,7 @@ export function issueService(db: Db) {
       if (creationCondition) conditions.push(creationCondition);
       if (!filters?.q?.trim()) {
         conditions.push(isNull(issues.conversationAgentId));
-        if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+        if (!filters?.parentId && !filters?.parentIds && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }
