@@ -495,6 +495,34 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await waitForHeartbeatIdle();
   });
 
+  it("keeps the owner recovery pending after held fires exhaust a monitor without limits", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture();
+    await holdMonitorWakes(agentId);
+    const heartbeat = heartbeatService(db);
+
+    let dueAt = new Date(nextCheckAt.getTime() + 60_000);
+    for (let fire = 0; fire < 11; fire += 1) {
+      await heartbeat.tickTimers(dueAt);
+      dueAt = (await readIssue(issueId)).monitorNextCheckAt!;
+      expect(dueAt).not.toBeNull();
+    }
+    let actions = await issueActions(issueId);
+    expect(actions.filter((action) => action === "issue.monitor_deferred")).toHaveLength(11);
+    expect(actions).not.toContain("issue.monitor_exhausted");
+
+    await releaseMonitorWakes(agentId);
+    await heartbeat.tickTimers(dueAt);
+    const cleared = await readIssue(issueId);
+    expect(cleared.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(cleared.executionState)?.monitor).toMatchObject({
+      status: "cleared", clearReason: "dispatch_deferred_exhausted",
+    });
+    actions = await issueActions(issueId);
+    expect(actions.filter((action) => action === "issue.monitor_recovery_wake_queued")).toHaveLength(1);
+    expect(actions).not.toContain("issue.monitor_triggered");
+    await waitForHeartbeatIdle();
+  });
+
   it("does not clobber a monitor replaced while a held fire is being deferred", async () => {
     const { issueId, agentId } = await seedFixture();
     await holdMonitorWakes(agentId);

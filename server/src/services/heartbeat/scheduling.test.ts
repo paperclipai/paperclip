@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as realDelay } from "node:timers/promises";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  activityLog, agentWakeupRequests, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
   completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -247,6 +247,35 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const backedOff = new Date(now.getTime() + 60_000);
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: backedOff, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
     expect(await f.scheduler.tickTimers(backedOff)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it("keeps the schedule when a dispatch throws after its wake was saved", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockImplementationOnce(async (agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.issue.companyId, agentId, source: "automation",
+        reason: opts?.reason ?? null, idempotencyKey: opts?.idempotencyKey ?? null, payload: { issueId: f.issue.id } });
+      throw new Error("Start after save failed");
+    });
+    await f.scheduler.tickTimers(now);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    const calls = f.deps.enqueueWakeup.mock.calls;
+    expect(calls[1]![1]!.idempotencyKey).toBe(calls[0]![1]!.idempotencyKey);
+  });
+
+  it("keeps the schedule when an owner recovery throws after its wake was saved", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ monitorAttemptCount: 1, executionPolicy: { mode: "normal", commentRequired: true, stages: [],
+      monitor: { nextCheckAt: dueAt.toISOString(), maxAttempts: 1 } } }).where(eq(issues.id, f.issue.id));
+    f.deps.enqueueWakeup.mockImplementationOnce(async (agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.issue.companyId, agentId, source: "automation",
+        reason: opts?.reason ?? null, idempotencyKey: opts?.idempotencyKey ?? null, payload: { issueId: f.issue.id } });
+      throw new Error("Start after save failed");
+    });
+    await f.scheduler.tickTimers(now);
+    expect(f.deps.enqueueWakeup.mock.calls[0]![1]!.idempotencyKey)
+      .toBe(`issue-monitor-recovery:${f.issue.id}:${dueAt.toISOString()}`);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
   });
 
   it("records bounded dispatch failure diagnostics while backing off the schedule", async () => {

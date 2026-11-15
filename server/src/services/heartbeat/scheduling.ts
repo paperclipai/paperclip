@@ -404,14 +404,8 @@ export function createHeartbeatScheduling(
       return;
     }
 
-    const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.scheduledAtIso}`;
-
-
-    const acceptedRecoveryKeys = [
-      recoveryKey,
-      `issue-monitor-recovery:${input.claimed.id}:max_attempts_exhausted:${input.scheduledAtIso}`,
-      `issue-monitor-recovery:${input.claimed.id}:timeout_exceeded:${input.scheduledAtIso}`,
-    ];
+    const acceptedRecoveryKeys = issueMonitorRecoveryKeys(input.claimed.id, input.scheduledAtIso);
+    const recoveryKey = acceptedRecoveryKeys[0]!;
 
 
 
@@ -508,9 +502,12 @@ export function createHeartbeatScheduling(
           return { outcome: "skipped" as const, reason: "monitor_recovery_deferred" };
         }
       } catch (error) {
-        await releaseOrBackOffIssueMonitorFire(input.claimed, input, input, {
-          action: "issue.monitor_dispatch_failed", reason: "monitor_recovery_failed",
-        });
+        const diagnostic = { action: "issue.monitor_dispatch_failed", reason: "monitor_recovery_failed" } as const;
+        if (await issueMonitorWakeSaved(input.claimed, issueMonitorRecoveryKeys(input.claimed.id, input.scheduledAtIso))) {
+          await releaseIssueMonitorWithDiagnostic(input.claimed, input, diagnostic);
+        } else {
+          await releaseOrBackOffIssueMonitorFire(input.claimed, input, input, diagnostic);
+        }
         throw error;
       }
     }
@@ -673,42 +670,37 @@ export function createHeartbeatScheduling(
     };
   }
 
+  function issueMonitorRecoveryKeys(issueId: string, scheduledAtIso: string) {
+    return [
+      `issue-monitor-recovery:${issueId}:${scheduledAtIso}`,
+      `issue-monitor-recovery:${issueId}:max_attempts_exhausted:${scheduledAtIso}`,
+      `issue-monitor-recovery:${issueId}:timeout_exceeded:${scheduledAtIso}`,
+    ];
+  }
+
+  async function issueMonitorWakeSaved(claimed: IssueMonitorDispatchRow, idempotencyKeys: string[]) {
+    const [saved] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, claimed.companyId),
+        inArray(agentWakeupRequests.idempotencyKey, idempotencyKeys),
+        sql`${agentWakeupRequests.status} <> 'skipped'`)).limit(1);
+    return Boolean(saved);
+  }
+
   async function deferIssueMonitorFire(
     claimed: IssueMonitorDispatchRow,
     input: Parameters<typeof dispatchClaimedIssueMonitor>[1],
     context: {
       policy: ReturnType<typeof normalizeIssueExecutionPolicy>;
       monitor: IssueExecutionMonitorPolicy | null;
-      scheduledAtIso: string;
-      nextAttemptCount: number;
-      recoveryPolicy: IssueExecutionMonitorRecoveryPolicy;
       dispatchAdmitted: boolean;
     },
     diagnostic: Parameters<typeof releaseIssueMonitorWithDiagnostic>[2],
   ) {
-    if (input.activitySource !== "scheduled" || context.dispatchAdmitted) {
+    if (context.dispatchAdmitted) {
       await releaseIssueMonitorWithDiagnostic(claimed, input, diagnostic);
-      return null;
-    }
-    if (issueMonitorDeferredCount(claimed) + 1 > ISSUE_MONITOR_MAX_DEFERRED_FIRES) {
-      return clearIssueMonitorAndRecover({
-        claimed,
-        policy: context.policy,
-        scheduledAtIso: context.scheduledAtIso,
-        nextAttemptCount: context.nextAttemptCount,
-        clearReason: "dispatch_deferred_exhausted",
-        recoveryPolicy: context.recoveryPolicy,
-        monitor: context.monitor,
-        now: input.now,
-        actorType: input.actorType,
-        actorId: input.actorId,
-        agentId: input.agentId,
-        runId: input.runId,
-        activitySource: input.activitySource,
-      });
+      return;
     }
     await releaseOrBackOffIssueMonitorFire(claimed, input, context, diagnostic);
-    return null;
   }
 
   async function releaseOrBackOffIssueMonitorFire(
@@ -762,7 +754,10 @@ export function createHeartbeatScheduling(
       monitor,
       nextAttemptCount,
       now: input.now,
-    });
+    }) ?? (input.activitySource === "scheduled" &&
+      issueMonitorDeferredCount(claimed) >= ISSUE_MONITOR_MAX_DEFERRED_FIRES
+      ? "dispatch_deferred_exhausted" as const
+      : null);
     const recoveryPolicy = monitorRecoveryPolicy(monitor);
     const monitorMetadata = {
       serviceName: monitor?.serviceName ?? null,
@@ -820,7 +815,8 @@ export function createHeartbeatScheduling(
       });
     }
 
-    const deferralContext = { policy, monitor, scheduledAtIso, nextAttemptCount, recoveryPolicy, dispatchAdmitted: false };
+    const deferralContext = { policy, monitor, dispatchAdmitted: false };
+    const monitorWakeKey = `issue-monitor:${claimed.id}:${scheduledAtIso}`;
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
         // Normalized monitor projections redact externalRef. Read the claimed
@@ -888,7 +884,7 @@ export function createHeartbeatScheduling(
           source: input.source,
           triggerDetail: input.triggerDetail,
           reason: wakeReason,
-          idempotencyKey: `issue-monitor:${claimed.id}:${scheduledAtIso}`,
+          idempotencyKey: monitorWakeKey,
           payload: {
             issueId: claimed.id,
             nextCheckAt: scheduledAtIso,
@@ -919,10 +915,10 @@ export function createHeartbeatScheduling(
             ([...EXECUTION_RECONCILIATION_CAUSES, "execution_owner_active"] as readonly string[]).includes(executionDeferredCause)
             ? executionDeferredCause : undefined;
           const reason = executionDeferredCause ? "execution_reconciliation_required" : "monitor_dispatch_deferred";
-          const cleared = await deferIssueMonitorFire(claimed, input, deferralContext, {
+          await deferIssueMonitorFire(claimed, input, deferralContext, {
             action: "issue.monitor_deferred", reason, ...(blockerCause ? { blockerCause } : {}),
           });
-          return cleared ?? { outcome: "skipped" as const, reason };
+          return { outcome: "skipped" as const, reason };
         }
         deferralContext.dispatchAdmitted = true;
       }
@@ -1005,6 +1001,9 @@ export function createHeartbeatScheduling(
 
           return { outcome: "skipped" as const, reason: err.message };
         }
+      }
+      if (!deferralContext.dispatchAdmitted && await issueMonitorWakeSaved(claimed, [monitorWakeKey])) {
+        deferralContext.dispatchAdmitted = true;
       }
       await deferIssueMonitorFire(claimed, input, deferralContext, {
         action: "issue.monitor_dispatch_failed", reason: "monitor_dispatch_failed",
