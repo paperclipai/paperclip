@@ -210,8 +210,8 @@ address review and CI failures, and inspect required checks and review on the
 current head SHA. Pending, skipped, and passing are distinct. Retry a failed check
 only with a reason; retain its evidence and fix repeatable failures. Resolve
 companion repository/artifact changes needed by the fix and state their ordering.
-A job whose log ends in a runner shutdown or cancellation is lost infrastructure:
-re-run it. A test failing in a file the PR does not touch gets one re-run; if it
+A job whose log shows the runner shut down or lost communication is lost
+infrastructure: re-run it. A cancellation without that evidence may be deliberate. A test failing in a file the PR does not touch gets one re-run; if it
 repeats, check master and tell the test's owner. When review finds one instance of
 a bug class, enumerate and test every entry point or counter of that class before
 pushing again.
