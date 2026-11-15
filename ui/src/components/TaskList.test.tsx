@@ -7,8 +7,8 @@ import { TaskList, type TaskListItem } from "./TaskList";
 import { TooltipProvider } from "./ui/tooltip";
 import { readTaskListSortParams } from "../lib/task-list";
 
-vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl }: { issue: { id: string; title: string }; leadingControl?: ReactNode }) =>
-  <div data-issue-row-details={issue.id}>{leadingControl}<button>{issue.title}</button></div> }));
+vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl, columnValues }: { issue: { id: string; title: string }; leadingControl?: ReactNode; columnValues?: { lastUpdated?: string } }) =>
+  <div data-issue-row-details={issue.id} data-last-updated={columnValues?.lastUpdated}>{leadingControl}<button>{issue.title}</button></div> }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const tasks = (count: number, parentId: string | null = null): TaskListItem[] => Array.from({ length: count }, (_, i) => ({
@@ -37,6 +37,13 @@ describe("TaskList progressive rendering", () => {
     expect(host.querySelector('[role="columnheader"][aria-sort="descending"]')).toBeNull();
     expect(host.querySelector('.task-list-sort-button[data-active]')).toBeNull();
     expect(host.querySelector('[data-slot="task-list-sort-direction"]')).toBeNull();
+  });
+  it("shows the same Last updated time that the Updated filter uses", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-15T12:00:00.000Z"), toFake: ["Date"] });
+    try {
+      await render([{ issue: createIssue({ id: "active", updatedAt: new Date("2026-11-05T12:00:00.000Z"), lastActivityAt: new Date("2026-11-15T10:00:00.000Z") }) }]);
+      expect(host.querySelector('[data-issue-row-details="active"]')?.getAttribute("data-last-updated")).toBe("2h ago");
+    } finally { vi.useRealTimers(); }
   });
   it("highlights Last updated only after selection and returns to the unhighlighted default when reset", async () => {
     const items = tasks(2).reverse();

@@ -21,6 +21,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { readIssueSortParams, type IssueSort } from "../lib/issue-sort";
+import { readIssueUpdatedParams, writeIssueUpdatedParams, type IssueUpdatedFilter } from "../lib/issue-filters";
 import { TaskViewsMenu } from "../components/TaskViewsMenu";
 import { Button } from "@/components/ui/button";
 import { CircleDot, Plus } from "lucide-react";
@@ -205,6 +206,24 @@ function OrganizationIssues({
     }, { replace: true });
   }, [setSearchParams, syncedSearch]);
   const [updatedBefore, setUpdatedBefore] = useState<string | undefined>(undefined);
+  // The Tasks URL owns the Updated filter, so a filtered link opens filtered.
+  const urlUpdated = searchParams.get("updated");
+  const urlUpdatedFrom = searchParams.get("updatedFrom");
+  const urlUpdatedTo = searchParams.get("updatedTo");
+  const updatedFilter = useMemo(() => readIssueUpdatedParams(new URLSearchParams({
+    ...(urlUpdated ? { updated: urlUpdated } : {}),
+    ...(urlUpdatedFrom ? { updatedFrom: urlUpdatedFrom } : {}),
+    ...(urlUpdatedTo ? { updatedTo: urlUpdatedTo } : {}),
+  })), [urlUpdated, urlUpdatedFrom, urlUpdatedTo]);
+  const handleUpdatedFilterChange = useCallback((filter: IssueUpdatedFilter) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (syncedSearch) next.set("q", syncedSearch);
+      else next.delete("q");
+      writeIssueUpdatedParams(next, filter);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams, syncedSearch]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
@@ -372,6 +391,8 @@ function OrganizationIssues({
       sort={sort}
       onSortChange={handleSortChange}
       onUpdatedBeforeChange={setUpdatedBefore}
+      updatedFilter={updatedFilter}
+      onUpdatedFilterChange={handleUpdatedFilterChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}

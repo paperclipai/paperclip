@@ -91,7 +91,11 @@ const LOCAL_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 function parseLocalDate(value: string | null | undefined, dayOffset = 0): number | null {
   const match = value ? LOCAL_DATE_PATTERN.exec(value) : null;
   if (!match) return null;
-  const time = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + dayOffset).getTime();
+  const [year, month, day] = [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+  // Reject impossible days such as 2026-02-31, which Date would roll into March.
+  const date = new Date(year, month, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month || date.getDate() !== day) return null;
+  const time = new Date(year, month, day + dayOffset).getTime();
   return Number.isFinite(time) ? time : null;
 }
 
@@ -147,7 +151,7 @@ export function issueUpdatedServerBefore(
   return end == null ? undefined : new Date(end).toISOString();
 }
 
-type IssueUpdatedFilter = Pick<IssueFilterState, "updatedWithin" | "updatedFrom" | "updatedTo">;
+export type IssueUpdatedFilter = Pick<IssueFilterState, "updatedWithin" | "updatedFrom" | "updatedTo">;
 
 /** Read the Updated filter from `updated`, `updatedFrom` and `updatedTo` page address values. */
 export function readIssueUpdatedParams(params: URLSearchParams): IssueUpdatedFilter {

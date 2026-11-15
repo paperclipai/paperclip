@@ -352,6 +352,9 @@ describe("Updated filter", () => {
     expect(normalizeIssueFilterState({ updatedWithin: "90d", updatedFrom: "Nov 1", updatedTo: 5 }))
       .toMatchObject({ updatedWithin: null, updatedFrom: null, updatedTo: null });
     expect(normalizeIssueFilterState({})).toMatchObject({ updatedWithin: null });
+    expect(normalizeIssueFilterState({ updatedWithin: "custom", updatedFrom: "2026-02-31", updatedTo: "2026-13-01" }))
+      .toMatchObject({ updatedWithin: "custom", updatedFrom: null, updatedTo: null });
+    expect(issueUpdatedTimeRange({ updatedWithin: "custom", updatedFrom: "2026-02-31", updatedTo: "2026-02-30" })).toBeNull();
   });
 
   it("counts as one active filter and clears with the default state", () => {
