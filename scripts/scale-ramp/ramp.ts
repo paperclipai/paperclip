@@ -135,7 +135,14 @@ export function serverMetrics(samples: ReadonlyArray<Record<string, unknown>>): 
     const values = samples.map(sample => num(sample[key])).filter((value): value is number => value !== null);
     return values.length ? Math.max(...values) : null;
   };
-  const missed = samples.map(sample => num(sample.leaseRenewalsMissed)).filter((value): value is number => value !== null);
+  const missedByProcess = new Map<string, number[]>();
+  for (const sample of samples) {
+    const value = num(sample.leaseRenewalsMissed);
+    if (value === null) continue;
+    const processId = typeof sample.processId === "string" ? sample.processId : "";
+    missedByProcess.set(processId, [...missedByProcess.get(processId) ?? [], value]);
+  }
+  const missed = [...missedByProcess.values()];
   return {
     mainThreadCpuMax: max("mainThreadCpu"),
     eventLoopUtilizationMax: max("eventLoopUtilization"),
@@ -144,7 +151,7 @@ export function serverMetrics(samples: ReadonlyArray<Record<string, unknown>>): 
     poolWaitP99MsMax: max("poolWaitP99Ms"),
     runEventLatenessP99MsMax: max("runEventLatenessP99Ms"),
     agentApiPreHandlerP99MsMax: max("agentApiPreHandlerP99Ms"),
-    leaseRenewalsMissed: missed.length ? missed[missed.length - 1]! - missed[0]! : null,
+    leaseRenewalsMissed: missed.length ? missed.reduce((sum, values) => sum + Math.max(0, values[values.length - 1]! - values[0]!), 0) : null,
     samples: samples.length,
   };
 }

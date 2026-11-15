@@ -2,6 +2,7 @@ import { nativeResponsePresentationWork } from "./native-response-presentation-w
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
+import { startServerMetrics, stopServerMetrics } from "../server-metrics.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -546,6 +547,21 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
     expect(observed.at(-1)?.payload.outputTails).toEqual([{ itemId: "ending-item",
       payload: { itemId: "ending-item", kind: "commandExecution", text: "***REDACTED***" } }]);
+  });
+
+  it("records the lateness of each committed runner event once for the server metrics", async () => {
+    const metrics = startServerMetrics();
+    try {
+      const f = await terminalObserverFixture();
+      const event = { ...f.event, emittedAt: new Date(Date.now() - 2_000).toISOString() };
+      await f.port.appendEvent(event);
+      await f.port.appendEvent(event);
+      const snapshot = metrics.snapshot();
+      expect(snapshot.runEventLatenessSamples).toBe(1);
+      expect(snapshot.runEventLatenessP99Ms).toBeGreaterThanOrEqual(1_900);
+    } finally {
+      stopServerMetrics(metrics);
+    }
   });
 
   it("completes a native run when a bound secret equals a protocol word", async () => {

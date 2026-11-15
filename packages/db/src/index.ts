@@ -58,3 +58,4 @@ export * from "./schema/index.js";
 
 export { databaseWorkScopeKey, primeDatabaseWorkTransactionId, signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";
 export { withDatabaseOperation } from "./response-capture.js";
+export { databaseStatementCount } from "./statement-count.js";

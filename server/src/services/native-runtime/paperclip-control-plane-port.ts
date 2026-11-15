@@ -39,6 +39,7 @@ import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransac
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
+import { recordRunEventCommitted } from "../server-metrics.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -506,6 +507,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   ): Promise<void> {
     try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
     if (persisted.disposition === "committed") {
+      recordRunEventCommitted(event.emittedAt);
       try {
         publishLiveEvent({
           companyId: this.#binding.companyId,

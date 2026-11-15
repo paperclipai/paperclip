@@ -253,6 +253,14 @@ import {
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 import { apiServerTiming } from "./middleware/api-server-timing.js";
+import { instanceServerMetricsRoutes } from "./routes/instance-server-metrics.js";
+import {
+  serverMetricsAgentPreHandler,
+  serverMetricsArrival,
+  serverMetricsEnabledFromEnv,
+  startServerMetrics,
+  stopServerMetrics,
+} from "./services/server-metrics.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
@@ -491,9 +499,12 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    serverMetricsEnabled?: boolean;
   },
 ) {
   const app = express();
+  const serverMetrics = (opts.serverMetricsEnabled ?? serverMetricsEnabledFromEnv(process.env)) ? startServerMetrics() : null;
+  if (serverMetrics) app.use("/api", serverMetricsArrival());
   // First, so the reported server time includes admission and database waits.
   app.use("/api", apiServerTiming());
   app.use(databaseOperationMiddleware);
@@ -886,6 +897,7 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
+  if (serverMetrics) api.use(instanceServerMetricsRoutes(serverMetrics));
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -1084,6 +1096,7 @@ export async function createApp(
 
   api.use(museBoardRoutes(db, opts.authPublicBaseUrl));
   api.use(museQualificationRoutes(db));
+  if (serverMetrics) app.use("/api", serverMetricsAgentPreHandler(serverMetrics));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -1448,6 +1461,7 @@ export async function createApp(
         // caller stops the database and the provider. A lease release that
         // fails stays a durable record for the startup reaper.
         await setupTokenLoginService?.shutdown();
+        if (serverMetrics) stopServerMetrics(serverMetrics);
       });
     });
     return appServicesShutdown;
