@@ -564,7 +564,11 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       blockedQueries.add(hashKey(event.query.queryKey));
       const userId = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
       const saved = userId ? readSaved(userId) : [];
-      if ((issueDetail || chatRef !== null) && ["auth", "forbidden", "not_found"].includes(classifyError(event.action.error))) {
+      const refusal = classifyError(event.action.error);
+      const revokesTask = issueDetail
+        ? ["auth", "forbidden", "not_found"].includes(refusal)
+        : chatRef !== null && (["auth", "forbidden"].includes(refusal) || (refusal === "not_found" && event.query.queryKey[1] === "comments"));
+      if (revokesTask) {
         // A refused task read, or a refused read of its saved chat, removes the
         // task and its saved chat at once, from memory and from storage.
         const ids = new Set(issueDetail ? issueRefs(event.query) : [chatRef!.toLowerCase()]);
