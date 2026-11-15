@@ -50,35 +50,35 @@ describe("actual saved native accounting contexts", () => {
     const workerRead = valid("budgets-costs.spend-breakdown"); workerRead.state.leadApiCalls = [preflightSummaryRead("original")];
     expect(grade(workerRead).passed).toBe(false);
   });
-  it("spend breakdown binds the unresolved run's read by what it returned, not by its exact query (cohort 16)", () => {
+  it("spend breakdown accepts a cost report whose checked date range covers the unpriced run (cohort 16)", () => {
     const grade = accountingIdentityCases[0]!.grade;
-    // Cohort 16: the answer linked the unpriced run's own page after reading the company run list twice and
-    // costs/by-agent, all with week or paging inputs the exact-digest allowlist did not list.
-    const list = (runId: string, digest: string, status = 200) => costRead(runId, "GET /api/companies/{companyId}/heartbeat-runs", status, digest);
-    const cohort16 = () => { const o = valid("budgets-costs.spend-breakdown");
+    const byAgent = "GET /api/companies/{companyId}/costs/by-agent";
+    const ranged = (query: Record<string, unknown>, runId = "answer", status = 200, operationId = byAgent, pathParams: Record<string, string> = { companyId: "company" }) =>
+      costRead(runId, operationId, status, callApiInputDigest({ operationId, pathParams, query }));
+    const list = (digest: string) => costRead("answer", "GET /api/companies/{companyId}/heartbeat-runs", 200, digest);
+    // Cohort 16: costs/by-agent and costs/summary for the requested week (copied from the task), plus run-list pages.
+    const cohort16 = (calls: LeadApiCall[]) => { const o = valid("budgets-costs.spend-breakdown");
+      Object.assign(o.state.originalRun as object, { startedAt: "2026-11-15T11:41:02.000Z", finishedAt: "2026-11-15T11:43:40.000Z" });
+      o.state.weekFrom = "2026-11-09T00:00:00.000Z"; o.state.weekTo = "2026-11-16T00:00:00.000Z";
       o.reply = "| Agent | Launch charges |\n|---|---|\n| Riley | $2.63 |\n| Morgan | $1.37 |\n| **Total** | **$4.00** |\n\nMorgan also finished a session on [ACO-5](/ACO/issues/ACO-5) ([the run](/ACO/agents/morgan/runs/original)) whose usage is saved but not yet priced.";
-      o.links.push("/ACO/issues/ACO-5", "/ACO/agents/morgan/runs/original");
-      o.state.leadApiCalls = [costRead("answer", "GET /api/companies/{companyId}/costs/by-agent", 200, "week-scoped"), list("answer", "page-one"), list("answer", "page-two")];
-      return o; };
-    expect(grade(cohort16()).passed, JSON.stringify(grade(cohort16()))).toBe(true);
-    // The run record, a task's runs or the data-quality report return the run with its accounting as well.
-    for (const operationId of ["GET /api/heartbeat-runs/{runId}", "GET /api/issues/{id}/runs", "GET /api/companies/{companyId}/costs/data-quality"]) {
-      const o = cohort16(); o.state.leadApiCalls = [costRead("answer", operationId, 200, "any-input")]; expect(grade(o).passed, operationId).toBe(true);
-    }
-    // Negative control: the unpriced run is stated (and even linked) without any read that returns runs.
-    const invented = cohort16(); invented.state.leadApiCalls = [];
-    expect(grade(invented).passed).toBe(false);
-    const dollarsOnly = cohort16(); dollarsOnly.state.leadApiCalls = [costRead("answer", "GET /api/companies/{companyId}/costs/by-agent", 200, "week-scoped"), costRead("answer", "GET /api/issues/{id}", 200, "task")];
-    expect(grade(dollarsOnly).passed).toBe(false);
-    // Without the run link, an unlisted run-list query proves nothing about which rows it returned.
-    const unlinked = cohort16(); unlinked.links = unlinked.links.filter(href => !href.includes("/runs/"));
-    expect(grade(unlinked).passed).toBe(false);
-    const denied = cohort16(); denied.state.leadApiCalls = [list("answer", "page-one", 403)];
-    expect(grade(denied).passed).toBe(false);
-    const otherRun = cohort16(); otherRun.state.leadApiCalls = [list("original", "page-one")];
-    expect(grade(otherRun).passed).toBe(false);
-    const wrongRunLink = cohort16(); wrongRunLink.links = wrongRunLink.links.map(href => href.replace("/runs/original", "/runs/answer"));
-    expect(grade(wrongRunLink).passed).toBe(false);
+      o.links.push("/ACO/issues/ACO-5", "/ACO/agents/morgan/runs/original"); o.state.leadApiCalls = calls; return o; };
+    const week = { from: "2026-11-09T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" };
+    expect(grade(cohort16([ranged(week), list("page-one"), list("page-two")])).passed).toBe(true);
+    for (const query of [{ from: "2026-11-09", to: "2026-11-15T23:59:59Z" }, { from: "2026-11-15T00:00:00Z" }, { to: "2026-11-16" }])
+      expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(true);
+    expect(grade(cohort16([ranged(week, "answer", 200, "GET /api/companies/{companyId}/costs/summary", {})])).passed).toBe(true);
+    // Negative controls: no read, run-list pages whose inputs prove nothing, a range that excludes the run, another
+    // company, a denied read, and a read by another run. A link to the run (its id is in the task) proves no read.
+    expect(grade(cohort16([])).passed).toBe(false);
+    expect(grade(cohort16([list("page-one"), list("page-two")])).passed).toBe(false);
+    for (const query of [{ from: "2026-11-02", to: "2026-11-09" }, { from: "2026-11-15T11:42:00Z" }, { to: "2026-11-15T11:43:00Z" }, { from: "2026-11-16" }])
+      expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(false);
+    expect(grade(cohort16([ranged(week, "answer", 200, byAgent, { companyId: "other-company" })])).passed).toBe(false);
+    expect(grade(cohort16([ranged(week, "answer", 403)])).passed).toBe(false);
+    expect(grade(cohort16([ranged(week, "original")])).passed).toBe(false);
+    // The answering run reads a different run's record but links the target run's id: still no read of its accounting.
+    const otherRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "answer" } }));
+    expect(grade(cohort16([otherRecord, list("page-one")])).passed).toBe(false);
   });
   it("a HTTP200 retry alone does not establish repaired accounting", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.afterStillUnresolved = false; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(false); });
   it("a genuine confirmed priced repair is distinct from still-unresolved", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.confirmedPricedRepair = true; o.state.afterStillUnresolved = false; o.state.retryAccounted = true; o.state.retryQuality = { runs: [], events: [] }; o.state.retryLedger = [{ agentId: "morgan", eventCount: 1, estimatedEventCount: 0 }]; o.state.finalReply = "The saved usage cost is now recorded. The original work was not rerun."; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(true); });

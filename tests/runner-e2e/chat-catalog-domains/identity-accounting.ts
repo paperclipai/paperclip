@@ -97,16 +97,11 @@ export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity,
   /** Run records this reading run saved with `saveResponse`, read back from the product's saved asset. */
   savedRunRecords?: readonly SavedRunRecord[];
   runListPosition?: RunListPosition;
-  /** The answer this run wrote links the original run's own page. A run id is an unguessable UUID, so the link is a
-   * redaction-safe receipt that a read returned that run's record; see RUN_ACCOUNTING_OPERATIONS. */
-  answerLinksOriginalRun?: boolean }
+  /** When the original run started and finished. A company cost report whose `from`/`to` range covers it returns
+   * the run's saved accounting, so that ranged read counts as well as an unranged one. */
+  originalRunWindow?: { startedAt: string; finishedAt: string } }
 export interface RunListPosition { agentId: string; companyAhead: number; agentAhead: number }
 const RUN_LIST_OPERATION = "GET /api/companies/{companyId}/heartbeat-runs";
-/** Reads whose response carries each run's id together with its saved usage and accounting state: the company run
- * list, the run record, a task's runs and the cost data-quality report (its unresolved rows name the run). Their
- * inputs are redacted, so which rows a call returned is bound by the answer's link to the original run, not by query. */
-const RUN_ACCOUNTING_OPERATIONS: ReadonlySet<string> = new Set([RUN_LIST_OPERATION, "GET /api/heartbeat-runs/{runId}", "GET /api/issues/{id}/runs",
-  "GET /api/companies/{companyId}/costs/data-quality"]);
 const runListCache = new Map<string, ReadonlySet<string>>();
 export function runListDigests(companyId: string, position: RunListPosition): ReadonlySet<string> {
   const key = JSON.stringify([companyId, position]);
@@ -133,6 +128,31 @@ export function runListPosition(runs: ReadonlyArray<{ id: string; agentId: strin
 /** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
  * `asset.created` by the reading run. Its saved content names the record actually read. */
 export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
+const coveringCache = new Map<string, ReadonlySet<string>>();
+/** `from`/`to` values a cost report accepts (an ISO date-time with offset, or a date) for each UTC day boundary within two
+ * weeks of the run, including the end of each day. Only ranges that cover the whole run are kept, so a read bound by one
+ * of these digests returned the run's saved accounting; a range that could exclude the run never counts. */
+export function coveringCostReportDigests(companyId: string, window: { startedAt: string; finishedAt: string }): ReadonlySet<string> {
+  const key = JSON.stringify([companyId, window]);
+  const cached = coveringCache.get(key); if (cached) return cached;
+  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt), digests = new Set<string>();
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return digests;
+  const day = 86_400_000, first = Math.floor(started / day) * day - 14 * day;
+  const values: Array<{ text: string; at: number }> = [];
+  for (let at = first; at <= first + 30 * day; at += day) {
+    const iso = new Date(at).toISOString();
+    values.push({ text: iso, at }, { text: iso.replace(".000Z", "Z"), at }, { text: iso.slice(0, 10), at },
+      { text: new Date(at + day - 1).toISOString(), at: at + day - 1 }, { text: new Date(at + day - 1000).toISOString().replace(".000Z", "Z"), at: at + day - 1000 });
+  }
+  const queries: Array<Record<string, string>> = [];
+  for (const from of values) if (from.at <= started) queries.push({ from: from.text });
+  for (const to of values) if (to.at >= finished) queries.push({ to: to.text });
+  for (const from of values) if (from.at <= started) for (const to of values) if (to.at >= finished) queries.push({ from: from.text, to: to.text });
+  for (const segment of COMPANY_COST_SEGMENTS) for (const pathParams of [{ companyId }, {}, undefined]) for (const query of queries)
+    digests.add(callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query }));
+  coveringCache.set(key, digests);
+  return digests;
+}
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
   const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
@@ -147,10 +167,11 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
   const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
     && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
+  const rangedDigests = companyId && target.originalRunWindow ? coveringCostReportDigests(companyId, target.originalRunWindow) : new Set<string>();
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
-      || !!originalRunId && target.answerLinksOriginalRun === true && RUN_ACCOUNTING_OPERATIONS.has(call.operationId)
+      || rangedDigests.has(call.digest)
       || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
       || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
 }
@@ -229,7 +250,7 @@ export function gradeAccounting(value: unknown) {
     c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
       && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
         citedRunReads: citedRunReads(run), savedRunRecords, runListPosition: runListPosition(o.runs, String(o.state.originalRunId ?? ""), run),
-        answerLinksOriginalRun: answerLinksRun(o, String(o.state.originalRunId ?? "")) })),
+        originalRunWindow: runWindow(o.state.originalRun as HeartbeatRun | undefined) })),
       "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
@@ -386,15 +407,10 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
 /** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
  * or its run id), and no line or sentence that names it states a zero amount for it. */
 /** The reply points at the unresolved record: a rendered link to its task or run, or its identifier or run id written out. */
-/** A link in the answer opens the page of run `runId` (`/<prefix>/agents/<agent>/runs/<runId>`) on this instance. */
-export function answerLinksRun(o: { origin: string; links: readonly string[] }, runId: string): boolean {
-  return !!runId && o.links.some(href => {
-    try {
-      const url = new URL(href, o.origin); if (url.origin !== new URL(o.origin).origin) return false;
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-      return parts.some((part, index) => index > 0 && parts[index - 1] === "runs" && part === runId);
-    } catch { return false; }
-  });
+/** When a saved run started (or was created) and finished, for binding ranged cost reports to it. */
+export function runWindow(run: Pick<HeartbeatRun, "createdAt" | "startedAt" | "finishedAt"> | undefined) {
+  const startedAt = run?.startedAt ?? run?.createdAt, finishedAt = run?.finishedAt;
+  return startedAt && finishedAt ? { startedAt: new Date(startedAt).toISOString(), finishedAt: new Date(finishedAt).toISOString() } : undefined;
 }
 export function unresolvedRecordIdentified(o: { reply: string; links: string[]; origin: string }, record: Entity | undefined, runId: string): boolean {
   const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
