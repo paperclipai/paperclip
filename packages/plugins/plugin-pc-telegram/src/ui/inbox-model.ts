@@ -75,6 +75,18 @@ export function feedIsCompact(width: number): boolean {
   return width > 0 && width <= 600;
 }
 
+export function keepShownPhoto(shown: string | null | undefined, incoming: string | null | undefined): string | null {
+  const next = usableListPhoto(incoming);
+  if (next) return next;
+  return usableListPhoto(shown);
+}
+
+function usableListPhoto(value: string | null | undefined): string | null {
+  if (!value || !value.startsWith("data:image/") || value.length > 480_000) return null;
+  if (/[\s"'()]/.test(value)) return null;
+  return value;
+}
+
 export function avatarPair(id: string): (typeof AVATAR_PAIRS)[number] {
   let hash = 5381;
   for (let index = 0; index < id.length; index += 1) {

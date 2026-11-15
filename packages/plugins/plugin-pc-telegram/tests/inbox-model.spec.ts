@@ -7,6 +7,7 @@ import {
   formatDayLabel,
   formatListTime,
   groupThread,
+  keepShownPhoto,
   shellIsNarrow,
   unreadLabel,
   type InboxMessage,
@@ -19,6 +20,15 @@ function at(day: number, hours: number, minutes: number, year = 2026, month = 10
 }
 
 describe("telegram inbox model", () => {
+  it("keeps a shown list avatar when the next payload is empty", () => {
+    const shown = "data:image/jpeg;base64,abc";
+    expect(keepShownPhoto(shown, null)).toBe(shown);
+    expect(keepShownPhoto(shown, undefined)).toBe(shown);
+    expect(keepShownPhoto(null, shown)).toBe(shown);
+    expect(keepShownPhoto(null, null)).toBeNull();
+    expect(keepShownPhoto(null, "not-a-photo")).toBeNull();
+  });
+
   it("keeps the avatar color stable for a chat id", () => {
     const first = avatarPair("issue-1");
     expect(avatarPair("issue-1")).toEqual(first);

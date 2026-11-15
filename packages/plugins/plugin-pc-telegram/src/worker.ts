@@ -130,6 +130,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const pendingLogins = new Map<string, PendingLogin>();
   const peerLabels = new Map<string, string>();
   const dialogCards = new Map<string, { cards: Map<string, DialogCard> }>();
+  const dialogPhotos = new Map<string, string>();
   const cardJobs = new Map<string, Promise<Map<string, DialogCard>>>();
   const historyCache = new Map<string, { at: number; messages: ChatBubble[] }>();
   const historyJobs = new Map<string, Promise<ChatBubble[]>>();
@@ -170,6 +171,17 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
 
   function cardBucket(companyId: string, accountId: string): Map<string, DialogCard> | null {
     return dialogCards.get(`${companyId}:${accountId}`)?.cards ?? null;
+  }
+
+  function dialogPhotoKey(companyId: string, accountId: string, peerId: string): string {
+    return `${companyId}:${accountId}:${peerId}`;
+  }
+
+  function keepDialogPhoto(companyId: string, accountId: string, peerId: string, photo: string | null, replace: boolean): string | null {
+    const key = dialogPhotoKey(companyId, accountId, peerId);
+    const safe = publicPhoto(photo);
+    if (safe && (replace || !dialogPhotos.has(key))) dialogPhotos.set(key, safe);
+    return dialogPhotos.get(key) ?? null;
   }
 
   function dropAccountCache(accountId: string) {
@@ -286,15 +298,17 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       return;
     }
     if (update.type === "photo") {
+      const photo = keepDialogPhoto(update.companyId, update.accountId, update.peerId, update.photo, true);
+      if (!photo) return;
       const card = cardBucket(update.companyId, update.accountId)?.get(update.peerId);
-      if (card) card.photo = update.photo;
+      if (card) card.photo = photo;
       void issueRefFor(update.companyId, update.accountId, update.peerId, knownRef).then((issueRef) => {
         if (!issueRef) return;
         emitInbox(update.companyId, {
           companyId: update.companyId,
           kind: "dialog",
           issueRef,
-          photo: update.photo,
+          photo,
           preview: card?.preview ?? "",
           unread: card?.unread ?? 0,
           activityAt: card?.activityAt ?? "",
@@ -341,7 +355,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         preview: card?.preview ?? update.bubble.text.replace(/\s+/g, " ").trim().slice(0, 80),
         unread: card?.unread ?? 0,
         activityAt: card?.activityAt || update.bubble.at,
-        photo: card?.photo ?? null,
+        photo: keepDialogPhoto(update.companyId, update.accountId, update.peerId, card?.photo ?? null, false),
       });
     });
   }
@@ -687,7 +701,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
                 name: row.name,
                 preview: typeof row.preview === "string" ? row.preview.slice(0, 80) : "",
                 unread: unreadCount(row.unread),
-                photo: publicPhoto(row.photo),
+                photo: keepDialogPhoto(companyId, accountId, row.id, publicPhoto(row.photo), false),
                 presence: publicPresence(row.presence),
                 activityAt: typeof row.activityAt === "string" ? row.activityAt : "",
               });
@@ -778,7 +792,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             updatedAt: activityAt,
             preview: card?.preview || null,
             unread: card?.unread || 0,
-            photo: card?.photo ?? null,
+            photo: parsed
+              ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
+              : null,
             presence: card?.presence ?? null,
           };
         }));
@@ -856,7 +872,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           void resolveDialogLabel(companyId, issue).catch(() => undefined);
         }
         const face = {
-          photo: card?.photo ?? null,
+          photo: parsed
+            ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
+            : null,
           presence: card?.presence ?? null,
         };
         const account = parsed ? liveByAccount.get(parsed.accountId) : undefined;
