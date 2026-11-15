@@ -432,7 +432,12 @@ the one origin.
 above `--spend-threshold-usd` (default $5) unless `--confirm-spend <max USD>`
 is at least the estimate. It never creates more tasks than the printed cap,
 and it stops when the model spend the runs record passes the confirmed
-amount. The defaults are assumptions: $0.02 model spend per task and $0.10
+amount. It reads recorded spend from Paperclip's cost records for the run's
+agents (`/api/companies/<id>/costs/by-agent?period=all`); run rows carry no
+cost. When some cost events have no known price, it prints a warning, grades
+the run incomplete, and checks the cap against tasks created times the
+per-task assumption as well. The
+defaults are assumptions: $0.02 model spend per task and $0.10
 per sandbox-hour (`PAPERCLIP_SCALE_MODEL_USD_PER_TASK`,
 `PAPERCLIP_SCALE_SANDBOX_USD_PER_HOUR`). Correct them from the recorded spend
 of the first run.
@@ -451,7 +456,8 @@ A missing source is reported as "not measured", never as zero.
 | Criterion | Source | Target | Measured from |
 | --- | --- | --- | --- |
 | Runs that need Retry | finish line | 0, stops at once | task view offers Retry |
-| Failed or timed-out runs | harness | 0, stops at once | run list |
+| Failed runs whose task did not finish by itself | harness | 0 within `--recovery-grace-minutes` (default 15), stops then | run list and task status |
+| Failed runs, recovered ones included, as a share of ended runs | harness | at most `--max-failed-run-percent` (default 2) | run list |
 | Tasks at rest but not done | harness | 0 | task status |
 | Peak running agents | harness | at least 90% of the step | run list |
 | Board page API requests, p90 | finish line | below 500 ms | a GET mix every 10 s: dashboard, issues, agents, live runs, sidebar badges |
@@ -463,6 +469,23 @@ A missing source is reported as "not measured", never as zero.
 | Agent API time before the handler, p99 | finish line | below 100 ms | metrics endpoint |
 | Lease renewals that miss their deadline | finish line | 0 | metrics endpoint |
 | Kill one server process | finish line | runs resume, no Retry | not measured by this harness |
+
+**Failed runs.** Paperclip retries many failed runs by itself (a same-run
+bootstrap retry, a continuation run). A failed run does not stop the ramp
+while its task can still finish: the harness keeps going and counts the run as
+recovered when its task reaches `done`, and as unrecovered when the task comes
+to rest without being done, offers Retry with no automatic retry scheduled, or
+has no live run for the recovery grace after the failure. An unrecovered run
+stops the ramp at once. The share of failed runs, recovered ones included, is
+graded at the end of each step.
+
+**Cleanup.** The harness reads each agent by id (a terminated agent leaves the
+company's agent list) and deletes it only after Paperclip reports its
+termination complete (`lifecycleState` `terminated`). An agent Paperclip keeps
+for its cost history stays terminated. The result names the agents still
+terminating and the sandbox leases still active after the waits, and counts the
+leases that released while it waited; `--cleanup-only <run id>` finishes them
+later from the state file.
 
 **Server metrics.** Each server process can serve
 `GET /api/instance/server-metrics`, a JSON snapshot of that process over the
