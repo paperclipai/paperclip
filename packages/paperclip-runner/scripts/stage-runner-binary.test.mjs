@@ -83,6 +83,14 @@ test("release metadata rejects incompatible native, harness and protocol contrac
   }
 });
 
+async function standaloneHostUtility(name) {
+  const standard = `/bin/${name}`;
+  if (process.platform !== "linux") return standard;
+  const other = name === "sleep" ? "/bin/echo" : "/bin/sleep";
+  const multicall = (await readFile(standard)).equals(await readFile(other));
+  return multicall ? `/usr/bin/gnu${name}` : standard;
+}
+
 async function withOwnedChildren(root, action) {
   const owned = [];
   const start = (command, args) => {
@@ -111,12 +119,13 @@ async function withOwnedChildren(root, action) {
 test("atomically publishes while the previous executable is running", { skip: process.platform === "win32", timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-test-"));
   const destination = path.join(root, "paperclip-runnerd");
+  const sleep = await standaloneHostUtility("sleep");
   await withOwnedChildren(root, async start => {
-    await stageRunnerBinary("/bin/sleep", destination);
+    await stageRunnerBinary(sleep, destination);
     const previous = await stat(destination);
     const old = start(destination, ["30"]);
     await old.spawned;
-    await stageRunnerBinary("/bin/sleep", destination);
+    await stageRunnerBinary(sleep, destination);
     const published = await stat(destination);
     assert.notEqual(published.ino, previous.ino);
     assert.equal(published.mode & 0o777, 0o755);
@@ -149,9 +158,9 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(source), { recursive: true });
     await writeFile(source, "fn main() {}\n");
     await mkdir(path.dirname(built), { recursive: true });
-    await copyHostFixture("/bin/echo", built);
+    await copyHostFixture(await standaloneHostUtility("echo"), built);
     const previousBuild = path.join(root, "previous-build");
-    await copyHostFixture("/bin/sleep", previousBuild);
+    await copyHostFixture(await standaloneHostUtility("sleep"), previousBuild);
     await stageRunnerBinary(previousBuild, hostTarget);
     await stageRunnerBinary(built, path.join(binaryRoot, "paperclip-runnerd"));
     const platforms = {}, releaseBytes = new Map();

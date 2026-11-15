@@ -19,6 +19,8 @@ import {
   plugins,
   projectWorkspaces,
   workspaceRuntimeServices,
+  costEvents,
+  financeEvents,
 } from "@paperclipai/db";
 import {
   deriveProjectUrlKey,
@@ -1122,6 +1124,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           code: "project_execution_admission_pending",
         });
       }
+      const [retainedTask] = await tx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.projectId, id)).limit(1);
+      if (retainedTask) throw conflict("This project still has tasks. Move or delete its tasks before deleting the project.", {
+        code: "project_tasks_pending",
+      });
+      await tx.update(costEvents).set({ projectId: null })
+        .where(and(eq(costEvents.companyId, project.companyId), eq(costEvents.projectId, id)));
+      await tx.update(financeEvents).set({ projectId: null })
+        .where(and(eq(financeEvents.companyId, project.companyId), eq(financeEvents.projectId, id)));
       await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
       await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
