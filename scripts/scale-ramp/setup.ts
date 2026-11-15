@@ -139,6 +139,7 @@ export async function ensureAgents(input: {
 
 export const AGENT_CREATE_PARALLELISM = 8;
 export const LIFECYCLE_ERROR_GRACE_MS = 60_000;
+export const AGENT_LIST_FAILURE_LIMIT = 5;
 
 export class AgentsNotReady extends Error {
   constructor(message: string) {
@@ -178,8 +179,24 @@ export async function waitForAgentsReady(input: {
   const started = clock.now();
   const erroredSince = new Map<string, number>();
   let logged = false;
+  let readFailures = 0;
   for (;;) {
-    const listed = await api.get<Json[]>(`/api/companies/${input.companyId}/agents`);
+    let listed: Json[];
+    try {
+      listed = await api.get<Json[]>(`/api/companies/${input.companyId}/agents`);
+      readFailures = 0;
+    } catch (error) {
+      readFailures += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      if (readFailures >= AGENT_LIST_FAILURE_LIMIT) {
+        throw new AgentsNotReady(`the agent list could not be read ${readFailures} times in a row while waiting for agent setup: ${message.slice(0, 300)}`);
+      }
+      if (clock.now() - started >= input.timeoutMs) {
+        throw new AgentsNotReady(`agent setup could not be checked within ${Math.round(input.timeoutMs / 60_000)} min: ${message.slice(0, 300)}`);
+      }
+      await clock.sleep(input.pollMs);
+      continue;
+    }
     const byId = new Map(listed.map(agent => [String(agent.id), agent]));
     const waiting = input.agentIds.map(id => byId.get(id) ?? { id, status: null }).filter(agent => !agentReady(agent));
     if (!waiting.length) {

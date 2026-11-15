@@ -227,7 +227,8 @@ export class Ramp {
       if (!stop) {
         this.nextPollAt = 0;
         this.nextBoardAt = 0;
-        stop = await this.loop(clock.now() + step.holdMs, step.concurrency);
+        accumulator.startedAt = clock.now();
+        stop = await this.loop(accumulator.startedAt + step.holdMs, step.concurrency);
       }
       accumulator.endedAt = clock.now();
       const atEnd = evaluate(this.metrics(step.index), options.thresholds);

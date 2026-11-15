@@ -460,6 +460,41 @@ describe("ramp against the fake API", () => {
     assertCleanedUp(h.fake);
   });
 
+  it("reports a step window equal to its hold when the step takes minutes to prepare", async () => {
+    const out = await tempDir();
+    const h = harness({ agentReadyDelayMs: index => index === 0 ? 3_000 : 5 * 60_000 });
+    const started = h.clock.now();
+    await main(baseArgs(out, ["--steps", "3", "--drain-minutes", "0"]), h.deps);
+    const result = await readResult(out);
+    const metrics = result.steps[0]!.metrics;
+    assert.ok(metrics.startedAt - started >= 5 * 60_000, "the hold starts after the agents finish setup");
+    assert.equal(metrics.endedAt! - metrics.startedAt, 2 * 60_000);
+  });
+
+  it("keeps waiting for agent setup through a few failed agent list reads", async () => {
+    const out = await tempDir();
+    const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/agents") && count <= 3
+      ? { status: 500, body: "{\"error\":\"database busy\"}" } : null });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.notEqual(result.stop?.criterion, "agents_ready");
+    assert.equal(result.error, null);
+    assert.equal(result.steps[0]!.metrics.peakRunning, 2);
+  });
+
+  it("stops with the status it saw when the agent list keeps failing during setup", async () => {
+    const out = await tempDir();
+    const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/agents") && count <= 5
+      ? { status: 500, body: "{\"error\":\"database busy\"}" } : null });
+    const code = await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.error, null);
+    assert.equal(result.stop!.criterion, "agents_ready");
+    assert.match(result.stop!.reason, /could not be read 5 times in a row.*returned 500/);
+    assertCleanedUp(h.fake);
+  });
+
   it("reports missing optional sources as not measured", async () => {
     const out = await tempDir();
     const h = harness();
