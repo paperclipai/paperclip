@@ -159,7 +159,8 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb, type AgentOrgRow } from "../agent-invokability.js";
+import { createRecoveryPassReads, type RecoveryPassReads } from "./pass-reads.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -207,6 +208,17 @@ import {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
+
+const strandedAgentFields = {
+  id: agents.id,
+  companyId: agents.companyId,
+  name: agents.name,
+  reportsTo: agents.reportsTo,
+  status: agents.status,
+  lifecycleState: agents.lifecycleState,
+  lifecycleHolds: agents.lifecycleHolds,
+};
+type StrandedAgent = { [K in keyof typeof strandedAgentFields]: (typeof agents.$inferSelect)[K] };
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -1039,9 +1051,33 @@ export function recoveryService(
   }
 
   async function isAgentInvokable(
-    agent: typeof agents.$inferSelect | null | undefined,
+    agent: AgentOrgRow | null | undefined,
   ) {
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+  }
+
+  async function readPassStrandedAgent(pass: RecoveryPassReads, agentId: string, companyId: string) {
+    const key = `agent:${agentId}`;
+    const cached = pass.get(key) as { agent: StrandedAgent; invokable: true } | undefined;
+    if (cached?.agent.companyId === companyId) return cached;
+    const agent = await db.select(strandedAgentFields).from(agents).where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    const invokable = agent && agent.companyId === companyId && !isAgentAwaitingSetup(agent)
+      ? await isAgentInvokable(agent) : false;
+    if (agent && invokable) pass.set(key, { agent, invokable });
+    return { agent, invokable };
+  }
+
+  async function readPassInvocationBudgetBlock(pass: RecoveryPassReads, issue: RecoveryIssue, agentId: string) {
+    const key = `budget:${issue.companyId}:${agentId}:${issue.projectId ?? ""}`;
+    if (pass.has(key)) return null;
+    const block = await readInvocationBudgetBlock(issue, agentId);
+    if (!block) pass.set(key, null);
+    return block;
+  }
+
+  async function isPassInvocationBudgetBlocked(pass: RecoveryPassReads, issue: RecoveryIssue, agentId: string) {
+    return Boolean(await readPassInvocationBudgetBlock(pass, issue, agentId));
   }
 
   async function getLatestIssueRun(
@@ -4752,7 +4788,9 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     skipExternalConversationSettlement?: boolean;
     skipRelatedRecovery?: boolean;
+    pass?: RecoveryPassReads;
   }) {
+    const pass = opts?.pass ?? createRecoveryPassReads();
     const candidates = await db
       .select(recoveryIssueFields)
       .from(issues)
@@ -4955,15 +4993,11 @@ export function recoveryService(
         }
       }
 
-      const agent = await getAgent(agentId);
+      const { agent, invokable: agentInvokable } = await readPassStrandedAgent(pass, agentId, issue.companyId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
         result.skipped += 1;
         continue;
       }
-      const agentInvokable =
-        agent && agent.companyId === issue.companyId
-          ? await isAgentInvokable(agent)
-          : false;
       if (
         agent?.status === "paused" &&
         agent.companyId === issue.companyId &&
@@ -5134,7 +5168,7 @@ export function recoveryService(
           continue;
         }
       }
-      const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      const budgetBlock = await readPassInvocationBudgetBlock(pass, issue, agentId);
       // A temporary hold (accounting still settling) only delays the task's
       // start or continuation; it is not a reason to escalate. Leave the task
       // as it is: settling accounting wakes this recovery again, which then
@@ -5351,7 +5385,7 @@ export function recoveryService(
             continue;
           }
 
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
+          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5589,7 +5623,7 @@ export function recoveryService(
           continue;
         }
 
-        if (await isInvocationBudgetBlocked(issue, participantAgentId)) {
+        if (await isPassInvocationBudgetBlocked(pass, issue, participantAgentId)) {
           result.skipped += 1;
           continue;
         }
@@ -5661,7 +5695,7 @@ export function recoveryService(
             continue;
           }
 
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
+          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5707,7 +5741,7 @@ export function recoveryService(
           continue;
         }
 
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
           result.skipped += 1;
           continue;
         }
@@ -5796,7 +5830,7 @@ export function recoveryService(
         // reconciled by their own finalizer), so the recovery enqueue
         // returns null for them and they escalate exactly as before.
         if (latestRun?.status === "interrupted") {
-          if (await isInvocationBudgetBlocked(issue, agentId)) {
+          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5879,7 +5913,7 @@ export function recoveryService(
           result.recentProgressExempted += 1;
         }
 
-        if (await isInvocationBudgetBlocked(issue, agentId)) {
+        if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
           result.skipped += 1;
           continue;
         }
@@ -6001,7 +6035,7 @@ export function recoveryService(
         }
       }
 
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
         result.skipped += 1;
         continue;
       }
