@@ -293,6 +293,16 @@ The master row has much less run churn than the earlier rows, so compare the
 per-window totals with care. In that window the one backstop pass loaded 260
 tasks into the stranded queue; run events loaded 147.
 
+A graceful shutdown now releases the process identity of the settled native
+runs that the stopping server ran, once it sees that their local processes
+exited. It uses one candidate read and one update for all runs (7 statements
+for 40 runs). Before this change, those runs kept `process_pid` and
+`process_group_id` after the deploy. A successor in another container cannot
+release them. A successor on the same host releases them at startup at about
+10 statements per run (401 statements for 40 runs); after a graceful shutdown
+it does one statement. Runs still running at shutdown, sandbox runs, and runs
+of other servers keep their records.
+
 ### Phase 2: several controller processes (target: 1,000)
 
 | # | Change |
