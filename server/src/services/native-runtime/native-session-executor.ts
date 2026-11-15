@@ -1127,12 +1127,37 @@ async function warmSandboxTerminated(db: Db, entry: WarmNativeSession): Promise<
   });
 }
 
-/** A failed close is complete when its Runner is proven gone, its sandbox is destroyed, or the run's own sandbox lease has a stop receipt. */
+async function warmRunnerPortTakenBySuccessor(db: Db, entry: WarmNativeSession): Promise<boolean> {
+  if (!entry.providerLeaseId || !entry.environmentId) return false;
+  const [owner] = await db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, entry.runId), eq(heartbeatRuns.companyId, entry.companyId)));
+  if (!owner?.finishedAt) return false;
+  const ownerFinishedAt = owner.finishedAt.toISOString();
+  const [successor] = await db.select({ runId: heartbeatRuns.id }).from(environmentLeases)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, entry.companyId)))
+    .where(and(
+      eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
+      eq(environmentLeases.companyId, entry.companyId),
+      eq(environmentLeases.environmentId, entry.environmentId),
+      sql`${heartbeatRuns.id} <> ${entry.runId}`,
+      sql`exists (select 1 from ${heartbeatRunEvents} launch
+        where launch.company_id = ${entry.companyId} and launch.run_id = ${heartbeatRuns.id}
+          and launch.event_type = ${PROCESS_IDENTITY_RECORDED} and launch.source_event_id is null
+          and launch.created_at > ${ownerFinishedAt}::timestamptz)`,
+      sql`exists (select 1 from ${heartbeatRunEvents} started
+        where started.company_id = ${entry.companyId} and started.run_id = ${heartbeatRuns.id}
+          and started.event_type = 'session.started' and started.source_instance_id = ${heartbeatRuns.runnerInstanceId}::text
+          and started.created_at > ${ownerFinishedAt}::timestamptz)`,
+    )).limit(1);
+  return Boolean(successor);
+}
+
+/** A failed close is complete when its Runner is proven gone, its sandbox is destroyed, the run's own sandbox lease has a stop receipt, or a later run launched its own Runner on the same sandbox. */
 async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb): Promise<boolean> {
   const diagnostic = readRemoteRunnerRecoveryError(error);
   if (diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running") return true;
   try {
-    return db ? await warmSandboxTerminated(db, entry) : false;
+    return db ? await warmSandboxTerminated(db, entry) || await warmRunnerPortTakenBySuccessor(db, entry) : false;
   } catch (proofError) {
     logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
     return false;
