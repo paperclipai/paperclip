@@ -281,7 +281,7 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
 
 export const DEDICATED_CONNECTION_IDLE_MAX = 4;
-export const DEFAULT_DEDICATED_CONNECTION_MAX = 64;
+export const DEFAULT_DEDICATED_CONNECTION_MAX = 24;
 export const DEFAULT_DEDICATED_CONNECTION_WAIT_MS = 30_000;
 
 type DedicatedConnectionWaiter = { grant(): void; timer: ReturnType<typeof setTimeout> };

@@ -931,7 +931,7 @@ the main pool (application name `paperclip-workspace-finalization-lock`). Each
 `createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
 single-connection clients idle for reuse; they follow the same idle timeout and
 max lifetime as the main pool. At most `DATABASE_DEDICATED_CONNECTION_MAX`
-(default 64) dedicated clients are in use at once per owner. A caller that
+(default 24) dedicated clients are in use at once per owner. A caller that
 finds the limit reached waits in a first-in, first-out queue. A caller that
 already holds a dedicated client, or runs inside an open transaction of the
 same process, is admitted at once, because its wait could deadlock with the
@@ -955,8 +955,8 @@ pool settings):
 | Main pool | `DATABASE_POOL_MAX` (driver default 10) |
 | Private pools: controller lease 2, legacy controller lease 1, controller-instance lease 1, runner checkpoint 3, file storage 2 | 9 |
 | Notification listeners: plugin lifecycle 1, deployment notifications 1 | 2 |
-| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 132 with the default limit |
-| Total with defaults | 153 |
+| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 52 with the default limit |
+| Total with defaults | 73 |
 
 A separate `DATABASE_MIGRATION_URL` adds a second owner with its own pools.
 Admission over the limit after the wait bound can exceed this total.

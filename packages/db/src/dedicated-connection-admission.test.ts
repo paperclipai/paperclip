@@ -116,8 +116,8 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection admission", () =>
   });
 
   it.each([200, 1_000])("bounds the sessions of a %i-run restart burst whose source lock nests a lifecycle lock", async runs => {
-    const limit = 24;
-    const db = owner({ dedicatedConnectionMax: limit });
+    const limit = DEFAULT_DEDICATED_CONNECTION_MAX;
+    const db = owner();
     const result = await restartBurst(db, runs, 40);
     console.info(JSON.stringify({ metric: "dedicated_connection_restart_burst", limit, ...result }));
     expect(result.failures).toBe(0);
