@@ -39,7 +39,7 @@ function TaskJourney({ openInitially = false, streamlinedTabs = false, panelWidt
     const cache = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
     cache.setQueryData(queryKeys.issues.attachments(issue.id), [attachment]);
     cache.setQueryData(queryKeys.issues.workProducts(issue.id), []);
-    cache.setQueryData([...queryKeys.issues.documents(issue.id), "list"], []);
+    cache.setQueryData(queryKeys.issues.documentList(issue.id), []);
     cache.setQueryData([...queryKeys.issues.documents(issue.id), "plan"], null);
     cache.setQueryData(queryKeys.issues.runs(issue.id), []);
     cache.setQueryData(queryKeys.agents.list(issue.companyId), storybookAgents);

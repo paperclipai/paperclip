@@ -3,13 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { ApiError } from "@/api/client";
 import { TaskDocumentPanel } from "./TaskDocumentPanel";
 import { MemoryRouter } from "react-router-dom";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const mocks = vi.hoisted(() => ({ get: vi.fn(), revision: vi.fn() }));
-vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: mocks.get, getDocumentRevision: mocks.revision } }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), revision: vi.fn() }));
+vi.mock("@/api/issues", () => ({ issuesApi: { listDocuments: mocks.list, getDocument: mocks.get, getDocumentRevision: mocks.revision } }));
 vi.mock("@/lib/router", () => ({ useLocation: () => ({ hash: "#document-copy&revision=old&interaction=review" }) }));
 vi.mock("@/components/IssueDocumentAnnotations", () => ({
   DocumentAnnotationsCountChip: () => <span>Annotations</span>,
@@ -57,4 +58,26 @@ describe("exact reviewed revision panel", () => {
     expect(container.textContent).toContain("Couldn't load the document");
     expect(container.querySelector("article")).toBeNull();
   });
+});
+
+it("opens a document keyed list after loading the document collection", async () => {
+  const listDocument = { id: "doc-list", key: "list", title: "Packing", body: "Pack the charger", updatedAt: new Date() };
+  mocks.list.mockResolvedValue([listDocument]);
+  mocks.get.mockResolvedValue(listDocument);
+  function Documents() {
+    const { data } = useIssueDocuments("task");
+    return data ? <TaskDocumentPanel issueId="task" documentKey="list" /> : null;
+  }
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => {
+    root!.render(<MemoryRouter><QueryClientProvider client={client}><Documents /></QueryClientProvider></MemoryRouter>);
+  });
+  await vi.waitFor(async () => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain("Pack the charger");
+  });
+  expect(mocks.get).toHaveBeenCalledWith("task", "list");
 });

@@ -12,7 +12,7 @@ import { queryKeys } from "@/lib/queryKeys";
  */
 export function useIssueDocuments(issueId: string | null | undefined) {
   return useQuery<IssueDocument[]>({
-    queryKey: [...queryKeys.issues.documents(issueId ?? ""), "list"],
+    queryKey: queryKeys.issues.documentList(issueId ?? ""),
     enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
     queryFn: () => issuesApi.listDocuments(issueId!),
   });

@@ -55,7 +55,7 @@ function GalleryStory({ scenario = "videos", width = 480 }: { scenario?: Scenari
     const cache = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
     cache.setQueryData(queryKeys.issues.workProducts(issue.id), workProducts);
     cache.setQueryData(queryKeys.issues.attachments(issue.id), attachments);
-    cache.setQueryData([...queryKeys.issues.documents(issue.id), "list"], []);
+    cache.setQueryData(queryKeys.issues.documentList(issue.id), []);
     cache.setQueryData(queryKeys.issues.runs(issue.id), [
       { runId: "style-exploration", agentId: storybookAgents[0].id, startedAt: date },
       { runId: "first-concepts", agentId: storybookAgents[0].id, startedAt: new Date("2026-09-22T17:43:00Z") },
