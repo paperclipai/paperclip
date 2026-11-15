@@ -137,6 +137,7 @@ import { failedRunRetryBudgetSpent, type HeartbeatRetryDependencies, type create
 import { serverRestartBudgetSpent } from "../execution-recovery-attempt.js";
 import type { CancelRunOptions } from "./run-control.js";
 import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
+import { isYieldingRunStarts, RUN_START_YIELD_RECHECK_MS } from "../run-start-handover.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRetries = ReturnType<typeof createHeartbeatRetries>;
@@ -2364,6 +2365,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
 
     await beforeDispatch?.();
+    if (isYieldingRunStarts()) {
+      if (remoteRetryRunIds.length || claimableNativeRunIds.size) scope.onDeferredDeadline?.(Date.now() + RUN_START_YIELD_RECHECK_MS);
+      return new Set<string>();
+    }
 
     const remoteRetryClaims = remoteRetryRunIds.length
       ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true, trigger: "same_run_retry" })).claims
