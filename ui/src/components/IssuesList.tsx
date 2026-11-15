@@ -48,6 +48,7 @@ import {
   resolveIssueFilterWorkspaceId,
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
+  issueUpdatedServerBefore,
   type IssueFilterState,
 } from "../lib/issue-filters";
 import {
@@ -479,6 +480,8 @@ interface IssuesListProps {
   /** URL sorting overrides the saved collection preference when supplied. */
   sort?: IssueSort;
   onSortChange?: (sort: IssueSort) => void;
+  /** Reports the server `updatedBefore` bound for the Updated filter's custom range end. */
+  onUpdatedBeforeChange?: (updatedBefore: string | undefined) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions" | "sortField" | "sortDir">;
   searchWithinLoadedIssues?: boolean;
@@ -732,6 +735,7 @@ function StreamlinedIssuesList({
   onRoutineTasksOnlyChange,
   sort,
   onSortChange,
+  onUpdatedBeforeChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -833,6 +837,10 @@ function StreamlinedIssuesList({
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
   }), [savedViewState, sort, routineTasksOnly]);
+  const updatedBefore = issueUpdatedServerBefore(viewState);
+  useEffect(() => {
+    onUpdatedBeforeChange?.(updatedBefore);
+  }, [onUpdatedBeforeChange, updatedBefore]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;

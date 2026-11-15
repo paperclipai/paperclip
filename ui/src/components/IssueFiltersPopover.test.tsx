@@ -241,4 +241,31 @@ describe("IssueFiltersPopover", () => {
 
     act(() => root.unmount());
   });
+
+  it.each(["legacy", "streamlined", "refreshed"] as const)("picks an Updated time window in %s", presentation => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+    act(() => root.render(<IssueFiltersPopover presentation={presentation} state={defaultIssueFilterState} onChange={onChange} activeFilterCount={0} />));
+    const updated = container.querySelector('[data-filter-options="updated"]');
+    expect(updated?.textContent).toBe("Any timeLast 24 hoursLast 3 daysLast 7 daysLast 30 daysCustom range");
+    expect(container.querySelector('input[type="date"]')).toBeNull();
+    const option = (label: string) => Array.from(updated!.querySelectorAll("button, label")).find(element => element.textContent === label) as HTMLElement;
+    act(() => (option("Last 3 days").querySelector("input") ?? option("Last 3 days")).click());
+    expect(onChange).toHaveBeenLastCalledWith({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+
+    act(() => root.render(<IssueFiltersPopover presentation={presentation} state={{ ...defaultIssueFilterState, updatedWithin: "custom", updatedFrom: "2026-11-01" }} onChange={onChange} activeFilterCount={1} />));
+    const from = container.querySelector<HTMLInputElement>('input[aria-label="Updated from"]');
+    const to = container.querySelector<HTMLInputElement>('input[aria-label="Updated to"]');
+    expect(from?.value).toBe("2026-11-01");
+    expect(to?.min).toBe("2026-11-01");
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(to, "2026-11-12");
+      to!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenLastCalledWith({ updatedTo: "2026-11-12" });
+    act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Clear")?.click());
+    expect(onChange).toHaveBeenCalledWith(defaultIssueFilterState);
+    act(() => root.unmount());
+  });
 });

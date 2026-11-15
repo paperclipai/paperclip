@@ -204,6 +204,7 @@ function OrganizationIssues({
       return next;
     }, { replace: true });
   }, [setSearchParams, syncedSearch]);
+  const [updatedBefore, setUpdatedBefore] = useState<string | undefined>(undefined);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
@@ -291,6 +292,7 @@ function OrganizationIssues({
       serverSortField,
       serverSortDir,
       includeBlockedBy,
+      updatedBefore ?? "__any__",
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
@@ -304,6 +306,7 @@ function OrganizationIssues({
       sortField: serverSortField,
       sortDir: serverSortDir,
       includeBlockedBy: includeBlockedBy || undefined,
+      updatedBefore,
     }, { signal }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
@@ -368,6 +371,7 @@ function OrganizationIssues({
       onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
       sort={sort}
       onSortChange={handleSortChange}
+      onUpdatedBeforeChange={setUpdatedBefore}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
