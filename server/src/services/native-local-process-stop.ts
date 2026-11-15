@@ -12,8 +12,8 @@ import os from "node:os";
 import { currentProcessSpaceHash, UNKNOWN_PROCESS_SPACE } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
 
-export const PROCESS_START_REQUESTED = "native.process_start_requested";
-export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
+import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-process-start-events.js";
+export { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED };
 /** Server-authored: the runner-state fence refused this run before it asked for
  * a runner, because a prior run's saved state could not be proven finished. */
 export const PRIOR_OWNER_FENCE_REFUSED = "native.prior_owner_fence_refused";
