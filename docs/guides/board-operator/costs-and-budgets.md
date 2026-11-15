@@ -25,7 +25,7 @@ A completed run can report tokens without a dollar amount. To trace one run:
 2. Compare the gateway’s `usage.input_tokens` and `usage.output_tokens` with `usage.inputTokens` and `usage.outputTokens` in the adapter result. Check for a dollar amount at the top level or inside `usage` (`cost_usd` or `costUsd`).
 3. Check `cost_usd` in the adapter result. A null value means the adapter did not report a price. A numeric zero means it reported zero. If the result contains a positive price but the dashboard shows no spend, check the Paperclip cost event for the same run.
 
-In the Costs overview, expand **run costs unavailable** if it appears. Follow the run link to distinguish a missing price from a missing final receipt. See [Cost Reporting](/guides/agent-developer/cost-reporting#understanding-incomplete-cost-data).
+In the Costs overview, expand **run costs unavailable** if it appears. Read the label in the expanded list. **Cost unavailable** means the usage has no reliable price. **Receiving usage** means Paperclip is waiting for final usage data. **Final usage unavailable** means the run stopped without that data. Select **View run** for run details. See [Cost Reporting](/guides/agent-developer/cost-reporting#understanding-incomplete-cost-data).
 
 If you need to stop new work on unpriced usage, open the applicable budget card. With an active hard stop and a positive limit, enable **Advanced settings** > **Block new work when usage has no reliable price**. This setting acts on qualifying unpriced events recorded by Paperclip.
 
