@@ -5,6 +5,7 @@ import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "./client.js";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "./response-capture.js";
+import { databaseStatementCount } from "./statement-count.js";
 import { announcementDismissals, announcementPublications } from "./schema/index.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
@@ -47,6 +48,17 @@ describeEmbeddedPostgres("transactions on the Paperclip database client", () => 
     await db.delete(announcementPublications);
   });
   afterAll(async () => { await database?.cleanup(); });
+
+  it("counts each statement, inside transactions and savepoints too", async () => {
+    const before = databaseStatementCount();
+    await db.select().from(announcementPublications);
+    await db.transaction(async (tx) => {
+      await publication(tx, "counted");
+      await tx.transaction(async nested => { await nested.select().from(announcementPublications); });
+      await tx.query.announcementPublications.findMany();
+    });
+    expect(databaseStatementCount() - before).toBe(4);
+  });
 
   describe("relational query builders", () => {
     it("builds none for a transaction or savepoint that never reads tx.query", async () => {

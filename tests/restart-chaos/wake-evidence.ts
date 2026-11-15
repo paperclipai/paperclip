@@ -79,7 +79,8 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
         wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
-        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
+        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,
+        providerTurnStarted: run.providerTurnStarted == null ? null : Boolean(run.providerTurnStarted),        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
     }),
     wakes: wakes.map(wake => ({ id: text(wake.id), reason: text(wake.reason), source: text(wake.source), triggerDetail: text(wake.triggerDetail),
@@ -99,7 +100,9 @@ async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, s
             r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
             floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
-            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt"
+            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt",
+            exists (select 1 from heartbeat_run_events t where t.company_id = r.company_id and t.run_id = r.id
+                       and t.event_type in ('turn.submitted', 'turn.accepted', 'turn.started')) as "providerTurnStarted"
        from heartbeat_runs r
        left join lateral (select coalesce(e.payload->'prpEvent'->'payload'->'result'->>'reportedWorkDisposition', e.payload->'result'->>'reportedWorkDisposition') as disposition, e.created_at as accepted_at
                             from heartbeat_run_events e where e.run_id = r.id and e.event_type = 'run.result.accepted'

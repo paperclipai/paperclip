@@ -534,12 +534,13 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     }
     if (freshWorkspace && parsed.kind === "description" && parsed.freshWorkspaceVersion !== 1)
       throw new Error("Plugin-provided fresh workspace preparation unavailable");
-    if (operation.kind === "prepare" && parsed.kind === "prepared" && parsed.projectAuthCheckAtSubmit) {
+    if (operation.kind === "prepare" && parsed.kind === "prepared" && (parsed.projectAuthChecked || parsed.projectAuthCheckAtSubmit)) {
       const harness = operation.requirements.provider === "acpx" ? operation.requirements.settings.acpxAgent : operation.requirements.provider;
       if (!harness) throw new Error("Plugin Runner prepared provider unavailable");
       const provider = harness === "codex" ? "openai" : harness === "claude" ? "anthropic" : harness;
       const saved = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
-        runnerTaskProjectAuthValidation: { configurationId: parsed.launch.configurationId, provider, projectIds, atSubmit: true },
+        runnerTaskProjectAuthValidation: { configurationId: parsed.launch.configurationId, provider, projectIds,
+          ...(parsed.projectAuthChecked ? {} : { atSubmit: true }) },
       })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
         eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
       if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");

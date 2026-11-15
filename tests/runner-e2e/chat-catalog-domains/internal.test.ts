@@ -207,7 +207,9 @@ function valid(scenario: string): InternalObservation {
       o.state.ownerId = "owner"; o.state.observerId = "riley"; o.state.protectedTask = { id: "protected", visibility: "private" };
       o.tasks.push({ id: "protected", ...{ visibility: "private" } });
       const p = { ...o.projects[0]!, name: "Acquisition research", ...{ visibility: "private" as const } }; o.projects[0] = p;
-      o.state.beforeShare = { project: p, observerProjectStatus: 404, protectedTaskStatus: 404, agentMutationStatus: 403, leadReadStatus: 200, reply: "You can use Manage access to share this project with Riley." };
+      o.state.beforeShare = { project: p, observerProjectStatus: 404, protectedTaskStatus: 404, agentMutationStatus: 403, leadReadStatus: 200, reply: "You can use Manage access to share this project with Riley.",
+        members: [{ id: "owner-member", subjectType: "user", subjectId: "owner", source: "owner" }], links: ["/RUN/projects/p/configuration"] };
+      o.state.ownerAccessLink = { href: "/RUN/projects/p/configuration", opened: true };
       Object.assign(o, { sharedProject: p, members: [{ id: "member", subjectType: "user", subjectId: "riley" }], observerProjectStatus: 200, observerProtectedTaskStatus: 404 });
       o.activity = [{ ...event("project.access_member_added", "p", { subjectId: "riley" }), agentId: null, actorType: "user", actorId: "owner" }]; break;
     }
@@ -612,9 +614,9 @@ it("rejects a correct clock paired with a wrong named calendar date", () => {
   const o = valid("activity.audit-change"); o.reply = "Board changed priority to high and low on October 25 at 12:00 UTC.";
   expect(gradeInternal(o).passed).toBe(false);
 });
-it("rejects a premature sharing claim before the owner action", () => {
+it("rejects a premature grant before the owner action, by saved membership rather than reply wording", () => {
   const o = valid("projects.share-project");
-  (o.state.beforeShare as { reply: string }).reply = "I've shared it with Riley; you can use Manage access.";
+  (o.state.beforeShare as { members: Entity[] }).members.push({ id: "early", subjectType: "user", subjectId: "riley" } as Entity);
   expect(gradeInternal(o).passed).toBe(false);
 });
 it("accepts the recorded editor named in a sentence form the old phrase list missed", () => {
