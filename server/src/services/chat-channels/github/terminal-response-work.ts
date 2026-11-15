@@ -5,6 +5,7 @@ import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordina
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
 import { githubResponseExecution } from "./response-execution.js";
+import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 import { HttpError } from "../../../errors.js";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
@@ -87,12 +88,9 @@ export function registerGitHubTerminalResponseWork(
    * recorded. A wait on the owning run's reply or presentation is never
    * recorded: a publication that commits it changes no wait-key input, and a
    * restart can lose the hint that its lease release sends. */
-  async function entry(row: Row): Promise<Entry | { parkable: boolean }> {
-    const pending: Entry = { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
-      issueId: row.issueId, conversationId: row.conversationId, repositoryId: row.repositoryId,
-      number: row.number ? Number(row.number) : null, dueAt: row.leaseExpiresAt ? Date.parse(row.leaseExpiresAt) : 0 };
+  async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | { parkable: boolean }> {
     try {
-      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! });
+      const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
       if (execution.body === undefined || execution.reply === "unsettled" ||
           (execution.paused && row.result?.pausedVersion === execution.version))
         return { parkable: !execution.presentationPending && execution.reply === "none" };
@@ -101,7 +99,24 @@ export function registerGitHubTerminalResponseWork(
       // Keep this request eligible for the acknowledgement owner's authority
       // check and cancellation; it must not poison discovery for other requests.
     }
-    return pending;
+    return pending(row);
+  }
+  /** The request's entry, before its run state is read. */
+  function pending(row: Row): Entry {
+    return { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
+      issueId: row.issueId, conversationId: row.conversationId, repositoryId: row.repositoryId,
+      number: row.number ? Number(row.number) : null, dueAt: row.leaseExpiresAt ? Date.parse(row.leaseExpiresAt) : 0 };
+  }
+  /** The entries of a page, by position, from one batched run-state read. */
+  async function entries(rows: Row[], signal?: AbortSignal) {
+    const reads = await readGitHubResponseRuns(db, rows.map(row => ({ companyId: row.companyId, endpointId: row.endpointId,
+      agentId: row.agentId!, issueId: row.issueId, deliveryId: row.deliveryId!, sourceMessageId: row.sourceMessageId })));
+    const values: Array<Awaited<ReturnType<typeof entry>>> = [];
+    for (const [index, row] of rows.entries()) {
+      if (!canRun() || signal?.aborted) throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
+      values.push(await entry(row, reads[index]!));
+    }
+    return values;
   }
   /** Record the wait of requests that cannot progress yet. A request whose row
    * changed after the read gets no key and is read again. The write leaves
@@ -119,8 +134,8 @@ export function registerGitHubTerminalResponseWork(
   async function current(actionId: string) {
     const [row] = await page(undefined, undefined, actionId);
     if (!row) return null;
-    const value = await entry(row);
-    if (!("parkable" in value)) return value;
+    const [value] = await entries([row]);
+    if (!("parkable" in value!)) return value!;
     if (value.parkable) await park([row]);
     return null;
   }
@@ -135,18 +150,17 @@ export function registerGitHubTerminalResponseWork(
       (!scope.endpointId || value.endpointId === scope.endpointId) && (!scope.repositoryId || value.repositoryId === scope.repositoryId) &&
       (!scope.number || value.number === scope.number)),
     load: async (scope?: Scope, signal?: AbortSignal) => {
-      const entries: Entry[] = [];
+      const loaded: Entry[] = [];
       let cursor: string | undefined;
       while (canRun() && !signal?.aborted) {
         const rows = await page(scope, cursor);
+        const values = await entries(rows, signal);
         const waiting: Row[] = [];
-        for (const row of rows) {
-          if (!canRun() || signal?.aborted) throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
-          const value = await entry(row);
-          if (!("parkable" in value)) entries.push(value); else if (value.parkable) waiting.push(row);
+        for (const [index, value] of values.entries()) {
+          if (!("parkable" in value)) loaded.push(value); else if (value.parkable) waiting.push(rows[index]!);
         }
         await park(waiting);
-        if (rows.length < 100) return entries;
+        if (rows.length < 100) return loaded;
         cursor = rows[rows.length - 1].id;
       }
       throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
@@ -155,7 +169,10 @@ export function registerGitHubTerminalResponseWork(
       const due = await current(value.id);
       if (!due || due.dueAt > Date.now() || !canRun() || signal?.aborted) return due;
       await acknowledge(due.deliveryId, () => canRun() && !signal?.aborted);
-      return current(value.id);
+      // Keep a request that still waits for the next check, which reads its
+      // run state again before it acknowledges. One check reads it once.
+      const [remaining] = await page(undefined, undefined, value.id);
+      return remaining ? pending(remaining) : null;
     },
   }, canRun);
 }
