@@ -143,6 +143,18 @@ for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
 
+## Other diagnostic switches
+
+- **OpenCode performance diagnostics.** Set
+  `PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` as an agent or environment
+  variable. It defaults off, and setting the OTLP endpoint alone does not turn it
+  on. The Runner then records closed OpenCode phase timings through a local,
+  authenticated sink. No operator OTLP endpoint or ingestion credential is
+  passed to OpenCode.
+- **Browser page-load tracing** on hosted instances needs
+  `PAPERCLIP_BROWSER_TRACES_ENDPOINT`. See
+  [browser performance tracing](browser-performance-tracing.md).
+
 ## Sentry Error Monitoring
 
 Paperclip ships with **opt-in** Sentry error monitoring for the server
