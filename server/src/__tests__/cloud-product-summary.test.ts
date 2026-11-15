@@ -525,6 +525,23 @@ describe("cloudProductSummaryQuerySchema", () => {
     }
   });
 
+  it("reads each task once when many tasks have the same creation time", async () => {
+    const companyId = await createCompany();
+    const tasks = await createTasks(companyId, CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2, { createdAt: ago(30 * DAY) });
+    const ordered = tasks.map((task) => task.id).sort();
+    for (const [index, id] of [ordered[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW - 1]!, ordered[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW]!].entries()) {
+      await db.update(issues).set({ status: "done", completedAt: ago((index + 1) * DAY) }).where(eq(issues.id, id));
+      await createDocument(companyId, id, index === 0 ? "plan" : "notes", ago((index + 3) * DAY));
+    }
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+
+    expect(summary.capabilities.ownTaskCompleted).toEqual({ state: "yes", firstAt: iso(2 * DAY), beforeSince: false });
+    expect(summary.capabilities.planCreated).toEqual({ state: "yes", firstAt: iso(3 * DAY), beforeSince: false });
+    expect(summary.capabilities.artifactCreated).toEqual({ state: "yes", firstAt: iso(4 * DAY), beforeSince: false });
+    expect(summary.capabilities.planApproved).toEqual({ state: "no", firstAt: null, beforeSince: false });
+  });
+
   it("returns no oldest blocked time when more tasks are blocked than the count cap", async () => {
     const companyId = await createCompany();
     await createTasks(companyId, CLOUD_PRODUCT_SUMMARY_COUNT_CAP + 1, { status: "blocked", blockedTransitionAt: ago(3 * DAY) });

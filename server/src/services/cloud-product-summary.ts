@@ -223,7 +223,7 @@ function taskWindow(context: Context, end: WindowEnd, columns: SQL): SQL {
   return sql`
     select ${columns} from issues i
     where i.company_id = ${context.companyId}
-    order by i.created_at ${end === "oldest" ? sql`asc` : sql`desc`}
+    order by ${end === "oldest" ? sql`i.created_at asc, i.id asc` : sql`i.created_at desc, i.id desc`}
     limit ${CLOUD_PRODUCT_SUMMARY_TASK_WINDOW}
   `;
 }
@@ -378,7 +378,7 @@ async function readRoutines(tx: Tx, context: Context): Promise<Partial<Capabilit
   const runWindow = (direction: SQL) => sql`(
     select rr.id, rr.triggered_at, rr.status from routine_runs rr
     where rr.company_id = ${context.companyId} and rr.routine_id = r.id
-    order by rr.created_at ${direction}
+    order by rr.created_at ${direction}, rr.id ${direction}
     limit ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW}
   )`;
   const [run] = await rows(tx, sql`
