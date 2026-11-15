@@ -131,6 +131,35 @@ data paths document their own contract in their own file:
 - [Run-Log Events](../../../../doc/run-log-events.md) — events written to the
   local `heartbeat_run_events` table.
 
+## Proposed Cloud Organization Link
+
+`cloud.organization_identified` is a proposed event. It links the telemetry
+installation ID of a Cloud-managed instance to its organization. It has one
+dimension, `organization_ref`.
+
+- Paperclip Cloud supplies the value in the environment variable
+  `PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF`. The value is a keyed hash that
+  only Paperclip Cloud can compute. It is 64 lowercase hexadecimal characters.
+- The server sends the value as it is. It does not derive it. The server never
+  sends the account group ID, the stack ID, an organization name, a slug, a
+  hostname, or a company ID. The account group ID is not always opaque.
+- The server attempts the event one time for each process start. It does this
+  only on a Cloud-managed instance, and only when the value has the correct
+  shape. Each other value causes no event.
+- A self-hosted instance never sends this event.
+- The telemetry runtime suppresses this event until the backend schema
+  registers it and the generated contract is synchronized. Thus no proposal
+  data leaves the process before approval.
+
+After approval, an analyst can attribute the events of an installation to its
+organization at query time. Historical event rows are not rewritten. An
+installation that never starts with a value stays unlinked.
+
+This event changes what Paperclip Telemetry says about a Cloud-managed
+instance: its events are no longer anonymous to Paperclip. Do not register the
+event before the privacy review and the customer notice for Paperclip Cloud are
+complete. Telemetry for a self-hosted instance does not change.
+
 ## Dimension Values
 
 Telemetry dimension values must be primitives. Use only the value types allowed
