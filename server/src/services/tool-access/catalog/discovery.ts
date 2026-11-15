@@ -236,9 +236,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       // `tools/list` is read-only, so a 400 can safely be retried after the MCP
       // initialize handshake. Stateful servers such as Supabase require the
       // returned Mcp-Session-Id on every non-initialization request.
-      // Some stateful servers reject a request without Mcp-Session-Id with 404
-      // instead of 400. MCP uses 404 for a session the server does not know,
-      // so retry it the same way when no session was sent.
       if (
         legacyResponse.status === 400 ||
         (legacyResponse.status === 404 && !new Headers(headers).has("mcp-session-id"))

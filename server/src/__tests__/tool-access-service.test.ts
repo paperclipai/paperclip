@@ -6434,7 +6434,6 @@ describeEmbeddedPostgres("tool access service", () => {
         expect(requestHeaders.get("mcp-session-id")).toBeTruthy();
         return new Response(null, { status: 202 });
       }
-      // mark3labs/mcp-go style: every request without a session is "not found".
       if (!requestHeaders.get("mcp-session-id")) {
         return new Response("Invalid session ID", {
           status: 404,
@@ -6465,7 +6464,6 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
-    // One version probe, then the plain listing that reveals the session need.
     expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
     expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
     expect(
