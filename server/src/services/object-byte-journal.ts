@@ -241,12 +241,51 @@ export function objectJournalIOSlots() {
 }
 export function trackObjectJournalWriter(): () => void {
   openWriters++;
+  grantWaitingUploads();
   grantWaitingIO();
   let released = false;
   return () => {
     if (released) return;
     released = true;
     openWriters--;
+  };
+}
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+export function objectJournalUploadActivity() {
+  return { active: activeUploads, waiting: uploadWaiters.length };
+}
+function grantWaitingUploads() {
+  while (activeUploads < objectJournalUploadSlots()) {
+    const next = uploadWaiters.shift();
+    if (!next) return;
+    activeUploads++;
+    next();
+  }
+}
+export async function acquireObjectJournalUpload(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  if (activeUploads >= objectJournalUploadSlots())
+    await new Promise<void>((resolve, reject) => {
+      const enter = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = uploadWaiters.indexOf(enter);
+        if (index !== -1) uploadWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      uploadWaiters.push(enter);
+    });
+  else activeUploads++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeUploads--;
+    grantWaitingUploads();
   };
 }
 function grantWaitingIO() {

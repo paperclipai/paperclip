@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
 import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
 import { OBJECT_JOURNAL_IO_CEILING, OBJECT_JOURNAL_READ_IO_RESERVE, OBJECT_JOURNAL_UPLOAD_SLOTS, ObjectJournalBusyError,
-  objectJournalIOSlots, objectJournalUploadSlots } from "./object-byte-journal.js";
+  objectJournalIOSlots, objectJournalUploadActivity, objectJournalUploadSlots } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -623,5 +623,51 @@ describe("S3 run log store", () => {
     expect(result.peak).toBeLessThanOrEqual(result.ioSlots);
     expect(result.ioSlots).toBeLessThanOrEqual(S3_CLIENT_MAX_SOCKETS / 2);
     expect(result.slotsAfterFinalize).toBeLessThan(result.slots);
+  });
+
+  it("starts waiting uploads when runs open and starts no new upload after runs close until the count is under the limit", async () => {
+    const options = { keyPrefix: "logs", flushMs: 30_000, assertWriterAuthority: async () => undefined };
+    const busy = memory(), idle = memory();
+    const busyStore = createObjectRunLogStore({ ...options, provider: busy.provider });
+    const idleStore = createObjectRunLogStore({ ...options, provider: idle.provider });
+    const busyHandles = [];
+    for (let run = 0; run < 40; run++) busyHandles.push(await busyStore.begin({ ...input, runId: `busy-${run}` }));
+    const slotsBefore = objectJournalUploadSlots();
+    const put = busy.provider.putObjectConditional!.bind(busy.provider);
+    const held: Array<() => void> = [];
+    busy.provider.putObjectConditional = async value => {
+      await new Promise<void>(resolve => held.push(resolve));
+      return put(value);
+    };
+    const appended = await Promise.all(busyHandles.map(handle => busyStore.enqueue!(handle, event(1))));
+    const flushes = busyHandles.map(handle => busyStore.flush!(handle));
+    await vi.waitFor(() => expect(objectJournalUploadActivity().active).toBe(slotsBefore));
+    expect(objectJournalUploadActivity().waiting).toBe(40 - slotsBefore);
+
+    const idleHandles = [];
+    for (let run = 0; run < 160; run++) idleHandles.push(await idleStore.begin({ ...input, runId: `idle-${run}` }));
+    const grown = objectJournalUploadSlots();
+    expect(grown).toBeGreaterThanOrEqual(slotsBefore + 16);
+    expect(objectJournalUploadActivity().active).toBe(grown);
+    await vi.waitFor(() => expect(held).toHaveLength(grown));
+
+    const closing = Promise.all(idleHandles.map(handle => idleStore.finalize(handle, { computeDigest: false })));
+    let previous = grown, shrankWhileBusy = false;
+    while (held.length || objectJournalUploadActivity().waiting || objectJournalUploadSlots() > slotsBefore) {
+      held.shift()?.();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const { active } = objectJournalUploadActivity(), limit = objectJournalUploadSlots();
+      expect(active).toBeLessThanOrEqual(Math.max(previous, limit));
+      if (active > limit && limit === slotsBefore) shrankWhileBusy = true;
+      previous = active;
+    }
+    await closing;
+    busy.provider.putObjectConditional = put;
+    await Promise.all(flushes);
+    await Promise.all(appended.map(entry => entry.committed));
+    await Promise.all(busyHandles.map(handle => busyStore.finalize(handle, { computeDigest: false })));
+    expect(shrankWhileBusy).toBe(true);
+    expect(objectJournalUploadActivity()).toEqual({ active: 0, waiting: 0 });
   });
 });
