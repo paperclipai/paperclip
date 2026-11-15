@@ -68,6 +68,10 @@ queries inside transactions and reserved or dedicated connections. Check the
 provider's configuration before you enable it. Preparation caches statement
 metadata, not query results. Unset preserves the existing ORM behavior and the
 driver default for tagged SQL. Explicit per-query options still apply.
+Each database client prepares at most 1,000 distinct statements and skips
+statements longer than 8 KB. If a prepared statement fails because the pooler's copy is
+stale after a schema change or was lost, Paperclip stops preparing that
+statement and retries it once unprepared.
 
 Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open) and the pool reports `application_name=paperclip`. See [Connection pool settings](#connection-pool-settings).
 

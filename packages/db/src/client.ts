@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
-import { installPreparedQueries } from "./prepared-queries.js";
+import { createPreparedQueryState, installPreparedQueries, preparedQueryStats, type PreparedQueryState, type PreparedQueryStats } from "./prepared-queries.js";
 import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
 
@@ -377,6 +377,13 @@ export function databaseConnectionBudget(options: DatabaseClientOptions = {}) {
     total: main + privatePools + DATABASE_LISTENER_CONNECTIONS + dedicated };
 }
 
+const preparedQueryStates = new WeakMap<object, PreparedQueryState>();
+
+export function preparedStatementStats(db: Db): PreparedQueryStats | null {
+  const state = preparedQueryStates.get(db);
+  return state ? preparedQueryStats(state) : null;
+}
+
 export function dedicatedDbConnectionStats(db: Db): DedicatedDbConnectionStats | null {
   const set = dedicatedConnectionSets.get(db);
   return set ? { ...set.stats } : null;
@@ -573,7 +580,10 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
 
 function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, dedicatedSet?: DedicatedConnectionSet) {
   const sql = postgres(url, postgresJsOptions(resolved));
-  if (resolved.prepare === true) installPreparedQueries(sql);
+  const preparedState = resolved.prepare === true
+    ? (owner && preparedQueryStates.get(owner)) || createPreparedQueryState()
+    : undefined;
+  if (preparedState) installPreparedQueries(sql, preparedState);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
   // A disconnect can lose the response after a statement has committed.
@@ -583,6 +593,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
   markOpenTransactions(db);
+  if (preparedState) preparedQueryStates.set(db, preparedState);
   const ownerSet = owner ? dedicatedConnectionSets.get(owner) : undefined;
   if (dedicatedSet) {
     trackClientEnd(db, () => { dedicatedSet.ended.add(db); });
