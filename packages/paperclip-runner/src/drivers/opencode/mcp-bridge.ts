@@ -65,7 +65,7 @@ const MAX_RESULT_BYTES = 1_048_576;
 const TOOL_DELIVERY_DIAGNOSTIC_SCHEMA = "paperclip.opencode.tool-delivery-diagnostic/v1";
 const MAX_TOOL_DELIVERY_DIAGNOSTICS = 256;
 const MAX_TOOL_INPUT_COERCION_DIAGNOSTICS = 64;
-const MAX_TOOL_DELIVERY_ARGUMENT_NAMES = 32;
+const MAX_TOOL_DELIVERY_ARGUMENT_NAMES_CHARS = 1_024;
 const TOOL_DELIVERY_ARGUMENT_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 
 type SocketUse = { requests: number; lastResponseAt: number | null };
@@ -75,7 +75,7 @@ type ToolDelivery = {
   receivedAt: number;
 };
 type ToolDeliveryOutcome = "result" | "error" | "unanswered";
-type ToolDeliveryInput = { argumentNames: string[] | null; undeclaredArgumentCount: number };
+type ToolDeliveryInput = { argumentNames: string[] | null; argumentNamesTruncated: boolean; undeclaredArgumentCount: number };
 
 export function canonicalOpenCodeMcpToolName(name: string): string {
   const trimmed = name.trim();
@@ -140,7 +140,8 @@ export async function startOpenCodeMcpBridge(
     const diagnostic = {
       schema: TOOL_DELIVERY_DIAGNOSTIC_SCHEMA,
       callIdSha256: createHash("sha256").update(callId).digest("hex"),
-      ...(input ? { argumentNames: input.argumentNames, undeclaredArgumentCount: input.undeclaredArgumentCount } : {}),
+      ...(input ? { argumentNames: input.argumentNames, argumentNamesTruncated: input.argumentNamesTruncated,
+        undeclaredArgumentCount: input.undeclaredArgumentCount } : {}),
       socketRequestIndex: delivery.socketRequestIndex,
       socketIdleMs: delivery.socketIdleMs,
       handlerMs: Date.now() - delivery.receivedAt,
@@ -203,6 +204,18 @@ export async function startOpenCodeMcpBridge(
       await closeServer(server);
     },
   };
+}
+
+function boundedArgumentNames(names: string[] | null): Pick<ToolDeliveryInput, "argumentNames" | "argumentNamesTruncated"> {
+  if (!names) return { argumentNames: null, argumentNamesTruncated: false };
+  const kept: string[] = [];
+  let size = 2;
+  for (const name of [...names].sort()) {
+    size += JSON.stringify(name).length + (kept.length ? 1 : 0);
+    if (size > MAX_TOOL_DELIVERY_ARGUMENT_NAMES_CHARS) return { argumentNames: kept, argumentNamesTruncated: true };
+    kept.push(name);
+  }
+  return { argumentNames: kept, argumentNamesTruncated: false };
 }
 
 function inputShape(input: unknown): "omitted" | "null" | "array" | "object" | "string" | "number" | "boolean" | "other" {
@@ -372,7 +385,7 @@ async function handleRequest(
   const receivedNames = isRecord(received) ? Object.keys(received) : null;
   const declaredNames = receivedNames?.filter(name => Object.hasOwn(declaredArguments, name) && TOOL_DELIVERY_ARGUMENT_NAME.test(name)) ?? null;
   deliveredInput = {
-    argumentNames: declaredNames?.sort().slice(0, MAX_TOOL_DELIVERY_ARGUMENT_NAMES) ?? null,
+    ...boundedArgumentNames(declaredNames),
     undeclaredArgumentCount: (receivedNames?.length ?? 0) - (declaredNames?.length ?? 0),
   };
   const validator = context.validators.get(tool);

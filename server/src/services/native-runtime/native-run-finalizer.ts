@@ -36,6 +36,7 @@ import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAIN
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -1765,6 +1766,8 @@ export async function finalizeNativeRun(input: {
       // into a blocker; the committer rechecks that under the issue lock.
       failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
         && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
+      toolCallLoopContinuation: assessment.reportedDisposition === "yielded"
+        && assessment.continuation?.idempotencyKey === toolCallLoopContinuationKey(run.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),

@@ -121,11 +121,12 @@ it("forwards delivery records with argument names and drops names that could car
   forward.bind("session");
   const delivery = { schema: "paperclip.opencode.tool-delivery-diagnostic/v1", callIdSha256: "e".repeat(64),
     socketRequestIndex: 1, socketIdleMs: null, handlerMs: 4, outcome: "result", written: true,
-    argumentNames: ["operationId", "pathParams", "query", "responseText"], undeclaredArgumentCount: 0 };
+    argumentNames: ["operationId", "pathParams", "query", "responseText"], argumentNamesTruncated: false, undeclaredArgumentCount: 0 };
   for (const bad of [
     { ...delivery, argumentNames: ["body value"] },
     { ...delivery, argumentNames: "operationId" },
-    { ...delivery, argumentNames: Array.from({ length: 33 }, (_, n) => `a${n}`) },
+    { ...delivery, argumentNames: Array.from({ length: 20 }, (_, n) => `${n}${"a".repeat(60)}`) },
+    { ...delivery, argumentNamesTruncated: "no" },
     { ...delivery, undeclaredArgumentCount: -1 },
     { ...delivery, undeclaredArgumentCount: "1" },
   ]) forward.diagnostic(JSON.stringify(bad));

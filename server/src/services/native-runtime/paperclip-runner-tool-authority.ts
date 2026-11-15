@@ -80,6 +80,7 @@ import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RU
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { AGENT_TOOL_CALL_LOOP, TOOL_CALL_LOOP_HINT, toolCallLoopContinuationKey, type ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { enqueueWake } from "./status-decision-committer.js";
 import type { Db } from "@paperclipai/db";
 import {
   authUsers,
@@ -257,7 +258,7 @@ type Binding = {
   enqueueWakeup?: (agentId: string, options: {
     source: "assignment" | "automation";
     triggerDetail: "system";
-    reason: "issue_assigned" | "issue_commented" | "issue_continuation_needed";
+    reason: "issue_assigned" | "issue_commented";
     payload: Record<string, unknown>;
     idempotencyKey: string;
     requestedByActorType: "agent";
@@ -353,30 +354,22 @@ export class PaperclipRunnerToolAuthority {
   close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); this.binding.assignedMcpTools?.close?.(); }
 
   async scheduleToolCallLoopContinuation(loop: ToolCallLoopError): Promise<boolean> {
-    if (!this.binding.enqueueWakeup) return false;
-    const idempotencyKey = toolCallLoopContinuationKey(this.binding.runId);
-    const delivered = () => this.db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, this.binding.companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-      notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
-    )).limit(1);
-    if ((await delivered()).length) return true;
-    const loopContext = { issueId: this.binding.issueId, sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
+    const review = this.binding.nativeReview;
+    const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
       tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
-    try {
-      await this.binding.enqueueWakeup(this.binding.agentId, {
-        source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
-        payload: loopContext,
-        idempotencyKey,
-        issueStateGuard: { statuses: ["todo", "in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
-        requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
-        contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, wakeReason: "issue_continuation_needed",
-          forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
-          livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
-      });
-    } catch (error) {
-      if (!(await delivered()).length) throw error;
-    }
-    return (await delivered()).length > 0;
+    await this.db.transaction(tx => enqueueWake({
+      tx: tx as unknown as Db,
+      originRunId: this.binding.runId,
+      companyId: this.binding.companyId,
+      issueId: this.binding.issueId,
+      agentId: this.binding.agentId,
+      reason: review ? "native_completion_review" : "issue_continuation_needed",
+      idempotencyKey: toolCallLoopContinuationKey(this.binding.runId),
+      payload: { ...(review ?? {}), ...loopContext },
+      contextSnapshot: { ...(review ?? {}), forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
+        livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
+    }));
+    return true;
   }
   constructor(readonly db: Db, readonly binding: Binding) {}
 

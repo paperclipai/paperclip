@@ -1612,33 +1612,30 @@ describe("PaperclipRunnerToolAuthority", () => {
       .rejects.toThrow(/conversation cannot be a parent/i);
   });
 
-  it("queues one fresh-session continuation with the tool hint when a turn is stopped by a tool-call loop", async () => {
-    const wakes: Array<{ agentId: string; options: Record<string, unknown> }> = [];
+  it.each([
+    ["the assignee", null],
+    ["a completion reviewer", { nativeReviewInteractionId: "7f0b4f3e-2c1d-4a5b-8c6d-0e1f2a3b4c5d", nativeReviewDecisionId: "8a1c5e4f-3d2e-4b6c-9d7e-1f2a3b4c5d6e" }],
+  ] as const)("queues one fresh-session continuation outbox for %s stopped by a tool-call loop", async (_who, nativeReview) => {
     const authority = new PaperclipRunnerToolAuthority(db, {
-      companyId, agentId, issueId, runId, workMode: "standard",
-      enqueueWakeup: async (wakeAgentId, options) => {
-        wakes.push({ agentId: wakeAgentId, options });
-        await db.insert(agentWakeupRequests).values({ companyId, agentId: wakeAgentId, source: options.source,
-          triggerDetail: options.triggerDetail, reason: options.reason, payload: options.payload, idempotencyKey: options.idempotencyKey });
-        return null;
-      },
+      companyId, agentId, issueId, runId, workMode: "standard", ...(nativeReview ? { nativeReview } : {}),
     });
+    const key = `agent_tool_call_loop:${runId}`;
     const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId", "pathParams"], 400, "refused");
     await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
     await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({
-      agentId,
-      options: {
-        reason: "issue_continuation_needed",
-        idempotencyKey: `agent_tool_call_loop:${runId}`,
-        payload: { issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop", tool: "call_api",
-          argumentNames: ["operationId", "pathParams"] },
-        contextSnapshot: { issueId, forceFreshSession: true, livenessContinuationReason: "agent_tool_call_loop",
-          livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      agentId, status: "queued", runId: null, requestedByActorType: "system", requestedByActorId: "native-status-committer",
+      reason: nativeReview ? "native_completion_review" : "issue_continuation_needed",
+      payload: {
+        issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop", tool: "call_api", argumentNames: ["operationId", "pathParams"],
+        ...(nativeReview ?? {}),
+        _paperclipWakeContext: { issueId, forceFreshSession: true, livenessContinuationSourceRunId: runId,
+          livenessContinuationReason: "agent_tool_call_loop", livenessContinuationInstruction: TOOL_CALL_LOOP_HINT, ...(nativeReview ?? {}) },
       },
     });
-    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `agent_tool_call_loop:${runId}`));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
