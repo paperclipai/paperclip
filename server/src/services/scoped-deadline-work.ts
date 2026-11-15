@@ -28,6 +28,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     backstop?(scope: Scope | undefined): number | null;
     beforePass?(): Promise<void>;
+    beforeChecks?(entries: readonly Entry[]): void;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     /**
@@ -197,6 +198,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           .sort((a, b) => (options.priority?.(b) ?? 0) - (options.priority?.(a) ?? 0)
             || a.dueAt - b.dueAt || a.id.localeCompare(b.id));
         const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
+        options.beforeChecks?.(batch.entries);
         // An owner may share more than one resource (for example a task and an
         // endpoint). Merge intersecting keys before dispatch so waiting siblings
         // do not occupy the bounded check slots ahead of independent work.
