@@ -1132,6 +1132,44 @@ describe("remote controller restart adoption", () => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
   });
+  const externalReady = { lifecycle: "ready", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+  const checkpointedRecovery = () => ({ claim, target: exitedRunner(externalReady) as never, identity,
+    runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, providerAttempt: 2,
+    checkpointRecoveryEligible: vi.fn(async () => true) });
+  it("relaunches a proven dead ready daemon only after its checkpoint owner accepts recovery", async () => {
+    const input = checkpointedRecovery();
+    await expect(verifyRemoteRunnerOrSettledExit(input)).resolves.toBeUndefined();
+    expect(input.checkpointRecoveryEligible).toHaveBeenCalledOnce();
+  });
+  it("keeps unknown checkpoint eligibility and the generic ready-daemon refusal closed", async () => {
+    const input = checkpointedRecovery(); const { checkpointRecoveryEligible, ...opaque } = input;
+    await expect(verifyRemoteRunnerOrSettledExit(opaque)).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    input.checkpointRecoveryEligible.mockResolvedValue(false);
+    await expect(verifyRemoteRunnerOrSettledExit(input)).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    input.checkpointRecoveryEligible.mockRejectedValue(new Error("checkpoint unavailable"));
+    await expect(verifyRemoteRunnerOrSettledExit(input)).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+  });
+  it("revalidates all six Runner identity fields after normalized checkpoint eligibility", async () => {
+    for (const field of Object.keys(identity)) {
+      const input = checkpointedRecovery();
+      await expect(verifyRemoteRunnerOrSettledExit({ ...input,
+        target: exitedRunner(externalReady, { ...externalReady, [field]: "changed" }) as never }))
+        .rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    }
+  });
+  it("does not invoke checkpoint eligibility for live, unproved, exhausted or unsettled daemons", async () => {
+    const input = checkpointedRecovery(); const live = fixture(externalReady);
+    await expect(verifyRemoteRunnerOrSettledExit({ ...input, target: live.target as never })).resolves.toMatchObject({ pid: 123 });
+    expect(input.checkpointRecoveryEligible).not.toHaveBeenCalled();
+    const original = live.execute.getMockImplementation()!;
+    live.execute.mockImplementation(async request => request.args[2] === "paperclip-runner-recovery-check"
+      ? { stdout: "", stderr: "", exitCode: 46, timedOut: false } : original(request));
+    await expect(verifyRemoteRunnerOrSettledExit({ ...input, target: live.target as never })).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    await expect(verifyRemoteRunnerOrSettledExit({ ...input, providerAttempt: 4 })).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    await expect(verifyRemoteRunnerOrSettledExit({ ...input,
+      target: exitedRunner({ ...externalReady, pendingProviderCleanup: { pid: 7 } }) as never })).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
+    expect(input.checkpointRecoveryEligible).not.toHaveBeenCalled();
+  });
   const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
   it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
     const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(exitedBeforeOpen) as never, identity,
