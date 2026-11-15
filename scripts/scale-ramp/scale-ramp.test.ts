@@ -349,6 +349,55 @@ describe("ramp against the fake API", () => {
     assert.equal(result.cleanup!.activeSandboxLeases, 0);
   });
 
+  it("stops within minutes with Paperclip's reason when the agents never finish setup", async () => {
+    const out = await tempDir();
+    const reason = "Execution configuration check failed. This agent's environment requires a managed AI connection and an isolated Runner home. "
+      + "Check both in Configuration, then retry. Automatic verification is paused. Update Configuration or choose Retry now.";
+    const h = harness({ agentSetupError: reason });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "10,50", "--hold-minutes", "20", "--confirm-spend", "100"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "agents_ready");
+    assert.ok(result.stop!.reason.includes(reason), result.stop!.reason);
+    assert.match(result.stop!.reason, /setup state verifying/);
+    assert.ok(h.clock.now() - started < 5 * 60_000, "the step is not held while nothing can run");
+    const agents = h.fake.requests.filter(request => request.method === "POST" && new URL(request.url).pathname.endsWith("/agents"));
+    assert.equal(agents.length, 1, "only the preflight agent is created");
+    assert.equal(h.fake.issues.size, 0);
+    assertCleanedUp(h.fake);
+  });
+
+  it("stops at the preflight with the task, run and agent state when the first task never starts", async () => {
+    const out = await tempDir();
+    const h = harness({ capacity: 0 });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "10,50", "--hold-minutes", "20", "--confirm-spend", "100", "--start-timeout-minutes", "3"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "run_started");
+    assert.match(result.stop!.reason, /no run started within 3 min/);
+    assert.match(result.stop!.reason, /is todo/);
+    assert.match(result.stop!.reason, /is queued/);
+    assert.match(result.stop!.reason, /setup state ready/);
+    assert.ok(h.clock.now() - started < 5 * 60_000);
+    assert.equal(h.fake.issues.size, 1, "only the preflight task is created");
+    assert.equal(result.cleanup!.runsCancelled, 1);
+    assertCleanedUp(h.fake);
+  });
+
+  it("creates the rest of the step only after the preflight task starts", async () => {
+    const out = await tempDir();
+    const h = harness();
+    await main(baseArgs(out, ["--steps", "3"]), h.deps);
+    const posts = h.fake.requests.map(request => request.method === "POST" ? new URL(request.url).pathname : "");
+    const firstTask = posts.findIndex(route => route.endsWith("/issues"));
+    const secondAgent = posts.findIndex((route, index) => route.endsWith("/agents") && posts.slice(0, index).some(earlier => earlier.endsWith("/agents")));
+    assert.ok(firstTask >= 0 && secondAgent > firstTask, "the second agent is created after the first task");
+    const result = await readResult(out);
+    assert.equal(result.steps[0]!.metrics.peakRunning, 3);
+  });
+
   it("reports missing optional sources as not measured", async () => {
     const out = await tempDir();
     const h = harness();

@@ -362,9 +362,12 @@ of other servers keep their records.
 
 `scripts/scale-agents-ramp.ts` runs real agents on a hosted instance through
 the product API only. It ramps concurrency in steps, holds each step, stops at
-the first failed criterion, and always cleans up. It has run only against the
-in-process fake API of its tests (`scripts/scale-ramp/scale-ramp.test.ts`).
-A run on a real instance needs the owner's go-ahead.
+the first failed criterion, and always cleans up. A run on a real instance
+needs the owner's go-ahead. Its first real run, on 2026-11-15, held a
+20-minute step with nothing running: it bound the agents to a plugin
+Runner-task environment (Paperclip Sandbox (Daytona)), which needs a managed
+AI connection, so every agent stayed in setup with that reason and every run
+stayed queued. The harness now checks this before it creates the rest.
 
 **What one run does.** It creates a company named `Scale ramp <run id>`, or
 uses `--company <id>` (a Cloud-managed instance refuses company creation, so
@@ -376,6 +379,22 @@ time. When a task ends, the agent gets a new one, so the step keeps its
 concurrency. Each task is the same small job: stream a sentence, run `pwd`
 and `ls`, write `scale-<nonce>.txt` in the workspace, read it back, post a
 `CHECKPOINT` comment, post a `DONE` comment and mark the task done.
+
+**Start checks.** A new agent cannot run until it finishes setup
+(`lifecycleState` `ready`). Before each step the harness waits for its agents
+to finish setup, at most `--agent-ready-minutes` (default 10). It stops when
+an agent reports a setup error for 60 s, and prints the agent's state and
+Paperclip's reason. Before the first step it creates one agent and one task,
+and creates the rest only after that task's run starts. If no run starts
+within `--start-timeout-minutes` (default 5) of the first task, it stops and
+prints the task status, the run status and error, and the agent's state.
+Every stop cleans up.
+
+**Environment.** Use a `sandbox`-driver environment (Paperclip Sandbox),
+which takes the provider key the harness stores. A plugin environment that
+runs Runner tasks (Paperclip Sandbox (Daytona), Paperclip Computer,
+Paperclip Sandbox (Unikraft)) runs only agents with a managed AI connection.
+The harness does not set one up, so its agents never finish setup there.
 
 **Run it.**
 

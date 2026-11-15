@@ -19,6 +19,8 @@ export interface FakeConfig {
   token: string;
   origin: string;
   cloudManaged: boolean;
+  agentReadyDelayMs: number;
+  agentSetupError: string | null;
   startDelayMs: number;
   runDurationMs: number;
   capacity: number;
@@ -73,6 +75,8 @@ export class FakePaperclip {
       token: "board-token-value",
       origin: "https://scale1.test.paperclip.app",
       cloudManaged: false,
+      agentReadyDelayMs: 3_000,
+      agentSetupError: null,
       startDelayMs: 2_000,
       runDurationMs: 60_000,
       capacity: Number.POSITIVE_INFINITY,
@@ -115,8 +119,23 @@ export class FakePaperclip {
     return [...this.runs.values()].filter(run => ["queued", "running"].includes(run.status));
   }
 
+  private invokable(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    return Boolean(agent && agent.lifecycleState === "ready" && agent.status === "idle");
+  }
+
   advance(): void {
     const now = this.clock.now();
+    for (const agent of this.agents.values()) {
+      if (!["preparing", "verifying"].includes(agent.lifecycleState) || now < agent.createdAt + this.config.agentReadyDelayMs) continue;
+      if (this.config.agentSetupError) {
+        agent.lifecycleState = "verifying";
+        agent.lifecycleError = this.config.agentSetupError;
+      } else {
+        agent.lifecycleState = "ready";
+        agent.status = "idle";
+      }
+    }
     for (const run of [...this.runs.values()].sort((a, b) => a.createdAt - b.createdAt)) {
       if (run.status === "running" && run.startedAt !== null && now >= run.startedAt + this.config.runDurationMs) {
         run.finishedAt = run.startedAt + this.config.runDurationMs;
@@ -131,7 +150,7 @@ export class FakePaperclip {
       }
     }
     for (const run of [...this.runs.values()].sort((a, b) => a.createdAt - b.createdAt)) {
-      if (run.status !== "queued" || now < run.createdAt + this.config.startDelayMs) continue;
+      if (run.status !== "queued" || now < run.createdAt + this.config.startDelayMs || !this.invokable(run.agentId)) continue;
       if (this.running() >= this.config.capacity) break;
       run.status = "running";
       run.startedAt = Math.max(run.createdAt + this.config.startDelayMs, now - 1_000);
@@ -145,6 +164,7 @@ export class FakePaperclip {
     return {
       id: run.id, agentId: run.agentId, issueId: run.issueId, status: run.status, createdAt: iso(run.createdAt), startedAt: iso(run.startedAt),
       finishedAt: iso(run.finishedAt), costUsd: run.status === "succeeded" || run.status === "failed" ? this.config.costPerRunUsd : null,
+      error: null, errorCode: null,
     };
   }
 
@@ -208,7 +228,8 @@ export class FakePaperclip {
       if (c === "agents") {
         if (method === "GET") return json(200, [...this.agents.values()].filter(agent => agent.companyId === companyId));
         const id = this.id();
-        this.agents.set(id, { id, companyId, name: body.name, status: "idle", lifecycleState: null, payload: body });
+        this.agents.set(id, { id, companyId, name: body.name, status: "paused", lifecycleState: "preparing", lifecycleHolds: [], lifecycleError: null,
+          pauseReason: null, createdAt: now, payload: body });
         return json(201, this.agents.get(id));
       }
       if (c === "issues") {
@@ -217,7 +238,7 @@ export class FakePaperclip {
           this.issues.set(id, { id, companyId, title: body.title, description: body.description, status: "todo", assigneeAgentId: body.assigneeAgentId,
             projectId: body.projectId ?? null, hiddenAt: null, interruption: null });
           const agent = this.agents.get(body.assigneeAgentId);
-          if (agent && agent.status !== "paused" && agent.status !== "terminated") {
+          if (agent && agent.status !== "terminated") {
             const runId = this.id();
             this.runs.set(runId, { id: runId, agentId: body.assigneeAgentId, issueId: id, status: "queued", createdAt: now, startedAt: null, finishedAt: null, willFail: false });
           }
