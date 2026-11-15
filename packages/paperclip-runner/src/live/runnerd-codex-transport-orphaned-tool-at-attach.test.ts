@@ -143,3 +143,55 @@ it.each(["dispatched to its handler", "still before dispatch"] as const)("settle
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 120_000);
+
+it("still settles a call stopped before dispatch as not dispatched when the controller closes without a restart", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-not-dispatched-at-close-"));
+  const controlPlaneStatePath = join(stateDirectory, "control-plane", "control-plane-state.json");
+  let reached!: () => void;
+  const callReached = new Promise<void>(resolveReached => { reached = resolveReached; });
+  let releaseDispatch!: () => void;
+  const dispatchGate = new Promise<void>(resolveGate => { releaseDispatch = resolveGate; });
+  let gatedOutcome: Promise<unknown> | null = null;
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (coreOptions) {
+    const dispatch = coreOptions.onSemanticToolInput;
+    if (dispatch && !gatedOutcome) {
+      coreOptions = { ...coreOptions, onSemanticToolInput: call => {
+        reached();
+        gatedOutcome = dispatchGate.then(() => dispatch(call));
+        return gatedOutcome as ReturnType<typeof dispatch>;
+      } };
+    }
+    return new OriginalCore(coreOptions);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--emit-tool-call"),
+    stateDirectory,
+  });
+  bundle.transport.setServerRequestHandler(() => new Promise<Record<string, unknown>>(() => undefined));
+  let runnerPid: number | null = null;
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [taskTool] });
+    runnerPid = bundle.evidence().runnerPid;
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Read current task" }] });
+    await callReached;
+    const closing = bundle.transport.close().catch(() => undefined);
+    releaseDispatch();
+    await (gatedOutcome as Promise<unknown> | null)?.catch(() => undefined);
+    await closing;
+    const results = (JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { commands: SavedCommand[] })
+      .commands.filter(command => command.type === "semantic_tool.result");
+    expect(results).toHaveLength(1);
+    expect(JSON.stringify(results[0]!.payload)).toContain("semantic_tool_not_dispatched");
+  } finally {
+    releaseDispatch();
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    if (runnerPid) {
+      try { process.kill(-runnerPid, "SIGKILL"); } catch { runnerPid = null; }
+    }
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 120_000);
