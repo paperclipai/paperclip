@@ -1184,12 +1184,18 @@ function OnboardingWizardInner({
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
-  // A host Antigravity login detected on this machine satisfies the
+  // A host Antigravity OAuth login detected on this machine satisfies the
   // subscription by itself: local runs execute with the host HOME, so the
   // hire must not detour through the separate managed login home (whose
   // credential check would fail against an empty directory) and no sign-in
-  // attempt needs to be prepared.
-  const hostAgyLoginPresent = adapterType === "agy_local" && authSignalStatus === "present";
+  // attempt needs to be prepared. Only an OAuth login counts: a host API key
+  // also reports status "present", but it is metered usage, not a
+  // subscription — treating it as a login would let a user who left
+  // Subscription selected skip OAuth and silently connect through the key.
+  const hostAgyLoginPresent =
+    adapterType === "agy_local" &&
+    authSignalStatus === "present" &&
+    authSignalQuery.data?.authMode === "subscription";
 
   // The same capability gate the agent configuration form uses to show its
   // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a

@@ -255,8 +255,22 @@ describe("adapter auth-signal route", () => {
     const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local"));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({ status: "present" });
+    expect(res.body).toEqual({ status: "present", authMode: "subscription" });
     expect(mockEvaluateAgyCredentialReadiness).toHaveBeenCalled();
+  });
+
+  it("returns present with authMode api for agy_local when readiness reports an API key", async () => {
+    mockEvaluateAgyCredentialReadiness.mockReturnValueOnce({
+      ready: true,
+      authMode: "api",
+      detail: "env_api_key",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ status: "present", authMode: "api" });
   });
 
   it("returns absent for agy_local when evaluateAgyCredentialReadiness reports not ready", async () => {
@@ -321,7 +335,7 @@ describe("adapter auth-signal route", () => {
     const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({ status: "present" });
+    expect(res.body).toEqual({ status: "present", authMode: "api" });
     expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
   });
 
@@ -347,7 +361,7 @@ describe("adapter auth-signal route", () => {
     const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({ status: "present" });
+    expect(res.body).toEqual({ status: "present", authMode: "api" });
     expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
   });
 
@@ -373,7 +387,7 @@ describe("adapter auth-signal route", () => {
     const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({ status: "present" });
+    expect(res.body).toEqual({ status: "present", authMode: "api" });
     expect(mockEvaluateAgyCredentialReadiness).not.toHaveBeenCalled();
   });
 
@@ -397,7 +411,7 @@ describe("adapter auth-signal route", () => {
     const res = await request(app).get(authSignalPath(COMPANY_1, "agy_local", ENVIRONMENT_1));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toEqual({ status: "present" });
+    expect(res.body).toEqual({ status: "present", authMode: "subscription" });
     expect(mockEvaluateAgyCredentialReadiness).toHaveBeenCalled();
   });
 

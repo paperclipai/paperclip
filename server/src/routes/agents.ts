@@ -3676,11 +3676,14 @@ export function agentRoutes(
   // The agy_local branch of the auth-signal read. Checks GEMINI_API_KEY, AGY_API_KEY,
   // or ANTIGRAVITY_API_KEY in the environment bindings for non-local environments,
   // or evaluateAgyCredentialReadiness against host-local OAuth tokens / env keys for local environments.
+  // The response carries the credential kind: an API key reports authMode
+  // "api" even though the status is "present", so a caller that would skip a
+  // subscription sign-in can tell it apart from an OAuth login.
   async function evaluateAgyAuthSignal(
     req: Request,
     companyId: string,
     environmentId: string | null,
-  ): Promise<AdapterAuthSignal> {
+  ): Promise<AdapterAuthSignalResponse> {
     if (environmentId) {
       const environment = await environmentsSvc.getById(environmentId);
       if (environment && environment.driver !== "local") {
@@ -3706,17 +3709,21 @@ export function agentRoutes(
             asNonEmptyString(resolution.env.AGY_API_KEY) ||
             asNonEmptyString(resolution.env.ANTIGRAVITY_API_KEY)
           ) {
-            return "present";
+            return { status: "present", authMode: "api" };
           }
         }
-        return "unknown";
+        return { status: "unknown" };
       }
     }
 
     const readiness = evaluateAgyCredentialReadiness({
       env: process.env,
     });
-    return readiness.ready ? "present" : "absent";
+    const authMode = readiness.authMode;
+    if (!readiness.ready || (authMode !== "api" && authMode !== "subscription")) {
+      return { status: "absent" };
+    }
+    return { status: "present", authMode };
   }
 
   // The cheap host-local authentication signal for one adapter type. The route
@@ -3738,23 +3745,22 @@ export function agentRoutes(
       }
       res.setHeader("Cache-Control", "no-store");
 
-      let status: AdapterAuthSignal = "unknown";
+      let body: AdapterAuthSignalResponse = { status: "unknown" };
       try {
         if (type === "claude_local") {
-          status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
+          body = { status: await evaluateClaudeAuthSignal(req, companyId, environmentId) };
         } else if (type === "codex_local") {
-          status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+          body = { status: await evaluateCodexAuthSignal(req, companyId, environmentId) };
         } else if (type === "agy_local") {
-          status = await evaluateAgyAuthSignal(req, companyId, environmentId);
+          body = await evaluateAgyAuthSignal(req, companyId, environmentId);
         }
       } catch {
         // A failed read is never a claim that the credential is absent. Report
         // the neutral "unknown" signal instead, so the wizard falls back to
         // showing the login panel.
-        status = "unknown";
+        body = { status: "unknown" };
       }
 
-      const body: AdapterAuthSignalResponse = { status };
       res.json(body);
     },
   );

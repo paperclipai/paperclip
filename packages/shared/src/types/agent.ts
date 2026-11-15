@@ -363,6 +363,16 @@ export type AdapterAuthSignal = "present" | "absent" | "unknown";
 
 export interface AdapterAuthSignalResponse {
   status: AdapterAuthSignal;
+  /**
+   * Which kind of credential the signal reports, when the adapter's signal
+   * distinguishes them. "api" is a metered API key; "subscription" is an
+   * OAuth login. Absent for adapters whose signal does not distinguish, and
+   * for "absent"/"unknown". A caller that would skip a subscription sign-in
+   * on the strength of this signal must require "subscription" here — a bare
+   * "present" can be an API key, and skipping OAuth for it would silently
+   * connect the user through metered usage they did not choose.
+   */
+  authMode?: "api" | "subscription";
 }
 
 export type AgentInstructionSource = "seed" | "board" | "api" | "tool" | "cleanup" | "restore";
