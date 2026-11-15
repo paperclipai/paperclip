@@ -1,6 +1,6 @@
 ---
-description: The known instance-wide data is announcement dismissals, the announcement publication-ID registry, personal workspace presentation preferences, and the per-user sidebar company order; these grant no authority, and a new exception must be added to this list.
-globs: "packages/db/src/schema/announcement_dismissals.ts,packages/shared/src/announcements.ts,server/src/routes/announcements.ts,server/src/services/announcements.ts,server/src/services/announcement-feed.ts,packages/db/src/schema/user_workspace_preferences.ts,packages/shared/src/workspace-preferences.ts,server/src/routes/workspace-preferences.ts,server/src/services/workspace-preferences.ts,packages/db/src/schema/user_sidebar_preferences.ts,packages/shared/src/types/sidebar-preferences.ts,server/src/routes/sidebar-preferences.ts,server/src/services/sidebar-preferences.ts"
+description: The known instance-wide data is announcement dismissals, the announcement publication-ID registry, personal workspace presentation preferences, the per-user sidebar company order, and the instance-admin server metrics snapshot; these grant no authority, and a new exception must be added to this list.
+globs: "packages/db/src/schema/announcement_dismissals.ts,packages/shared/src/announcements.ts,server/src/routes/announcements.ts,server/src/services/announcements.ts,server/src/services/announcement-feed.ts,packages/db/src/schema/user_workspace_preferences.ts,packages/shared/src/workspace-preferences.ts,server/src/routes/workspace-preferences.ts,server/src/services/workspace-preferences.ts,packages/db/src/schema/user_sidebar_preferences.ts,packages/shared/src/types/sidebar-preferences.ts,server/src/routes/sidebar-preferences.ts,server/src/services/sidebar-preferences.ts,server/src/routes/instance-server-metrics.ts,server/src/services/server-metrics.ts"
 alwaysApply: false
 ---
 
@@ -29,6 +29,13 @@ company scope here.
 - **The sidebar company order** in `user_sidebar_preferences` is instance-wide by
   user, because it orders the user's companies. Sidebar preferences inside one
   company stay company-scoped in `company_user_sidebar_preferences`.
+- **The server metrics snapshot** (`GET /api/instance/server-metrics`) describes
+  one server process: CPU, event-loop load, statement rate, latency
+  percentiles and missed lease renewals. Company scope does not fit, because the
+  process serves every company and the numbers cannot be split by company. Only
+  an instance admin can read it, it is off unless `PAPERCLIP_SERVER_METRICS` is
+  set, and it returns numbers and a build revision only: no SQL, names, IDs or
+  hostnames. It persists nothing and changes nothing.
 
 ## Requirements
 

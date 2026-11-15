@@ -79,6 +79,31 @@ describe("source-bound Studio native accounting", () => {
     o.sourceComments[1]!.createdByRunId = "initial";
     expect(studioNativeRunsComplete(o)).toBe(false); expect(gradeIntegratorSkillStudio(o).passed).toBe(false);
   });
+  /** The completion turn was suppressed: the initial reply, after reading the test task done, is the report. */
+  function earlierReply() {
+    const o = valid(); o.runs.pop();
+    Object.assign(o, { completedReads: { initial: [{ taskId: "harness", createdAt: "2026-11-03T00:02:30Z" }] }, completionReports: { harness: "completed-reply" } });
+    Object.assign(o.sourceComments[1]!, { createdByRunId: "initial", createdAt: "2026-11-03T00:03:00Z" });
+    return o as ReturnType<typeof valid> & { completedReads: Record<string, Array<{ taskId: string; createdAt: string }>>; completionReports: Record<string, string | null> };
+  }
+  it("accepts the earlier reply the server took as the completion report, from saved state only", () => {
+    const o = earlierReply();
+    expect(studioNativeRunsComplete(o)).toBe(true); expect(gradeIntegratorSkillStudio(o).passed).toBe(true);
+  });
+  it.each(["no done read", "read of another task", "reply before the read", "reply from another run", "two replies", "extra completion run", "no task link", "delivery still pending", "delivery settled by another reply"])("rejects an earlier reply with %s", fault => {
+    const o = earlierReply();
+    if (fault === "delivery still pending") o.completionReports = { harness: null };
+    if (fault === "delivery settled by another reply") o.completionReports = { harness: "other-reply" };
+    if (fault === "no done read") o.completedReads = {};
+    if (fault === "read of another task") o.completedReads.initial![0]!.taskId = "other";
+    if (fault === "reply before the read") o.sourceComments[1]!.createdAt = "2026-11-03T00:02:00Z";
+    if (fault === "reply from another run") o.sourceComments[1]!.createdByRunId = "native";
+    if (fault === "two replies") o.sourceComments.push({ ...o.sourceComments[1]!, id: "second-reply" });
+    if (fault === "extra completion run") o.runs.push({ ...valid().runs[2]!, contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed" } });
+    if (fault === "no task link") o.sourceComments[1]!.body = "The test finished with one failure.";
+    const graded = gradeIntegratorSkillStudio(o);
+    expect(fault === "no task link" ? graded.passed : studioNativeRunsComplete(o)).toBe(false);
+  });
   it.each(["wrong company", "wrong source", "wrong worker", "extra worker", "missing delivery", "ambiguous delivery", "wrong task", "unfinished task", "wrong wake", "missing response", "early response", "ambiguous response", "cancelled", "unfinished", "wrong human", "before task", "missing detail", "wrong version detail", "foreign version detail", "wrong version author", "wrong summary company"])("rejects %s without hiding extra or incomplete work", fault => {
     const o = valid(), completion = o.runs[2]!, context = completion.contextSnapshot;
     if (fault === "wrong company") completion.companyId = "foreign";

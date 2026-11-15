@@ -1,10 +1,11 @@
 import { posix } from "node:path";
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput, type DurablePrpCheckpoint, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { readRunCancellation } from "../run-cancellation.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBootstrap, nativeSessionProviderEvidence } from "./native-session-resume.js";
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -99,15 +100,26 @@ export async function deferNativeControllerRecovery(db: Db, input: {
     const cancellation = record(run?.resultJson?.nativeCancellation);
     const stop = readRunCancellation(run?.resultJson);
     const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+    const hasProcessIdentity = Boolean(run?.processPid || run?.processGroupId || run?.processStartedAt);
+    const inheritedProcessIdentity = hasProcessIdentity
+      && typeof record(run?.runnerProfileJson).inheritedProcessIdentityRunId === "string"
+      && !(await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.companyId, input.companyId), eq(heartbeatRunEvents.runId, input.runId),
+        isNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES]))).limit(1)).length;
     if (!run || run.runtimeMode !== "native" || run.status !== "running" || task?.executionRunId !== input.runId
       || !owner || owner.phase !== "observed" || owner.resultId || owner.attempt !== 0
       || owner.controllerGeneration !== 0 || owner.leaseOwner !== (input.leaseOwner ?? null)
       || (input.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt <= new Date(clock.now)))
-      || run.processPid || run.processGroupId || run.processStartedAt || authority || progress.size
+      || (hasProcessIdentity && !inheritedProcessIdentity) || authority || progress.size
       || !record(run.runnerProfileJson).nativeExecutionInput || run.resultJson?.startupCancellation
       || (stop?.source === "operator" && stop.expected)
       || (["run", "issue"].includes(String(cancellation.scope)) && ["pending", "acknowledged"].includes(String(cancellation.dispatchState)))) {
       throw new Error("native_controller_recovery_wait_authority_changed");
+    }
+    if (inheritedProcessIdentity) {
+      await tx.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, input.runId));
     }
     await notifyNativeFinalizationWork(tx, input);
     await tx.update(nativeRunFinalizations).set({

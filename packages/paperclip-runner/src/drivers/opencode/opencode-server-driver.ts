@@ -95,7 +95,7 @@ import {
   type OpenCodeMcpBridge,
   type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
-import { toolCallMarkupStart, visibleBeforeToolCallMarkup } from "./tool-call-markup.js";
+import { controlTokenStart, toolCallMarkupStart, visibleBeforeModelScaffolding } from "./tool-call-markup.js";
 import {
   materializeNativeRuntimeSkills,
   releaseMaterializedNativeRuntimeSkills,
@@ -568,6 +568,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
   #lastToolCallMarkupSourceSeq = 0;
+  #lastControlTokenReplySourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   #upstreamServed: UpstreamServed | null = null;
   readonly #conversationMode: "task" | "prepared";
@@ -707,6 +708,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#semanticResultProviderMessageId = null;
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#lastToolCallMarkupSourceSeq = 0;
+    this.#lastControlTokenReplySourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
     this.#reasoningTexts.clear();
@@ -920,7 +922,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       ? "Your previous response reached the output limit and was discarded as incomplete."
       : this.#lastToolCallMarkupSourceSeq > this.#turnStartSourceSeq
         ? "Your previous response wrote a tool call as plain text, so the tool did not run. Call tools only through the tool-calling interface, never as text."
-        : "Your response ended without a user-visible final answer or an accepted completion report.";
+        : this.#lastControlTokenReplySourceSeq > this.#turnStartSourceSeq
+          ? "Your previous response contained raw model control tokens instead of an answer, so it was discarded."
+          : "Your response ended without a user-visible final answer or an accepted completion report.";
     const prompt = attempt === 1
       ? `${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`
       : "Your last response was empty again. Start this response with a short plain-text final answer for the user that says what you did and what, if anything, is left. After that text, submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.";
@@ -2210,12 +2214,16 @@ class OpenCodeHarnessSession implements HarnessSession {
     // the start of a completed reasoning part, and release it once it differs.
     if (partType === "reasoning" && content.trim()) this.#reasoningTexts.set(partId, content.trim());
     const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
+    // Tool-call markup and model control tokens are never prose: hide them
+    // from progress as they stream, and keep them out of the reply.
     const markupStart = partType === "text" && completed ? toolCallMarkupStart(content) : -1;
+    const controlStart = partType === "text" && completed ? controlTokenStart(content) : -1;
+    const cut = Math.min(...[markupStart, controlStart].filter(start => start >= 0), content.length);
     const visible = partType !== "text"
       ? content
       : completed
-        ? markupStart < 0 ? content : content.slice(0, markupStart)
-        : visibleBeforeToolCallMarkup(content);
+        ? content.slice(0, cut)
+        : visibleBeforeModelScaffolding(content);
     if (!reasoningEcho) this.#partText.set(partId, visible);
     if (partType === "text" && visible.length > 0 && !reasoningEcho) {
       for (const reference of paperclipWorkspaceFileReferencesFromText(
@@ -2330,15 +2338,30 @@ class OpenCodeHarnessSession implements HarnessSession {
         );
         return;
       }
+      // Prose before a control token is the answer (a trailing end-of-turn
+      // token, say). With no prose before it, the part is degenerate output,
+      // so the empty-response correction asks for the real answer. Unlike
+      // tool-call markup it says nothing about earlier prose, which stays
+      // eligible as the reply.
+      const answer = controlStart < 0 ? content : content.slice(0, controlStart).trimEnd();
+      if (!answer.trim()) {
+        this.#lastControlTokenReplySourceSeq = this.#sourceSequence;
+        this.#emit(
+          "harness.diagnostic",
+          { code: "opencode_control_token_reply_discarded", message: "OpenCode returned model control tokens instead of an answer; the text was not used as a response." },
+          { turnId },
+        );
+        return;
+      }
       this.#completedTextParts.push({
         partId,
         messageId,
-        text: content,
+        text: answer,
         item: bounded({
           ...part,
           type: "agentMessage",
           phase: "final_answer",
-          text: content,
+          text: answer,
         }),
         observedSourceSeq: this.#sourceSequence,
       });
