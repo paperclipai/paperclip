@@ -995,6 +995,43 @@ describe("runChildProcess", () => {
   );
 
   it.runIf(process.platform === "win32")(
+    "waits for the descendant tree to stop before the run settles",
+    async () => {
+      let descendantPid: number | null = null;
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "const { spawn } = require('node:child_process');",
+            "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'ignore', 'ignore'] });",
+            "process.stdout.write(String(child.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 1,
+          graceSec: 1,
+          onLog: async (_stream, text) => {
+            const parsed = Number.parseInt(text.trim(), 10);
+            if (Number.isInteger(parsed) && parsed > 0) descendantPid = parsed;
+          },
+          onSpawn: async () => {},
+        },
+      );
+
+      expect(result.timedOut).toBe(true);
+      expect(result.processTreeStopFailure ?? null).toBeNull();
+      expect(Number.isInteger(descendantPid) && descendantPid! > 0).toBe(true);
+      expect(isPidAlive(descendantPid!)).toBe(false);
+    },
+    60_000,
+  );
+
+  it.runIf(process.platform === "win32")(
     "signalRunningProcess kills the direct child even when the tree cannot be reaped",
     () => {
       let killed: NodeJS.Signals | null = null;
