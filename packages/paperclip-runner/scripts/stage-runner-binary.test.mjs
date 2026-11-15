@@ -250,22 +250,25 @@ test("a release build stages the verified exact-source host daemon instead of co
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "runner-release-host-"))), source = "a".repeat(40);
   const artifacts = path.join(root, "artifacts"), packageRoot = path.join(root, "package");
   const verifyMetadata = value => verifyReleaseRunnerMetadata(value, contract);
+  const staged = [];
+  const stage = async (from, to) => { staged.push([from, to]); await mkdir(path.dirname(to), { recursive: true }); await copyFile(from, to); };
   try {
     await writeReleaseDaemons(artifacts, source);
     for (const target of RELEASE_RUNNER_TARGETS) {
-      const staged = await stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target });
-      assert.equal(staged.target, target);
+      const result = await stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target, stage });
+      assert.equal(result.target, target);
       const bytes = await readFile(path.join(packageRoot, "dist", "bin", "paperclip-runnerd"));
       assert.deepEqual(bytes, await readFile(path.join(artifacts, target, "paperclip-runnerd")));
-      if (process.platform !== "win32") assert.equal((await stat(path.join(packageRoot, "dist", "bin", "paperclip-runnerd"))).mode & 0o777, 0o755);
+      assert.deepEqual(staged.at(-1), [path.join(artifacts, target, "paperclip-runnerd"), path.join(packageRoot, "dist", "bin", "paperclip-runnerd")]);
     }
-    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: "b".repeat(40), packageRoot, verifyMetadata, target: "linux-x64" }),
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: "b".repeat(40), packageRoot, verifyMetadata, target: "linux-x64", stage }),
       /source, digest or architecture/);
-    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "win32-x64" }),
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "win32-x64", stage }),
       /No exact-source release daemon for win32-x64/);
     await writeFile(path.join(artifacts, "linux-x64", "paperclip-runnerd"), Buffer.alloc(64, 1));
-    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "linux-x64" }),
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "linux-x64", stage }),
       /digest or architecture/);
+    assert.equal(staged.length, RELEASE_RUNNER_TARGETS.length, "rejected artifacts are never staged");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

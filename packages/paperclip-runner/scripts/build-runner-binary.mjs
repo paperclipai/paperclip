@@ -9,13 +9,13 @@ export function hostRunnerTarget(platform = process.platform, arch = process.arc
   return `${platform}-${arch}`;
 }
 
-export async function stageReleaseHostBinary({ artifactDirectory, sourceRevision, packageRoot, verifyMetadata, target = hostRunnerTarget() }) {
+export async function stageReleaseHostBinary({ artifactDirectory, sourceRevision, packageRoot, verifyMetadata, target = hostRunnerTarget(), stage = stageRunnerBinary }) {
   const { releaseDaemonManifest } = await import("./stage-release-runner-binaries.mjs");
   const manifest = releaseDaemonManifest(artifactDirectory, sourceRevision, verifyMetadata);
   const artifact = manifest.platforms[target];
   if (!artifact) throw new Error(`No exact-source release daemon for ${target}`);
   const executable = target.startsWith("win32-") ? "paperclip-runnerd.exe" : "paperclip-runnerd";
-  await stageRunnerBinary(artifact.path, path.join(packageRoot, "dist", "bin", executable));
+  await stage(artifact.path, path.join(packageRoot, "dist", "bin", executable));
   return { target, sha256: artifact.sha256 };
 }
 
