@@ -2,12 +2,10 @@ import { Router } from "express";
 import type { ServerMetricsCollector } from "../services/server-metrics.js";
 import { assertInstanceAdmin } from "./authz.js";
 
-export const INSTANCE_SERVER_METRICS_PATH = "/instance/server-metrics";
-
 export function instanceServerMetricsRoutes(collector: ServerMetricsCollector) {
   const router = Router();
 
-  router.get(INSTANCE_SERVER_METRICS_PATH, (req, res) => {
+  router.get("/instance/server-metrics", (req, res) => {
     assertInstanceAdmin(req);
     res.set("Cache-Control", "no-store");
     res.json(collector.snapshot());
