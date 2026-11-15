@@ -2754,8 +2754,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const tracksLegacyLocalChild =
         run.runtimeMode !== "native" && currentAdapterTracksLocalChild;
       // A local run with no persisted PID yet may simply not have written its
-      // process metadata — give it the grace window before reaping.
-      if (tracksLegacyLocalChild && !run.processPid) {
+      // process metadata — give it the grace window before reaping. This only
+      // holds while the owning controller is not proven gone: a dead controller
+      // cannot still be mid-spawn, so its run is a genuine orphan and settles at
+      // once through the lease prover above, never waiting out this window.
+      if (tracksLegacyLocalChild && !run.processPid && !legacyControllerGone) {
         const startedRef = run.startedAt ? new Date(run.startedAt).getTime() : 0;
         const updatedRef = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         const refTime = Math.max(startedRef, updatedRef, 0);

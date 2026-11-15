@@ -37,7 +37,7 @@ import { taskInterruptionPresentation } from "../services/task-interruption-pres
 import { requestTaskRetry } from "../services/task-retry.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
@@ -1074,6 +1074,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await heartbeat.getRun(freshStart.runId))?.status).toBe("running");
     expect((await heartbeat.getRun(freshUpdate.runId))?.status).toBe("running");
     expect((await heartbeat.getRun(agedOut.runId))?.status).not.toBe("running");
+  });
+
+  it("reaps a pid-less local run at once when its legacy controller is proven dead, ignoring the metadata grace window", async () => {
+    // A freshly-timestamped local run with no persisted PID normally gets the
+    // metadata grace window. When its legacy controller is proven gone, though,
+    // the run is a genuine orphan — a dead controller cannot still be mid-spawn —
+    // so it must settle immediately instead of waiting out the window.
+    const { runId } = await seedRunFixture({ processPid: null, includeIssue: false, runtimeMode: "legacy" });
+    const deadControllerBootId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(),
+        updatedAt: new Date(),
+        executionStage: "dispatching",
+        controllerBootId: deadControllerBootId,
+        controllerLeaseExpiresAt: new Date(Date.now() - 1_000),
+        controllerProcess: {
+          bootId: deadControllerBootId,
+          pid: 2_000_000_001,
+          hostHash: currentProcessSpaceHash(),
+          processStartedAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.runIds).toContain(runId);
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
   });
 
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
