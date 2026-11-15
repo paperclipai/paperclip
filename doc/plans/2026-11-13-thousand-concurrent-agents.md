@@ -358,6 +358,139 @@ of other servers keep their records.
 3. `paperclip.staging` only after the owner's explicit go-ahead.
 4. Repeat the 1,000 step with real model calls for a short window.
 
+### Phase 3 runbook: real-agent ramp
+
+`scripts/scale-agents-ramp.ts` runs real agents on a hosted instance through
+the product API only. It ramps concurrency in steps, holds each step, stops at
+the first failed criterion, and always cleans up. It has run only against the
+in-process fake API of its tests (`scripts/scale-ramp/scale-ramp.test.ts`).
+A run on a real instance needs the owner's go-ahead.
+
+**What one run does.** It creates a company named `Scale ramp <run id>`, or
+uses `--company <id>` (a Cloud-managed instance refuses company creation, so
+pass the company there). It stores the provider key as a company secret, or
+reuses `PAPERCLIP_SCALE_PROVIDER_SECRET_ID`. It creates one project, and one
+agent per concurrent slot (`maxConcurrentRuns` 1, heartbeat off, warm runner,
+the company's single sandbox environment). Each agent works one task at a
+time. When a task ends, the agent gets a new one, so the step keeps its
+concurrency. Each task is the same small job: stream a sentence, run `pwd`
+and `ls`, write `scale-<nonce>.txt` in the workspace, read it back, post a
+`CHECKPOINT` comment, post a `DONE` comment and mark the task done.
+
+**Run it.**
+
+```sh
+export PAPERCLIP_SCALE_TOKEN=<board token for the host>   # never a flag
+export OPENROUTER_API_KEY=<key>                            # or PAPERCLIP_SCALE_PROVIDER_SECRET_ID
+H=<name>.test.paperclip.app
+S="node cli/node_modules/tsx/dist/cli.mjs scripts/scale-agents-ramp.ts --base-url https://$H --target-kind test-stack"
+$S --steps 10,50 --hold-minutes 20 --dry-run                   # plan and estimate; no request
+$S --steps 10,50 --hold-minutes 20 --confirm-spend 15          # first real 50-agent run
+$S --cleanup-only <run id>                                     # finish a cleanup after a crash
+```
+
+The script asks you to type the host name before it creates anything, unless
+`--yes` is given. Optional environment: `PAPERCLIP_SCALE_COMPANY_ID`,
+`PAPERCLIP_SCALE_ENVIRONMENT_ID`, `PAPERCLIP_SCALE_PROVIDER`,
+`PAPERCLIP_SCALE_MODEL` (default `openrouter/deepseek/deepseek-v4-flash-0731`,
+the qualified OpenCode model that restart-chaos hosted runs also use),
+`PAPERCLIP_SCALE_ADAPTER_CONFIG` (JSON merged into the agent's adapter config,
+for example to use a scripted runner when one exists), and
+`PAPERCLIP_SCALE_METRICS_URL` with `PAPERCLIP_SCALE_METRICS_TOKEN`. Results go
+to `scripts/scale-ramp/results/<run id>/`: `result.json`, `SUMMARY.md` and
+`state.json`. Exit codes: 0 pass, 1 fail, 2 refused, 3 incomplete, 4 error or
+interrupted.
+
+**Target guard.** `--target-kind` is required and must match the host:
+`local` (localhost), `test-stack` (`<name>.staging.paperclip.app` or
+`<name>.test.paperclip.app`, the restart-chaos hosted pattern),
+`shared-staging` (`paperclip.staging.paperclip.app`, which also needs
+`--allow-shared-staging`), or `production` (any other host, which also needs
+`--allow-production-host <the same host>`). Every request is checked against
+the one origin.
+
+**Cost.** The script prints an estimate before it starts and refuses a run
+above `--spend-threshold-usd` (default $5) unless `--confirm-spend <max USD>`
+is at least the estimate. It never creates more tasks than the printed cap,
+and it stops when the model spend the runs record passes the confirmed
+amount. The defaults are assumptions: $0.02 model spend per task and $0.10
+per sandbox-hour (`PAPERCLIP_SCALE_MODEL_USD_PER_TASK`,
+`PAPERCLIP_SCALE_SANDBOX_USD_PER_HOUR`). Correct them from the recorded spend
+of the first run.
+
+| Steps | Hold | Tasks (cap) | Estimate |
+| --- | --- | --- | --- |
+| 10, 50 | 20 min | 420 (525) | $13 |
+| 200 | 60 min | 4,000 (5,000) | $122 |
+| 1,000 | 60 min | 20,000 (25,000) | $610 |
+
+**Pass.** The criteria are written into every result. A step passes when no
+measured criterion fails. The run passes when every step passes and every
+criterion was measured; it is `incomplete` when a criterion was not measured.
+A missing source is reported as "not measured", never as zero.
+
+| Criterion | Source | Target | Measured from |
+| --- | --- | --- | --- |
+| Runs that need Retry | finish line | 0, stops at once | task view offers Retry |
+| Failed or timed-out runs | harness | 0, stops at once | run list |
+| Tasks at rest but not done | harness | 0 | task status |
+| Peak running agents | harness | at least 90% of the step | run list |
+| Board page API requests, p90 | finish line | below 500 ms | a GET mix every 10 s: dashboard, issues, agents, live runs, sidebar badges |
+| Board API failures | harness | 0 | the same requests |
+| Queue wait before start, p95 | harness | at most 60 s | run created to started |
+| First visible activity, p95 | harness | at most 60 s | run events of up to 50 runs per step |
+| Main-thread CPU or event-loop utilization | finish line | below 0.6 | metrics endpoint |
+| Run event lateness, p99 | finish line | below 1 s | metrics endpoint |
+| Agent API time before the handler, p99 | finish line | below 100 ms | metrics endpoint |
+| Lease renewals that miss their deadline | finish line | 0 | metrics endpoint |
+| Kill one server process | finish line | runs resume, no Retry | not measured by this harness |
+
+The server has no metrics endpoint today. `PAPERCLIP_SCALE_METRICS_URL` must
+answer a JSON object with any of `mainThreadCpu`, `eventLoopUtilization`
+(0 to 1, highest server process), `eventLoopDelayP99Ms`,
+`statementsPerSecond`, `poolWaitP99Ms`, `runEventLatenessP99Ms`,
+`agentApiPreHandlerP99Ms` and `leaseRenewalsMissed` (a counter). Without it,
+the four server criteria are not measured, and a run can be at best
+`incomplete`. The harness does not read the database.
+
+**Proof order.** A hosted stack that is not `paperclip.staging` first
+(`--target-kind test-stack`): 10 and 50, then 200, then 500 and 1,000, one
+hour per step from 200 on. `paperclip.staging` only after the owner's
+explicit go-ahead. Production last.
+
+**Check the target first.**
+
+- Sandbox quota and concurrency of the provider account for the step size
+  (50, 200, 1,000 sandboxes at once), and its start rate.
+- Provider rate limits (OpenRouter requests and tokens per minute) for the
+  step size.
+- Database connection budget: each server process opens its main,
+  checkpoint and liveness pools plus dedicated connections (about 10 to 20
+  at 1,000 runs, see change 1g), and a burst of starts can open more.
+- Company budget and hard stop: the company must allow the run's spend, or
+  the budget stop pauses it part way.
+- Nothing else important runs on the instance; the run creates real tasks.
+
+**Risks to know before approving a real run.**
+
+- Sandbox cost and quota: the estimate counts sandbox-hours at an assumed
+  rate. 200 agents for an hour is about 220 sandbox-hours, and 1,000 is about
+  1,100.
+- Model spend: about $0.02 per task is an assumption; 1,000 agents create up
+  to 25,000 tasks in an hour.
+- The run creates real companies, agents, tasks, comments, runs, cost rows
+  and sandboxes on the instance. Cleanup archives the tasks, project and
+  created company, deletes agents (an agent with cost history stays
+  terminated) and the stored secret. It cannot remove run history or cost
+  rows.
+- Cleanup cancels live runs, terminates agents and waits up to 5 minutes for
+  agents to terminate and up to 5 minutes for the run's sandbox leases to be
+  released. At 1,000 agents expect 10 to 20 minutes, mostly requests at 8 in
+  parallel. If the harness dies, `--cleanup-only <run id>` finishes from
+  `state.json`, or by name when the file is gone.
+- At 1,000 agents the harness itself adds load: one run list read, ten task
+  reads and a board GET mix per poll (15 s), plus task creation.
+
 ## Decisions for the owner
 
 | # | Decision | Recommendation |
@@ -376,3 +509,6 @@ of other servers keep their records.
 - Staging's pool size and run-log storage mode were not read.
 - Tool-gateway calls, recovery sweeps, and browser fan-out are not in the
   model.
+- The real-agent ramp (`scripts/scale-agents-ramp.ts`) has run only against
+  the fake API of its tests. Its cost defaults are assumptions, and the
+  server criteria need a metrics endpoint that does not exist yet.
