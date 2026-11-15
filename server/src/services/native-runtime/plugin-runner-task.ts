@@ -155,7 +155,7 @@ export function createPluginRunnerTaskOwner(input: {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
-    if (launched || !result.projectAuthCheckAtSubmit) await checkProjectAuth(result.launch.configurationId);
+    if (!result.projectAuthChecked && (launched || !result.projectAuthCheckAtSubmit)) await checkProjectAuth(result.launch.configurationId);
     preparedLaunchId = result.launch.configurationId;
     preparedIdentity = requirements.identity;
     return result.launch;
