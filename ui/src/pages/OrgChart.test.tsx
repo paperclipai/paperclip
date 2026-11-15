@@ -6,14 +6,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { OrgChart } from "./OrgChart";
+import { ToastProvider } from "../context/ToastContext";
 
+const membershipListMock = vi.fn().mockResolvedValue({ starredAgentIds: [] });
+const membershipUpdateMock = vi.fn().mockResolvedValue({ resourceId: "agent-1", state: "joined", starredAt: new Date() });
+vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: {
+  listMine: (...args: unknown[]) => membershipListMock(...args),
+  updateAgent: (...args: unknown[]) => membershipUpdateMock(...args),
+} }));
 const navigateMock = vi.fn();
 const orgMock = vi.fn();
 const listMock = vi.fn();
+const liveRunsMock = vi.fn().mockResolvedValue([]);
+const summariesMock = vi.fn().mockResolvedValue([]);
+vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: (...args: unknown[]) => liveRunsMock(...args) } }));
+vi.mock("../api/issues", () => ({ issuesApi: { summaries: (...args: unknown[]) => summariesMock(...args) } }));
+const readTransform = (layer: HTMLElement) => layer.style.transform.match(/-?[\d.]+/g)!.map(Number);
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
   useNavigate: () => navigateMock,
+  useLocation: () => ({ pathname: window.location.pathname, search: window.location.search }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -138,8 +151,14 @@ describe("OrgChart mobile gestures", () => {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    document.documentElement.style.setProperty("--org-card-width", "240px");
+    document.documentElement.style.setProperty("--org-card-height", "336px");
+    for (const [key, value] of Object.entries({ "leader-width": 280, "leader-height": 368, "manager-width": 232, "manager-height": 320, "member-width": 192, "member-height": 116, gap: 32, "level-gap": 72, padding: 48, "task-height": 32, "task-band-height": 64, "task-label-width": 208, "task-legend-height": 20, "toolbar-clearance": 88, "sparse-padding": 80, "fit-zoom-max": 1.25, "sparse-fit-zoom-max": 1 })) document.documentElement.style.setProperty(`--org-${key}`, `${value}px`);
     viewportWidth = 360;
     viewportHeight = 520;
+    window.history.replaceState({}, "", "/");
+    liveRunsMock.mockResolvedValue([]);
+    summariesMock.mockResolvedValue([]);
     orgMock.mockResolvedValue(orgTree);
     listMock.mockResolvedValue(agents);
 
@@ -191,16 +210,20 @@ describe("OrgChart mobile gestures", () => {
     }
     container.remove();
     document.body.innerHTML = "";
+    window.history.replaceState({}, "", "/");
+    document.documentElement.style.removeProperty("--org-card-width");
+    document.documentElement.style.removeProperty("--org-card-height");
+    for (const key of ["leader-width", "leader-height", "manager-width", "manager-height", "member-width", "member-height", "gap", "level-gap", "padding", "task-height", "task-band-height", "task-label-width", "task-legend-height", "toolbar-clearance", "sparse-padding", "fit-zoom-max", "sparse-fit-zoom-max"]) document.documentElement.style.removeProperty(`--org-${key}`);
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
-  async function renderOrgChart() {
+  async function renderOrgChart(enableTaskLayer = false, matchingAgentIds?: ReadonlySet<string>) {
     root = createRoot(container);
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <OrgChart />
+          <ToastProvider><OrgChart enableTaskLayer={enableTaskLayer} matchingAgentIds={matchingAgentIds} /></ToastProvider>
         </QueryClientProvider>,
       );
     });
@@ -212,8 +235,33 @@ describe("OrgChart mobile gestures", () => {
     };
   }
 
+  it("centers two agents at natural size on a large viewport, including after Fit", async () => {
+    viewportWidth = 1600;
+    viewportHeight = 1000;
+    const { layer } = await renderOrgChart();
+    const assertCentered = () => {
+      const [panX, panY, zoom] = readTransform(layer);
+      expect(zoom).toBe(1);
+      const cards = Array.from(container.querySelectorAll<HTMLElement>("[data-org-card]"));
+      const left = Math.min(...cards.map(card => parseFloat(card.style.left))) * zoom + panX;
+      const right = Math.max(...cards.map(card => parseFloat(card.style.left) + parseFloat(card.style.width))) * zoom + panX;
+      const top = Math.min(...cards.map(card => parseFloat(card.style.top))) * zoom + panY;
+      const bottom = Math.max(...cards.map(card => parseFloat(card.style.top) + parseFloat(card.style.height))) * zoom + panY;
+      expect((left + right) / 2).toBeCloseTo(viewportWidth / 2);
+      expect((top + bottom) / 2).toBeCloseTo(viewportHeight / 2);
+      expect(top).toBeGreaterThan(200);
+      expect(left).toBeGreaterThan(500);
+    };
+    assertCentered();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]')!.click());
+    expect(readTransform(layer)[2]).toBeGreaterThan(1);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Fit chart to screen"]')!.click());
+    assertCentered();
+  });
+
   it("pans the chart with one-finger touch drag", async () => {
     const { viewport, layer } = await renderOrgChart();
+    const before = readTransform(layer);
 
     await act(async () => {
       viewport.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
@@ -221,7 +269,10 @@ describe("OrgChart mobile gestures", () => {
       viewport.dispatchEvent(createTouchEvent("touchend", []));
     });
 
-    expect(layer.style.transform).toBe("translate(50px, 105px) scale(1)");
+    const after = readTransform(layer);
+    expect(after[0]).toBeCloseTo(before[0] + 30);
+    expect(after[1]).toBeCloseTo(before[1] + 45);
+    expect(after[2]).toBeCloseTo(before[2]);
   });
 
   it("suppresses card navigation after a touch pan", async () => {
@@ -252,6 +303,7 @@ describe("OrgChart mobile gestures", () => {
   });
   it("pinch-zooms toward the touch center", async () => {
     const { viewport, layer } = await renderOrgChart();
+    const before = readTransform(layer);
 
     await act(async () => {
       viewport.dispatchEvent(createTouchEvent("touchstart", [
@@ -265,7 +317,10 @@ describe("OrgChart mobile gestures", () => {
       viewport.dispatchEvent(createTouchEvent("touchend", []));
     });
 
-    expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+    const after = readTransform(layer);
+    expect(after[2]).toBeCloseTo(before[2] * 1.5);
+    expect(after[0]).toBeCloseTo(150 - 1.5 * (150 - before[0]));
+    expect(after[1]).toBeCloseTo(100 - 1.5 * (100 - before[1]));
   });
 
   it("does not produce a negative zoom while the viewport has no usable height", async () => {
@@ -279,6 +334,120 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(layer.style.transform).toBe("translate(0px, 0px) scale(1)");
+  });
+
+  it("dims reporting connections when either endpoint is filtered while preserving navigation", async () => {
+    await renderOrgChart(false, new Set(["agent-1"]));
+    const edge = () => container.querySelector(".org-reporting-edge")!;
+    expect(edge().getAttribute("data-filter-match")).toBe("false");
+    for (const ids of [["agent-2"], ["agent-1", "agent-2"]]) {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><ToastProvider><OrgChart matchingAgentIds={new Set(ids)} /></ToastProvider></QueryClientProvider>));
+      expect(edge().getAttribute("data-filter-match")).toBe(ids.length === 2 ? "true" : "false");
+    }
+    await act(async () => (container.querySelector('[aria-label="Open Engineer overview"]') as HTMLElement).click());
+    expect(navigateMock).toHaveBeenCalledWith("/agents/engineer");
+  });
+
+  it("uses live characters only for the two leadership tiers and keeps contributors static", async () => {
+    orgMock.mockResolvedValue([{ ...orgTree[0], reports: [{ ...orgTree[0].reports[0], reports: [{ id: "agent-3", name: "Contributor", role: "engineer", status: "idle", reports: [] }] }] }]);
+    await renderOrgChart();
+    const cards = container.querySelectorAll("[data-org-card]");
+    expect(cards).toHaveLength(3);
+    expect(cards[0].querySelector(".org-card-live-character")).not.toBeNull();
+    expect(cards[1].querySelector(".org-card-live-character")).not.toBeNull();
+    expect(cards[2].querySelector(".org-card-live-character")).toBeNull();
+    expect(cards[2].querySelector("img")?.getAttribute("src")).toContain("view=portrait");
+    expect(cards[0].querySelector(".org-card-status")?.textContent).toBe("Idle");
+  });
+
+  it("stars a leader without opening its overview, including keyboard activation", async () => {
+    await renderOrgChart();
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Star CEO"]')!;
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      button.click();
+    });
+    await flushReact();
+    expect(membershipUpdateMock).toHaveBeenCalledWith("company-1", "agent-1", { state: undefined, starred: true });
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the custom title, configured model label, and effort on each portrait card", async () => {
+    listMock.mockResolvedValue([
+      { ...agents[0], title: "Team lead", adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5", effort: "max" } },
+      { ...agents[1], adapterConfig: { model: "custom-company-model", modelReasoningEffort: "xhigh" } },
+    ]);
+    await renderOrgChart();
+    const cards = container.querySelectorAll("[data-org-card]");
+    expect(cards[0].textContent).toContain("Team lead");
+    expect(cards[0].querySelector(".org-card-model")?.textContent).toBe("Opus 5.5 Max");
+    expect(cards[0].textContent).toContain("Max");
+    expect(cards[1].textContent).toContain("custom-company-model");
+    expect(cards[1].textContent).toContain("Extra High");
+  });
+
+  it("omits unknown model and effort labels and opens a focused card with Enter", async () => {
+    await renderOrgChart();
+    const card = container.querySelector("[data-org-card]") as HTMLElement;
+    expect(card.querySelector(".org-card-model")).toBeNull();
+    expect(card.textContent).not.toContain("Codex");
+    expect(card.textContent).not.toContain("Harness default");
+    expect(card.tabIndex).toBe(0);
+    await act(async () => {
+      card.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/agents/ceo");
+  });
+
+  it("loads live task associations only when Tasks is enabled and deduplicates shared tasks", async () => {
+    liveRunsMock.mockResolvedValue([
+      { id: "r1", status: "running", agentId: "agent-1", issueId: "task-1" },
+      { id: "r2", status: "running", agentId: "agent-2", issueId: "task-1" },
+      { id: "r3", status: "succeeded", agentId: "agent-2", issueId: "task-2" },
+    ]);
+    summariesMock.mockResolvedValue([{ id: "task-1", title: "Review the launch", identifier: "PAP-1" }]);
+    const { layer } = await renderOrgChart(true);
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+    const transform = layer.style.transform;
+    const cardStyles = [...container.querySelectorAll("[data-org-card]")].map(card => card.getAttribute("style"));
+    expect(liveRunsMock).not.toHaveBeenCalled();
+    const toggle = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Tasks")!;
+    await act(() => toggle.click()); await flushReact(); await flushReact();
+    expect(container.querySelectorAll("[data-org-task]")).toHaveLength(1);
+    expect(container.querySelectorAll(".org-task-edge")).toHaveLength(2);
+    expect(container.querySelector("[data-org-task]")?.getAttribute("href")).toBe("/issues/PAP-1");
+    expect(container.textContent).toContain("Review the launch");
+    expect(layer.style.transform).toBe(transform);
+    expect([...container.querySelectorAll("[data-org-card]")].map(card => card.getAttribute("style"))).toEqual(cardStyles);
+    expect(layer.querySelector("[data-org-task]")).toBeNull();
+    await act(() => toggle.click());
+    expect(container.querySelectorAll("[data-org-task]")).toHaveLength(0);
+    expect(layer.style.transform).toBe(transform);
+  });
+
+  it("shows a task-layer failure without hiding the organization", async () => {
+    liveRunsMock.mockRejectedValue(new Error("Task service unavailable"));
+    await renderOrgChart(true);
+    const toggle = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Tasks")!;
+    await act(() => toggle.click());
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Task service unavailable");
+    expect(container.querySelectorAll("[data-org-card]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-org-task]")).toHaveLength(0);
+  });
+
+  it("keeps task layering hidden on product surfaces even with the demo URL", async () => {
+    viewportWidth = 1200;
+    window.history.replaceState({}, "", "/?orgTasks=demo");
+    await renderOrgChart();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Tasks")).toBe(false);
+    expect(container.textContent).not.toContain("simulated running tasks");
+    expect(container.querySelectorAll("[data-org-task]")).toHaveLength(0);
+    expect(container.querySelectorAll("a[data-org-task]")).toHaveLength(0);
+    expect(container.querySelectorAll(".org-task-edge")).toHaveLength(0);
+    expect(liveRunsMock).not.toHaveBeenCalled();
+    expect(summariesMock).not.toHaveBeenCalled();
   });
 
   it("shows both portability buttons on self-hosted instances", async () => {

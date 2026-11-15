@@ -1,0 +1,2019 @@
+{
+  "schema": "paperclip.native-procedure-readiness-public.v1",
+  "state": "no_regression_gate_failed_one_setup_cell_uncomparable",
+  "sources": {
+    "candidate": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+    "baseline": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+    "candidateBranch": "codex/native-procedure-candidate-v4",
+    "baselineBranch": "codex/native-procedure-baseline-v3"
+  },
+  "campaigns": {
+    "candidate": 37348723829,
+    "baseline": 37348764875
+  },
+  "workflowSha": "59015846ae02f935411afc620e0867ce812378fb",
+  "originalGradesPreserved": true,
+  "pairCounts": {
+    "newFailures": 2,
+    "newPasses": 2,
+    "unchangedPasses": 1,
+    "unchangedFailures": 0,
+    "pending": 1
+  },
+  "pairs": [
+    {
+      "executionId": "everyday-workflows.runner-codex.local.hire-reuse",
+      "baseline": "passed",
+      "candidate": "passed"
+    },
+    {
+      "executionId": "everyday-workflows.runner-codex.local.delegate-feedback",
+      "baseline": null,
+      "candidate": "failed"
+    },
+    {
+      "executionId": "everyday-workflows.runner-acpx-claude.local.hire-reuse",
+      "baseline": "failed",
+      "candidate": "passed"
+    },
+    {
+      "executionId": "everyday-workflows.runner-acpx-claude.local.delegate-feedback",
+      "baseline": "passed",
+      "candidate": "failed"
+    },
+    {
+      "executionId": "everyday-workflows.runner-opencode.local.hire-reuse",
+      "baseline": "passed",
+      "candidate": "failed"
+    },
+    {
+      "executionId": "everyday-workflows.runner-opencode.local.delegate-feedback",
+      "baseline": "failed",
+      "candidate": "passed"
+    }
+  ],
+  "cells": [
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-acpx-claude.local.delegate-feedback",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "failed",
+      "originalFailureClass": "candidate_failure",
+      "model": "claude-sonnet-5",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 4,
+      "startedRunCount": 4,
+      "runStatuses": {
+        "succeeded": 4
+      },
+      "resultSha256": "2052ff9fd63a10bba7940034fe7c1362b7d9e3bfa00cbae490371226e3769789",
+      "evidenceHashes": {
+        "evidence-manifest.json": "e10659910f5060bcf07bf22ac92d776f39d8dd97ff0caba3e5029db6c27f3160",
+        "html-report/data/5c30415881df8ec08d97ca7a6bede282562ed011.json": "2052ff9fd63a10bba7940034fe7c1362b7d9e3bfa00cbae490371226e3769789",
+        "playwright-output/runner-everyday-workflows--fdae5-the-browser-and-public-APIs/attachments/runner-e2e-result-86dec9e27afb28b2e2187e13cb5c2f9fc0e27da7.json": "2052ff9fd63a10bba7940034fe7c1362b7d9e3bfa00cbae490371226e3769789",
+        "result.json": "2052ff9fd63a10bba7940034fe7c1362b7d9e3bfa00cbae490371226e3769789",
+        "snapshots/api-state.json": "79629476404aacd118880ca3fac7807e36384714a1d0665f39a912e6a5ba4596",
+        "snapshots/browser-diagnostics.json": "09425086c198b70cb77ab0445b05ef49dfc07d448e89504a35e073a8d1fe9b5e",
+        "snapshots/chat-final-run-ledger.json": "1c71ffedd9a955323eee0094120248e9bcc288f62936b903b5ed39086a5f867c",
+        "snapshots/everyday-workflow.json": "08614a740e941a2b6898490d09e16034c0c2a35093a6281c0d085fa9a0b3de96",
+        "snapshots/fixtures.json": "49ea2e205256f8c6ffda07c568ab82f4588e9e6f98d831ba0b2a224d621d5299"
+      },
+      "originalChecks": [
+        {
+          "id": "reply-3-stored-once",
+          "passed": true
+        },
+        {
+          "id": "one-child",
+          "passed": true
+        },
+        {
+          "id": "child-consumed-feedback",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.reject-zero-length",
+          "passed": true
+        },
+        {
+          "id": "feedback-delivered-to-child",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": false
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        },
+        {
+          "id": "workflow-completed",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-acpx-claude.local.hire-reuse",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "claude-sonnet-5",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "89cf913d14d8539ac5b57e9f4e25de320a747c88afefa0eada25e06e3b12623f",
+      "evidenceHashes": {
+        "evidence-manifest.json": "105c12346c49a688db40e18e02d6efc50d14c84910916e553cc5d0a8b346afff",
+        "html-report/data/cb46b8428a23af11c95ce3d137f6335b810bd844.json": "89cf913d14d8539ac5b57e9f4e25de320a747c88afefa0eada25e06e3b12623f",
+        "playwright-output/runner-everyday-workflows--9a7d2-the-browser-and-public-APIs/attachments/runner-e2e-result-8789ecd32f82f4b761fb24a7725ca7ec6cb73ac0.json": "89cf913d14d8539ac5b57e9f4e25de320a747c88afefa0eada25e06e3b12623f",
+        "result.json": "89cf913d14d8539ac5b57e9f4e25de320a747c88afefa0eada25e06e3b12623f",
+        "snapshots/api-state.json": "29e710b168e8af6ccc61834c26651d2000b04460d01bd66a70288d22b33f56eb",
+        "snapshots/browser-diagnostics.json": "526698e7c5252f6a3977fbc39f9378100ec085828ef0496393555770a1d6a013",
+        "snapshots/chat-final-run-ledger.json": "765feb06ac615078708fb8ac606d1a1ab97906fe9a13a7e879c257062321a90a",
+        "snapshots/everyday-workflow.json": "d611e433959e70022e99e4dd52df71203c74e3a82dd901c4f0d1f72fc5fb5739",
+        "snapshots/fixtures.json": "a10c0fcdbf6f630c57ee74e882ddac14b842ecdf74bdcd358ca4d29ae3370897"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator-_",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator--",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.reject-invalid-separator",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-codex.local.delegate-feedback",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "failed",
+      "originalFailureClass": "candidate_failure",
+      "model": "gpt-5.6-sol",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 4,
+      "startedRunCount": 4,
+      "runStatuses": {
+        "succeeded": 4
+      },
+      "resultSha256": "7bc74633dc89cea37a3da9808649a9a0e8594ced95e43a01df1d0db55e3443aa",
+      "evidenceHashes": {
+        "evidence-manifest.json": "7cebcff0de1037aeffbcf2e23d2bdf5a21a362210c553ec3fc3b0afb9f3b7ddc",
+        "html-report/data/9cf046f592d24ccff4f9df9a989cbeb14d66185e.json": "7bc74633dc89cea37a3da9808649a9a0e8594ced95e43a01df1d0db55e3443aa",
+        "playwright-output/runner-everyday-workflows--a6fcb-the-browser-and-public-APIs/attachments/runner-e2e-result-f13a90c839b7c34d9d295c72bec11dc94b31ff3d.json": "7bc74633dc89cea37a3da9808649a9a0e8594ced95e43a01df1d0db55e3443aa",
+        "result.json": "7bc74633dc89cea37a3da9808649a9a0e8594ced95e43a01df1d0db55e3443aa",
+        "snapshots/api-state.json": "7c68b1ae4cfb624f59d975a6ebb645ee648270805235a4e3603504b7d09977a5",
+        "snapshots/browser-diagnostics.json": "dec21a43696a72270af7bc10ab45e1d635d231f10e7ae4cd1a31e4476123bc7f",
+        "snapshots/chat-final-run-ledger.json": "2ac35bc9eb6c6f3d29452f287745d1fbb9a49b9e8e72bd241da519455ef86d64",
+        "snapshots/everyday-workflow.json": "d16fcfc9a2b0ce8bcedf8b2c6d0fecbe55813400dae7e407a166fdbb3b6f4960",
+        "snapshots/fixtures.json": "5094477bb71791879b257bb6f341e5f7804b7bf13304f62d4cb65554d6ba7e79"
+      },
+      "originalChecks": [
+        {
+          "id": "reply-3-stored-once",
+          "passed": true
+        },
+        {
+          "id": "workflow-completed",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-codex.local.hire-reuse",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "gpt-5.6-sol",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "f4e0c4dcb62b9d1ce7a63aa5c9f94123f201b9534f90d924fd1a51828ac705cb",
+      "evidenceHashes": {
+        "evidence-manifest.json": "3e4e2408709036e1f79c70d50edb91230a905706fc204e963a0ee1e2f38887e7",
+        "html-report/data/e07424ec1b7a5523ba0b6982a1886f1bff8f008e.json": "f4e0c4dcb62b9d1ce7a63aa5c9f94123f201b9534f90d924fd1a51828ac705cb",
+        "playwright-output/runner-everyday-workflows--d934c-the-browser-and-public-APIs/attachments/runner-e2e-result-2af08a5b86fffd7530895a7502aaf2acbb80f798.json": "f4e0c4dcb62b9d1ce7a63aa5c9f94123f201b9534f90d924fd1a51828ac705cb",
+        "result.json": "f4e0c4dcb62b9d1ce7a63aa5c9f94123f201b9534f90d924fd1a51828ac705cb",
+        "snapshots/api-state.json": "0626b20467a3e403cb1e43372e96fc704807a8742396c4847c29440a4e68df3d",
+        "snapshots/browser-diagnostics.json": "bf94315df08454b2c1361c5553f46eb82af593db78d125e9e6c195cc13dc125c",
+        "snapshots/chat-final-run-ledger.json": "349026e3638cb2d2b16279b7b98ee45fedb85e070fb780c44392c01e6bc56740",
+        "snapshots/everyday-workflow.json": "abbbfabaff06ad00f6ce6c8f0a1fd43e40398b800c76bf479365c1cbd45f3a2b",
+        "snapshots/fixtures.json": "1195bf03b48915c8d0f55157bad3d0b33e1b3a888dc5868c33aec2874af599d9"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator-_",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator--",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.reject-invalid-separator",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-opencode.local.delegate-feedback",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 4,
+      "startedRunCount": 4,
+      "runStatuses": {
+        "succeeded": 4
+      },
+      "resultSha256": "b08a55f91bbdce0cf0558a78f25fd6d5de4459a1c96d5f0559dbb13834b5b738",
+      "evidenceHashes": {
+        "evidence-manifest.json": "db3dd6cdbf826a9bae0d8ed97ebe4edc51f8c0f71022d7addc1718a3066ed2d2",
+        "html-report/data/c1b9063fd22a68f64bf4d6e5d4c3426ef6cac4dd.json": "b08a55f91bbdce0cf0558a78f25fd6d5de4459a1c96d5f0559dbb13834b5b738",
+        "playwright-output/runner-everyday-workflows--616ad-the-browser-and-public-APIs/attachments/runner-e2e-result-de3bc5087d02916426e722e1a0fbd2c23d867550.json": "b08a55f91bbdce0cf0558a78f25fd6d5de4459a1c96d5f0559dbb13834b5b738",
+        "result.json": "b08a55f91bbdce0cf0558a78f25fd6d5de4459a1c96d5f0559dbb13834b5b738",
+        "snapshots/api-state.json": "57257f9b63b63b34d049b3755f4428eeee1b71656e0797399174b503925be7cb",
+        "snapshots/browser-diagnostics.json": "ec80144d5efb3c0fcd5d8de6d847559b47f1c982ce89a4b2b6be7e4ff2745c56",
+        "snapshots/chat-final-run-ledger.json": "05648c596135076994e3e729927ed1ef75ba1caa7b063e26db175536c1f15f27",
+        "snapshots/everyday-workflow.json": "5029b09ed242ca9526f217d61031b264bb21980a0872ba914a6c077f45ea5307",
+        "snapshots/fixtures.json": "d359e7e9fab7f6d7479962dcd54ec82a7015ea7f0a2af75d1267716a2227227e"
+      },
+      "originalChecks": [
+        {
+          "id": "reply-3-stored-once",
+          "passed": true
+        },
+        {
+          "id": "one-child",
+          "passed": true
+        },
+        {
+          "id": "child-consumed-feedback",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.reject-zero-length",
+          "passed": true
+        },
+        {
+          "id": "feedback-delivered-to-child",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "executionId": "everyday-workflows.runner-opencode.local.hire-reuse",
+      "source": {
+        "sha": "aba7ec219b588de02cf323b4ebca559a105e6d01",
+        "ref": "refs/heads/codex/native-procedure-candidate-v4",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348723829"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "failed",
+      "originalFailureClass": "secret_leak",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "c3e7b3ccfcd8d40e8212d7cc48bc0e12aaf8340ec3e6e76ee0f93cf3502dc8b7",
+      "evidenceHashes": {
+        "evidence-manifest.json": "fb6d9c63a3dabfc2f9a4fc882fc8ab0eb4c3f185d9c01a86e735fb5c04430aaa",
+        "html-report/data/e2a9234f30c494f82aac6de3a85691ca9e0002db.json": "98cfdcc136287d080efeb8e0b2ce6ab8c91169a99a3da627e38591cfe9187588",
+        "playwright-output/runner-everyday-workflows--90607-the-browser-and-public-APIs/attachments/runner-e2e-result-5b5c108dfa523e2f2e72dd426cbcce5fa8a4f16f.json": "98cfdcc136287d080efeb8e0b2ce6ab8c91169a99a3da627e38591cfe9187588",
+        "result.json": "c3e7b3ccfcd8d40e8212d7cc48bc0e12aaf8340ec3e6e76ee0f93cf3502dc8b7",
+        "snapshots/api-state.json": "b2ca1ef09614cb4cf2dffdd5aa2fb5bd574eff3c316a689f4dd242427428b5c4",
+        "snapshots/browser-diagnostics.json": "8744b2d708c86d0c3b3595d910b6d831444fc2e217b09aa90c618dddf7326933",
+        "snapshots/chat-final-run-ledger.json": "6ee7305e3dff3192e613c6c38701b8c4b63f79aecfc7d25e40ecc5c14122cf0d",
+        "snapshots/everyday-workflow.json": "8e82f0643eda9224c7ae6c5cc941f09d1fefe6da0ea8df31b65ce1fa1bfdba16",
+        "snapshots/fixtures.json": "3800139b64c63a0cdf6109ad45f738b8cc52a36c33b085b32acc1cc78f583a37"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator-_",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator--",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.reject-invalid-separator",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "executionId": "everyday-workflows.runner-acpx-claude.local.delegate-feedback",
+      "source": {
+        "sha": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+        "ref": "refs/heads/codex/native-procedure-baseline-v3",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348764875"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "claude-sonnet-5",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 4,
+      "startedRunCount": 4,
+      "runStatuses": {
+        "succeeded": 4
+      },
+      "resultSha256": "0c241c2bf4aa78b2e53c9a81965f2af5cd0a65914e02a9f33d7f9905446a6aa7",
+      "evidenceHashes": {
+        "evidence-manifest.json": "dce0a724dbeefc0578d07a5e4955a8ddfe9e5dd78a3e72472f48d2022864a29f",
+        "html-report/data/e247a98e2ef3ab1585b500ddeb1083f5c62eebd2.json": "0c241c2bf4aa78b2e53c9a81965f2af5cd0a65914e02a9f33d7f9905446a6aa7",
+        "playwright-output/runner-everyday-workflows--fdae5-the-browser-and-public-APIs/attachments/runner-e2e-result-b7cfd2b7fd8d7cbe59d1960795561610ea681b41.json": "0c241c2bf4aa78b2e53c9a81965f2af5cd0a65914e02a9f33d7f9905446a6aa7",
+        "result.json": "0c241c2bf4aa78b2e53c9a81965f2af5cd0a65914e02a9f33d7f9905446a6aa7",
+        "snapshots/api-state.json": "a2684af703be5f88a2c7e87632dc5db8c835586930b210c6514d6e3e979ded8c",
+        "snapshots/browser-diagnostics.json": "9fdc8a931f20fcc121b9aef71a34753bc762caa20fea0b6754b1de20fe9be298",
+        "snapshots/chat-final-run-ledger.json": "747524776dfbd2c11582bba85552d5599b00ff31ae86350ea1f570772215be7e",
+        "snapshots/everyday-workflow.json": "20cdb9a0d00ed734fdcdb750f8e3490146b75ba481563729df3afeb7dd7e6b49",
+        "snapshots/fixtures.json": "beaa1bb97dd431fbcf35989d3ec464312dffe206f961e39ada5abb042dd4dd0d"
+      },
+      "originalChecks": [
+        {
+          "id": "reply-3-stored-once",
+          "passed": true
+        },
+        {
+          "id": "one-child",
+          "passed": true
+        },
+        {
+          "id": "child-consumed-feedback",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.reject-zero-length",
+          "passed": true
+        },
+        {
+          "id": "feedback-delivered-to-child",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "executionId": "everyday-workflows.runner-acpx-claude.local.hire-reuse",
+      "source": {
+        "sha": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+        "ref": "refs/heads/codex/native-procedure-baseline-v3",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348764875"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "failed",
+      "originalFailureClass": "candidate_failure",
+      "model": "claude-sonnet-5",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "cd6a2a4dfadf970ed0bc8067bbd4352fe512b290e97dbb0234e804a980c44013",
+      "evidenceHashes": {
+        "evidence-manifest.json": "0f42e325c18e5ab1caffed574ef8c7ff064238b590376624023cbfb1c0444c69",
+        "html-report/data/25e2cab109cbcb2f719700b2acf37c71a11af214.json": "cd6a2a4dfadf970ed0bc8067bbd4352fe512b290e97dbb0234e804a980c44013",
+        "playwright-output/runner-everyday-workflows--9a7d2-the-browser-and-public-APIs/attachments/runner-e2e-result-e98664c4029e78829752908076817b85e6db5d67.json": "cd6a2a4dfadf970ed0bc8067bbd4352fe512b290e97dbb0234e804a980c44013",
+        "result.json": "cd6a2a4dfadf970ed0bc8067bbd4352fe512b290e97dbb0234e804a980c44013",
+        "snapshots/api-state.json": "daa7f727dc624e21f5f7168617271a71364f7f0f039da8e0a607d420f329d67b",
+        "snapshots/browser-diagnostics.json": "effa05d63cbf9b8a92d4df8308a8e555cd630847ad58c71406a55ece0d16d08d",
+        "snapshots/chat-final-run-ledger.json": "cf892a73243bd2da5276f87c8d5a8ab6b42dceae76145c91e759f21073f12b44",
+        "snapshots/everyday-workflow.json": "a54d3acefb569e385ae1c656a4d1a0ea142479efef35b5b83c4d9139b2f94181",
+        "snapshots/fixtures.json": "68f592252222a8a70d3253103840ad6a282f3c68a26f5cf6360a9f03bb8c20b6"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.zip-delivered",
+          "passed": false
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        },
+        {
+          "id": "workflow-completed",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "executionId": "everyday-workflows.runner-codex.local.hire-reuse",
+      "source": {
+        "sha": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+        "ref": "refs/heads/codex/native-procedure-baseline-v3",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348764875"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "gpt-5.6-sol",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "553c84d9cac87670d5ccac940733f9480791955f4e257f82467bd2295802e8d8",
+      "evidenceHashes": {
+        "evidence-manifest.json": "2064b2faa0a710fcffdde7eef98231698bcac82f3b07cc829688c976abd588b7",
+        "html-report/data/b0521708080dfd9e14c867175d841965fce30834.json": "553c84d9cac87670d5ccac940733f9480791955f4e257f82467bd2295802e8d8",
+        "playwright-output/runner-everyday-workflows--d934c-the-browser-and-public-APIs/attachments/runner-e2e-result-175a197d38cae1451e9c0d0edc257c25f52b813a.json": "553c84d9cac87670d5ccac940733f9480791955f4e257f82467bd2295802e8d8",
+        "result.json": "553c84d9cac87670d5ccac940733f9480791955f4e257f82467bd2295802e8d8",
+        "snapshots/api-state.json": "de1d7d8ebbfb7087c6d74ed0256db7ad7c4a59e64431fd7e53bb097c61dd647e",
+        "snapshots/browser-diagnostics.json": "a1e96e38e345962123df2513785399aa9675a585717d716be574e2221dbcdcea",
+        "snapshots/chat-final-run-ledger.json": "d96faa781e4131a912333486d66527d9dc0acd3b959260aadde20c1a7d55535e",
+        "snapshots/everyday-workflow.json": "f0800a8e169f6b6f4af6e214cea0010d326b6053954125753467a4b70fbd4b61",
+        "snapshots/fixtures.json": "7e0d747ae4117918ab879363f592ce940773f2aa612f4dcd7b4421395ad6d18e"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator-_",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator--",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.reject-invalid-separator",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "executionId": "everyday-workflows.runner-opencode.local.delegate-feedback",
+      "source": {
+        "sha": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+        "ref": "refs/heads/codex/native-procedure-baseline-v3",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348764875"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "failed",
+      "originalFailureClass": "candidate_failure",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 4,
+      "startedRunCount": 4,
+      "runStatuses": {
+        "succeeded": 4
+      },
+      "resultSha256": "622c78df06de7c9c17e5d875d6a7ce5eab07d24691fa8cc07e5e998202bcc410",
+      "evidenceHashes": {
+        "evidence-manifest.json": "ef77cb6f49ced2b1192156b098bf4c90c90b4ad008b059bb5c333d01321d9b22",
+        "html-report/data/921db0ab223237bb50570635a7a6652b5424ff63.json": "622c78df06de7c9c17e5d875d6a7ce5eab07d24691fa8cc07e5e998202bcc410",
+        "playwright-output/runner-everyday-workflows--616ad-the-browser-and-public-APIs/attachments/runner-e2e-result-5df85a6ef79eb3010b42b9aa7bdd5d68e2d5ae69.json": "622c78df06de7c9c17e5d875d6a7ce5eab07d24691fa8cc07e5e998202bcc410",
+        "result.json": "622c78df06de7c9c17e5d875d6a7ce5eab07d24691fa8cc07e5e998202bcc410",
+        "snapshots/api-state.json": "89f5399ae3d320c23ae7aa08650dbe596524ea2de9e98ff18f92ee6d0802d7d4",
+        "snapshots/browser-diagnostics.json": "bf82e258e3391b191b500cd10105b1f5b7a7895959c5d848e69a24b4f2e3b04f",
+        "snapshots/chat-final-run-ledger.json": "853e65b05cf46057363b99a7da7fdfa49eb51c30831a51647728f7e14244e7da",
+        "snapshots/everyday-workflow.json": "ab5ae69afa478a2ae622387acea63bc2f8a1740de89c03f5a91494ef280fa88c",
+        "snapshots/fixtures.json": "c6f60fd9fcb2fedce2be5f50b6429db062956d352267209ff128dc4aee76d9fd"
+      },
+      "originalChecks": [
+        {
+          "id": "reply-3-stored-once",
+          "passed": true
+        },
+        {
+          "id": "one-child",
+          "passed": true
+        },
+        {
+          "id": "child-consumed-feedback",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-7",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-6",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.length-1",
+          "passed": true
+        },
+        {
+          "id": "delegated-delivery.reject-zero-length",
+          "passed": true
+        },
+        {
+          "id": "feedback-delivered-to-child",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": false
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        },
+        {
+          "id": "workflow-completed",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "executionId": "everyday-workflows.runner-opencode.local.hire-reuse",
+      "source": {
+        "sha": "ce31f5efd0d416205c3994c55dd02b645f8b8423",
+        "ref": "refs/heads/codex/native-procedure-baseline-v3",
+        "workflowRunUrl": "https://github.com/paperclipai/paperclip/actions/runs/37348764875"
+      },
+      "suiteDefinitionHash": "acd17b4acbd7051070531f7d7587131139900f54245b992eb7a62faacda8e334",
+      "harnessDigest": "7fc184b06de3af473980ef1a0ad7124342cfd8d36ca721fe452298e775154cf5",
+      "attempt": 1,
+      "originalStatus": "passed",
+      "originalFailureClass": null,
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "cleanup": "passed",
+      "resultLedgerRunSetEqual": true,
+      "apiRunSetEqual": true,
+      "ledgerCount": 6,
+      "startedRunCount": 6,
+      "runStatuses": {
+        "succeeded": 6
+      },
+      "resultSha256": "2e2f3d418169af50464e4963b0d8b24b536da50b5fb74196a5ed404799a2a482",
+      "evidenceHashes": {
+        "evidence-manifest.json": "1f1c22b1fd6ec09bf20a7a4b02e9dcb80bffff35374b8b7f252caf2d80245713",
+        "html-report/data/76284c18712671e245f76266f0a2275337bf287b.json": "2e2f3d418169af50464e4963b0d8b24b536da50b5fb74196a5ed404799a2a482",
+        "playwright-output/runner-everyday-workflows--90607-the-browser-and-public-APIs/attachments/runner-e2e-result-c90198d41e9925e738230e788c65a93ed8d33a09.json": "2e2f3d418169af50464e4963b0d8b24b536da50b5fb74196a5ed404799a2a482",
+        "result.json": "2e2f3d418169af50464e4963b0d8b24b536da50b5fb74196a5ed404799a2a482",
+        "snapshots/api-state.json": "310afec9ef9767b36d3968cbf013e75c3a892a0169226e6fc243c2552337da95",
+        "snapshots/browser-diagnostics.json": "b08a66f0f71cf2fc46c79b2b0ff182d9bb36831daffffef587039ce8418de392",
+        "snapshots/chat-final-run-ledger.json": "4d2b9a76c2c44b2251dfde036a6107bc95f607d95b534b77b562f696b47cafe2",
+        "snapshots/everyday-workflow.json": "551c6a37b971e6bd56930aa4d226edf7e4a985d33b1213fd5b914019d5e0409e",
+        "snapshots/fixtures.json": "207a9015bb726a98e4bca348e7e3048e2c94e2fed69ae6694a6d63977e318d23"
+      },
+      "originalChecks": [
+        {
+          "id": "exactly-one-hire",
+          "passed": true
+        },
+        {
+          "id": "manager-correct",
+          "passed": true
+        },
+        {
+          "id": "hire-native-connection",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "hired-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reply-5-stored-once",
+          "passed": true
+        },
+        {
+          "id": "hire-reused",
+          "passed": true
+        },
+        {
+          "id": "hired-agent-executed-revision",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.one-slugify-source",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.readme-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.project-tests-present",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-0",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-1",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-2",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-3",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-4",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-5",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-6",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.base-7",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.importable-function",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator-_",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.separator--",
+          "passed": true
+        },
+        {
+          "id": "reused-delivery.reject-invalid-separator",
+          "passed": true
+        },
+        {
+          "id": "submitted-replies-consumed",
+          "passed": true
+        },
+        {
+          "id": "parent-finishes-after-child",
+          "passed": true
+        },
+        {
+          "id": "native-model-config",
+          "passed": true
+        },
+        {
+          "id": "native-terminal-contract",
+          "passed": true
+        },
+        {
+          "id": "tasks-done",
+          "passed": true
+        },
+        {
+          "id": "settled",
+          "passed": true
+        },
+        {
+          "id": "native-runtime",
+          "passed": true
+        },
+        {
+          "id": "successful-runs",
+          "passed": true
+        },
+        {
+          "id": "bounded-work",
+          "passed": true
+        },
+        {
+          "id": "parent-owned-by-lead",
+          "passed": true
+        },
+        {
+          "id": "no-pending-bookkeeping",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "retainedStartedRuns": 56,
+  "missingCell": {
+    "variant": "baseline",
+    "executionId": "everyday-workflows.runner-codex.local.delegate-feedback",
+    "jobId": 111896338920,
+    "observedFailure": "Pinned Python oracle preparation: docker version timed out after 30 seconds (exit 124); Run paid cell was skipped; no result artifact was produced.",
+    "behavioralGrade": null,
+    "setupLogSha256": "b2c2502f9aff687facdff805834ffd1d6ad5fb0e1b9840749891dbab1583553b"
+  },
+  "limits": [
+    "Single trials do not establish causation, equivalence, speed or cost trends.",
+    "The OpenCode candidate hiring credential-persistence guard failed. Its original provider database was removed by cleanup; the credential type and exact persistence cause are not retained.",
+    "Only eleven final result/API/ledger sets are available. The missing setup cell is not passed or behaviorally failed.",
+    "Raw sessions, reasoning, run identifiers, and numeric billing subtotals are excluded. Actual charges remain unknown."
+  ]
+}

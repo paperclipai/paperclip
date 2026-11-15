@@ -1,0 +1,204 @@
+{
+  "schema": "paperclip-cursor-offline-pack-proof/v1",
+  "capturedAt": "2026-09-28T20:18:46.105Z",
+  "runnerSourceRevision": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+  "packDigest": "sha256:38bc6dd39c13b0f5478a1018e26deb61b0333ab0242f3d857e3c79d3a34b7682",
+  "target": {
+    "platform": "darwin",
+    "architecture": "arm64"
+  },
+  "candidate": {
+    "version": "2026.09.26-dd393fe",
+    "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+    "closureDigest": "sha256:77394184a89b0e7384971181da19c3c82d83a399b04e7944b3f94fe3d7e62b25",
+    "qualification": "pending",
+    "path": "provider-assets/cursor/darwin-arm64",
+    "sha256": "sha256:3b6de19114d4df62f648604025a0d71937dfa7c2b15b397cce5da2c5da268994"
+  },
+  "productionLock": "sha256:9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+  "launch": {
+    "entrypoint": "verified bundled node + index.js",
+    "arguments": [
+      "--disable-project-configs",
+      "--disable-auto-update",
+      "acp"
+    ],
+    "credentials": "none; private home/config/data/cache; memory credential store",
+    "verification": "generic profile installation registry, whole closure digest verification, retained immutable native snapshot, closed module bootstrap",
+    "modelAdmission": "offline-installation-probe is a factory identity sentinel only; no ACP model selection or prompt; model remains unverified"
+  },
+  "requests": [
+    {
+      "method": "initialize",
+      "params": {
+        "protocolVersion": 1,
+        "clientCapabilities": {
+          "fs": {
+            "readTextFile": false,
+            "writeTextFile": false
+          },
+          "terminal": false,
+          "_meta": {
+            "subagents": true
+          }
+        },
+        "clientInfo": {
+          "name": "paperclip-offline-pack-probe",
+          "version": "1"
+        }
+      }
+    },
+    {
+      "method": "cursor/list_available_models",
+      "params": {}
+    },
+    {
+      "method": "session/list",
+      "params": {}
+    },
+    {
+      "method": "session/fork",
+      "params": {
+        "sessionId": "probe"
+      }
+    },
+    {
+      "method": "session/resume",
+      "params": {
+        "sessionId": "probe",
+        "cwd": "/qualification/private/workspace",
+        "mcpServers": []
+      }
+    },
+    {
+      "method": "session/new",
+      "params": {
+        "cwd": "/qualification/private/workspace",
+        "mcpServers": []
+      }
+    }
+  ],
+  "responses": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": true,
+            "sse": true
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": true
+          },
+          "sessionCapabilities": {
+            "list": {},
+            "subagents": {}
+          }
+        },
+        "authMethods": [
+          {
+            "id": "cursor_login",
+            "name": "Cursor Login",
+            "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "error": {
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {
+          "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "error": {
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {
+          "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "error": {
+        "code": -32601,
+        "message": "\"Method not found\": session/fork",
+        "data": {
+          "method": "session/fork"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "error": {
+        "code": -32601,
+        "message": "\"Method not found\": session/resume",
+        "data": {
+          "method": "session/resume"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "error": {
+        "code": -32000,
+        "message": "Authentication required",
+        "data": {
+          "message": "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'."
+        }
+      }
+    }
+  ],
+  "process": {
+    "exitCode": 143,
+    "signalCode": null,
+    "leaseClosed": true,
+    "stderrBytes": 0,
+    "unexpectedMessageCount": 0
+  },
+  "qualification": {
+    "status": "pending",
+    "model": null,
+    "billablePrompts": 0,
+    "costUsd": 0,
+    "environment": "local macOS ARM64; no Daytona execution"
+  },
+  "redactions": [
+    "ephemeral workspace and private directories replaced with /qualification/private"
+  ],
+  "nativeEofProbe": {
+    "provider": "cursor",
+    "packSource": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+    "credentials": false,
+    "prompts": 0,
+    "startedAt": "2026-09-28T20:56:56.035Z",
+    "initialized": true,
+    "eofAt": "2026-09-28T20:56:57.776Z",
+    "eofSettled": false,
+    "exit": null,
+    "stderrBytes": 0,
+    "finishedAt": "2026-09-28T20:57:02.777Z",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "gracefulExitDeadlineMs": 5000,
+    "fallback": "explicit owned process-group SIGTERM and native lease close",
+    "qualification": "EOF non-settlement observed; explicit cleanup is the supported runner lifecycle",
+    "evidenceSha256": "b99e972c14d1dbd731a5cef4d06e6ea54af6574fb4fe26fd44e78dfa9913fd7b"
+  }
+}

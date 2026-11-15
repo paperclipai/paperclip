@@ -26,7 +26,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://api.you.com/mcp"
+        "serverUrl": "https://api.you.com/mcp",
+        "scopesHint": [
+          "Tools",
+          "offline_access"
+        ]
       },
       "guidanceMd": "Connect You.com in the browser. A You.com account for browser sign-in, or a You.com API key from you.com/platform for higher rate limits; a keyless free profile is also available.",
       "riskTier": "S2",
@@ -59,7 +63,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your You.com API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "None: search, contents and research tools (usage may be billed). A read-only key is sufficient."
         }
       ],
       "keyPlacement": {

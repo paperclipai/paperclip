@@ -9,7 +9,7 @@ The first built-ins are `briefs` and `learning`. Operators can provision them fr
 The subsystem has four layers:
 
 - Registry: `server/src/services/built-in-agents.ts` defines the static `BuiltInAgentDefinition` list.
-- Marker: `server/src/services/built-in-agent-metadata.ts` reads and writes `metadata.paperclipBuiltInAgent`.
+- Marker: `server/src/lib/built-in-agent-metadata.ts` reads and writes `metadata.paperclipBuiltInAgent`.
 - Provisioning service: `builtInAgentService(db)` finds, creates, updates, resets, and requires built-ins per company.
 - Routes: `server/src/routes/built-in-agents.ts` exposes list, provision, and reset APIs.
 

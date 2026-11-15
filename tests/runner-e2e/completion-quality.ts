@@ -4,6 +4,13 @@ import { createHash } from "node:crypto";
 import { FIRST_TASK_JUDGE_CONFIG } from "./first-task-quality.js";
 import type { CompletionObservation } from "./completion-updates.js";
 
+/** Only journeys that finish delegated work can require a completion report. */
+export function runsCompletionUpdateProbe(execution: { suite: { id: string }; task: { id: string; flow: string } }) {
+  return execution.suite.id === "completion-updates"
+    || (execution.suite.id === "confirmation-replies" && execution.task.flow === "first_task"
+      && execution.task.id !== "reject-no-execution");
+}
+
 export const COMPLETION_QUALITY_CONFIG = {
   version: 14, resultAccessEvidence: "observed-rendered-task-links", duplicateRule: "per-reply-completed-task-references-new-access-or-correction", model: FIRST_TASK_JUDGE_CONFIG.model, temperature: 0, maxOutputTokens: 1600,
   correctionRule: "Grade the final corrected position of the conversation. If a later reply explicitly corrects an earlier stale or inaccurate statement and provides the result without a new user request, the corrected statement replaces the earlier statement for ALL three criteria. Do not fail a criterion solely because the corrected earlier reply failed it. Uncorrected false claims still fail.",

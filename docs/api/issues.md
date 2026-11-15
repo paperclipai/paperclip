@@ -18,8 +18,18 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `view` | `index`: collection rows without bodies or diagnostics; `rows`: rows with diagnostic summaries but no bodies; `compact`: existing board row contract |
+| `ids` | One to 100 comma-separated task UUIDs; requires `view=index` or `view=rows` without `attention` |
+| `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
+| `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 
 Results sorted by priority.
+
+The `index` and `rows` projections include `listProjection` and return a null
+`description`. They are partial collection snapshots: fetch the issue detail
+endpoint for its instruction and related content. Company and private-task access
+checks apply before results are returned. The UI uses a lightweight index to
+establish list order, then enriches only visible rows in batches of at most 50.
 
 ## Get Issue
 
@@ -67,6 +77,8 @@ The optional `comment` field adds a comment in the same call. For execution-poli
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
 ### Update Response
 
@@ -160,6 +172,24 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
+## Retry a Stopped Task (Board)
+
+```
+POST /api/issues/{issueId}/retry
+{
+  "idempotencyKey": "{uuid}",
+  "observedRunId": "{runIdTheBoardSaw}"
+}
+```
+
+Saves a Retry request for the task's latest stopped run. The same `idempotencyKey` returns the same request. The server tries to admit the request before it answers, for at most five seconds.
+
+- `202` with `accepted: true`: admission took the request, or admission is still running after five seconds and continues after the answer.
+- `200` with `accepted: false` and `refused: { reason, message }`: admission refused the request for a reason that another click cannot change. `message` is the text that the task view shows. The request stays saved. If its reason clears later, it starts by itself.
+- `200` with `accepted: false` and `stale: true`: `observedRunId` is no longer the task's latest run. Read the task again.
+
+Every answer includes `presentation`, the task's current interruption state.
+
 ## Comments
 
 ### List Comments
@@ -176,6 +206,24 @@ POST /api/issues/{issueId}/comments
 ```
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
+
+### Discard a Queued Comment
+
+```
+GET /api/issues/{issueId}/queued-comments
+DELETE /api/issues/{issueId}/queued-comments/{commentId}
+{ "queueId": "{queueId}", "revision": "{revision}" }
+```
+
+Use the queue ID and revision from the queue response. Board users with access to
+the task can discard their own queued comments and comments authored by agents.
+Other people's queued comments remain author-only. Editing remains author-only.
+Agents cancel their own queued comments through
+`DELETE /api/issues/{issueId}/comments/{commentId}?mode=cancel`.
+
+The discard removes the pending comment and its queue linkage. Removing the last
+entry also cancels its queued continuation. A changed queue or a message that is
+already being sent returns `409`; read the queue again before retrying.
 
 ## Issue-Thread Interactions
 
@@ -325,6 +373,33 @@ GET /api/attachments/{attachmentId}/content
 ```
 DELETE /api/attachments/{attachmentId}
 ```
+
+## Tool Call Progress
+
+```
+GET /api/issues/{issueId}/tool-call-progress
+```
+
+Returns the latest progress of the task's connected-app tool calls that are still running, for a page that loads mid-call, and the calls that finished in the last hour, marked `done`. A client should drop a call's progress only on `done`: a running call may not have saved its first update yet. Live updates arrive as `heartbeat.run.tool_progress` events on the company live-events socket.
+
+- Board callers only. The caller needs company access and read access to the task; otherwise the response is `404`.
+- Lists unfinished calls made by a run in the last 24 hours that reported progress (at most 50), then calls finished in the last hour (at most 50).
+
+Each item:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `invocationId` | string | The tool call. |
+| `runId` | string | The run that made the call. |
+| `toolName` | string | The tool name the agent called. |
+| `startedAt` | string (ISO) | When the call started. |
+| `updatedAt` | string (ISO) | When the app last reported progress. |
+| `progress` | number | Progress so far. |
+| `total` | number or null | Known end value; `null` when the app does not know it. |
+| `message` | string or null | The app's latest status line: plain text, at most 200 characters. |
+| `done` | boolean | `true` once the call has finished. |
+
+See `doc/connections/MCP-PROGRESS.md`.
 
 ## Issue Lifecycle
 

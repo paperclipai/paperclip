@@ -294,6 +294,7 @@ describe("captureBrowserException", () => {
       contexts: {
         react: { componentStack: "\n    at TaskDetail" },
         browser_state: expect.objectContaining({ translation_marker: true }),
+        page_lifecycle: expect.objectContaining({ pagehide_seen: false }),
       },
     });
     expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain("private-value");
@@ -318,6 +319,36 @@ describe("captureBrowserException", () => {
   });
 });
 
+describe("captureQueryException", () => {
+  it("does not throw when the gate is closed", async () => {
+    const { captureQueryException } = await importFreshSentry();
+
+    expect(() => captureQueryException(new Error("boom"), ["issues"])).not.toThrow();
+  });
+
+  it("groups each failing query's server error by status and query name", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureQueryException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const issuesError = Object.assign(new Error("Internal server error"), { status: 500 });
+    const agentsError = Object.assign(new Error("Internal server error"), { status: 500 });
+
+    captureQueryException(issuesError, ["issues", "company-uuid", "detail", "PAP-1"]);
+    captureQueryException(agentsError, ["agents", "company-uuid"]);
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.captureException).toHaveBeenNthCalledWith(1, issuesError, {
+      tags: { query_kind: "issues", api_status: "500" },
+      fingerprint: ["api-error", "500", "issues"],
+    });
+    expect(mocks.captureException).toHaveBeenNthCalledWith(2, agentsError, {
+      tags: { query_kind: "agents", api_status: "500" },
+      fingerprint: ["api-error", "500", "agents"],
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toMatch(/company-uuid|PAP-1/);
+  });
+});
+
 describe("browser error diagnostics with the real SDK", () => {
   it("emits bounded component and translation context without page data or scope leakage", async () => {
     const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
@@ -337,12 +368,12 @@ describe("browser error diagnostics with the real SDK", () => {
     const gate = await importFreshSentry();
     await gate.initBrowserErrorMonitoring(DSN, "staging");
     const previousPath = window.location.pathname + window.location.search;
-    window.history.replaceState({}, "", "/tasks/private-task?token=private-capability");
+    window.history.replaceState({}, "", "/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability");
     document.documentElement.classList.add("translated-ltr", "private-customer-class");
     try {
       gate.captureBrowserException(new DOMException("insertBefore failed", "NotFoundError"), {
         boundary: "route",
-        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/private-task?token=private-capability:3:4)",
+        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability:3:4)",
       });
       document.documentElement.classList.remove("translated-ltr");
       gate.captureBrowserException(new Error("unrelated failure"));
@@ -364,7 +395,7 @@ describe("browser error diagnostics with the real SDK", () => {
         expect(event).not.toHaveProperty("request");
         expect(event.breadcrumbs).toBeUndefined();
       }
-      for (const secret of ["tenant.example", "private-task", "private-capability", "private-customer-class"]) {
+      for (const secret of ["tenant.example", "sentry-fixture-secret-task-7fa83e", "private-capability", "private-customer-class"]) {
         expect(JSON.stringify(events)).not.toContain(secret);
       }
       await gate.teardownBrowserErrorMonitoring();
@@ -375,6 +406,49 @@ describe("browser error diagnostics with the real SDK", () => {
       await gate.teardownBrowserErrorMonitoring();
       document.documentElement.classList.remove("translated-ltr", "private-customer-class");
       window.history.replaceState({}, "", previousPath);
+    }
+  });
+});
+
+describe("unhandled rejection attribution through the gate", () => {
+  it("pairs a dispatched undefined rejection with its event shape and page lifecycle", async () => {
+    const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
+    const events: Array<Record<string, unknown>> = [];
+    vi.doMock("@sentry/browser", () => ({
+      ...Sentry,
+      init: (options: Parameters<typeof Sentry.init>[0]) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: async (event, hint) => {
+          const enriched = await options?.beforeSend?.(event, hint) ?? event;
+          events.push(enriched as unknown as Record<string, unknown>);
+          return enriched;
+        },
+      }),
+    }));
+    const gate = await importFreshSentry();
+    // The production init path registers the snapshot listener before the SDK handler.
+    await gate.initBrowserErrorMonitoring(DSN, "staging");
+    try {
+      window.dispatchEvent(new Event("pagehide"));
+      const event = new Event("unhandledrejection");
+      Object.defineProperty(event, "reason", { value: undefined });
+      Object.defineProperty(event, "promise", { value: Promise.resolve() });
+      window.dispatchEvent(event);
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        tags: { browser_rejection_kind: "undefined", browser_rejection_event: "synthetic" },
+        contexts: {
+          rejection_event: { trusted: false, promise: "native" },
+          page_lifecycle: { pagehide_seen: true, last_transition: "pagehide", since_transition: "<1s" },
+        },
+        exception: { values: [{ type: "UnhandledRejection" }] },
+      });
+      expect(events[0]).not.toHaveProperty("request");
+    } finally {
+      window.dispatchEvent(new Event("pageshow"));
+      await gate.teardownBrowserErrorMonitoring();
     }
   });
 });

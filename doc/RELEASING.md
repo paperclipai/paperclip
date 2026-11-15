@@ -64,6 +64,10 @@ internal traceability tag.
 ## Core Invariants
 
 - canaries publish from `master`
+- the canary publisher checks out the exact master push SHA. It verifies the
+  repository, event, branch, and checked-out commit before attaching local
+  `master` at that same SHA. It never switches to a newer branch tip. The local
+  release script still rejects detached or non-master checkouts.
 - nightlies republish a commit that already shipped a canary (the commit must
   carry a `canary/v*` tag), and only after the release smoke suite passes
   against that exact published canary
@@ -82,7 +86,7 @@ internal traceability tag.
   moves them to the versioned name
 - canaries, nightlies, and betas never create GitHub Releases
 - canaries, nightlies, and betas never require changelog generation
-- Docker `:latest` moves only on stable releases; master builds publish
+- Docker `:latest` moves only on stable releases; canary dispatches promote
   `:canary`, nightly builds `:nightly`, and beta builds `:beta`
 
 ## TL;DR
@@ -100,8 +104,59 @@ It:
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
 - installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; npm `ETARGET` and verified canary tarball availability failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates a git tag `canary/vYYYY.MDD.P-canary.N`
+
+#### Busy master and lost runners
+
+Master often receives a commit every few minutes, faster than one canary
+publishes (about 60-90 minutes). The release workflow keeps one running canary
+and one pending canary. A newer push replaces the pending one, so the canary
+that runs next is always the newest master commit. Commits in between are not
+published on their own; they ship inside the next canary.
+
+Each canary waits for `Cloud source verified v1` from the Cloud readiness run
+of its exact SHA (up to 90 minutes). Cloud readiness runs on AWS Spot workers.
+When an attempt fails only because its workers were reclaimed, the canary gate
+and the master image watcher re-run that attempt's failed jobs instead of
+failing the release
+([`scripts/cloud-readiness-runner-loss.mjs`](../scripts/cloud-readiness-runner-loss.mjs)).
+A job counts as lost when its log shows the runner's shutdown or lost
+communication error. Retries continue up to attempt 4 of the readiness run. A
+real check failure, including a flaky test, is never retried: that canary fails
+and the next push publishes. If a canary is missing after a quiet period, look
+at the failed `Reuse exact-source verification` job. It names the readiness run
+and lists each failed job as a lost runner or a failure.
+
+After publication, the onboarding smoke checks out the same source SHA and
+installs its test dependencies from the publisher's resolved lockfile with
+`--frozen-lockfile`. The same-run artifact is captured before tracked files are
+restored or release versions are rewritten. This lets a source commit use its
+current patches and manifests while the separate lockfile-refresh PR is still
+pending, without resolving new dependencies in the smoke job. The smoke still installs and tests
+the exact published canary version, not a workspace build.
+
+The tarball retry applies only to an unambiguous npm `E404` for a canonical
+public-registry tarball of a CI-published Paperclip package at that exact canary
+version. The helper queries npm's effective global and applicable scoped registry
+in the failed install's prefix, working directory, and environment. A custom or
+unknown effective registry fails. Configuration output stays private in memory.
+Fresh primary-registry metadata must match the package, version, and tarball URL
+and announce a valid SHA512 integrity value. This establishes the announced
+artifact identity; it does not download the tarball or independently verify its
+contents. The actual npm install still checks tarball integrity.
+
+Configuration and metadata checks share a five-second deadline, including the
+response body, within the same two-minute acquisition budget. Metadata is limited
+to 64 KiB. Redirects, authentication errors, missing metadata, conflicting npm
+errors, and other artifacts fail. A persistent promised-tarball failure also
+fails after three installs. Onboarding errors never restart acquisition or
+repeat onboarding.
+
+The lockfile artifact is retained for 14 days. A publisher-job rerun replaces its
+source-named artifact; a smoke-only rerun uses the existing artifact. A missing
+artifact fails the job rather than falling back to a different dependency set.
 
 Users install canaries with:
 
@@ -156,6 +211,14 @@ Betas are manual promotions. Dispatch
   it does not exist or already shipped as a beta
 - the publish waits for approval in the **`npm-beta` environment** — its
   required reviewers are the promotion gate
+- the publish job checks out the source commit and runs
+  `scripts/release.sh beta`, which refuses a commit whose `pnpm-lock.yaml` is
+  behind the Runner's manifests, in a dry run too. An image build installs
+  the Runner with a frozen lockfile, so a plain `docker build` of such a
+  commit fails, and the beta would start a soak that the stable cannot
+  finish. Promote a nightly whose commit includes the lockfile refresh, or
+  cut a candidate branch that does. Check a commit before the dispatch with
+  `node scripts/check-release-runner-lockfile.mjs --commit <ref>`
 - promotions run the release tooling of the source commit, so the source
   nightly must postdate the beta channel's introduction; the selection job
   rejects older sources with a clear error (in practice every nightly cut
@@ -195,7 +258,8 @@ from a short-lived candidate branch:
 4. selection validates the branch name, rejects heads that already shipped
    as a beta, records the cherry-picked commits in the job summary, and the
    head runs **full verification** before publishing (it never went through
-   a canary or nightly)
+   a canary or nightly). The lockfile check above runs against the head of
+   the candidate branch
 5. after the beta ships, land the fixes on `master` normally and delete the
    candidate branch
 
@@ -248,7 +312,9 @@ Before running stable:
    `releases/beta/v<beta-version>.md`) is merged on `master` — or, for
    candidate builds, that the candidate branch itself carries
    `releases/vYYYY.MDD.P.md`
-5. run the stable workflow from that source ref
+5. check that the lockfile of the source commit matches the Runner's
+   manifests: `node scripts/check-release-runner-lockfile.mjs --commit <source_ref>`
+6. run the stable workflow from that source ref
 
 Example:
 
@@ -265,6 +331,12 @@ The workflow:
   `releases/beta/v<beta-version>.md` on `master` (a promoted beta). When
   neither exists the run fails before the `npm-stable` approval gate with
   the missing path named
+- refuses a source commit whose `pnpm-lock.yaml` is behind the Runner's
+  manifests, in a dry run too. `scripts/release.sh stable` makes this check
+  before it builds anything, as `scripts/release.sh beta` did when the beta
+  was cut. An image build installs the Runner with a frozen lockfile, so a
+  plain `docker build` of such a commit fails. Release a commit that
+  includes the lockfile refresh
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
 - dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
@@ -276,12 +348,22 @@ The workflow:
 
 ## Docker Image Tags
 
-[`docker.yml`](../.github/workflows/docker.yml) publishes both the self-hosted
-image and the `-cloud` variant with the same lane mapping:
+Master image publication requires both exact-source verification and a successful
+`publish` job from the canonical migrator workflow at the same source SHA and
+latest attempt. A green admission-only run with skipped build and publish jobs
+is pending work. The source observer retries only producers that were strictly
+deferred, continues watching after build admission, and waits for publication.
+The final publication step rechecks both proofs before it creates image tags.
+Failed or cancelled producers require inspection and are not retried automatically,
+with one exception: a Cloud readiness attempt that failed only because Spot
+runners were reclaimed is retried (see "Busy master and lost runners" below).
+
+[`docker.yml`](../.github/workflows/docker.yml) publishes the standard image:
 
 | Build ref | Tags |
 | --- | --- |
-| `master` push | `:canary`, `:sha-<short>` |
+| `master` push | `:sha-<short>`, `:sha-<full>` |
+| `canary/v*` dispatch | `:sha-<short>`, then `:canary` for the current npm canary |
 | `nightly/v*` tag | `:nightly`, `:sha-<short>` |
 | `beta/v*` tag | `:beta`, `:sha-<short>` |
 | `v*` tag (stable) | `:latest`, `:YYYY.MDD.P`, `:YYYY.MDD`, `:sha-<short>` |
@@ -290,6 +372,66 @@ Lane tags are pushed by release workflows using `GITHUB_TOKEN`, and GitHub
 suppresses push-triggered workflow runs for those pushes. The release jobs
 therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
 mapping keys off `github.ref` either way.
+
+When the merge queue is enabled for `master`,
+[`docker-merge-group.yml`](../.github/workflows/docker-merge-group.yml) builds
+and probes the production image for each merge-group commit. It has no registry
+credentials and uploads an OCI archive with a record of the commit, tree,
+architecture and digest. The `master` push for that same commit then pushes
+those exact bytes by digest instead of rebuilding
+(`scripts/merge-group-image.mjs`). A commit that changes that pipeline (the
+merge-group workflow, `docker.yml`, the promotion script or the PID 1 probe)
+anywhere in the pushed range is always built from source. `docker.yml` runs the
+promotion script as master had it before the push, so promotion trusts only a
+pipeline that master already ran.
+Without a matching successful merge-group
+run, or on any mismatch or error, the push builds from source. The PID 1 probe,
+exact-source gate and signing apply on both paths.
+
+The `master` ruleset requires `ci / verify` and `ci / e2e`, which `pr.yml`
+reports only for pull requests.
+[`merge-queue-checks.yml`](../.github/workflows/merge-queue-checks.yml) reports
+both names on each merge-group commit so the queue does not stall. It runs no
+tests: a pull request enters the queue only after both checks pass on it, and
+the exact-source gate still tests every `master` commit before publication.
+The queue can therefore land a commit while its image is still building. The
+`master` push waits up to 15 minutes for that build before it builds from
+source. Publication waits for the exact-source gate in any case.
+
+To turn the queue on, add **Require merge queue** to the `master` ruleset with
+merge method Squash, build concurrency 5, group size 1 to 5 and a 60 minute
+status check timeout. After the first queued merge, confirm that the `master`
+commit SHA equals the SHA of its merge-group runs; promotion depends on it.
+To turn it off, remove the rule. `master` then builds from source again.
+
+Canary dispatches first look up the full-SHA master image. Reuse requires a
+valid multi-platform index with both `linux/amd64` and `linux/arm64`, a matching
+registry digest, and signed provenance from this repository's `docker.yml`
+on `master` at the exact source commit. The image is retagged by immutable
+digest. This preserves the original build inputs and skips both native builds
+and the manifest merge. A missing full-SHA image runs the normal build instead;
+registry errors or invalid provenance fail the run. Rerun after the master
+image's attestation finishes if the image became visible before its proof.
+
+Both paths retain the serialized promotion that resolves the current npm
+`canary` dist-tag before moving Docker `:canary`. Nightly, beta, stable, and
+master builds retain their existing build paths. Downstream image builds can
+continue to consume the signed full-SHA master image independently of npm
+canary publication.
+
+The Docker build matrix and the release preview image builder configure
+BuildKit to check `mirror.gcr.io` for Docker Hub images first. This covers
+both the Dockerfile frontend and base images. BuildKit keeps Docker Hub as
+the fallback when the cache has no usable copy. The image references,
+build arguments, GHCR publication, and release gates stay the same.
+
+This is an availability improvement, not an outage guarantee. Google can
+evict cached images, and mutable tags can lag upstream changes or deletions.
+Matching manifests at one point does not guarantee later tag freshness or
+blob availability. The initial `moby/buildkit` bootstrap still uses the host
+Docker daemon and can fail on Docker Hub before this configuration takes
+effect. See the [BuildKit mirror configuration](https://docs.docker.com/build/ci/github-actions/configure-builder/#registry-mirror)
+and [Google cache limits](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images).
 
 ## Local Commands
 

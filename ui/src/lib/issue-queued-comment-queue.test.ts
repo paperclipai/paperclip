@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
+  startingQueuedCommentIds,
 } from "./issue-queued-comment-queue";
 
 function comment(id: string, body: string) {
@@ -22,6 +23,34 @@ function comment(id: string, body: string) {
 }
 
 describe("normalizeIssueQueuedCommentQueue", () => {
+  it("keeps later inputs and uncertain or retry queues editable", () => {
+    const opener = comment("opener", "Start this turn");
+    const later = { ...comment("later", "Follow up"), createdAt: new Date("2026-09-04T12:00:02Z") };
+    const queue = normalizeIssueQueuedCommentQueue({ queueId: "wake", state: "queued",
+      entries: [opener, later].map(comment => ({ comment })) }, "issue-1");
+    const run = { runId: "run", contextIssueId: "issue-1", wakeupRequestId: "wake", status: "queued",
+      startedAt: null, createdAt: "2026-09-04T12:00:01Z", wakeCommentIds: [opener.id, later.id] };
+    const ids = (runs: unknown[], value = queue) => [...startingQueuedCommentIds(value, runs as import("../api/activity").RunForIssue[])];
+    expect(ids([run])).toEqual(["opener"]);
+    expect(ids([{ ...run, retryOfRunId: "prior" }])).toEqual([]);
+    expect(ids([{ ...run, wakeupRequestId: "new-wake" }])).toEqual([]);
+    expect(ids([{ ...run, contextIssueId: "other-issue" }])).toEqual([]);
+    expect(ids([])).toEqual([]);
+    expect(ids([run], { ...queue, targetRunId: "previous", state: "deferred" })).toEqual([]);
+    expect(ids([run], { ...queue, entries: [{ ...queue.entries[0]!, source: { kind: "interaction", interactionId: "decision", interactionKind: "request_confirmation", requiresFreshSession: false } }] })).toEqual([]);
+  });
+  it("shows an Interrupt hand-off's messages as sent, including on a fresh page load", () => {
+    const first = comment("first", "Wait, are the daily tests passing?");
+    const second = { ...comment("second", "And which ones fail?"), createdAt: new Date("2026-09-04T12:00:02Z") };
+    // No successor run exists yet: the stopped run is still settling.
+    const handoff = normalizeIssueQueuedCommentQueue({ queueId: "wake", state: "deferred", targetRunId: null,
+      executionWait: { reason: "interrupt_handoff", message: "Sending your messages." },
+      entries: [first, second].map(comment => ({ comment })) }, "issue-1");
+    expect([...startingQueuedCommentIds(handoff, [])]).toEqual(["first", "second"]);
+    // A real wait keeps the messages queued and editable.
+    expect([...startingQueuedCommentIds({ ...handoff,
+      executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." } }, [])]).toEqual([]);
+  });
   it("retains the immutable response and fresh-turn requirement", () => {
     const source = { kind: "interaction", interactionId: "approval-1", interactionKind: "request_confirmation", requiresFreshSession: true };
     const normalized = normalizeIssueQueuedCommentQueue({ entries: [{ comment: comment("approval-1", "Accepted: Plan"), source,
@@ -117,6 +146,18 @@ describe("normalizeIssueQueuedCommentQueue", () => {
         },
       ],
     });
+  });
+
+  it("keeps native steering while an empty queue snapshot predates the submitted message", () => {
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      protocol: "legacy", entries: [],
+    }, "issue-1");
+    const queue = mergePendingIssueQueuedComments({
+      issueId: "issue-1", authoritativeQueue,
+      pendingComments: [{ comment: comment("optimistic-1", "Use the new model next turn"), targetRunId: "run-native" }],
+      fallbackProtocol: "paperclip_runner_v1",
+    });
+    expect(queue).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
   });
 
   it("deduplicates acknowledged entries and restores the authoritative queue identity", () => {

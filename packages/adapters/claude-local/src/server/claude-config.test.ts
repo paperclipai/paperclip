@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 // A shared handle so the managed-config test can force the runtime preparation
@@ -19,10 +20,22 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
     adapterExecutionTargetUsesManagedHome: () => true,
     maybeRunSandboxInstallCommand: async () => null,
     prepareAdapterExecutionTargetRuntime,
+    runAdapterExecutionTargetShellCommand: vi.fn(actual.runAdapterExecutionTargetShellCommand),
   };
 });
 
-import { prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import {
+  buildRemoteClaudeConfigMaterializationCommand,
+  CLAUDE_TOOL_SHELL_PREFIX_SCRIPT,
+  materializeRemoteClaudeConfig,
+  prepareClaudeConfigSeed,
+  prepareSandboxClaudeProbeRuntime,
+  resolveRemoteClaudeToolShellPrefixPath,
+} from "./claude-config.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];
@@ -44,6 +57,17 @@ describe("prepareClaudeConfigSeed", () => {
       CLAUDE_CONFIG_DIR: sourceDir,
     };
   }
+
+  it("does not copy the SSH user's existing login into a managed agent's config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-host-fallback-"));cleanupDirs.push(root);
+    const hostHome = path.join(root, "ssh-user"), seed = path.join(root, "seed"), target = path.join(root, "managed-config");
+    await fs.mkdir(path.join(hostHome, ".claude"), { recursive: true });await fs.mkdir(seed);
+    const original = '{"token":"ssh-user-account-canary"}';
+    await fs.writeFile(path.join(hostHome, ".claude", ".credentials.json"), original);
+    await execFileAsync("sh", ["-c", buildRemoteClaudeConfigMaterializationCommand({ remoteClaudeConfigDir: target, remoteClaudeConfigSeedDir: seed, allowHostCredentials: false })], { env: { ...process.env, HOME: hostHome } });
+    await expect(fs.access(path.join(target, ".credentials.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(hostHome, ".claude", ".credentials.json"), "utf8")).toBe(original);
+  });
 
   it("reuses the same snapshot path when the seeded files are unchanged", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-seed-"));
@@ -88,6 +112,50 @@ describe("prepareClaudeConfigSeed", () => {
       .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "default" } }));
     await expect(fs.readFile(path.join(second, "settings.json"), "utf8"))
       .resolves.toBe(JSON.stringify({ theme: "dark", permissions: { defaultMode: "default" } }));
+  });
+
+  it("seeds bypassPermissions only when it is requested", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-bypass-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({
+      theme: "light",
+      permissions: { defaultMode: "acceptEdits", allow: ["Bash(*)"] },
+      hooks: { PreToolUse: [{ matcher: "*" }] },
+    }), "utf8");
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const defaultSeed = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    const bypassSeed = await prepareClaudeConfigSeed(env, onLog, "company-1", {
+      permissionDefaultMode: "bypassPermissions",
+    });
+
+    expect(bypassSeed).not.toBe(defaultSeed);
+    await expect(fs.readFile(path.join(defaultSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "default" } }));
+    await expect(fs.readFile(path.join(bypassSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "bypassPermissions" } }));
+  });
+
+  it("writes a bypassPermissions settings file when the host has none", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-bypass-empty-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const defaultSeed = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    const bypassSeed = await prepareClaudeConfigSeed(env, onLog, "company-1", {
+      permissionDefaultMode: "bypassPermissions",
+    });
+
+    await expect(fs.access(path.join(defaultSeed, "settings.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(bypassSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ permissions: { defaultMode: "bypassPermissions" } }));
   });
 
   it("strips local-only settings from remote Claude config seeds", async () => {
@@ -166,6 +234,25 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
     }
   });
 
+  it("keeps the selected SSH account's probe home until the provider probe finishes", async () => {
+    const target: AdapterExecutionTarget = { kind: "remote", transport: "ssh", remoteCwd: "/workspace", spec: {
+      useHostAuth: false, host: "fixture.invalid", port: 22, username: "fixture", remoteCwd: "/workspace", remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    } };
+    const restore = vi.fn(async () => {}), registerCleanup = vi.fn<(cleanup: () => Promise<void>) => void>();
+    const env: Record<string, string> = { HOME: "/controller/selected", CLAUDE_CONFIG_DIR: "/controller/selected/provider", CLAUDE_CODE_OAUTH_TOKEN: "fixture-selected" };
+    prepareAdapterExecutionTargetRuntime.mockResolvedValueOnce({ runtimeRootDir: "/tmp/paperclip-ssh-runtime.probe", assetDirs: { "config-seed": "/tmp/paperclip-ssh-runtime.probe/config-seed" }, restoreWorkspace: restore });
+    vi.mocked(runAdapterExecutionTargetShellCommand).mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: new Date().toISOString() });
+    const checks = await prepareSandboxClaudeProbeRuntime({ managedAiConnection: true, registerCleanup, runId: "selected-probe", target, cwd: "/workspace", env,
+      installCommand: "", detectCommand: "claude", targetIsRemote: true, targetIsSandbox: false, helloProbeTimeoutSec: 10 });
+    expect(checks).toContainEqual(expect.objectContaining({ code: "claude_managed_config_dir" }));
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(expect.objectContaining({ privateRuntime: true, syncWorkspace: false,
+      assets: [expect.objectContaining({ localDir: "/controller/selected/provider" })] }));
+    expect(env).toMatchObject({ HOME: "/tmp/paperclip-ssh-runtime.probe", CLAUDE_CONFIG_DIR: "/tmp/paperclip-ssh-runtime.probe/config", CLAUDE_CODE_OAUTH_TOKEN: "fixture-selected" });
+    expect(restore).not.toHaveBeenCalled();
+    await registerCleanup.mock.calls[0]![0]();
+    expect(restore).toHaveBeenCalledOnce();
+  });
+
   it("keeps a thrown config-materialization error out of every check and the log", async () => {
     // The runtime preparation throws an error that carries two untrusted values:
     // an opaque credential marker and a proxy marker. Neither may reach a check
@@ -220,5 +307,123 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
       errorClass: "Error",
     });
     warnSpy.mockRestore();
+  });
+});
+
+describe("Claude tool shell prefix", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function installPrefix() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-tool-prefix-"));
+    cleanupDirs.push(root);
+    const prefixPath = path.join(root, "runtime", "tool-shell-prefix.sh");
+    const command = buildRemoteClaudeConfigMaterializationCommand({
+      remoteClaudeConfigDir: path.join(root, "runtime", "config"),
+      remoteClaudeConfigSeedDir: path.join(root, "runtime", "config-seed"),
+      remoteToolShellPrefixPath: prefixPath,
+    });
+    const { stdout } = await execFileAsync("/bin/sh", ["-c", command], { env: { PATH: process.env.PATH ?? "" } });
+    return { root, prefixPath, stdout };
+  }
+
+  async function runThroughPrefix(prefixPath: string, commandString: string, env: Record<string, string>) {
+    const { stdout } = await execFileAsync(prefixPath, [commandString], { env });
+    return stdout.trim();
+  }
+
+  it("installs the script as a private executable and reports the install", async () => {
+    const { prefixPath, stdout } = await installPrefix();
+    await expect(fs.readFile(prefixPath, "utf8")).resolves.toBe(CLAUDE_TOOL_SHELL_PREFIX_SCRIPT);
+    expect((await fs.stat(prefixPath)).mode & 0o777).toBe(0o700);
+    expect(stdout).toContain("[paperclip] Installed the Claude tool shell prefix.");
+    await expect(fs.stat(`${prefixPath}.partial`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("leaves the materialization command unchanged without a prefix path", () => {
+    const command = buildRemoteClaudeConfigMaterializationCommand({
+      remoteClaudeConfigDir: "/sandbox/runtime/config",
+      remoteClaudeConfigSeedDir: "/sandbox/runtime/config-seed",
+    });
+    expect(command.endsWith("done")).toBe(true);
+    expect(command).not.toContain("tool shell prefix");
+  });
+
+  it.runIf(process.platform === "linux")(
+    "raises the tool command's out-of-memory score and keeps the caller's score",
+    async () => {
+      const { prefixPath } = await installPrefix();
+      const before = (await fs.readFile("/proc/self/oom_score_adj", "utf8")).trim();
+      const score = await runThroughPrefix(prefixPath, "cat /proc/self/oom_score_adj", {
+        PATH: process.env.PATH ?? "",
+        SHELL: "/bin/bash",
+      });
+      expect(score).toBe("1000");
+      expect((await fs.readFile("/proc/self/oom_score_adj", "utf8")).trim()).toBe(before);
+    },
+  );
+
+  it("runs the command string in the shell Claude Code selects", async () => {
+    const { root, prefixPath } = await installPrefix();
+    const bash = (await execFileAsync("/bin/sh", ["-c", "command -v bash"])).stdout.trim();
+    const probe = 'if [ -n "${BASH_VERSION:-}" ]; then echo bash; else echo other; fi';
+    await expect(runThroughPrefix(prefixPath, probe, { PATH: process.env.PATH ?? "", SHELL: bash }))
+      .resolves.toBe("bash");
+    await expect(runThroughPrefix(prefixPath, probe, {
+      PATH: process.env.PATH ?? "",
+      SHELL: bash,
+      CLAUDE_CODE_SHELL: "/missing/bash",
+    })).resolves.toBe("bash");
+    const binDir = path.join(root, "bin");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.symlink(bash, path.join(binDir, "bash"));
+    await expect(runThroughPrefix(prefixPath, probe, { PATH: binDir, SHELL: "/bin/sh" }))
+      .resolves.toBe("bash");
+    await expect(runThroughPrefix(prefixPath, `printf '%s' "q'uote"`, { PATH: process.env.PATH ?? "", SHELL: bash }))
+      .resolves.toBe("q'uote");
+    await expect(execFileAsync(prefixPath, ["exit 7"], { env: { PATH: process.env.PATH ?? "", SHELL: bash } }))
+      .rejects.toMatchObject({ code: 7 });
+  });
+
+  it("keeps an operator prefix", () => {
+    expect(resolveRemoteClaudeToolShellPrefixPath({ CLAUDE_CODE_SHELL_PREFIX: "/opt/audit.sh" }, "/sandbox/runtime"))
+      .toBeNull();
+    expect(resolveRemoteClaudeToolShellPrefixPath({}, "/sandbox/runtime"))
+      .toBe("/sandbox/runtime/tool-shell-prefix.sh");
+  });
+
+  it("reports no install when the sandbox does not confirm it", async () => {
+    const target: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: "/home/daytona/paperclip-workspace",
+      runner: {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      },
+    };
+    await expect(materializeRemoteClaudeConfig({
+      runId: "run-1",
+      target,
+      remoteClaudeConfigDir: "/sandbox/runtime/config",
+      remoteClaudeConfigSeedDir: "/sandbox/runtime/config-seed",
+      remoteToolShellPrefixPath: "/sandbox/runtime/tool-shell-prefix.sh",
+      options: { cwd: "/home/daytona/paperclip-workspace", env: {} },
+    })).resolves.toEqual({ toolShellPrefixInstalled: false });
   });
 });

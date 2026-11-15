@@ -1,10 +1,11 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns, issueComments, issueDocuments, issues } from "@paperclipai/db";
+import { activityLog, cases, heartbeatRuns, issueComments, issueDocuments, issues } from "@paperclipai/db";
 import { createActivityDetailsRedactor } from "./activity-log.js";
 import { badRequest } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { activityEntityIdCondition, caseAwareActivitySource } from "./case-activity-source.js";
 
 export interface AgentActionAuditFilters {
   companyId: string;
@@ -20,6 +21,7 @@ export interface AgentActionAuditFilters {
   to?: Date;
   cursor?: string;
   limit: number;
+  caseReadCondition?: SQL<boolean>;
 }
 
 type CursorValue = { createdAt: string; id: string };
@@ -54,7 +56,8 @@ export function agentActionAuditService(db: Db) {
       const cursor = decodeCursor(filters.cursor);
       if (filters.cursor && !cursor) throw badRequest("Invalid audit cursor");
       const effectiveResponsibleUserId = sql<string | null>`coalesce(${activityLog.responsibleUserId}, ${heartbeatRuns.responsibleUserId})`;
-      const conditions = [eq(activityLog.companyId, filters.companyId)];
+      const conditions = [eq(activityLog.companyId, filters.companyId),
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       // Preserve the historical agent-audit query unless the caller opts into
       // the unified all-actors feed explicitly.
       if (filters.actorScope !== "all") conditions.push(isNotNull(activityLog.agentId));
@@ -68,7 +71,7 @@ export function agentActionAuditService(db: Db) {
       )!);
       if (filters.runId) conditions.push(eq(activityLog.runId, filters.runId));
       if (filters.entityType) conditions.push(eq(activityLog.entityType, filters.entityType));
-      if (filters.entityId) conditions.push(eq(activityLog.entityId, filters.entityId));
+      if (filters.entityId) conditions.push(activityEntityIdCondition(filters.entityType, filters.entityId));
       if (filters.action) conditions.push(sql<boolean>`starts_with(${activityLog.action}, ${filters.action})`);
       if (filters.actorType) conditions.push(eq(activityLog.actorType, filters.actorType));
       if (filters.from) conditions.push(gte(activityLog.createdAt, filters.from));
@@ -97,12 +100,18 @@ export function agentActionAuditService(db: Db) {
         details: activityLog.details,
         createdAt: activityLog.createdAt,
         cursorCreatedAt: sql<string>`to_char(${activityLog.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as("cursor_created_at"),
-      }).from(activityLog).leftJoin(heartbeatRuns, and(
+      }).from(caseAwareActivitySource(db, filters.companyId)).leftJoin(heartbeatRuns, and(
         eq(heartbeatRuns.companyId, activityLog.companyId),
         eq(heartbeatRuns.id, activityLog.runId),
       )).where(and(...conditions)).orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(filters.limit + 1);
 
       const page = rows.slice(0, filters.limit);
+      const caseEntityIds = [...new Set(page.filter((row) => row.entityType === "case").map((row) => row.entityId))];
+      // The page has already passed the retained-source case predicate above.
+      const caseRows = caseEntityIds.length === 0 ? [] : await db.select({
+        id: cases.id, identifier: cases.identifier, title: cases.title,
+      }).from(cases).where(and(eq(cases.companyId, filters.companyId), inArray(cases.id, caseEntityIds)));
+      const caseMap = new Map(caseRows.map((row) => [row.id, row]));
       const commentEntityIds = [...new Set(page
         .filter((row) => row.entityType === "issue_comment")
         .map((row) => row.entityId))];
@@ -179,6 +188,7 @@ export function agentActionAuditService(db: Db) {
           createdAt: row.createdAt,
           details: isIssueDerived && !issueSnippet ? null : redactDetails(row.details),
           entity: {
+            ...(row.entityType === "case" ? { case: caseMap.get(row.entityId) ?? null } : {}),
             issue: issueSnippet,
             comment: comment ? { id: comment.id, excerpt: excerpt(comment.body) } : null,
             document: document ? { id: document.documentId, key: document.key } : null,
