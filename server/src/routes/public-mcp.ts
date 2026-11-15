@@ -70,7 +70,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
   });
   const discoveryDocuments = () => mcpDiscoveryDocuments({ origin: oauth.config.origin, authorizationOrigin: oauth.config.authorizationOrigin ?? oauth.config.origin,
     profiles: [agentConnection ? "dot-mcp" : "personal-mcp"] });
-  for (const { path } of discoveryDocuments()) router.get(path, (_req,res) => res.json(discoveryDocuments().find((entry) => entry.path === path)!.document));
+  for (const entry of discoveryDocuments()) router.get(entry.path, (_req,res) => res.json(discoveryDocuments().find((current) => current.path === entry.path)!.document));
   router.use(oauthPath, authRateLimit(), express.urlencoded({ extended: false, limit: "16kb" }));
   router.post(oauthPath + "/register", async (req, res) => res.status(201).json(await oauth.register(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown")));
   router.post(oauthPath + "/device_authorization", async (req, res) => res.json(await oauth.deviceAuthorize(req.body, req.ip ?? req.socket.remoteAddress ?? "unknown",verifyMcpDeviceMintContext(req,oauth.config.resource))));
