@@ -94,8 +94,8 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
-- model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
-- variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
+- model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5); on OpenCode V2, append the variant as provider/model#variant
+- variant (string, optional): provider-specific reasoning/profile variant passed as --variant on OpenCode V1, which V2 rejects (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config with \`permission=allow\` for all tools and connections; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
