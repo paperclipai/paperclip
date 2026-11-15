@@ -83,7 +83,9 @@ it("configures each control with the CLI against the assembled app and enforces 
       const before = await snapshot();
       const response = key.includes("Assign") ? await api(`/companies/${companyId}/issues`, {
         title: "Prohibited delegation", status: "todo", ...(key === "canAssignTasksToHumans" ? { assigneeUserId: userId } : { assigneeAgentId: recipient }),
-      }) : key.includes("Mention") ? await api(`/issues/${owned!.id}/comments`, { body: `[@Recipient](agent://${recipient})` })
+      }) : key === "canAskHumans" ? await api(`/issues/${owned!.id}/interactions`, { kind: "ask_user_questions", payload: {
+        version: 1, questions: [{ id: "proceed", prompt: "Proceed?", selectionMode: "single", options: [{ id: "yes", label: "Yes" }] }],
+      } }) : key.includes("Mention") ? await api(`/issues/${owned!.id}/comments`, { body: `[@Recipient](agent://${recipient})` })
         : key.includes("Comment") ? await api(`/issues/${peer!.id}/comments`, { body: "Prohibited reply" })
         : key.includes("Edit") ? await api(`/issues/${peer!.id}`, { title: "Prohibited edit" }, "PATCH")
         : await api(`/agents/${recipient}`, { capabilities: "Prohibited configuration" }, "PATCH");
@@ -109,7 +111,7 @@ it("configures each control with the CLI against the assembled app and enforces 
     expect((await api(`/agents/${sender}/interaction-permissions`, { canMentionAgents: true }, "PATCH")).status).toBe(403);
     await cli(recipient, { canReceiveCommentsFromAgents: null });
     const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "agent.interaction_permissions_updated")));
-    expect(audit).toHaveLength(25);
+    expect(audit).toHaveLength(27);
     expect(audit.every(row => row.actorId === userId)).toBe(true);
     expect((await db.select().from(agents).where(eq(agents.companyId, companyId))).every(row => !Object.hasOwn(row.permissions, "interactions"))).toBe(true);
   } finally {

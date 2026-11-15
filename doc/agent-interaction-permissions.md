@@ -17,6 +17,7 @@ checkout and execution rules still apply.
 | --- | --- | --- |
 | Assign/delegate work to an agent | `canAssignTasksToAgents` | `canReceiveAssignmentsFromAgents` |
 | Assign work to a human | `canAssignTasksToHumans` | Existing human authorization |
+| Ask a person (question or confirmation card not addressed to an agent) | `canAskHumans` | Existing human authorization |
 | Mention another agent | `canMentionAgents` | `canReceiveMentionsFromAgents` |
 | Comment on another task | `canCommentOnOtherTasks` | `canReceiveCommentsFromAgents` |
 | Edit another task | `canEditOtherTasks` | `canReceiveTaskEditsFromAgents` |
