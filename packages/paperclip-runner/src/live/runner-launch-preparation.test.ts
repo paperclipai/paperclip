@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions, NATIVE_RUNTIME_ASSET_SCHEMA } from "../contracts/runtime-context.js";
 import { describe, expect, it } from "vitest";
-import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchIdentityDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements,
+import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchPreparationDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements,
   validatePreparedRunnerLaunch, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
 const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run",
@@ -97,13 +97,13 @@ describe("environment-owned launch contract", () => {
   });
 });
 
-describe("launch identity and run digests", () => {
+describe("launch preparation and run digests", () => {
   const nextRun = { ...identity, runId: "next-run", turnId: "next-turn", itemId: "next-item" };
   const withIdentity = (value: typeof identity) => ({ ...requirements(), identity: value });
 
-  it("keeps the identity digest across runs of one Runner and changes the run digest", () => {
-    const first = runnerLaunchIdentityDigest(requirements());
-    expect(runnerLaunchIdentityDigest(withIdentity(nextRun))).toBe(first);
+  it("keeps the preparation digest across runs of one Runner and changes the run digest", () => {
+    const first = runnerLaunchPreparationDigest(requirements());
+    expect(runnerLaunchPreparationDigest(withIdentity(nextRun))).toBe(first);
     expect(first).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(first).not.toBe(runnerLaunchRequirementsDigest(requirements()));
     const run = runnerLaunchRunDigest(first, withIdentity(identity));
@@ -113,37 +113,52 @@ describe("launch identity and run digests", () => {
     expect(runnerLaunchRunDigest(first, withIdentity(identity))).toBe(run);
   });
 
-  // Core names an MCP binding per run (`native-mcp:<runId>`) for any agent with an assigned connection; the Runner
-  // rebinds it on every run attachment, so it belongs to the run, not to the launch.
   const zero = "0".repeat(64);
-  const contextWith = (bindingId: string | null, assignmentSetId = "assigned") => {
-    const value = {
-      prompt: { revision: "fixture", text: "Core policy", digest: createHash("sha256").update("Core policy").digest("hex") },
-      instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA,
-        rootPath: "/controller/instructions", digest: zero, manifestDigest: zero, fileCount: 1, totalBytes: 1 } },
-      skills: [],
-      mcp: { assignmentSetId, digest: zero, bindingId },
-    };
-    return { ...value, aggregateDigest: canonicalNativeRuntimeContextDigest(value) };
+  const one = "1".repeat(64);
+  type Context = NonNullable<RunnerProviderLaunchRequirements["runtimeContext"]>;
+  const baseContext = (): Omit<Context, "aggregateDigest"> => ({
+    prompt: { revision: "fixture", text: "Core policy", digest: createHash("sha256").update("Core policy").digest("hex") },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA,
+      rootPath: "/controller/instructions", digest: zero, manifestDigest: zero, fileCount: 1, totalBytes: 1 } },
+    skills: [{ key: "assigned", runtimeName: "assigned", versionId: "v1", bundle: {
+      schema: NATIVE_RUNTIME_ASSET_SCHEMA, rootPath: "/controller/skill", digest: zero, manifestDigest: zero, fileCount: 1, totalBytes: 1 } }],
+    mcp: { assignmentSetId: "assigned", digest: zero, bindingId: "native-mcp:run" },
+  });
+  const withContext = (value: typeof identity, change: (context: Omit<Context, "aggregateDigest">) => void = () => {}): RunnerProviderLaunchRequirements => {
+    const context = baseContext();
+    change(context);
+    return { ...requirements(), identity: value, runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) } };
   };
-  const withContext = (value: typeof identity, bindingId: string | null, assignmentSetId?: string): RunnerProviderLaunchRequirements =>
-    ({ ...requirements(), identity: value, runtimeContext: contextWith(bindingId, assignmentSetId) });
 
-  it("keeps the identity digest across warm runs whose runtime context differs only by the run's MCP binding", () => {
-    const first = withContext(identity, "native-mcp:run");
-    const next = withContext(nextRun, "native-mcp:next-run");
-    const digest = runnerLaunchIdentityDigest(first);
-    expect(runnerLaunchIdentityDigest(next)).toBe(digest);
-    expect(runnerLaunchRunDigest(digest, next)).not.toBe(runnerLaunchRunDigest(digest, first));
-    // The binding alone names a run, so the run digest covers it too.
-    expect(runnerLaunchRunDigest(digest, withContext(identity, "native-mcp:other"))).not.toBe(runnerLaunchRunDigest(digest, first));
-    // An agent with no assigned connection has no binding, and its digest is stable the same way.
-    expect(runnerLaunchIdentityDigest(withContext(nextRun, null))).toBe(runnerLaunchIdentityDigest(withContext(identity, null)));
+  // MCP reaches the Runner through Core's tool authority on every run attachment, never through files the environment
+  // publishes, and Core keeps a warm session across an MCP-only change. So MCP belongs to the run digest only.
+  it("keeps the preparation digest across warm runs whose runtime context changes only in MCP", () => {
+    const first = withContext(identity);
+    const digest = runnerLaunchPreparationDigest(first);
+    const mcpChanges: Array<[string, RunnerProviderLaunchRequirements]> = [
+      ["the run's binding", withContext(nextRun, context => { context.mcp.bindingId = "native-mcp:next-run"; })],
+      ["no binding", withContext(nextRun, context => { context.mcp.bindingId = null; })],
+      ["the assigned access set", withContext(nextRun, context => { context.mcp = { assignmentSetId: "other-set", digest: one, bindingId: "native-mcp:next-run" }; })],
+    ];
+    for (const [label, next] of mcpChanges) {
+      expect(runnerLaunchPreparationDigest(next), label).toBe(digest);
+      expect(runnerLaunchRunDigest(digest, next), label).not.toBe(runnerLaunchRunDigest(digest, first));
+    }
+    // Within one run, an MCP change still changes the run digest.
+    const sameRun = withContext(identity, context => { context.mcp.assignmentSetId = "other-set"; });
+    expect(runnerLaunchRunDigest(digest, sameRun)).not.toBe(runnerLaunchRunDigest(digest, first));
   });
 
-  it("changes the identity digest when the assigned MCP access set changes", () => {
-    expect(runnerLaunchIdentityDigest(withContext(identity, "native-mcp:run", "other-set")))
-      .not.toBe(runnerLaunchIdentityDigest(withContext(identity, "native-mcp:run")));
+  it.each([
+    ["instruction bundle", (context: Omit<Context, "aggregateDigest">) => { context.instructions.bundle.digest = one; }],
+    ["instruction entry", (context: Omit<Context, "aggregateDigest">) => { context.instructions.entryPath = "CLAUDE.md"; }],
+    ["skill bundle", (context: Omit<Context, "aggregateDigest">) => { context.skills[0]!.bundle.digest = one; }],
+    ["skill set", (context: Omit<Context, "aggregateDigest">) => { context.skills = []; }],
+    ["instruction working copy", (context: Omit<Context, "aggregateDigest">) => {
+      context.instructions.workingCopy = { rootPath: "/workspace/.paperclip-runtime/agent-files/agent/run", entryPath: "AGENTS.md", kind: "agent_files" }; }],
+    ["connection instructions", (context: Omit<Context, "aggregateDigest">) => { context.connectionInstructions = { text: "Use the connector.", digest: one }; }],
+  ])("changes the preparation digest when the %s changes", (_label, change) => {
+    expect(runnerLaunchPreparationDigest(withContext(identity, change))).not.toBe(runnerLaunchPreparationDigest(withContext(identity)));
   });
 
   it.each([
@@ -154,9 +169,9 @@ describe("launch identity and run digests", () => {
     ["model", { ...requirements(), model: "other-model" }],
     ["approval policy", { ...requirements(), approvalPolicy: "never" as const }],
     ["settings", { ...requirements(), settings: { ...requirements().settings, disableCodexWebSearch: true } }],
-  ])("changes the identity digest when the %s changes", (_label, changed) => {
-    const before = runnerLaunchIdentityDigest(requirements());
-    const after = runnerLaunchIdentityDigest(changed as RunnerProviderLaunchRequirements);
+  ])("changes the preparation digest when the %s changes", (_label, changed) => {
+    const before = runnerLaunchPreparationDigest(requirements());
+    const after = runnerLaunchPreparationDigest(changed as RunnerProviderLaunchRequirements);
     expect(after).not.toBe(before);
     expect(runnerLaunchRunDigest(after, withIdentity(identity))).not.toBe(runnerLaunchRunDigest(before, withIdentity(identity)));
   });

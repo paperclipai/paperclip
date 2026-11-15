@@ -18,7 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
-import { runnerLaunchIdentityDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
+import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
 
 export type PluginTaskDescription = Extract<PluginEnvironmentTaskResult, { kind: "description" }>;
@@ -62,9 +62,9 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   expectedTaskId?: string;
 }): Promise<PluginEnvironmentTaskResult> {
   const operation = environmentTaskOperationSchema.parse(input.operation);
-  if (operation.kind === "prepare" && (operation.identityDigest !== undefined || operation.runDigest !== undefined)) {
-    const identityDigest = runnerLaunchIdentityDigest(operation.requirements as Parameters<typeof runnerLaunchIdentityDigest>[0]);
-    if (operation.identityDigest !== identityDigest || operation.runDigest !== runnerLaunchRunDigest(identityDigest, operation.requirements as Parameters<typeof runnerLaunchRunDigest>[1])) {
+  if (operation.kind === "prepare" && (operation.preparationDigest !== undefined || operation.runDigest !== undefined)) {
+    const preparationDigest = runnerLaunchPreparationDigest(operation.requirements as Parameters<typeof runnerLaunchPreparationDigest>[0]);
+    if (operation.preparationDigest !== preparationDigest || operation.runDigest !== runnerLaunchRunDigest(preparationDigest, operation.requirements as Parameters<typeof runnerLaunchRunDigest>[1])) {
       throw new Error("Plugin Runner launch digest mismatch");
     }
   }

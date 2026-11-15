@@ -95,7 +95,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     githubBroker: githubBroker.optional(),
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
-    identityDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+    preparationDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
     runDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),

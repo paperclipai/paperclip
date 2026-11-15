@@ -5,7 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
-import { runnerLaunchIdentityDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
+import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
 vi.mock("../services/provider-fresh-workspace.js", () => ({
@@ -354,18 +354,18 @@ describe("plugin-provided Runner execution", () => {
       settings: {}, approvalPolicy: "on-request" as const, readOnly: false,
       preparedConversation: false, includeCollaborationModeInstructions: true,
     } };
-    const identityDigest = runnerLaunchIdentityDigest(operation.requirements);
-    const runDigest = runnerLaunchRunDigest(identityDigest, operation.requirements);
+    const preparationDigest = runnerLaunchPreparationDigest(operation.requirements);
+    const runDigest = runnerLaunchRunDigest(preparationDigest, operation.requirements);
     const result = { kind: "prepared", taskId: "attempt-1", launch: { configurationId: "configuration-1",
       requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
     const accepted = worker(result);
     await expect(executeEnvironmentTask(database().db, accepted as never, { companyId: "company", leaseId,
-      operation: { ...operation, identityDigest, runDigest } })).resolves.toEqual(result);
+      operation: { ...operation, preparationDigest, runDigest } })).resolves.toEqual(result);
     expect(accepted.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
-      operation: expect.objectContaining({ identityDigest, runDigest }) }), 15_000);
+      operation: expect.objectContaining({ preparationDigest, runDigest }) }), 15_000);
     const forged = `sha256:${"b".repeat(64)}`;
-    for (const digests of [{ identityDigest: forged, runDigest }, { identityDigest, runDigest: forged },
-      { identityDigest }, { runDigest }]) {
+    for (const digests of [{ preparationDigest: forged, runDigest }, { preparationDigest, runDigest: forged },
+      { preparationDigest }, { runDigest }]) {
       const refused = worker(result);
       await expect(executeEnvironmentTask(database().db, refused as never, { companyId: "company", leaseId,
         operation: { ...operation, ...digests } })).rejects.toThrow("launch digest mismatch");

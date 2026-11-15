@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
-import { runnerLaunchIdentityDigest, runnerLaunchRunDigest, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
+import { runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -850,14 +850,14 @@ it.each([
   const prepares=task.mock.calls.map(([op])=>op).filter(op=>op.kind==="prepare");
   expect(prepares).toHaveLength(2);
   if (version === 1) {
-    const [first, next] = prepares as Array<{identityDigest?:string;runDigest?:string}>;
-    expect(first.identityDigest).toBe(runnerLaunchIdentityDigest(launchRequirements("codex")));
-    expect(next.identityDigest).toBe(first.identityDigest);
-    expect(first.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, launchRequirements("codex")));
-    expect(next.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, {...launchRequirements("codex"),identity:nextIdentity}));
+    const [first, next] = prepares as Array<{preparationDigest?:string;runDigest?:string}>;
+    expect(first.preparationDigest).toBe(runnerLaunchPreparationDigest(launchRequirements("codex")));
+    expect(next.preparationDigest).toBe(first.preparationDigest);
+    expect(first.runDigest).toBe(runnerLaunchRunDigest(first.preparationDigest!, launchRequirements("codex")));
+    expect(next.runDigest).toBe(runnerLaunchRunDigest(first.preparationDigest!, {...launchRequirements("codex"),identity:nextIdentity}));
     expect(next.runDigest).not.toBe(first.runDigest);
   } else {
-    for (const op of prepares) expect(op).not.toHaveProperty("identityDigest");
+    for (const op of prepares) expect(op).not.toHaveProperty("preparationDigest");
     for (const op of prepares) expect(op).not.toHaveProperty("runDigest");
   }
   await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
