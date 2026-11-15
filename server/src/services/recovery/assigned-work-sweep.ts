@@ -73,6 +73,7 @@ export const ASSIGNED_WORK_REPAIRS_PER_MINUTE = 10;
 /** Upper bound on tasks one report reads. */
 export const ASSIGNED_WORK_REPORT_LIMIT = 2_000;
 export const UNCHANGED_REFUSAL_MAX_WAIT_MS = 6 * 60 * 60_000;
+const UNCHANGED_REFUSAL_CHAIN = 9;
 
 const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
@@ -645,7 +646,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       }
     }
     const key = stateKey(facts, verdict);
-    const refusals = await refusalsInState(issue, key);
+    const refusals = await refusalsInState(issue, key, at);
     if (refusals.count && refusals.lastAt !== null) {
       const waitUntil = refusals.lastAt + Math.min(UNCHANGED_REFUSAL_MAX_WAIT_MS, CONTINUATION_BASE_BACKOFF_MS * 2 ** (refusals.count - 1));
       if (waitUntil > at.getTime()) return { verdict, outcome: "waiting_unchanged", retryAt: new Date(waitUntil) };
@@ -716,10 +717,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     return createHash("sha256").update(JSON.stringify({ reason: verdict.reason, ...facts, issue })).digest("hex").slice(0, 32);
   }
 
-  async function refusalsInState(issue: IssueRow, key: string) {
+  async function refusalsInState(issue: IssueRow, key: string, at: Date) {
     const rows = await db.select({ details: activityLog.details }).from(activityLog).where(and(
       eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION))).orderBy(desc(activityLog.createdAt)).limit(16);
+      gte(activityLog.createdAt, new Date(at.getTime() - UNCHANGED_REFUSAL_CHAIN * UNCHANGED_REFUSAL_MAX_WAIT_MS)),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION))).orderBy(desc(activityLog.createdAt)).limit(UNCHANGED_REFUSAL_CHAIN);
     let count = 0, lastAt: number | null = null;
     for (const row of rows) {
       const details = json(row.details);
