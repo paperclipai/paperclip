@@ -487,10 +487,15 @@ function OnboardingWizardInner({
           companies,
           cloudManaged: Boolean(cloudInstance),
         });
+  const routeRequested = routeOnboardingOptions !== null && !routeDismissed;
+  // The connect page hides the dialog. That is visibility, not a new opening
+  // request: recording it as closed makes the effect below treat the return
+  // as a fresh open and send the customer back to initialStep.
+  const onboardingSessionOpen = onboardingOpen || routeRequested;
   const effectiveOnboardingOpen = shouldCoverWithOnboardingWizard({
     pathname: location.pathname,
     onboardingOpen,
-    routeRequested: routeOnboardingOptions !== null && !routeDismissed,
+    routeRequested,
   });
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
@@ -837,9 +842,9 @@ function OnboardingWizardInner({
   useEffect(() => {
     const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     const previousRequest = openingRequestRef.current;
-    openingRequestRef.current = { open: effectiveOnboardingOpen, companyId: routeCompanyId,
-      hasOpened: previousRequest?.hasOpened === true || effectiveOnboardingOpen };
-    if (!effectiveOnboardingOpen) return;
+    openingRequestRef.current = { open: onboardingSessionOpen, companyId: routeCompanyId,
+      hasOpened: previousRequest?.hasOpened === true || onboardingSessionOpen };
+    if (!onboardingSessionOpen) return;
     if (previousRequest?.open && previousRequest.companyId === routeCompanyId) return;
     const initialRequest = previousRequest?.hasOpened !== true;
     const resumesRouteDraft = initialRequest && !onboardingOpen && saved !== null
@@ -900,7 +905,7 @@ function OnboardingWizardInner({
       routeCompanyIdRef.current = null;
       clearCompanyScopedState();
     }
-  }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId]);
+  }, [onboardingSessionOpen, effectiveOnboardingOptions.companyId]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
   useEffect(() => {

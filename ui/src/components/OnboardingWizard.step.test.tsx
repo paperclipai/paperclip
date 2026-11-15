@@ -517,6 +517,45 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(currentStep()).toBe("agent");
   });
 
+  it("keeps the connect step when setup visits /apps/connect and comes back", async () => {
+    // Dashboard open is a dialog request. Covering it up on the connect page
+    // used to mark that request closed, so the return reapplied initialStep
+    // and walked the customer back to the agent step.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_AGENT_STEP,
+    };
+    routerState.pathname = "/PC1/dashboard";
+    await render();
+    await settle();
+    expect(currentStep()).toBe("agent");
+
+    const field = document.getElementById("onboarding-agent-name") as HTMLInputElement;
+    setControlledValue(field, "Ada");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Next",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle();
+    expect(document.getElementById("onboarding-agent-name")).toBeNull();
+    expect(document.body.querySelectorAll("button[aria-checked]").length).toBeGreaterThan(0);
+
+    routerState.pathname = "/PC1/apps/connect";
+    await rerender();
+    await settle();
+    expect(currentStep()).toBe("closed");
+
+    routerState.pathname = "/PC1/dashboard";
+    await rerender();
+    await settle();
+    expect(document.getElementById("onboarding-agent-name")).toBeNull();
+    expect(document.body.querySelectorAll("button[aria-checked]").length).toBeGreaterThan(0);
+  });
+
   describe("an existing company opened on the agent step", () => {
     // It opens on the agent step, so step 1 never runs. The wizard hires the
     // first agent there — the mission it once seeded from is now the server's.
