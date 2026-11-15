@@ -224,6 +224,10 @@ import {
   loadWithoutCoordinatedShutdownSignalHooks,
   runBoundedShutdownStep,
 } from "./shutdown.js";
+import {
+  releaseOwnedSettledNativeRunProcessesAtShutdown,
+  type ShutdownSettledProcessRelease,
+} from "./services/native-local-process-stop.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { initializeAdapterSettings } from "./services/adapter-settings.js";
 import { migrateCloudConfiguration } from "./services/cloud-configuration-migration.js";
@@ -1305,6 +1309,7 @@ async function startServerWithDatabaseTeardown(
   ) => Promise<unknown>) | null = null;
   let drainHeartbeatExecutionFinalizers: (() => Promise<void>) | null = null;
   let handOffNativeRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<string[]>) | null = null;
+  let releaseSettledNativeProcessesForShutdown: (() => Promise<ShutdownSettledProcessRelease>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM", now?: Date, abort?: AbortSignal) => Promise<{
     skipDrain: boolean;
     drainRunIds?: string[];
@@ -1646,6 +1651,7 @@ async function startServerWithDatabaseTeardown(
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
     handOffNativeRunsForShutdown = signal => heartbeat.handOffNativeRunsForShutdown(signal);
+    releaseSettledNativeProcessesForShutdown = () => releaseOwnedSettledNativeRunProcessesAtShutdown(db as any);
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
@@ -2337,6 +2343,21 @@ async function startServerWithDatabaseTeardown(
     }
 
     await workspaceRecoveryStop;
+
+    const releaseSettledNativeProcesses = releaseSettledNativeProcessesForShutdown;
+    if (releaseSettledNativeProcesses) {
+      await runBoundedShutdownStep({
+        step: "settled_native_process_release",
+        signal,
+        timeoutMs: 3_000,
+        run: async () => {
+          const release = await releaseSettledNativeProcesses();
+          logger.info({ signal, ...release }, "released the process identity of settled native runs this server ran");
+          return release;
+        },
+        log: logger,
+      });
+    }
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {

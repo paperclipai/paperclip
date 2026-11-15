@@ -128,6 +128,20 @@ describe("release swap task grade", () => {
     expect(gradeReleaseSwapTask(task({ status: "todo", runs: [failed], queuedWakes: 1 })).verdict).toBe("still_working");
   });
 
+  it("does not report queued wakes as never dispatched while a run holds them (w-20261115T044649-s7106/t019)", () => {
+    const now = 10_000_000;
+    const held = gradeReleaseSwapTask(task({ status: "in_progress", now, staleAfterMs: 60_000, queuedWakes: 2,
+      interruption: interruption({ state: "working" }),
+      runs: [{ runId: "9df2283c", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: now - 70_000 }] }));
+    expect(held.detail).toContain("run 9df2283c running with no activity for 1 min");
+    expect(held.detail).not.toContain("never dispatched");
+    const queued = gradeReleaseSwapTask(task({ status: "todo", now, staleAfterMs: 60_000, queuedWakes: 1,
+      runs: [{ runId: "q1", status: "queued", errorCode: null, createdAt: now - 120_000, startedAt: null, finishedAt: null, lastActivityAt: null }] }));
+    expect(queued.detail).not.toContain("never dispatched");
+    const orphan = gradeReleaseSwapTask(task({ status: "todo", now, staleAfterMs: 60_000, runs: [failed], queuedWakes: 2 }));
+    expect(orphan.detail).toContain("2 queued wake(s) never dispatched");
+  });
+
   it("keeps a task still running past the drain cap out of the number and reports it with its last activity", () => {
     const running = gradeReleaseSwapTask(task({ status: "in_progress", now: 1_000_000, staleAfterMs: 900_000,
       runs: [{ runId: "r5", status: "running", errorCode: null, createdAt: 0, startedAt: 1, finishedAt: null, lastActivityAt: 940_000 }] }));

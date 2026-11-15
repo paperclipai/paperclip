@@ -16,7 +16,7 @@ import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
 import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, snapshotAttemptKeys, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
-import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
+import { REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH, WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 const SCHEMA = "paperclip.workspace-snapshot.v1";
 const KEY_SCHEMA = "paperclip.workspace-snapshot-key.v1";
@@ -199,6 +199,7 @@ type WorkspaceSnapshotUpload = {
   /** Receives per-step durations and storage request counts. */
   timing?: WorkspaceSnapshotStorageTiming;
   verification?: "readback" | "upload";
+  expectedArchive?: { sha256: string; byteSize: number };
 };
 
 /** Upload attempts are journaled before remote I/O. The caller owns publication. */
@@ -326,6 +327,8 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     const after = await lstat(input.archivePath);
     if (!before.isFile() || before.isSymbolicLink() || sealed.plaintextBytes !== before.size || after.dev !== before.dev || after.ino !== before.ino
       || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) failure("archive_changed");
+    if (input.expectedArchive && (sealed.plaintextSha256 !== input.expectedArchive.sha256
+      || sealed.plaintextBytes !== input.expectedArchive.byteSize)) throw new Error(REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH);
     const plaintext = { sha256: sealed.plaintextSha256, byteSize: sealed.plaintextBytes };
     const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ schema: KEY_SCHEMA,
       ...identity, dataKey: dataKey.toString("base64"), plaintextSha256: plaintext.sha256, plaintextBytes: plaintext.byteSize }) });
