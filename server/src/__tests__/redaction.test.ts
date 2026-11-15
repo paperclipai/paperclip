@@ -936,6 +936,47 @@ second-line\" status=401`,
     const config = { devicePrivateKeyPem: REDACTED_EVENT_VALUE, apiKey: REDACTED_EVENT_VALUE, nested: [{ signingPrivateKeyDer: REDACTED_EVENT_VALUE, enabled: true }], url: "wss://gateway.example.test" };
     expect(omitRedactedPrivateKeyPlaceholders(config)).toEqual({ apiKey: REDACTED_EVENT_VALUE, nested: [{ enabled: true }], url: "wss://gateway.example.test" });
   });
+
+  it("redacts PEM private key blocks in place and keeps the surrounding text", () => {
+    const input = [
+      "status: deploy finished",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "synthetic-private-body",
+      "-----END OPENSSH PRIVATE KEY-----",
+      "next step: rotate the gateway",
+      "-----BEGIN PRIVATE KEY-----",
+      "second-synthetic-body",
+      "-----END PRIVATE KEY-----",
+      "done",
+    ].join("\n");
+    expect(redactSensitiveText(input)).toBe([
+      "status: deploy finished",
+      REDACTED_EVENT_VALUE,
+      "next step: rotate the gateway",
+      REDACTED_EVENT_VALUE,
+      "done",
+    ].join("\n"));
+  });
+
+  it("redacts a truncated PEM private key block through the end of the text", () => {
+    const result = redactSensitiveText("stderr tail:\n-----BEGIN RSA PRIVATE KEY-----\nsynthetic-truncated-body");
+    expect(result).toBe(`stderr tail:\n${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("redacts PEM private key blocks alongside other credentials without dropping text", () => {
+    const input = [
+      "database postgresql://paperclip:synthetic-db-password@example.com/db",
+      "-----BEGIN PRIVATE KEY-----",
+      "synthetic-private-body",
+      "-----END PRIVATE KEY-----",
+      "public summary line",
+    ].join("\n");
+    const result = redactSensitiveText(input);
+    expect(result).not.toContain("synthetic-private-body");
+    expect(result).not.toContain("BEGIN PRIVATE KEY");
+    expect(result).toContain("database postgresql://");
+    expect(result).toContain("public summary line");
+  });
 });
 
 describe("redaction of long letter/digit runs", () => {

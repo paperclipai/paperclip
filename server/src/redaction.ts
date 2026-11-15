@@ -7,6 +7,7 @@ const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
 const PRIVATE_KEY_PAYLOAD_KEY_RE = /private[-_]?key|pem/i;
 const PRIVATE_KEY_PEM_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/i;
+const PRIVATE_KEY_PEM_BLOCK_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/gi;
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
 // "authorization". JWT-shaped values are still caught by the value guard below.
@@ -1057,8 +1058,8 @@ export function omitRedactedPrivateKeyPlaceholders(value: unknown): unknown {
   return next;
 }
 
-export function redactSensitiveText(input: string): string {
-  if (PRIVATE_KEY_PEM_RE.test(input)) return REDACTED_EVENT_VALUE;
+export function redactSensitiveText(text: string): string {
+  const input = text.replace(PRIVATE_KEY_PEM_BLOCK_RE, REDACTED_EVENT_VALUE);
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(
     redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
