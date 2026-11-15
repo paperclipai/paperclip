@@ -30,7 +30,7 @@
     {
       "slug": "antigravity",
       "provider": "Antigravity",
-      "catalogVisible": true,
+      "catalogVisible": false,
       "localAsset": "/brands/apps/antigravity.svg"
     },
     {
