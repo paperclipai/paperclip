@@ -1,5 +1,5 @@
 /**
- * `--fail-recovery-step <step>[:<nth>]`: fail the Nth attempt of one recovery step once (README "Fail the Nth
+ * `--fail-recovery-step <step>[:<nth>]`: fail the Nth attempt of one recovery step once (SCENARIOS.md "Fail the Nth
  * recovery step").
  *
  * Every other fault hits the control plane once and then lets recovery run. On staging the first fault was
