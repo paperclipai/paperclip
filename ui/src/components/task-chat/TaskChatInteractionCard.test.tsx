@@ -735,6 +735,38 @@ describe("TaskChatInteractionCard", () => {
     expect(reasonGroup?.className).not.toContain("mt-3");
   });
 
+  it("opens the revision note for a plan even when the request does not require a reason", async () => {
+    const reject = vi.fn();
+    const interaction = createRequestConfirmation({
+      sourceRunId: "run-plan",
+      title: "Confirm the two-step plan",
+      payload: {
+        version: 1,
+        prompt: "Please review the plan.",
+        acceptLabel: "Confirm",
+        rejectLabel: "Request changes",
+        rejectRequiresReason: false,
+        target: { type: "issue_document", issueId: "issue-1", key: "plan", revisionId: "revision-1", revisionNumber: 1 },
+      },
+    });
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover"
+              onAcceptInteraction={vi.fn()} onRejectInteraction={reject} onUploadImage={vi.fn()} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const requestChanges = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Request changes");
+    flushSync(() => requestChanges?.click());
+    expect(reject).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="plan-revision-composer"]')).not.toBeNull();
+    expect(container.textContent).toContain("(optional)");
+  });
+
   it("shows one question at a time and preserves answers across pages", async () => {
     const submit = vi.fn();
     flushSync(() => {

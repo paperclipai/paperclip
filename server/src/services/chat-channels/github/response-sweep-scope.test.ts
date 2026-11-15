@@ -68,7 +68,12 @@ suite("GitHub response sweep scopes", () => {
         builder.from = ((...args: Parameters<typeof from>) => {
           const selection = from(...args), execute = selection.execute.bind(selection);
           selection.execute = (async () => {
-            if (selection.toSQL().sql.includes(`'wakeCommentIds', '[]'::jsonb) ?`)) reads += 1;
+            // Count requests whose run state is read. A batched read names its
+            // requests in arrays, so count the requests rather than statements.
+            const query = selection.toSQL();
+            if (query.sql.includes(`'wakeCommentIds', '[]'::jsonb) ?`)) {
+              reads += Array.isArray(query.params[0]) ? query.params[0].length : 1;
+            }
             return execute();
           }) as typeof selection.execute;
           return selection;

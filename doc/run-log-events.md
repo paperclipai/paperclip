@@ -462,7 +462,7 @@ runner lifecycle, `other` for an unknown value, or `unavailable` when the state 
 none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
 provider cleanup or warm transition is pending. These fields explain how the runner
 stopped. The event is not recorded when a scheduled retry resumes a runner that
-exited after a settled suspension; see `doc/execution-semantics.md`.
+exited after a settled suspension.
 
 `native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
 failed run whose reattachment proved the Runner process gone
@@ -723,7 +723,7 @@ run phases:
 | `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
 | `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
-| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. |
+| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. This is the only full read of a downloaded archive: one whose digest or size differs from the sandbox's receipt fails here, before any upload is recorded. |
 | `storage.snapshot.digest` | Record the digest of the encrypted file. The `encrypt` pass computes it, so this step takes no time. |
 | `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
 | `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |

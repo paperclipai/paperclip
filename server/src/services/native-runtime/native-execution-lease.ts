@@ -5,6 +5,7 @@ import { currentNativeControllerIdentity, type NativeControllerIdentity } from "
 import { OPERATOR_ATTESTED_CONTROLLER_HOST } from "./native-controller-host-recovery.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "./native-runner-ownership.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
+import { recordMissedLeaseRenewal } from "../server-metrics.js";
 
 export const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
@@ -613,7 +614,10 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       state!.loss = Promise.resolve().then(state!.input.onLost).catch(() => undefined);
     };
     const deadline = (delay: number) => {
-      const timer = setTimeout(() => lose(new Error("native_session_lease_renewal_deadline")), Math.max(0, delay));
+      const timer = setTimeout(() => {
+        recordMissedLeaseRenewal();
+        lose(new Error("native_session_lease_renewal_deadline"));
+      }, Math.max(0, delay));
       timer.unref?.();
       return timer;
     };

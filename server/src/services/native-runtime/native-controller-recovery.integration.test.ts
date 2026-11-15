@@ -23,7 +23,7 @@ import { NativePredecessorRetirementUnprovenError } from "./predecessor-retireme
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "../heartbeat/agent-directory-busy.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
-import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { inspectRemoteWarmSessionRecovery, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
 import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../controller-instance-lease.js";
 import { readProcessStartedAt } from "../hot-restart.js";
@@ -642,6 +642,26 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     } finally {
       oldServer.kill("SIGKILL");
     }
+  });
+
+  it("keeps a follow-up waiting for a live outgoing server until that server has checkpointed the session after the turn", async () => {
+    const { recordOwner, current, fixture } = await seedWarmFollowUpOnOldServer();
+    const oldBoot = randomUUID();
+    await recordOwner({ controllerBootId: oldBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    registerControllerInstanceDb(db);
+    try {
+      const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
+        priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
+      await expect(wait(null)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() - 60_000))).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() + 1_000))).resolves.toBeUndefined();
+      await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBoot));
+      await expect(wait(null)).resolves.toBeUndefined();
+    } finally { resetControllerInstanceLeaseForTests(); }
   });
 
   it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {

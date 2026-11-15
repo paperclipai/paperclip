@@ -716,14 +716,14 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
-  it("logs a pointer to the docs when a same-run retry follows a failed attachment", async () => {
+  it("logs an explanation when a same-run retry follows a failed attachment", async () => {
     const { input, run } = await fixture(true);
     await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
     await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: input.task.issueId!, runId: run.id, phase: "retryable_failure" });
     const error = new Error('native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"message":"run.attach requires a settled Codex provider session: active_turn"}}');
     vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
     await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeSessionResumeScheduledError", original: error });
-    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("doc/execution-semantics.md#session-settlement-after-a-run"));
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("A later run may start a new provider thread."));
     expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("run.attach requires a settled Codex provider session: active_turn"));
     expectCleanup(input);
   });

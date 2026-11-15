@@ -4179,6 +4179,13 @@ async function readIssueBlockerAttentionBatch(
           >`${agentWakeupRequests.payload} ->> 'issueId'`,
         })
         .from(agentWakeupRequests)
+        .leftJoin(
+          heartbeatRuns,
+          and(
+            eq(heartbeatRuns.id, agentWakeupRequests.runId),
+            eq(heartbeatRuns.companyId, companyId),
+          ),
+        )
         .where(
           and(
             eq(agentWakeupRequests.companyId, companyId),
@@ -4186,7 +4193,10 @@ async function readIssueBlockerAttentionBatch(
               agentWakeupRequests.status,
               BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES,
             ),
-            sql`${agentWakeupRequests.runId} is null`,
+            or(
+              sql`${agentWakeupRequests.runId} is null`,
+              inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
+            ),
             inArray(
               sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`,
               chunk,
@@ -9124,10 +9134,9 @@ export function issueService(db: Db) {
       issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
       userId: string,
     ) => {
-      const [[activity], [archive]] = await Promise.all([
-        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
-        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
-      ]);
+      const [archive] = await inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]);
+      if (!archive) return activeInboxArchiveFields(archive, issue.updatedAt);
+      const [activity] = await lastActivityStatsForIssues(db, issue.companyId, [issue.id]);
       const lastActivityAt =
         latestIssueActivityAt(
           issue.updatedAt,
@@ -9215,8 +9224,8 @@ export function issueService(db: Db) {
       return getIssueByIdentifier(identifier);
     },
 
-    getCurrentScheduledRetry: async (issueId: string) => {
-      const issue = await db
+    getCurrentScheduledRetry: async (issueId: string, known?: { companyId: string }) => {
+      const issue = known ? { id: issueId, companyId: known.companyId } : await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, issueId))
@@ -9225,8 +9234,8 @@ export function issueService(db: Db) {
       return getCurrentScheduledRetryForIssue(issue.id, issue.companyId);
     },
 
-    getRelationSummaries: async (issueId: string) => {
-      const issue = await db
+    getRelationSummaries: async (issueId: string, known?: { companyId: string }) => {
+      const issue = known ? { id: issueId, companyId: known.companyId } : await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, issueId))
@@ -14633,9 +14642,12 @@ export function issueService(db: Db) {
 
     findMentionedProjectIds: async (
       issueId: string,
-      opts?: { includeCommentBodies?: boolean },
+      opts?: {
+        includeCommentBodies?: boolean;
+        issue?: { companyId: string; title: string; description: string | null };
+      },
     ) => {
-      const issue = await db
+      const issue = opts?.issue ?? await db
         .select({
           companyId: issues.companyId,
           title: issues.title,
@@ -14686,7 +14698,7 @@ export function issueService(db: Db) {
       return [...mentionedIds].filter((projectId) => valid.has(projectId));
     },
 
-    getAncestors: async (issueId: string) => {
+    getAncestors: async (issueId: string, known?: { parentId: string | null }) => {
       const raw: Array<{
         id: string;
         identifier: string | null;
@@ -14698,44 +14710,56 @@ export function issueService(db: Db) {
         projectId: string | null;
         goalId: string | null;
       }> = [];
-      const visited = new Set<string>([issueId]);
-      const start = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((r) => r[0] ?? null);
-      let currentId = start?.parentId ?? null;
-      while (currentId && !visited.has(currentId) && raw.length < 50) {
-        visited.add(currentId);
-        const parent = await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            description: issues.description,
-            status: issues.status,
-            priority: issues.priority,
-            assigneeAgentId: issues.assigneeAgentId,
-            projectId: issues.projectId,
-            goalId: issues.goalId,
-            parentId: issues.parentId,
-          })
+      const firstParentId = known
+        ? known.parentId
+        : await db
+          .select({ parentId: issues.parentId })
           .from(issues)
-          .where(eq(issues.id, currentId))
-          .then((r) => r[0] ?? null);
-        if (!parent) break;
-        raw.push({
-          id: parent.id,
-          identifier: parent.identifier ?? null,
-          title: parent.title,
-          description: parent.description ?? null,
-          status: parent.status,
-          priority: parent.priority,
-          assigneeAgentId: parent.assigneeAgentId ?? null,
-          projectId: parent.projectId ?? null,
-          goalId: parent.goalId ?? null,
-        });
-        currentId = parent.parentId ?? null;
+          .where(eq(issues.id, issueId))
+          .then((r) => r[0]?.parentId ?? null);
+      if (firstParentId && firstParentId !== issueId) {
+        const chain = await db.execute<{
+          id: string;
+          identifier: string | null;
+          title: string;
+          description: string | null;
+          status: string;
+          priority: string;
+          assignee_agent_id: string | null;
+          project_id: string | null;
+          goal_id: string | null;
+        }>(sql`
+          with recursive chain as (
+            select i.id, i.identifier, i.title, i.description, i.status, i.priority,
+              i.assignee_agent_id, i.project_id, i.goal_id, i.parent_id,
+              1 as depth, array[${issueId}::uuid, i.id] as path
+            from ${issues} i
+            where i.id = ${firstParentId}::uuid
+            union all
+            select p.id, p.identifier, p.title, p.description, p.status, p.priority,
+              p.assignee_agent_id, p.project_id, p.goal_id, p.parent_id,
+              chain.depth + 1, chain.path || p.id
+            from chain
+            join ${issues} p on p.id = chain.parent_id
+            where chain.depth < 50 and not (p.id = any(chain.path))
+          )
+          select id, identifier, title, description, status, priority, assignee_agent_id, project_id, goal_id
+          from chain
+          order by depth
+        `);
+        for (const parent of chain) {
+          raw.push({
+            id: parent.id,
+            identifier: parent.identifier ?? null,
+            title: parent.title,
+            description: parent.description ?? null,
+            status: parent.status,
+            priority: parent.priority,
+            assigneeAgentId: parent.assignee_agent_id ?? null,
+            projectId: parent.project_id ?? null,
+            goalId: parent.goal_id ?? null,
+          });
+        }
       }
 
       // Batch-fetch referenced projects and goals

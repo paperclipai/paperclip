@@ -37,6 +37,7 @@ import {
   queuedMessageAutoSteerEligible,
   queuedMessageAutoSteerKey,
 } from "./queued-message-auto-steer";
+import { isQueuedInterruptHandoff } from "@/lib/issue-queued-comment-queue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -474,7 +475,8 @@ export function TaskChatQueuedMessages({
       if (action === "steer") await onSteer(commentId, queue.revision);
       else if (action === "interrupt") {
         const updatedQueue = await onInterrupt?.();
-        if (updatedQueue?.state === "deferred") {
+        // The stopped turn is handing off to these messages: they are sent.
+        if (updatedQueue?.state === "deferred" && !isQueuedInterruptHandoff(updatedQueue)) {
           for (const entry of updatedQueue.entries) optimisticDeliveryIds.current.delete(entry.comment.id);
           setEntries(updatedQueue.entries.filter(entry => !optimisticDeliveryIds.current.has(entry.comment.id)));
           setDeferredStatus({ queueId: updatedQueue.queueId, message: updatedQueue.executionWait?.message ?? "Messages are still queued. They will send when the task is ready." });
