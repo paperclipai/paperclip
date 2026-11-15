@@ -939,6 +939,7 @@ export function createHeartbeatScheduling(
       agentId?: string | null;
       runId?: string | null;
       wakeReason?: string;
+      consumeFutureSchedule?: boolean;
     },
   ) {
     const now = input?.now ?? new Date();
@@ -960,6 +961,12 @@ export function createHeartbeatScheduling(
     }
     if (!issue.monitorNextCheckAt) {
       throw conflict("Issue has no scheduled monitor");
+    }
+    if (issue.monitorNextCheckAt.getTime() > now.getTime() && !input?.consumeFutureSchedule) {
+      throw conflict("Issue monitor is scheduled for a future check. Pass consumeFutureSchedule to run it now.", {
+        code: "issue_monitor_future_schedule",
+        nextCheckAt: issue.monitorNextCheckAt.toISOString(),
+      });
     }
     if (!issue.assigneeAgentId || issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
@@ -996,6 +1003,7 @@ export function createHeartbeatScheduling(
             eq(issues.id, issueId),
             noActiveNativeMonitorRun(),
             sql`${issues.monitorNextCheckAt} is not null`,
+            ...(input?.consumeFutureSchedule ? [] : [lte(issues.monitorNextCheckAt, now)]),
             isNull(issues.assigneeUserId),
             sql`${issues.assigneeAgentId} is not null`,
             inArray(issues.status, allowedStatuses),
