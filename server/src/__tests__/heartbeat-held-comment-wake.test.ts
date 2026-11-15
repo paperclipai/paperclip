@@ -484,6 +484,41 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(0);
   }, 180_000);
 
+  it("closes saved input for an agent that no longer owns the task instead of re-delivering it", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({
+      payload: sql`${agentWakeupRequests.payload} || jsonb_build_object('queuedCommentInterrupt', jsonb_build_object('actorId', ${f.userId}::text))`,
+    }).where(eq(agentWakeupRequests.id, f.wakeId));
+    const [other] = await db.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.companyId, f.companyId), sql`${agents.id} <> ${f.agentId}`));
+    await db.update(issues).set({ status: "in_review", assigneeAgentId: other.id }).where(eq(issues.id, f.issueId));
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.wakeId);
+    expect(await readWake(f.wakeId)).toMatchObject({ status: "cancelled",
+      error: "Saved input was not delivered because the task is now assigned to someone else." });
+    const retries = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.idempotencyKey} like ${`queued-comment-%:${f.wakeId}`}`));
+    expect(retries).toEqual([]);
+    expect(deliveries(f.commentId)).toHaveLength(0);
+  }, 180_000);
+
+  it("still delivers an interrupt saved for a done task that its agent owns", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({
+      payload: sql`${agentWakeupRequests.payload} || jsonb_build_object('queuedCommentInterrupt', jsonb_build_object('actorId', ${f.userId}::text))`,
+    }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.wakeId);
+    const wake = await readWake(f.wakeId);
+    expect(wake?.error ?? "").not.toContain("Saved input was not delivered");
+    const attempts = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.idempotencyKey} = ${`queued-comment-interrupt:${f.wakeId}`}`));
+    expect(attempts.length).toBeGreaterThan(0);
+  }, 180_000);
+
   // Chaos s9401/t72: a message queued its own run while the first run was
   // finishing. The first run completed the task, so the queued run was
   // cancelled as a stale continuation and the unread message was dropped.

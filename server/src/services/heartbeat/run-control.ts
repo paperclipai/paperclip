@@ -726,13 +726,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (!issueId || wake.idempotencyKey?.startsWith("chat-inbound:")) return;
     const response = await readQueuedInteractionResponse(db, companyId, issueId, payload);
     if (!commentIds.length && !response) return;
-    const [target] = await db.select({ status: issues.status }).from(issues)
+    const [target] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
-    if (!target || target.status === "done" || target.status === "cancelled") {
+    const deliverableStatuses = ["todo", "in_progress", "in_review", "blocked", ...(interrupted ? ["done"] : [])];
+    const undeliverableReason = !target ? "the task is missing"
+      : target.assigneeAgentId !== wake.agentId ? "the task is now assigned to someone else"
+      : !deliverableStatuses.includes(target.status) ? `the task is ${target.status}`
+      : null;
+    if (undeliverableReason) {
       const now = new Date();
       await db.update(agentWakeupRequests).set({
         status: "cancelled", finishedAt: now, updatedAt: now,
-        error: `Saved input was not delivered because the task is ${target?.status ?? "missing"}.`,
+        error: `Saved input was not delivered because ${undeliverableReason}.`,
       }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, companyId),
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
