@@ -2301,13 +2301,14 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(interactions.find((interaction) => interaction.id === checkboxId)?.status).toBe("pending");
   });
 
-  it("keeps secret proposal and tool action cards pending when the historical sweep runs", async () => {
+  it("keeps secret proposal, tool action, and quality review cards pending when the historical sweep runs", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical sweep keeps proposal cards");
     const agentId = randomUUID();
     await db.insert(agents).values(activeCodexAgentRow(agentId, companyId, "Proposal agent", "engineer"));
 
     const proposalIds = [randomUUID(), randomUUID(), randomUUID()];
     const toolActionId = randomUUID();
+    const qualityReviewId = randomUUID();
     const draftIds = [randomUUID(), randomUUID()];
     const secretProposal = (proposalId: string) => ({
       version: 1 as const,
@@ -2340,9 +2341,39 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         status: "pending",
         continuationPolicy: "wake_assignee",
         createdByAgentId: agentId,
-        payload: { version: 1 as const, prompt: "Run the tool action", toolAction: { requestId: randomUUID() } },
+        payload: {
+          version: 1 as const,
+          prompt: "Run the tool action",
+          toolAction: {
+            version: 1 as const,
+            actionRequestId: randomUUID(),
+            invocationId: randomUUID(),
+            toolName: "create_record",
+            toolDisplayName: "Create record",
+            connectionId: null,
+            applicationId: null,
+            appDisplayName: null,
+            risk: "write" as const,
+            previewMarkdown: "Create one record",
+            argumentsSummaryJson: "{}",
+            argumentsHash: "hash",
+            expiresAt: null,
+          },
+        },
         createdAt: new Date("2026-07-01T12:05:00.000Z"),
         updatedAt: new Date("2026-07-01T12:05:00.000Z"),
+      },
+      {
+        id: qualityReviewId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        payload: { version: 1 as const, prompt: "Review the result", qualityReview: { key: "release-check" } },
+        createdAt: new Date("2026-07-01T12:06:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:06:00.000Z"),
       },
       ...draftIds.map((id, index) => ({
         id,
@@ -2366,7 +2397,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, issueId));
     const statusById = new Map(rows.map((row) => [row.id, row.status]));
-    for (const id of [...proposalIds, toolActionId]) {
+    for (const id of [...proposalIds, toolActionId, qualityReviewId]) {
       expect(statusById.get(id)).toBe("pending");
     }
     expect(statusById.get(draftIds[1])).toBe("pending");
