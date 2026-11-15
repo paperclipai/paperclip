@@ -276,7 +276,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     "refreshes company AI account previews after %s", (action) => {
       const invalidateQueries = vi.fn();
       __liveUpdatesTestUtils.invalidateActivityQueries(
-        { invalidateQueries, getQueryData: () => undefined } as never,
+        { invalidateQueries, getQueryData: () => undefined, getQueryCache: () => ({ findAll: () => [] }) } as never,
         "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
         { userId: "owner", agentId: null },
       );
@@ -288,6 +288,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -347,6 +348,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("still refreshes comments when a comment activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -373,6 +375,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("keeps heartbeat progress invalidation scoped away from hot list queries", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -416,6 +419,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes the selected run detail after lifecycle events", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -521,6 +525,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       [JSON.stringify(queryKeys.issues.runs("DEMO-759")), [{ runId: "run-1" }]],
     ]);
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
       setQueryData: (key: unknown, updater: unknown) => {
         const cacheKey = JSON.stringify(key);
@@ -625,6 +630,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes issue document caches when a document activity event arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -690,6 +696,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes all issue document caches when document activity omits a document key", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -874,6 +881,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes document annotation caches when annotation activity arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -913,6 +921,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("refreshes routine description annotation caches when routine annotation activity arrives", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1103,6 +1112,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("keeps self-authored comment events from refetching the active issue tree", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1140,6 +1150,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("treats self-authored comment-driven issue updates as inactive-only refreshes", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1177,6 +1188,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("keeps visible issue detail refetches inactive for downstream agent updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1223,6 +1235,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("still actively refetches visible issue detail for board-authored updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1271,6 +1284,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("actively refreshes interactions materialized by a visible native status decision", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1323,6 +1337,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("keeps visible issue comment updates inactive-only instead of active refetching", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1421,6 +1436,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       [JSON.stringify(queryKeys.issues.runs("issue-1")), [{ runId: "run-1" }]],
     ]);
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1496,6 +1512,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     (status) => {
       const invalidations: unknown[] = [];
       const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
         invalidateQueries: (input: unknown) => invalidations.push(input),
         getQueryData: (key: unknown) => {
           if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
@@ -1523,6 +1540,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it("ignores run status events for other issues", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -1603,6 +1621,7 @@ describe("LiveUpdatesProvider visible issue comment hydration", () => {
 
     const setCalls: Array<{ key: unknown; value: unknown }> = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: (key: unknown) => {
         if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
           return {
@@ -1684,6 +1703,7 @@ describe("LiveUpdatesProvider visible issue comment hydration", () => {
 describe("LiveUpdatesProvider visible issue toast suppression", () => {
   it("suppresses activity toasts for the issue page currently in view", () => {
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: (key: unknown) => {
         if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
           return {
@@ -1725,6 +1745,7 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 
   it("suppresses run and agent status toasts for the assignee of the visible issue", () => {
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: (key: unknown) => {
         if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) return { id: "run-1" };
         if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
@@ -1767,6 +1788,7 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 describe("LiveUpdatesProvider run lifecycle toasts", () => {
   it("does not build start or success toasts for agent runs", () => {
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: () => [],
     };
 
@@ -1803,6 +1825,7 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
 
   it("still builds failure toasts for agent errors and failed runs", () => {
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       getQueryData: () => [
         {
           id: "agent-1",
@@ -2014,6 +2037,7 @@ describe("LiveUpdatesProvider summary slot invalidation", () => {
   it("invalidates the slot and revisions queries on summary_slot.write", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -2048,6 +2072,7 @@ describe("LiveUpdatesProvider summary slot invalidation", () => {
   it("maps a null scopeId to a company-scoped slot key", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -2077,6 +2102,7 @@ describe("LiveUpdatesProvider summary slot invalidation", () => {
   it("skips slot invalidation when scope details are missing", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
       invalidateQueries: (input: unknown) => {
         invalidations.push(input);
       },
@@ -2167,6 +2193,7 @@ describe("task subtree notification context", () => {
   const root = { id: "root", companyId: "company", identifier: "PAP-204", assigneeAgentId: "parent-agent" };
   const descendants = [{ id: "child", identifier: "PAP-205", assigneeAgentId: "child-agent", executionRunId: "child-run" }];
   const queryClient = {
+      getQueryCache: () => ({ findAll: () => [] }),
     getQueryData: (key: unknown) => {
       if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-204"))) return root;
       if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.listByDescendantRoot("company", "root"))) return descendants;

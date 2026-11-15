@@ -8,6 +8,7 @@ export {
   dedicatedDbConnectionStats,
   type DedicatedDbConnectionStats,
   type DedicatedDbConnectionOptions,
+  preparedStatementStats,
   databaseConnectionBudget,
   PRIVATE_POOL_MAX_CONNECTIONS,
   createOwnedDatabaseListener,

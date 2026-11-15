@@ -8,6 +8,7 @@ import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   authUsers,
   approvals,
@@ -30,6 +31,7 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { TOOL_CALL_LOOP_HINT, ToolCallLoopError } from "./repeated-tool-failure-guard.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
@@ -1608,6 +1610,32 @@ describe("PaperclipRunnerToolAuthority", () => {
 
     await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
       .rejects.toThrow(/conversation cannot be a parent/i);
+  });
+
+  it.each([
+    ["the assignee", null],
+    ["a completion reviewer", { nativeReviewInteractionId: "7f0b4f3e-2c1d-4a5b-8c6d-0e1f2a3b4c5d", nativeReviewDecisionId: "8a1c5e4f-3d2e-4b6c-9d7e-1f2a3b4c5d6e" }],
+  ] as const)("queues one fresh-session continuation outbox for %s stopped by a tool-call loop", async (_who, nativeReview) => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId, workMode: "standard", ...(nativeReview ? { nativeReview } : {}),
+    });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId", "pathParams"], 400, "refused");
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      agentId, status: "queued", runId: null, requestedByActorType: "system", requestedByActorId: "native-status-committer",
+      reason: nativeReview ? "native_completion_review" : "issue_continuation_needed",
+      payload: {
+        issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop", tool: "call_api", argumentNames: ["operationId", "pathParams"],
+        ...(nativeReview ?? {}),
+        _paperclipWakeContext: { issueId, forceFreshSession: true, livenessContinuationSourceRunId: runId,
+          livenessContinuationReason: "agent_tool_call_loop", livenessContinuationInstruction: TOOL_CALL_LOOP_HINT, ...(nativeReview ?? {}) },
+      },
+    });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {

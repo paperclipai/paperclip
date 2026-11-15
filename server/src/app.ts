@@ -1,3 +1,4 @@
+import { authorizationReadScope } from "./services/authorization-read-scope.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sync.js";
 import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
@@ -635,6 +636,7 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  app.use(authorizationReadScope);
   app.use(runnerCallOutcomeMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);

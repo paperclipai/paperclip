@@ -151,6 +151,12 @@ describe("native status authority", () => {
     expect(decision.effects.some((effect) => ["enqueue_continuation", "schedule_retry"].includes(effect.kind))).toBe(false);
   });
 
+  it("lets a reviewer stopped by a tool-call loop continue through its queued review wake instead of a resume recovery", () => {
+    const decision = arbitrate({ priorIssueStatus: "in_review", nativeReviewOutcome: "pending", toolCallLoopContinuation: true });
+    expect(decision).toMatchObject({ statusAction: "preserve", toStatus: "in_review", reasonCode: "native_review_unresolved" });
+    expect(decision.effects).toEqual([{ kind: "release_checkout" }]);
+  });
+
   it("treats only the authorized Board response_wake as passive and preserves governance", () => {
     const passive = assessment({
       reportedDisposition: "yielded",
