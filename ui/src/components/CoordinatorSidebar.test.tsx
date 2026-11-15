@@ -28,6 +28,15 @@ vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, sum
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { issuePrefix: "COO" } }) }));
+vi.mock("@/plugins/slots", () => ({
+  PluginSlotOutlet: ({ slotTypes, context }: { slotTypes: string[]; context: { companyPrefix: string | null } }) =>
+    <div data-testid="plugin-slot" data-slot-types={slotTypes.join(",")} data-company-prefix={context.companyPrefix ?? ""} />,
+}));
+vi.mock("@/plugins/launchers", () => ({
+  PluginLauncherOutlet: ({ placementZones }: { placementZones: string[] }) =>
+    <div data-testid="plugin-launcher" data-zones={placementZones.join(",")} />,
+}));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
@@ -231,6 +240,14 @@ describe("Coordinator pinned pages", () => {
     if (collapsed) await click("More workspace pages");
     await click("Unpin Projects");
     expect(pinnedPage("/projects")).toBeNull();
+  });
+
+  it("renders plugin sidebar slots and launchers in the primary navigation", async () => {
+    await renderSidebar();
+    const slot = navigation().querySelector("[data-testid='plugin-slot']");
+    expect(slot?.getAttribute("data-slot-types")).toBe("sidebar");
+    expect(slot?.getAttribute("data-company-prefix")).toBe("COO");
+    expect(navigation().querySelector("[data-testid='plugin-launcher']")?.getAttribute("data-zones")).toBe("sidebar");
   });
 
   it("keeps pins personal and only renders known destinations", async () => {

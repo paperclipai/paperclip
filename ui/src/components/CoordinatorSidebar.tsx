@@ -29,6 +29,9 @@ import { AgentAvatar } from "./AgentAvatar";
 import { agentChatPinKey } from "./AgentChatPin";
 import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useCompany } from "@/context/CompanyContext";
+import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 const NO_RECENT_TASKS: never[] = [];
 
@@ -108,6 +111,8 @@ function RecentNavigationList({ children }: { children: ReactNode }) {
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const { selectedCompany } = useCompany();
+  const pluginContext = { companyId: companyId ?? null, companyPrefix: selectedCompany?.issuePrefix ?? null };
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const { data: experimental } = useQuery({
@@ -171,6 +176,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
+          <PluginSlotOutlet slotTypes={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5"
+            itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" />
+          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5"
+            itemClassName="text-(length:--text-compact) font-medium" />
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
