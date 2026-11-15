@@ -128,6 +128,9 @@ export interface TaskSidePanelProps {
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
+  /** The user asked to show properties; open and select that tab once per request. */
+  propertiesOpenRequestId?: number;
+  onPropertiesOpened?: (requestId: number) => void;
   onRequestClose?: () => void;
   streamlinedTabs?: boolean;
   showSubtasksTab?: boolean;
@@ -286,6 +289,8 @@ function TaskSidePanelForScope({
   documentDeepLink,
   artifactsOpenRequestId,
   onArtifactsOpened,
+  propertiesOpenRequestId,
+  onPropertiesOpened,
   onRequestClose,
   streamlinedTabs = false,
   showSubtasksTab = false,
@@ -327,6 +332,7 @@ function TaskSidePanelForScope({
   const userInteractedRef = useRef(restoredRef.current?.userInteracted ?? false);
   const autoPlanHandledRef = useRef(restoredRef.current?.autoPlanHandled ?? false);
   const handledArtifactsRequestRef = useRef<number | undefined>(undefined);
+  const handledPropertiesRequestRef = useRef<number | undefined>(undefined);
   const handledDocumentRequestRef = useRef<number | undefined>(undefined);
   const initialState = useMemo(() => {
     const restored = restoredRef.current?.state;
@@ -519,6 +525,15 @@ function TaskSidePanelForScope({
     viewer.query,
     viewer.state,
   ]);
+
+  useEffect(() => {
+    if (propertiesOpenRequestId === undefined || handledPropertiesRequestRef.current === propertiesOpenRequestId) return;
+    handledPropertiesRequestRef.current = propertiesOpenRequestId;
+    if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
+    setLauncherOpen(false);
+    controller.openTab(taskPanelPropertiesTab());
+    onPropertiesOpened?.(propertiesOpenRequestId);
+  }, [propertiesOpenRequestId, controller.openTab, onPropertiesOpened, coordinatorWorkspaceEnabled]);
 
   useEffect(() => {
     if (artifactsOpenRequestId === undefined || handledArtifactsRequestRef.current === artifactsOpenRequestId) return;

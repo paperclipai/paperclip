@@ -17,7 +17,10 @@ import { journeyRequiredChecks } from "./success-contract.js";
 import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
-    (locator: { textContent(): Promise<string> }) => ({ async toContainText(value: string) { expect(await locator.textContent()).toContain(value); } }),
+    (locator: { textContent(): Promise<string>; isVisible?(): Promise<boolean> }) => ({
+      async toContainText(value: string) { expect(await locator.textContent()).toContain(value); },
+      async toBeVisible() { expect(await locator.isVisible?.()).toBe(true); },
+    }),
     { poll: (read: () => Promise<unknown>) => ({ async toBe(value: unknown) { expect(await read()).toBe(value); } }) },
   ),
 }));
@@ -189,7 +192,7 @@ describe("deployment journey contracts", () => {
     await fixtures.resolve(["backlog-task"]);
     api.post.mockImplementation(async () => { throw Error("task creation inside measured story"); });
     let assigned = false;
-    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => false), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
+    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => true), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
     for (const method of [locator.filter, locator.first, locator.locator, locator.getByRole]) method.mockReturnValue(locator);
     const assign = { click: vi.fn(async () => { assigned = true; }) };
     const page = { goto: vi.fn(), reload: vi.fn(), locator: vi.fn(() => locator), getByRole: vi.fn((_role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign : locator) };

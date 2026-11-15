@@ -352,6 +352,25 @@ describe("TaskSidePanel", () => {
     expect(onArtifactsOpened).toHaveBeenCalledWith(1);
   });
 
+  it("opens Properties in the Coordinator workspace when the user asks to show properties", async () => {
+    coordinator.enabled = true;
+    const onPropertiesOpened = vi.fn();
+    await render(panel({ onPropertiesOpened }));
+    expect(container.querySelector('[role="tab"]')).toBeNull();
+
+    await render(panel({ propertiesOpenRequestId: 1, onPropertiesOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
+    expect(container.textContent).toContain("Properties content");
+    expect(onPropertiesOpened).toHaveBeenCalledExactlyOnceWith(1);
+
+    // The same request never reopens a tab the user later closed.
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.click());
+    await render(panel({ propertiesOpenRequestId: 1, onPropertiesOpened }));
+    expect(container.querySelector('[data-side-panel-tab-target="properties"]')).toBeNull();
+    await render(panel({ propertiesOpenRequestId: 2, onPropertiesOpened }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
+  });
+
   it("opens another task's exact plan without requiring an origin plan or reusing origin document data", async () => {
     coordinator.enabled = true;
     fixture.plan = null;
