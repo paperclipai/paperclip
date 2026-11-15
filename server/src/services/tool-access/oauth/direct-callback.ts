@@ -1,3 +1,5 @@
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
+import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { credentialScope } from "./client-settings.js";
 import { withoutOAuthRefreshLease } from "./refresh-leases.js";
 import type { ActorInfo } from "../types.js";
@@ -74,6 +76,11 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     // a refused request must not stay completable by a later code (PAP-17109).
     const stateRow = await consumeOAuthState(input.state, input.actor);
     if (input.error) {
+      // RFC 9207: an error from a server other than the one we sent the user to
+      // is neither acted on nor shown.
+      const errorConnection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+      const savedIssuer = oauthConfig(errorConnection).issuer;
+      assertOAuthCallbackIssuer(errorConnection, { issuer: typeof savedIssuer === "string" ? savedIssuer : null }, input.iss);
       await rejectPendingOAuthInteraction(stateRow, input.actor);
       const providerError = normalizeOAuthProviderError(input.error);
       throw new HttpError(
@@ -270,6 +277,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
               // different scopes. The connection-level list is whichever callback ran last,
               // so it is the wrong baseline for anyone else's refresh.
               requestedScopes: authorizedScopes,
+              consentedAt: connectedAt.toISOString(),
               tokenType: token.tokenType,
               refreshedAt: connectedAt.toISOString(),
             },
@@ -331,6 +339,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             },
           },
         };
+        await notifyToolConnectionHealth(tx, connection);
         const [updatedConnection] = await tx
           .update(toolConnections)
           .set({
@@ -371,18 +380,19 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             updatedAt: new Date(),
           })
           .where(eq(toolApplications.id, connection.applicationId));
-        const linkedInteractionKind = stateRow.interactionId
+        const linkedInteraction = stateRow.interactionId
           ? await tx
-              .select({ kind: issueThreadInteractions.kind })
+              .select({ kind: issueThreadInteractions.kind, issueId: issueThreadInteractions.issueId })
               .from(issueThreadInteractions)
               .where(eq(issueThreadInteractions.id, stateRow.interactionId))
               .limit(1)
-              .then((rows) => rows[0]?.kind ?? null)
+              .then((rows) => rows[0] ?? null)
           : null;
         if (
           stateRow.interactionId &&
-          linkedInteractionKind === "request_confirmation"
+          linkedInteraction?.kind === "request_confirmation"
         ) {
+          await notifyIssueReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
           await tx
             .update(issueThreadInteractions)
             .set({
@@ -610,6 +620,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
           },
         },
       };
+      await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({

@@ -18,8 +18,6 @@ import { companyTransferRunService } from "./company-transfer-runs.js";
 
 /** Spool dirs with no upload/apply activity for this long are abandoned. */
 export const IMPORT_TRANSFER_SPOOL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-/** How often the abandoned-spool sweep runs. */
-export const IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -54,7 +52,19 @@ function partPathFor(spoolRoot: string, runId: string, index: number): string {
   return path.join(spoolDirFor(spoolRoot, runId), importTransferPartName(index));
 }
 
-/** Atomic part write: temp file in the same dir, then rename over the target. */
+const spoolListeners = new Set<(root: string, runId: string) => void>();
+
+export function onImportTransferSpoolChange(listener: (root: string, runId: string) => void): () => void {
+  spoolListeners.add(listener);
+  return () => { spoolListeners.delete(listener); };
+}
+
+function changed(spoolRoot: string, runId: string) {
+  for (const listener of spoolListeners) listener(path.resolve(spoolRoot), runId);
+}
+
+
+
 export async function writeImportTransferPart(
   spoolRoot: string,
   runId: string,
@@ -62,10 +72,15 @@ export async function writeImportTransferPart(
   bytes: Buffer,
 ): Promise<void> {
   const target = partPathFor(spoolRoot, runId, index);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const tempPath = `${target}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await fs.writeFile(tempPath, bytes);
-  await fs.rename(tempPath, target);
+  try {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const tempPath = `${target}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await fs.writeFile(tempPath, bytes);
+    await fs.rename(tempPath, target);
+  } finally {
+
+    changed(spoolRoot, runId);
+  }
 }
 
 /** Byte size of a spooled part, or null when it is missing (or not a file). */
@@ -100,7 +115,9 @@ export async function assembleImportTransferZip(
 }
 
 export async function removeImportTransferSpool(spoolRoot: string, runId: string): Promise<void> {
-  await fs.rm(spoolDirFor(spoolRoot, runId), { recursive: true, force: true });
+  const dir = spoolDirFor(spoolRoot, runId);
+  try { await fs.rm(dir, { recursive: true, force: true }); }
+  finally { changed(spoolRoot, runId); }
 }
 
 /**
@@ -112,72 +129,75 @@ export async function removeImportTransferPart(
   runId: string,
   index: number,
 ): Promise<void> {
-  await fs.rm(partPathFor(spoolRoot, runId, index), { force: true });
+  const target = partPathFor(spoolRoot, runId, index);
+  try { await fs.rm(target, { force: true }); }
+  finally { changed(spoolRoot, runId); }
 }
 
-/**
- * Delete spool dirs whose transfer saw no activity for `maxAgeMs` and cancel
- * their still-open ledger runs. A run-backed spool is only deleted after an
- * atomic claim: one guarded UPDATE cancels the run while it is still open
- * (pending/running) AND its `updatedAt` (every part upload and resume bumps
- * it) is still older than the cutoff — so a transfer that resumed after this
- * sweep read the run makes the guard miss and keeps its spool. The claim
- * cancels rather than fails on purpose: a failed run would still be claimable
- * by `claimApply`, letting an apply assemble the spool while this sweep
- * deletes it; a cancelled run is unclaimable the instant the UPDATE commits,
- * before any file is removed. Terminal runs keep their status and their spool
- * (a failed run's verified parts stay reusable for an apply retry; a
- * completed run's spool was already removed at apply). Orphan dirs with no
- * run row fall back to the dir's mtime — no run means no upload can race the
- * delete. A swept run is never resumed: `resumeOrCreate` ignores cancelled
- * runs, so redeclaring the same content starts a fresh run with every part
- * missing — matching the 410 "re-create it" a part upload against the swept
- * run gets.
- */
-export async function sweepAbandonedImportTransferSpools(
-  db: Db,
-  spoolRoot: string,
-  options: { maxAgeMs?: number; now?: Date } = {},
-): Promise<{ swept: number }> {
-  const maxAgeMs = options.maxAgeMs ?? IMPORT_TRANSFER_SPOOL_MAX_AGE_MS;
-  const nowMs = (options.now ?? new Date()).getTime();
-  const cutoff = new Date(nowMs - maxAgeMs);
-  let entries;
+
+export async function listImportTransferSpools(spoolRoot: string): Promise<string[]> {
   try {
-    entries = await fs.readdir(spoolRoot, { withFileTypes: true });
-  } catch {
-    return { swept: 0 };
+    return (await fs.readdir(spoolRoot, { withFileTypes: true }))
+      .filter(entry => entry.isDirectory() && isImportTransferRunId(entry.name)).map(entry => entry.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
+}
+
+export async function readImportTransferSpool(db: Db, spoolRoot: string, runId: string) {
+  let stat;
+  try { stat = await fs.lstat(spoolDirFor(spoolRoot, runId)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!stat.isDirectory()) return null;
+
+  const run = await companyTransferRunService.getCleanupState(db, runId);
+  return { run, mtimeMs: stat.mtimeMs };
+}
+
+type Spool = NonNullable<Awaited<ReturnType<typeof readImportTransferSpool>>>;
+
+export function importTransferSpoolDeadline(spool: Spool, maxAgeMs = IMPORT_TRANSFER_SPOOL_MAX_AGE_MS): number | null {
+  if (!spool.run) return Math.floor(spool.mtimeMs + maxAgeMs) + 1;
+  if (spool.run.status === "completed" || spool.run.status === "cancelled") return 0;
+  if (spool.run.status === "pending" || spool.run.status === "running")
+    return spool.run.updatedAt.getTime() + maxAgeMs + 1;
+
+  return null;
+}
+
+
+
+
+export async function settleImportTransferSpool(
+  db: Db, spoolRoot: string, runId: string,
+  options: { maxAgeMs?: number; now?: Date } = {},
+): Promise<boolean> {
+  const spool = await readImportTransferSpool(db, spoolRoot, runId);
+  if (!spool) return false;
+  const maxAgeMs = options.maxAgeMs ?? IMPORT_TRANSFER_SPOOL_MAX_AGE_MS;
+  const now = options.now?.getTime() ?? Date.now();
+  const deadline = importTransferSpoolDeadline(spool, maxAgeMs);
+  if (deadline === null || deadline > now) return false;
+  if (spool.run && spool.run.status !== "completed" && spool.run.status !== "cancelled") {
+    const claimed = await companyTransferRunService.cancelIfIdle(db, runId, new Date(now - maxAgeMs),
+      "Abandoned import transfer: spooled parts were deleted after prolonged inactivity.");
+    if (!claimed) return false;
+  }
+  await removeImportTransferSpool(spoolRoot, runId);
+  return true;
+}
+
+
+export async function sweepAbandonedImportTransferSpools(
+  db: Db, spoolRoot: string, options: { maxAgeMs?: number; now?: Date } = {},
+): Promise<{ swept: number }> {
   let swept = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !isImportTransferRunId(entry.name)) continue;
-    const runId = entry.name;
-    const run = await companyTransferRunService.getRun(db, runId).catch(() => null);
-    if (run) {
-      if (run.status === "completed" || run.status === "cancelled") {
-        // Terminal runs never assemble again; a leftover spool (e.g. a
-        // best-effort post-apply cleanup that failed) is pure garbage and is
-        // collected immediately, regardless of idle time.
-      } else {
-        const claimed = await companyTransferRunService.cancelIfIdle(
-          db,
-          runId,
-          cutoff,
-          "Abandoned import transfer: spooled parts were deleted after prolonged inactivity.",
-        );
-        if (!claimed) continue;
-      }
-    } else {
-      let mtimeMs: number;
-      try {
-        mtimeMs = (await fs.stat(path.join(spoolRoot, runId))).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (nowMs - mtimeMs <= maxAgeMs) continue;
-    }
-    await fs.rm(path.join(spoolRoot, runId), { recursive: true, force: true });
-    swept += 1;
+  for (const runId of await listImportTransferSpools(spoolRoot)) {
+    if (await settleImportTransferSpool(db, spoolRoot, runId, options)) swept++;
   }
   return { swept };
 }

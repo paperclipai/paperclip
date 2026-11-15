@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -47,7 +48,7 @@ async function fixedPersonalIdentityForReconnect(
     const fixedSubjectUserId =
       connection.createdByUserId ?? retainedGrant?.subjectUserId ?? null;
     const binding = actorBinding(actor);
-    const actorUserId = binding.actorType === "user" ? binding.actorId : null;
+    const actorUserId = connectionActorUserId(actor);
     const subjectUserId = requestedSubjectUserId ?? actorUserId;
 
     if (!subjectUserId) {

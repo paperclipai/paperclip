@@ -19,17 +19,35 @@ export function budgetCancellationScopePredicate(scope: Pick<BudgetEnforcementSc
     sql`${heartbeatRuns.resultJson}->'startupCancellation'->'budgetEnforcement'->>'scopeId' = ${scope.scopeId}`);
 }
 
-export async function listPendingBudgetCancellationScopes(db: Db, limit = 100): Promise<BudgetEnforcementScope[]> {
+/** The run IDs that still owe one scope's committed Stop (run control). */
+export function pendingBudgetRunIdsForScopeQuery(db: Db, scope: Pick<BudgetEnforcementScope, "companyId" | "scopeType" | "scopeId">) {
+  return db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(and(pendingBudgetRunCancellationPredicate(), budgetCancellationScopePredicate(scope)));
+}
+
+/** The idle-sleep check: any committed Stop that is not delivered yet. */
+export function pendingBudgetRunCancellationExistsQuery() {
+  return sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`;
+}
+
+/** Oldest pending scopes first. The partial index
+ * `heartbeat_runs_pending_budget_cancellation_idx` keeps this off the full
+ * run history; its predicate must match `pendingBudgetRunCancellationPredicate`. */
+export function pendingBudgetCancellationScopesQuery(db: Db, limit = 100) {
   const intent = sql`${heartbeatRuns.resultJson}->'startupCancellation'->'budgetEnforcement'`;
   const scopeType = sql<string>`${intent}->>'scopeType'`, scopeId = sql<string>`${intent}->>'scopeId'`;
   const attemptAt = sql`coalesce((${intent}->>'lastAttemptAt')::timestamptz,
     (${heartbeatRuns.resultJson}->'startupCancellation'->>'requestedAt')::timestamptz, ${heartbeatRuns.updatedAt})`;
-  const rows = await db.select({ companyId: heartbeatRuns.companyId,
+  return db.select({ companyId: heartbeatRuns.companyId,
     intent: sql<Record<string, unknown>>`(array_agg(${intent} order by ${attemptAt}, ${heartbeatRuns.id}))[1]`,
   }).from(heartbeatRuns).where(pendingBudgetRunCancellationPredicate())
     .groupBy(heartbeatRuns.companyId, scopeType, scopeId)
     .orderBy(sql`min(${attemptAt})`, heartbeatRuns.companyId, scopeType, scopeId)
     .limit(limit);
+}
+
+export async function listPendingBudgetCancellationScopes(db: Db, limit = 100): Promise<BudgetEnforcementScope[]> {
+  const rows = await pendingBudgetCancellationScopesQuery(db, limit);
   return rows.flatMap(({ companyId, intent }) => {
     if (intent.companyId !== companyId || !["company", "agent", "project"].includes(String(intent.scopeType))
       || typeof intent.scopeId !== "string" || !isUuidLike(intent.scopeId)

@@ -2,17 +2,17 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, and } from "drizzle-orm";
 import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues, issueComments } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 describe("runner task reassignment", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("runner-reassign-");
+    temporary = await startRecoveryPostgres("runner-reassign-");
     db = createDb(temporary.connectionString);
-  });
+  }, 60_000);
   afterAll(async () => { await temporary?.cleanup(); });
 
   async function fixture(status = "todo") {
@@ -183,7 +183,9 @@ describe("runner task reassignment", () => {
   it.each(["planning", "ask", "skill_test"])("denies reassignment from %s mode", async workMode => {
     const f = await fixture();
     await db.update(issues).set({ workMode }).where(eq(issues.id, f.issueId));
-    await expect(f.authority.execute(f.call)).rejects.toThrow("mode_denied");
+    if (workMode === "skill_test") await expect(f.authority.execute(f.call)).rejects.toMatchObject({ status: 403 });
+    else await expect(f.authority.execute(f.call)).rejects.toThrow("mode_denied");
+    expect(f.stopTaskForReassignment).not.toHaveBeenCalled();
   });
 
   it("denies foreign targets and unavailable assignees", async () => {

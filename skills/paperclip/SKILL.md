@@ -34,9 +34,14 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 When the task context says **Chat mode** (the issue has `conversationAgentId`),
 follow that directive for the conversation lifecycle. Research, clarify, and
 revise the conversation's `plan` document here. On an authorized handoff, create
-ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
-relationship back to the conversation. Link them in your reply and let them run
-normally; do not wait for them or change the conversation's status.
+ordinary assigned tasks in a suitable project, never with the conversation as
+`parentId` and with no blocker relationship back to the conversation. Pick the
+shape that fits: one task, one top-level task with child tasks you created under
+it, or several separate top-level tasks. Link them in your reply and let them run
+normally; do not wait for them or change the conversation's status. Default new
+tasks and task suggestions to the agent in this chat (yourself), unless the user
+explicitly specifies another agent or person. "For me" alone is not a request to
+assign the task to the user. Do not infer a different owner from task suitability.
 
 Copy the relevant approved plan into each execution task **at creation**, using
 `create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.
@@ -158,7 +163,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Ask for information only when it prevents the next useful action. Optional reproduction details, an example of a past failure, or a preferred test case do not block general inspection and verification. Continue the independent work; explain what remains unverified if the specific example is still unavailable. Keep real access restrictions and approval gates authoritative.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
-- Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
+- Continue work on the current issue. Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - For a real blocker, use `blockedByIssueIds` or an `unblockDescriptor` with your own `owner: { "agentId": "<your-agent-id>" }` and an exact `action`. Agents cannot set board/user or other-agent unblock owners. Human-input waits use a saved pending interaction and `in_review`; prose alone is not a waiting path. See [Questions and waiting for human input](references/api-reference.md#questions-and-waiting-for-human-input) for valid payloads.
 - Human authority or missing permission does not imply a manager handoff. Keep ownership, identify the missing capability, and use the human-input payload below when a person must decide. Verify actual capability and permission before suggesting delegation.
@@ -168,7 +173,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 
 **Human input questions.**
 
-For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). Put every text and choice question in one complete `questionSet`. Paperclip generates the compatibility `questions` entries. Legacy choice-only payloads remain supported; if you send both representations, they must describe the same complete form.
+For an open answer, use a text field. Use a confirmation for a concrete yes/no decision, not to ask someone to write a comment and then confirm they wrote it. POST `/api/issues/{issueId}/interactions` with the following complete payload (replace `detail`, the prompt, and the idempotency key for your question). Put every text and choice question in one complete `questionSet`. When you need several inputs that do not depend on each other's answers (for example name, prices, contact details, and style), ask them together in one card with one entry per question. Do not post one card per question: each card costs the user another wait for your next turn. Ask a follow-up card only when it depends on an earlier answer. If the user asks for one question at a time, ask only the next unanswered question and wait for its real answer. Paperclip generates the compatibility `questions` entries. Legacy choice-only payloads remain supported; if you send both representations, they must describe the same complete form.
 
 Omit `addresseeUserId` for ordinary questions.
 In Agent Chat, Paperclip addresses the question to the conversation owner automatically. On a task, leave the recipient open unless a particular person must answer. For that case, explicitly address their exact Paperclip user ID, including any prefix. The server rejects unknown or unauthorized recipients. Do not guess IDs or infer authority from a title. Agent-directed questions use `addresseeAgentId` and omit `resolverPolicy`.
@@ -222,7 +227,7 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an actually-scheduled issue monitor (non-null `monitorNextCheckAt`, not merely described in a comment) that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
-- Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work. A follow-up created from an ordinary execution task without `parentId` is parented to that task by default; pass `parentId: null` only for intentionally standalone work.
+- If work is delegated, use blockers when the current issue must wait for that work. A follow-up created from an ordinary execution task without `parentId` is parented to that task by default; pass `parentId: null` only for intentionally standalone work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or a real scheduled monitor/recovery path (not a narrated one) that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
@@ -267,7 +272,15 @@ Because of that, follow these rules:
 - **Never imply a live watcher on a task you are marking `done`.** `done` means no follow-up on this issue, which contradicts an ongoing watcher. If real re-checking is still needed, keep the issue `in_progress`/`in_review` with a scheduled monitor instead of closing it.
 - This is enforced by state, not by narration: the disposition guard rejects an agent move to `in_review` (`invalid_issue_disposition`) unless a real review path exists — interaction, approval, human reviewer, typed participant, or an actually-scheduled monitor with a real `monitorNextCheckAt` — and the recovery classifier flags `in_review_without_action_path` for anything parked with no live wake path. Keep your comments consistent with that real state.
 
-**Step 9 — Delegate if needed.** For ordinary execution tasks, create subtasks with `POST /api/companies/{companyId}/issues` and set `parentId` and `goalId`. If you omit `parentId` while running an ordinary execution task, the server sets `parentId` to your current task and records that default in the creation activity (if you may not create a child under that task, for example under a protected assignment policy, the task stays standalone instead); send `parentId: null` only when the new task is intentionally top-level work (CLI: `--standalone`). Either way the follow-up keeps run provenance, and the task page shows "Created from <your task> by <you>" without implying a blocker. For conversation tasks, use the project handoff above instead. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Task depth.** Agents build at most two levels: a top-level task and its
+children. If you ask for a child of a task that is already a child, the server
+does not error: it creates the task beside your task (under the same parent),
+keeps your task as the originating task, and returns `parentAdjusted` in the
+response. Moving a task that has its own children under another task is skipped
+the same way. Use `blockedByIssueIds` (or `blockParentUntilDone`) when your task
+must wait for the new work; nesting is not a wait. Board users are not limited.
+
+**Step 9 — Optional task creation.** `POST /api/companies/{companyId}/issues` supports `parentId` and `goalId`. If you omit `parentId` while running an ordinary execution task, the server sets `parentId` to your current task and records that default in the creation activity (if you may not create a child under that task, for example under a protected assignment policy, the task stays standalone instead); send `parentId: null` only when the new task is intentionally top-level work (CLI: `--standalone`). Either way the follow-up keeps run provenance, and the task page shows "Created from <your task> by <you>" without implying a blocker. For conversation tasks, use the project handoff above instead. Every subtask gets its own workspace from the project base, never your checkout, branch or unmerged changes; to hand a subtask code, push or merge it first. Set `billingCode` for cross-team work.
 
 ### Delegating review tasks
 
@@ -278,7 +291,7 @@ Run-scoped writes are subtree-scoped: the delegate's run can write to its own is
 - Make the review issue's description **self-contained** — the delegate may not be able to read your issue or its documents. Put the full instructions, acceptance criteria, and material to review (or repo-relative pointers) in the description.
 - Block your issue on the review issue (`blockedByIssueIds`) so you wake when the verdict lands.
 
-**Courier pattern (lateral coordination):** to nudge or hand context to an agent whose issues you cannot write to, create a new issue assigned to that agent carrying complete, self-contained instructions. Issue-CREATE is company-scoped and always available; commenting into another agent's boundary is not.
+**Lateral coordination:** use an authorized comment on the existing task to pass context. If access is denied, report the missing permission on your current task.
 
 ## Managing A User's Inbox
 
@@ -348,7 +361,7 @@ Five issue-thread interaction kinds are supported. Pick the smallest kind that f
 | `request_checkbox_confirmation` | A responder selects any subset of a known list (up to 200 options) and then confirms or rejects. | Yes/no decisions (use `request_confirmation`), or proposing new tasks (use `suggest_tasks`).        |
 | `request_item_verdicts`         | A responder approves/rejects/defers individual known items, potentially over multiple submits. | One-shot multi-select decisions (use `request_checkbox_confirmation`) or task creation choices.    |
 | `ask_user_questions`            | Short structured form: a handful of typed questions, each with answers/options/text.         | Selecting many items from a long list, or single accept/reject decisions.                          |
-| `suggest_tasks`                 | Proposing concrete tasks for a responder to accept; accepted tasks become real subtasks.     | Confirming a plan or an arbitrary selection. Tasks are the unit; not arbitrary ids.                |
+| `suggest_tasks`                 | Proposing concrete tasks for a responder to accept; accepted tasks become real tasks (one nesting level). | Confirming a plan or an arbitrary selection. Tasks are the unit; not arbitrary ids.                |
 | `decision`                      | Effects span other issues, create a cross-issue bundle, or must stand alone from one thread. | The response belongs only to the current issue; use an issue-thread interaction instead.           |
 
 Routing rule: **same issue → issue-thread interaction; other issues or bundles → decision**.
@@ -603,8 +616,8 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
-- **Prefer child issues over polling.** Create bounded child issues for long or parallel delegated work and rely on Paperclip wake events or comments for completion.
-- **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace from `parentId` server-side. For non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
+- **Do not busy-poll.** For existing delegated work, rely on Paperclip wake events or comments for completion.
+- **Subtasks get their own workspace.** A child issue keeps its parent's project and workspace strategy, but the server always realizes a separate workspace for it from the project base. It never shares the parent's checkout, branch or unsaved files, and `inheritExecutionWorkspaceFromIssueId` does not change that. Share code between tasks through pushed branches or merged changes.
 - **Never cancel cross-team tasks.** If you question the task, follow the requester-directed decision flow in [Receiving cross-team work](references/api-reference.md#receiving-cross-team-work). Keep the task assigned to yourself; do not automatically hand it to a manager.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **Say only what you actually scheduled.** Never tell a user a "watcher"/monitor will wake you unless you scheduled a real issue monitor (non-null `monitorNextCheckAt`), and never imply a live watcher on a task you mark `done` — see **Monitors and Watchers**.
@@ -630,6 +643,10 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - `[ZED-24](/ZED/issues/ZED-24)`
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
+
+**No raw IDs in prose (required):** People read comments, titles, and descriptions. Name tasks, documents, agents, and projects by identifier link or name; never paste a raw UUID into a comment body, issue title, or issue description. UUIDs are API arguments, and an agent that needs one resolves it from the identifier. Write "the approved brief on [BRA-2](/BRA/issues/BRA-2#document-plan)", not "the brief on task BRA-2 (id 2b330993-…)". Markdown link targets such as `agent://<agent-id>` are fine because the reader sees the link text.
+
+**Describe outcomes, not mechanics (required):** Say what happened, what it means for the reader, and the next step. Do not narrate control-plane internals such as receipts, execution policies, run ownership, wake payloads, idempotency keys, tool names, or rejected API calls. When something did not work, say in plain words what is not done yet and what you are doing about it; leave the technical detail to the run log.
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 

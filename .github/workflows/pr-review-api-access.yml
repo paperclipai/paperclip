@@ -1,0 +1,43 @@
+name: PR review API access
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/notify-pr-merge-review.mjs
+      - .github/scripts/tests/notify-pr-merge-review.test.mjs
+      - .github/workflows/pr-merge-review.yml
+      - .github/workflows/pr-review-api-access.yml
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  probe:
+    if: github.repository == 'paperclipai/paperclip'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # This job has no environment or private webhook secrets. It proves that
+    # the notifier's status query works with the actual read-only Actions token.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Read the PR status rollup with the Actions token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { snapshot } from './.github/scripts/notify-pr-merge-review.mjs';
+          const pr = snapshot(Number(process.env.PR_NUMBER));
+          assert.equal(pr.headRefOid, process.env.PR_HEAD_SHA);
+          assert.ok(pr.statusCheckRollup.length > 0);
+          console.log('Actions token can read the complete PR status rollup.');
+          JS

@@ -1,7 +1,12 @@
+import { describeError } from "@/api/errors";
 import { Component, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { onChunkLoadReloadAbandoned, reloadForChunkLoadError } from "@/lib/chunk-load-recovery";
+import {
+  cancelPendingChunkLoadReload,
+  onChunkLoadReloadAbandoned,
+  reloadForChunkLoadError,
+} from "@/lib/chunk-load-recovery";
 import { captureBrowserException } from "@/lib/sentry";
 import { PaperclipLoading } from "./AnimatedPaperclipIcon";
 
@@ -39,7 +44,13 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
   }
 
   override componentWillUnmount(): void {
+    this.cancelPendingReload();
     this.stopWaiting();
+  }
+
+  // A delayed retry must not reload a page the user has since moved to.
+  private cancelPendingReload(): void {
+    if (this.state.reloading) cancelPendingChunkLoadReload();
   }
 
   private stopWaiting(): void {
@@ -57,6 +68,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
     // away (back button included) can't recover without a hard refresh. We sit
     // above the routed <Outlet />, so reset whenever the route changes.
     if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.cancelPendingReload();
       this.stopWaiting();
       this.setState({ error: null, reloading: false });
     }
@@ -76,7 +88,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
           </p>
         </div>
         <pre className="overflow-auto rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive whitespace-pre-wrap">
-          {error.message}
+          {describeError(error).body}{/* // query-error-ok: error boundary; crash diagnostics, not a query read */}
         </pre>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={this.props.onReset}>

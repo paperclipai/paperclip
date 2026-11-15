@@ -77,6 +77,7 @@ test("browses passive cases and rolled-up task documents without starting work o
   // The agentless dashboard offers onboarding. Start on the ordinary task
   // list so this zero-agent fixture can use Cases navigation without setup.
   await page.goto(`/${company.issuePrefix}/issues`);
+  await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   await page.getByRole("link", { name: /^Cases\b/ }).first().click();
   const casePage = page.getByTestId("case-pages");
   const list = page.getByRole("region", { name: "Case list", exact: true });

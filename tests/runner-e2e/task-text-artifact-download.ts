@@ -2,7 +2,7 @@ import { expect, type Page } from "@playwright/test";
 
 export async function downloadTaskTextArtifact(page: Page, attachmentId: string, name: string) {
   const contentPath = `/api/attachments/${encodeURIComponent(attachmentId)}/content`;
-  const chip = page.getByTestId("task-chat-bubble-attachments").locator(`a[href*="${contentPath}"]`).last();
+  const chip = page.getByTestId("task-chat-bubble-artifacts-v1").locator(`a[href*="${contentPath}"]`).last();
   await expect(chip).toBeVisible({ timeout: 30_000 });
   await expect(chip).toHaveAttribute("aria-label", `Open ${name}`);
   await chip.click();

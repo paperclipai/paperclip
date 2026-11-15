@@ -29,7 +29,7 @@ export function SpekoPhoneLineForm({configuration, loading, saving, saved, error
 }
 export function SpekoPhoneLine({companyId, endpointId}: {companyId: string; endpointId: string}) {
   const queryClient = useQueryClient(), key = ["speko-phone-line", companyId, endpointId];
-  const query = useQuery({queryKey: key, queryFn: () => voicePhoneApi.configuration(companyId, endpointId), retry: false});
+  const query = useQuery({queryKey: key, queryFn: () => voicePhoneApi.configuration(companyId, endpointId)});
   const mutation = useMutation({mutationFn: (input: {numberId: string; enabled: boolean; guestIntake?: boolean; lowTrustEnvironmentId?: string | null}) => voicePhoneApi.save(companyId, endpointId, input), onSuccess: data => queryClient.setQueryData(key, data)});
   return <SpekoPhoneLineForm configuration={query.data} loading={query.isLoading} saving={mutation.isPending} saved={mutation.isSuccess} error={(mutation.error ?? query.error)?.message} onRefresh={() => void query.refetch()} onSave={input => mutation.mutate(input)} />;
 }

@@ -34,7 +34,7 @@ import {
 
 const COMPANY_ID = "company-storybook";
 const SELECTED_COMPANY_STORAGE_KEY = "paperclip.selectedCompanyId";
-const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
+const ISSUE_DRAFT_STORAGE_KEY = `paperclip:issue-draft:${storybookAuthSession.user!.id}`;
 
 const storybookGoals: Goal[] = [
   {
@@ -335,6 +335,13 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(COMPANY_ID), storybookProjects);
+  queryClient.setQueryData(queryKeys.projects.environments(COMPANY_ID), {
+    groups: [
+      { storageProviderPluginId: null, environments: [{ id: "sandbox", name: "Paperclip Sandbox" }, { id: "local", name: "Local" }] },
+      { storageProviderPluginId: "computer-storage", environments: [{ id: "computers", name: "Agent computers" }] },
+    ],
+    defaultEnvironmentId: "sandbox", error: null,
+  });
   queryClient.setQueryData(queryKeys.goals.list(COMPANY_ID), storybookGoals);
   queryClient.setQueryData(queryKeys.issues.list(COMPANY_ID), storybookIssues);
   queryClient.setQueryData(queryKeys.issues.labels(COMPANY_ID), storybookIssueLabels);

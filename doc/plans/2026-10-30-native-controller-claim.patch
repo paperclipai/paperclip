@@ -1,0 +1,170 @@
+--- scripts/benchmark-native-controller-recovery.ts
++++ scripts/benchmark-native-controller-recovery.ts
+@@ -14 +14 @@
+-const repoRoot = fileURLToPath(new URL("../", import.meta.url));
++const repoRoot = path.resolve(required("BENCH_CANDIDATE_ROOT"));
+@@ -241,0 +242,112 @@
++async function claimCapacityPhase(db: any, u: string, items: any[], monitor: any) {
++  const { claimNativeRestartRecoveries } = await load(repoRoot, "server/src/services/native-runtime/native-restart-recovery.ts");
++  const { loadNativeRunnerCheckpoint } = await load(repoRoot, "server/src/services/native-runtime/native-runner-checkpoint.ts");
++  const replacement = createDb(u, { maxConnections: 10, applicationName: "benchmark-claim-replacement" });
++  const successor = { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() };
++  const result: any = { schema: "paperclip.native-controller-claim-capacity/v1", ...provenance,
++    scope: "Production DB claim function against synthetic prepared-workspace references and real persisted snapshots/PRP records. Natural lease expiry; two server database clients. No provider attachment or external sandbox existence claim.",
++    errors: [], claims: [], reads: [], samples: [], sqlByClient: {}, renewedOwnerLosses: 0, restoredCheckpoints: 0,
++    retainedOldControllerLeaseMs: 60000, remoteReconnectGraceMs: 420000, checkpointPoolPerServer: 2 };
++  const clients = [
++    ["old_request", db.$client], ["old_liveness", livenessDb(db).$client], ["old_checkpoint", checkpointDb(db).$client],
++    ["new_request", replacement.$client], ["new_liveness", livenessDb(replacement).$client], ["new_checkpoint", checkpointDb(replacement).$client],
++  ];
++  for (const [name, client] of clients) { result.sqlByClient[name] = 0; client.options.debug = () => { result.sqlByClient[name]++; }; }
++  // Data is persisted by the ordinary snapshot port during the preconditioning phase.
++  const validity = await db.$client.unsafe("select count(*)::int as valid from heartbeat_runs r join native_run_finalizations f on f.run_id=r.id where r.status='running' and r.runner_profile_json->'nativeWorkspaceSync'->>'state'='prepared' and r.runner_profile_json->'sessionCheckpoint'->'identity'->>'runId'=r.id::text and exists(select 1 from native_runner_checkpoints c where c.run_id=r.id)");
++  assert.equal(validity[0].valid, 300, "All claim inputs need real snapshots/checkpoints and prepared references");
++  const before = pgResources(), started = performance.now(), requests = new Set<Promise<any>>(), renewals: any[] = [];
++  const observed = observeLockWaits(monitor);
++  let tick = 0, offered = 0, completed = 0;
++  const traffic = setInterval(() => {
++    for (let j = 0; j < 20; j++) {
++      const index = tick++, item = items[index % items.length], client = index % 2 ? replacement : db;
++      const at = performance.now(); offered++;
++      const task = loadAgentRunAuthentication(client, item).then(() => { completed++; result.reads.push(performance.now() - at); })
++        .catch((e: any) => result.errors.push({ source: "request", message: e.message })).finally(() => requests.delete(task));
++      requests.add(task);
++    }
++  }, 100); // 200 database authentication requests/second, split evenly between servers.
++  let sampling: Promise<any> | null = null;
++  const sample = setInterval(() => {
++    if (sampling) return;
++    sampling = monitor`select application_name,count(*)::int as connections,count(*) filter(where state='active')::int as active from pg_stat_activity where datname=current_database() and application_name!='benchmark-observer' group by application_name`
++      .then((rows: any) => result.samples.push({ elapsedMs: performance.now() - started, rows, postgresMemoryBytes: pgResources().memoryBytes }))
++      .catch((e: any) => result.errors.push({ source: "observer", message: e.message })).finally(() => { sampling = null; });
++  }, 1000);
++  try {
++    const [lease] = await db.$client.unsafe("select greatest(0,extract(epoch from(max(lease_expires_at)-clock_timestamp()))*1000)::float8 as remaining from native_run_finalizations where lease_owner is not null");
++    result.naturalExpiryWaitMs = Number(lease.remaining);
++    await sleep(result.naturalExpiryWaitMs + 100);
++    const [expired] = await db.$client.unsafe("select count(*)::int as expired from native_run_finalizations where lease_owner is not null and lease_expires_at<=clock_timestamp()");
++    assert.equal(expired.expired, 300, "Never rewrite or shorten a controller lease for the probe");
++    const claimStarted = performance.now();
++    const dispositions = await claimNativeRestartRecoveries({ db: replacement, controller: successor, restartKind: "hard",
++      runIds: items.map(item => item.runId), limit: 300,
++      onClaim: (claim: any, scope: any) => {
++        result.claims.push({ runId: claim.runId, kind: claim.kind, elapsedMs: performance.now() - claimStarted, generation: claim.controllerGeneration });
++        renewals.push(startNativeSessionExecutionLeaseRenewal({ db: replacement,
++          companyId: scope.companyId, issueId: scope.issueId, runId: claim.runId, leaseOwner: claim.leaseOwner,
++          attempt: claim.providerAttempt, controller: successor, remote: true,
++          onLost: async () => { result.renewedOwnerLosses++; } }));
++      },
++    });
++    result.claimDrainMs = performance.now() - claimStarted;
++    assert.equal(dispositions.length, 300);
++    assert(dispositions.every((claim: any) => claim.kind === "reattach_remote_runner"), "Every DB claim must independently validate its evidence");
++    // Restore persisted records into empty replacement directories, then persist a real new control and snapshot.
++    const work = [...dispositions];
++    await Promise.all(Array.from({ length: 4 }, async () => {
++      while (work.length) {
++        const claim: any = work.shift(), item = items.find(i => i.runId === claim.runId);
++        const checkpoint = await loadNativeRunnerCheckpoint(replacement, { companyId: item.companyId, issueId: item.issueId, runId: item.runId });
++        assert(checkpoint);
++        const directory = root + "/replacement-states/" + item.runId;
++        checkpoint.restoreSessionDirectory(directory);
++        const header = JSON.parse(checkpoint.records.get("header")!);
++        const core = new CandidateCore({ stateDirectory: directory, identity: header.state.identity,
++          expectedRunnerVersion: checkpoint.runnerVersion, expectedRunnerDigest: checkpoint.runnerDigest });
++        const binding = { companyId: item.companyId, issueId: item.issueId, runId: item.runId,
++          authorityRunId: item.runId, bootId: successor.bootId, generation: claim.controllerGeneration, leaseOwner: claim.leaseOwner };
++        core.setCheckpointPersistence(CandidateWriter(replacement, binding));
++        core.queueCommand("semantic_tool.result", { callId: "replacement-capacity", operationId: "fixture_read", result: { body: "x".repeat(4096) }, isError: false }, "replacement-control");
++        await core.flushCheckpoint();
++        const identity = item.snapshot.identity;
++        const port = new CandidatePort(replacement, { ...identity, sourceInstanceId: checkpoint.recoveryEvidence.runnerInstanceId,
++          controlPlaneSourceInstanceId: "replacement-controller", completionContractId: item.completionContractId, completionContractSha256: item.completionContractSha256 }, { nativeRecovery: {
++            compatibility: { configDigest: "sha256:" + "a".repeat(64), processConfigDigest: null }, owner: binding } });
++        await port.openRun({ identity, backendKind: "codex", sourceInstanceId: checkpoint.recoveryEvidence.runnerInstanceId });
++        await port.checkpointSession(item.snapshot);
++        result.restoredCheckpoints++;
++        await core.stop();
++      }
++    }));
++    result.claimAndRestoreDrainMs = performance.now() - claimStarted;
++    // Observe one natural 20-second renewal from the last replacement claim.
++    await sleep(Math.max(0, 21000 - (performance.now() - claimStarted - result.claimDrainMs)));
++    const [saved] = await replacement.$client.unsafe("select count(*)::int as owners,min(controller_generation)::int as min_generation,max(controller_generation)::int as max_generation,min(extract(epoch from(lease_expires_at-clock_timestamp()))*1000)::float8 as minimum_remaining_ms from native_run_finalizations where controller_boot_id=$1 and lease_owner is not null", [successor.bootId]);
++    result.postRenewalOwners = saved;
++    assert.equal(saved.owners, 300); assert.equal(saved.min_generation, 2); assert.equal(saved.max_generation, 2);
++    assert(saved.minimum_remaining_ms > 40000, "Replacement leases should have naturally renewed from the database clock");
++  } catch (e: any) { result.errors.push({ source: "claim-or-restore", message: e.message, stack: e.stack }); }
++  finally {
++    clearInterval(traffic); clearInterval(sample);
++    await Promise.allSettled([...requests]); await sampling;
++    await Promise.allSettled(renewals.map(r => r.stop()));
++    result.lockWait = await observed.stop();
++  }
++  result.elapsedMs = performance.now() - started;
++  result.requestsOffered = offered; result.requestsCompleted = completed; result.requestLatency = summary(result.reads); delete result.reads;
++  result.postgresCpuUsec = pgResources().cpuUsec - before.cpuUsec;
++  const totalSql = () => Object.values(result.sqlByClient).reduce((a: number, b: any) => a + Number(b), 0);
++  const idleStart = totalSql(); await sleep(1000); result.settledIdleSql = totalSql() - idleStart;
++  result.passed = result.errors.length === 0 && result.lockWait.errors.length === 0 && result.claims.length === 300
++    && result.restoredCheckpoints === 300 && completed === offered && result.renewedOwnerLosses === 0
++    && result.claimAndRestoreDrainMs < 420000 && result.requestLatency.p99 < 250 && result.settledIdleSql === 0;
++  await writeFile(root + "/claim-capacity.json", JSON.stringify(result, null, 2) + "\n");
++  console.log(JSON.stringify({ phase: "claim-capacity-complete", passed: result.passed, claims: result.claims.length,
++    claimDrainMs: result.claimDrainMs, claimAndRestoreDrainMs: result.claimAndRestoreDrainMs,
++    requests: result.requestLatency, errors: result.errors.slice(0, 3) }));
++  if (!result.passed) process.exitCode = 1;
++}
++
+@@ -429,0 +542 @@
++        runnerProfileJson: { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: randomUUID(), remoteCwd: "/workspace", resourceDisposition: "destroy" } },
+@@ -544,0 +658,2 @@
++      completionContractId: contractId,
++      completionContractSha256: "fixture",
+@@ -905,0 +1021 @@
++  await claimCapacityPhase(db, u, items, monitor);
+@@ -917,6 +1033 @@
+-    const profile = [
+-      ["baseline", 300],
+-      ["candidate", 300],
+-      ["candidate", 300],
+-      ["baseline", 300],
+-    ] as const;
++    const profile = [["candidate", 300]] as const;
+@@ -953,35 +1064 @@
+-    const perOperation = (r: any, key: string) =>
+-      r[key] / (r.normalCompleted + r.normalWritesCompleted + r.controls + r.admissionsCompleted);
+-    const average = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+-    const comparable =
+-      result.every((r) => r.correctnessPassed) &&
+-      result.every(
+-        (r) =>
+-          r.controls === result[0].controls &&
+-          r.normalCompleted === result[0].normalCompleted &&
+-          r.normalWritesCompleted === result[0].normalWritesCompleted,
+-      );
+-    const relative = {};
+-    for (const key of ["postgresCpuUsec", "walBytes", "requestP99"]) {
+-      const value = (r: any) => (key === "requestP99" ? r.normalReadSummary.p99 : perOperation(r, key));
+-      const baseline = average(result.filter((r) => r.variant === "baseline").map(value));
+-      const candidate = average(result.filter((r) => r.variant === "candidate").map(value));
+-      relative[key] = {
+-        baseline,
+-        candidate,
+-        increasePercent: comparable ? 100 * (candidate / baseline - 1) : null,
+-        passed: comparable ? candidate <= baseline * 1.1 : null,
+-      };
+-    }
+-    Object.assign(report, {
+-      relative,
+-      comparable,
+-      passed: result.every((r) => r.passed) && Object.values(relative).every((r: any) => r.passed),
+-      measurementLimits: [
+-        "Database request latency is not HTTP latency",
+-        "Pool queue includes client encoding; BEGIN response includes network time",
+-        "pg_stat_statements execution includes lock waits; lock episodes report sampled duration bounds, with short waits potentially missed",
+-        "Peak memory is sampled once a second",
+-        "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide",
+-      ],
+-    });
++    Object.assign(report, { passed: result.every(r => r.passed), scope: "Preconditioning only for the separate claim-capacity.json report" });

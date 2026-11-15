@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 const { and, eq } = createRequire(new URL("../server/package.json", import.meta.url))("drizzle-orm");
 import { agents, companies, createDb, heartbeatRuns, startEmbeddedPostgresTestDatabase, type Db } from "../packages/db/src/index.js";
 import { agentRunWritesRevoked } from "../server/src/agent-run-cancellation.js";
-import { loadAgentRunAuthentication } from "../server/src/middleware/agent-run-authentication.js";
+import { agentRunAuthenticationQuery } from "../server/src/middleware/agent-run-authentication.js";
 
 type Query = { sql: string; params: unknown[] };
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
@@ -32,7 +32,7 @@ try {
   const baseline = new Function("db", "heartbeatRuns", "and", "eq", "claims", `return ${expression}`)(
     db, heartbeatRuns, and, eq, { sub: agentId, company_id: companyId, run_id: runId },
   ).toSQL() as Query;
-  const treatment = loadAgentRunAuthentication(db, { companyId, agentId, runId }).toSQL();
+  const treatment = agentRunAuthenticationQuery(db, { companyId, agentId, runId }).toSQL();
 
   function contract(rows: unknown[][]) {
     return rows.map(([activeIdentityContextId, responsibleUserId, status, resultJson, contextSnapshot]) => ({

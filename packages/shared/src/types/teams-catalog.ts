@@ -182,6 +182,7 @@ export interface CatalogTeamImportPreviewResult {
 }
 
 export interface CatalogTeamInstallResult {
+  resourceLinks: { kind: "agent" | "project" | "routine"; id: string; name: string; href: string }[];
   team: CatalogTeam;
   portabilityImport: CompanyPortabilityImportResult;
   skillPreparations: CatalogTeamSkillPreparation[];

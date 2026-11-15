@@ -13,13 +13,14 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { createStoredZipArchive } from "./helpers/zip.js";
 import { removeTestHome } from "../../../tests/helpers/remove-test-home.js";
+import { PAPERCLIP_RUNTIME_INFO_FILENAME, readRuntimeInfo } from "../runtime-info.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
-async function getAvailablePort(): Promise<number> {
+async function reserveRequestedPort(): Promise<{ port: number; release: () => Promise<void> }> {
   return await new Promise((resolve, reject) => {
-    const server = net.createServer();
+    const server = net.createServer((socket) => socket.destroy());
     server.unref();
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -29,9 +30,11 @@ async function getAvailablePort(): Promise<number> {
         return;
       }
       const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
+      resolve({
+        port,
+        release: () => new Promise<void>((resolveClose, rejectClose) => {
+          server.close((error) => error ? rejectClose(error) : resolveClose());
+        }),
       });
     });
   });
@@ -246,31 +249,46 @@ async function runCliJson<T>(
   return JSON.parse(stdout.slice(jsonStart)) as T;
 }
 
+// `paperclipai run` loads the CLI and the whole server graph from source
+// through tsx. The test runner gives every run a fresh TMPDIR, so tsx's
+// transform cache is always cold: startup then costs about twice a warm start
+// (11.5 s against 5.2 s from "Starting Paperclip server..." to the first server
+// log on an idle 16-core machine). On contended 4-vCPU CI runners the hooks of
+// passing runs took 15-25 s, and the old 30 s budget failed in the tail. This budget
+// matches the 90 s test-body timeout; a child that exits early still fails at
+// once.
+const SERVER_STARTUP_TIMEOUT_MS = 90_000;
+
 async function waitForServer(
-  apiBase: string,
+  instanceId: string,
+  runtimeInfoPath: string,
   child: ServerProcess,
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < SERVER_STARTUP_TIMEOUT_MS) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
       );
     }
 
-    try {
-      const res = await fetch(`${apiBase}/api/health`);
-      if (res.ok) return;
-    } catch {
-      // Server is still starting.
+    const runtime = readRuntimeInfo(instanceId, runtimeInfoPath);
+    if (runtime && runtime.pid === child.pid) {
+      const apiBase = `http://127.0.0.1:${runtime.port}`;
+      try {
+        const res = await fetch(`${apiBase}/api/health`, { signal: AbortSignal.timeout(1_000) });
+        if (res.ok) return apiBase;
+      } catch {
+
+      }
     }
 
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   throw new Error(
-    `Timed out waiting for ${apiBase}/api/health.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
+    `Timed out waiting for the child server recorded in ${runtimeInfoPath}.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
   );
 }
 
@@ -283,6 +301,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let cliShellHome = "";
   let paperclipInstanceId = "";
   let serverProcess: ServerProcess | null = null;
+  let requestedPortReservation: Awaited<ReturnType<typeof reserveRequestedPort>> | null = null;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
@@ -297,9 +316,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-cli-db-");
 
-    const port = await getAvailablePort();
+
+
+    requestedPortReservation = await reserveRequestedPort();
+    const { port } = requestedPortReservation;
     writeTestConfig(configPath, tempRoot, port, tempDb.connectionString);
-    apiBase = `http://127.0.0.1:${port}`;
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
@@ -324,11 +345,19 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output.stderr.push(String(chunk));
     });
 
-    await waitForServer(apiBase, child, output);
-  }, 60_000);
+    apiBase = await waitForServer(
+      paperclipInstanceId,
+      path.join(paperclipHome, "instances", paperclipInstanceId, PAPERCLIP_RUNTIME_INFO_FILENAME),
+      child,
+      output,
+    );
+    expect(new URL(apiBase).port).not.toBe(String(port));
+    // Room for the embedded database start on top of the server budget.
+  }, SERVER_STARTUP_TIMEOUT_MS + 30_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
+    await requestedPortReservation?.release();
     await tempDb?.cleanup();
     if (tempRoot) {
       removeTestHome(tempRoot);

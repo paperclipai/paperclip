@@ -35,6 +35,12 @@ function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtr
 }
 
 describe("task watchdog subtree classifier", () => {
+  it("does not produce a stopped fingerprint from an incomplete scan", () => {
+    const result = classify({ subtreeIncomplete: true });
+    expect(result.state).toBe("incomplete");
+    expect(result).not.toHaveProperty("stopFingerprint");
+  });
+
   it("suppresses watchdog wakeups while watched subtree work has a live path", () => {
     const result = classify({
       issues: [
@@ -98,7 +104,7 @@ describe("task watchdog subtree classifier", () => {
     const ticked = classify({
       issues: [issue({
         status: "blocked",
-        updatedAt: "2026-06-18T20:00:00.000Z",
+        updatedAt: new Date("2026-06-18T20:00:00.000Z"),
         latestCommentAt: "2026-06-18T20:01:00.000Z",
         latestDocumentAt: "2026-06-18T20:02:00.000Z",
         latestWorkProductAt: "2026-06-18T20:03:00.000Z",

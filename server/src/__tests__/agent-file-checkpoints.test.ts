@@ -94,7 +94,7 @@ describe("incremental managed file checkpoints", () => {
             if (first) { first = false; await fs.appendFile(filename, Buffer.alloc(1024 * 1024, 2)); }
             yield chunk;
           }
-        })()) as typeof handle.createReadStream;
+        })()) as unknown as typeof handle.createReadStream;
       }
       return handle;
     });

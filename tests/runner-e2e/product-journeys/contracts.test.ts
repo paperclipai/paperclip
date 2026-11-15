@@ -13,9 +13,15 @@ import type { RunnerE2EResult } from "../types.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
 import { createConnectionProof } from "../connection-evidence.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { journeyRequiredChecks } from "./success-contract.js";
+import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
-    (locator: { textContent(): Promise<string> }) => ({ async toContainText(value: string) { expect(await locator.textContent()).toContain(value); } }),
+    (locator: { textContent(): Promise<string>; isVisible?(): Promise<boolean> }) => ({
+      async toContainText(value: string) { expect(await locator.textContent()).toContain(value); },
+      async toBeVisible() { expect(await locator.isVisible?.()).toBe(true); },
+      async toBeInViewport() {},
+    }),
     { poll: (read: () => Promise<unknown>) => ({ async toBe(value: unknown) { expect(await read()).toBe(value); } }) },
   ),
 }));
@@ -29,7 +35,86 @@ function result(): RunnerE2EResult {
   return { schema: "paperclip.runner-e2e.result/v2", suiteId: "product-journeys", suiteDefinitionHash: "test", executionId: "product-journeys.local-qa.local.task-properties", profileId: "local-qa", environmentId: "local", caseId: "task-properties", provider: null, model: null, runtimeMode: "none", status: "passed", cleanup: "passed", attempt: 1, startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z", durationMs: 1000,
     productJourney: { outcome: "passed", startingState: "recipe", phases: [{phase: "journey", outcome: "passed"}], checks: [{id:"assignment-persisted", passed:true},{id:"no-agent-work",passed:true}], privacy: "private", resourceDisposition: "released", deployment: { kind: "self-hosted", targetId: "local-qa", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), cloudRelease: null, runtimeImage: null, configurationHash: "test" } } };
 }
+function connectReceipt(): OnboardingConnectEvidence {
+  return {
+    version: 1, checkpoint: "hire",
+    validation: { state: "json", httpStatus: 200, requestedAdapter: "paperclip_runner", adapter: "paperclip_runner", outcome: "fail", serverCode: null, checks: [{ code: "adapter_auth_missing", level: "error" }], truncatedChecks: false },
+    hire: { state: "json", httpStatus: 422, requestedAdapter: null, adapter: null, outcome: null, serverCode: "agent_runner_unavailable", checks: [], truncatedChecks: false },
+  };
+}
 describe("deployment journey contracts", () => {
+  it("discovers an ordinary assigned-skill journey without an experimental pin prerequisite", () => {
+    const discovered = productJourneys.find(journey => journey.id === "saved-skill-use")!;
+    expect(discovered).not.toHaveProperty("requiredSettings");
+    expect(journeyRequiredChecks[discovered.id]?.[0]).toBe("saved-skill-assignment-bound");
+    const config = parseTargetConfig({ ...local, journeys: ["saved-skill-use"],
+      limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } });
+    expect(preparationPreview(config).journeys).toContainEqual(discovered);
+    expect(config.baseline.features).toEqual({});
+  });
+  it("requires one native saved-skill run and every closed source/use/result check", () => {
+    const config = { ...local, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs",
+      executionEnvironment: "daytona", journeys: ["saved-skill-use"], limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } };
+    expect(parseTargetConfig(config).journeys).toEqual(["saved-skill-use"]);
+    for (const maxRuns of [0, 2]) expect(() => parseTargetConfig({ ...config, limits: { ...config.limits, maxRuns } })).toThrow("agent_journeys_require_bounded_runs");
+    const retained = result();
+    Object.assign(retained, { caseId: "saved-skill-use", provider: "opencode", model: "configured-model", runtimeMode: "native", runIds: ["run"] });
+    retained.productJourney!.checks = journeyRequiredChecks[retained.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    for (const check of retained.productJourney!.checks) {
+      const missing = structuredClone(retained);
+      missing.productJourney!.checks = missing.productJourney!.checks.filter(row => row.id !== check.id);
+      expect(() => validateRetainedRunnerResult(missing)).toThrow("result.productJourney");
+    }
+    retained.runIds = [];
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.agentJourneyRun");
+  });
+  it("accepts historical results without Connect diagnostics and optional closed receipts", () => {
+    const retained = result();
+    retained.caseId = "cloud-onboarding";
+    retained.status = "failed";
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    expect(renderCaseOutcome(retained, true, [])).not.toContain("Onboarding Connect diagnostics");
+    retained.productJourney!.onboardingConnect = connectReceipt();
+    expect(() => validateRetainedRunnerResult(JSON.parse(JSON.stringify(retained)))).not.toThrow();
+    retained.productJourney!.onboardingConnect.validation = { state: "pending", httpStatus: 200, requestedAdapter: "codex_local", adapter: null, outcome: null, serverCode: null, checks: [], truncatedChecks: false };
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+  });
+  it.each([
+    ["request headers", () => ({ ...connectReceipt(), requestHeaders: { authorization: "must-not-retain" } })],
+    ["response bodies", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, body: "must-not-retain" } })],
+    ["check messages", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "adapter_auth_missing", level: "error", message: "must-not-retain" }] } })],
+    ["unknown server codes", () => ({ ...connectReceipt(), hire: { ...connectReceipt().hire, serverCode: "raw-provider-error" } })],
+    ["unknown check codes", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "raw-provider-error", level: "error" }] } })],
+    ["unknown adapters", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, adapter: "raw-provider-name" } })],
+    ["unknown requested adapters", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, requestedAdapter: "raw-provider-name" } })],
+    ["unknown outcomes", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, outcome: "raw-provider-message" } })],
+    ["unknown response states", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, state: "raw-provider-message" } })],
+    ["unknown check levels", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: [{ code: "adapter_auth_missing", level: "fatal" }] } })],
+    ["oversized check arrays", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, checks: Array.from({ length: 33 }, () => ({ code: "adapter_auth_missing", level: "error" })) } })],
+    ["invalid HTTP statuses", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, httpStatus: 600 } })],
+    ["non-boolean truncation", () => ({ ...connectReceipt(), validation: { ...connectReceipt().validation, truncatedChecks: "true" } })],
+    ["missing response fields", () => ({ ...connectReceipt(), hire: { state: "missing" } })],
+    ["unsupported receipt versions", () => ({ ...connectReceipt(), version: 2 })],
+    ["unknown checkpoints", () => ({ ...connectReceipt(), checkpoint: "raw-browser-text" })],
+  ] as const)("rejects Connect receipts containing %s", (_label, makeReceipt) => {
+    const retained = result();
+    retained.productJourney!.onboardingConnect = makeReceipt() as OnboardingConnectEvidence;
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingConnect");
+  });
+  it("renders only validated Connect fields and marks missing or truncated evidence", () => {
+    const retained = result();
+    retained.productJourney!.onboardingConnect = connectReceipt();
+    const output = renderCaseOutcome(retained, true, []);
+    for (const text of ["Onboarding Connect diagnostics", "Last checkpoint", "Native validation", "Agent hire", "HTTP status", "Test endpoint adapter", "Returned adapter", "200", "422", "paperclip_runner", "adapter_auth_missing", "agent_runner_unavailable", "error", "Unavailable"]) expect(output).toContain(text);
+    retained.productJourney!.onboardingConnect.validation.truncatedChecks = true;
+    expect(renderCaseOutcome(retained, true, [])).toContain("Only the first 32 validation checks were retained");
+    Object.assign(retained.productJourney!.onboardingConnect.validation, { body: "<script>must-not-render</script>" });
+    const invalid = renderCaseOutcome(retained, false, []);
+    expect(invalid).toContain("Onboarding Connect diagnostics unavailable: invalid receipt");
+    expect(invalid).not.toContain("must-not-render");
+    expect(invalid).not.toContain("adapter_auth_missing");
+  });
   it("validates optional historical artifact evidence without trusting extra fields or a different run", () => {
     const retained = result();
     retained.caseId = "cloud-onboarding";
@@ -108,10 +193,23 @@ describe("deployment journey contracts", () => {
     await fixtures.resolve(["backlog-task"]);
     api.post.mockImplementation(async () => { throw Error("task creation inside measured story"); });
     let assigned = false;
-    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => false), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
-    for (const method of [locator.filter, locator.first, locator.locator, locator.getByRole]) method.mockReturnValue(locator);
+    let panelOpen = false;
+    let propertiesSelected = false;
+    const chain = <T extends object>(target: T) => Object.assign(target, { filter: vi.fn(() => target), first: vi.fn(() => target) });
+    const hidden = chain({ isVisible: vi.fn(async () => false), click: vi.fn() });
+    const link = chain({ click: vi.fn() });
+    const opener = chain({ isVisible: vi.fn(async () => !panelOpen), click: vi.fn(async () => { panelOpen = true; }) });
+    const propertiesOption = chain({ isVisible: vi.fn(async () => panelOpen && !propertiesSelected), click: vi.fn(async () => { propertiesSelected = true; }) });
+    const valueButton = chain({ click: vi.fn() });
+    const value = chain({ getByRole: vi.fn(() => valueButton), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") });
+    const assignee = chain({ isVisible: vi.fn(async () => propertiesSelected), locator: vi.fn(() => value),
+      scrollIntoViewIfNeeded: vi.fn() });
+    const locator = link;
     const assign = { click: vi.fn(async () => { assigned = true; }) };
-    const page = { goto: vi.fn(), reload: vi.fn(), locator: vi.fn(() => locator), getByRole: vi.fn((_role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign : locator) };
+    const page = { goto: vi.fn(), reload: vi.fn(async () => { panelOpen = false; propertiesSelected = false; }), locator: vi.fn(() => assignee),
+      getByRole: vi.fn((role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign
+        : role === "link" ? link : role === "option" ? propertiesOption : role === "tab" ? hidden
+        : options?.name === "Open a new tab" || options?.name === "Toggle side panel" ? hidden : opener) };
     const get = vi.fn(async (route: string) => route.endsWith("/runs") ? [] : { assigneeUserId: assigned ? context.user.id : null, assigneeAgentId: null, status: "backlog" });
     Object.assign(context.api, { get });
     context.page = page as unknown as JourneyContext["page"];
@@ -121,6 +219,8 @@ describe("deployment journey contracts", () => {
     expect(session.own).toHaveBeenCalledTimes(2);
     expect(page.goto).toHaveBeenCalledExactlyOnceWith("https://qa.example.test/QA/issues");
     expect(locator.filter).toHaveBeenCalledWith({ hasText: "Journey QA campaign-1" });
+    expect(opener.click).toHaveBeenCalledTimes(2);
+    expect(propertiesOption.click).toHaveBeenCalledTimes(2);
     expect(assign.click).toHaveBeenCalledOnce();
     expect(page.reload).toHaveBeenCalledOnce();
     expect(get.mock.calls.map(([route]) => route)).toEqual(["/api/issues/task-1", "/api/issues/task-1", "/api/issues/task-1/runs"]);
@@ -166,12 +266,28 @@ describe("deployment journey contracts", () => {
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it("requires real pass evidence and forbids model work in browser-only passes", () => {
-    expect(()=>validateRetainedRunnerResult(result())).not.toThrow();
-    const missing = result(); missing.productJourney!.checks=[];
+  it.each(["inbox-triage", "task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+    const browser = result();
+    browser.caseId = caseId;
+    browser.executionId = `product-journeys.local-qa.local.${caseId}`;
+    browser.productJourney!.checks = journeyRequiredChecks[caseId]!.map(id => ({ id, passed: true }));
+    expect(()=>validateRetainedRunnerResult(browser)).not.toThrow();
+    const missing = structuredClone(browser); missing.productJourney!.checks=[];
     expect(()=>validateRetainedRunnerResult(missing)).toThrow();
-    const paid = result(); paid.runIds=["unexpected"];
-    expect(()=>validateRetainedRunnerResult(paid)).toThrow();
+    const forbidden: Array<Partial<RunnerE2EResult>> = [{ runIds: ["unexpected"] }, { provider: "openai" }, { model: "unexpected" },
+      { runtimeMode: "native" }, { runtimeMode: "legacy" }];
+    for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
+  });
+  it("rejects collected runs and nonempty usage on a saved passing access result", () => {
+    const browser = result(); browser.caseId = "company-access-isolation";
+    browser.executionId = "product-journeys.local-qa.local.company-access-isolation";
+    browser.productJourney!.checks = journeyRequiredChecks[browser.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(browser)).not.toThrow();
+    const collected = validateJourneyCollection({ journeyId: "company-access-isolation", runIds: ["collected-run"], usage: { runs: [{ runId: "collected-run", usage: { inputTokens: 1 } }] } });
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: collected.runIds, usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: [], usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { inputTokens: 1 } })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { runs: [] } })).not.toThrow();
   });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();
