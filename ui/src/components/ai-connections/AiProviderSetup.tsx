@@ -454,13 +454,31 @@ export function AiProviderSetup({
             Test the connection with your chosen model in the agent’s execution
             environment after connecting.
           </p>
-          {save.error && (
-            <p role="alert" className="text-sm text-destructive">
-              {save.error instanceof Error && save.error.name === "ZodError"
-                ? "Check the URL, API format, and authentication fields."
-                : describeError(save.error).body}
-            </p>
-          )}
+
+          {(provider === "local" || provider === "gateway") &&
+            /^http:\/\//i.test(baseUrl.trim()) &&
+            !allowPrivateHttp && (
+              <p role="alert" className="text-sm text-destructive">
+                HTTP connection blocked. Enable "Allow HTTP to a
+                private-network model server" to connect without
+                encryption, or use HTTPS.
+              </p>
+            )}
+
+          {save.error &&
+            !(
+              (provider === "local" || provider === "gateway") &&
+              /^http:\/\//i.test(baseUrl.trim()) &&
+              !allowPrivateHttp &&
+              save.error instanceof Error &&
+              save.error.name === "ZodError"
+            ) && (
+              <p role="alert" className="text-sm text-destructive">
+                {save.error instanceof Error && save.error.name === "ZodError"
+                  ? "Check the URL, API format, and authentication fields."
+                  : describeError(save.error).body}
+              </p>
+            )}
           {accessDefaults}
           <div className="flex items-center justify-between gap-3">
             <Button
