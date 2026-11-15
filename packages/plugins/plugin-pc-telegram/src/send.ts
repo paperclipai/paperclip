@@ -45,3 +45,32 @@ export function authorizeSendText(
   }
   return { ok: true, accountId, peerId, connection };
 }
+
+export function authorizeOperatorDialog(
+  connections: TelegramConnection[],
+  request: { companyId: string; issueOriginId?: string | null },
+): SendAuthorization {
+  const fromIssue = parseDialogOriginId(request.issueOriginId);
+  if (!fromIssue) return { ok: false, error: "This issue is not a Telegram dialog." };
+  const connection = connections.find((entry) => (
+    entry.companyId === request.companyId && entry.telegramUserId === fromIssue.accountId
+  ));
+  if (!connection) return { ok: false, error: "That Telegram account is not connected." };
+  return { ok: true, accountId: fromIssue.accountId, peerId: fromIssue.peerId, connection };
+}
+
+export function authorizeOperatorReply(
+  connections: TelegramConnection[],
+  request: { companyId: string; issueOriginId?: string | null; text: string },
+): SendAuthorization {
+  const text = request.text.trim();
+  if (!text) return { ok: false, error: "Message text is required." };
+  if (text.length > 4000) return { ok: false, error: "Message text is too long." };
+  const fromIssue = parseDialogOriginId(request.issueOriginId);
+  if (!fromIssue) return { ok: false, error: "This issue is not a Telegram dialog." };
+  const connection = connections.find((entry) => (
+    entry.companyId === request.companyId && entry.telegramUserId === fromIssue.accountId
+  ));
+  if (!connection) return { ok: false, error: "That Telegram account is not connected." };
+  return { ok: true, accountId: fromIssue.accountId, peerId: fromIssue.peerId, connection };
+}

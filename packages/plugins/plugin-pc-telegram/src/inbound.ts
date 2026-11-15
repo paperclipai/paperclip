@@ -42,6 +42,18 @@ export function formatNewIssueTitle(message: InboundDirectMessage): string {
   return `Telegram · ${name}`;
 }
 
+export function chatListLabel(title: string): string {
+  const name = title.replace(/^Telegram\s·\s/, "").trim();
+  if (!name || /^\d{5,}$/.test(name)) return "Telegram";
+  return name;
+}
+
+const UNWAKEABLE_DIALOG_STATUSES = new Set(["backlog", "done", "cancelled"]);
+
+export function reopenDialogForInbound(status: string): "todo" | null {
+  return UNWAKEABLE_DIALOG_STATUSES.has(status) ? "todo" : null;
+}
+
 export async function storeInboundFiles(
   ctx: PluginContext,
   companyId: string,

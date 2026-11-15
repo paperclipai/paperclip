@@ -1,7 +1,26 @@
+import { describeInboundForward, publicForward, unknownForward, visibleForwardName, type TelegramForwardSource } from "./forward.js";
+import {
+  photoDataUrl,
+  presenceFromStatus,
+  previewFromMessage,
+  publicAbout,
+  publicChannelTitle,
+  publicPhone,
+  publicSharedChats,
+  publicUsername,
+  unreadCount,
+  type PeerProfile,
+  type PeerSummary,
+} from "./peer-card.js";
+import { mapTelegramMessage, type ChatBubble, type TelegramHistoryMessage } from "./thread.js";
+import { createLoginPasswordGate } from "./password-gate.js";
 import { qrImageDataUrl, telegramQrUrl } from "./qr.js";
+import type { TelegramMessageAction } from "./message-menu.js";
 import type {
   InboundAttachment,
   InboundDirectMessage,
+  InboundForward,
+  InboxPeerUpdate,
   LiveTelegramAccount,
   PublicTelegramAccount,
   QrLoginHandle,
@@ -12,7 +31,17 @@ type GramJsClient = {
   connect(): Promise<unknown>;
   disconnect(): Promise<unknown>;
   getMe(): Promise<{ id?: unknown; username?: string | null; firstName?: string | null; lastName?: string | null }>;
-  sendMessage(peer: string, options: { message: string }): Promise<unknown>;
+  sendMessage(peer: string, options: { message: string; replyTo?: number }): Promise<unknown>;
+  pinMessage?(peer: unknown, messageId: number, params?: { notify?: boolean; pmOneSide?: boolean }): Promise<unknown>;
+  unpinMessage?(peer: unknown, messageId: number): Promise<unknown>;
+  deleteMessages?(peer: unknown, messageIds: number[], params?: { revoke?: boolean }): Promise<unknown>;
+  forwardMessages?(peer: unknown, params: { messages: number[]; fromPeer: unknown }): Promise<unknown>;
+  getInputEntity?(peer: string): Promise<unknown>;
+  getEntity?(peer: unknown): Promise<unknown>;
+  getDialogs?(options: { limit: number }): Promise<unknown[]>;
+  invoke?(query: unknown): Promise<unknown>;
+  downloadProfilePhoto?(entity: unknown, params?: { isBig?: boolean }): Promise<Uint8Array>;
+  getMessages(peer: unknown, options: { limit: number; maxId?: number }): Promise<unknown[]>;
   addEventHandler(handler: (event: unknown) => unknown, event: unknown): void;
   session: { save(): string };
   signInUserWithQrCode(
@@ -32,6 +61,20 @@ type GramJsModule = {
     apiHash: string,
     options?: Record<string, unknown>,
   ) => GramJsClient;
+  Api?: {
+    users?: {
+      GetFullUser: new (args: { id: unknown }) => unknown;
+    };
+    ReactionEmoji?: new (args: { emoticon: string }) => unknown;
+    messages?: {
+      SendReaction: new (args: {
+        peer: unknown;
+        msgId: number;
+        reaction?: unknown[];
+        addToRecent?: boolean;
+      }) => unknown;
+    };
+  };
 };
 
 type GramJsSessions = {
@@ -42,6 +85,43 @@ type GramJsEvents = {
   NewMessage: new (options?: Record<string, unknown>) => unknown;
 };
 
+type GramEventCtor = new (options?: Record<string, unknown>) => unknown;
+
+function entityLabel(entity: unknown): string {
+  if (!entity || typeof entity !== "object") return "";
+  const record = entity as {
+    title?: unknown;
+    firstName?: unknown;
+    lastName?: unknown;
+    username?: unknown;
+  };
+  const named = displayNameFromUser({
+    firstName: typeof record.firstName === "string" ? record.firstName : null,
+    lastName: typeof record.lastName === "string" ? record.lastName : null,
+    username: typeof record.username === "string" ? record.username : null,
+  });
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  const chosen = named && named !== "Telegram user" ? named : title;
+  if (!chosen || /^\d{5,}$/.test(chosen)) return "";
+  return chosen.slice(0, 80);
+}
+
+function hasProfilePhoto(entity: unknown): boolean {
+  if (!entity || typeof entity !== "object") return false;
+  const photo = (entity as { photo?: { className?: unknown } }).photo;
+  if (!photo || typeof photo !== "object") return false;
+  const name = String(photo.className ?? "");
+  return name === "UserProfilePhoto" || name === "ChatPhoto";
+}
+
+function peerIdOf(value: unknown): string {
+  try {
+    return telegramUserId(value);
+  } catch {
+    return "";
+  }
+}
+
 function displayNameFromUser(user: { username?: string | null; firstName?: string | null; lastName?: string | null }): string {
   const parts = [user.firstName, user.lastName].filter((part): part is string => Boolean(part && part.trim()));
   if (parts.length > 0) return parts.join(" ");
@@ -49,49 +129,176 @@ function displayNameFromUser(user: { username?: string | null; firstName?: strin
   return "Telegram user";
 }
 
-function asUserId(value: unknown): string {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") return String(value);
-  if (value && typeof value === "object" && "value" in value) return asUserId((value as { value: unknown }).value);
+export function telegramUserId(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") {
+    const text = String(value).trim();
+    if (text.length > 0 && text !== "[object Object]") return text;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    // PeerUser / PeerChat / PeerChannel keep the id on a field. A big-integer
+    // object stringifies to the decimal id, while its `.value` is a digit array.
+    if ("userId" in record) return telegramUserId(record.userId);
+    if ("chatId" in record) return telegramUserId(record.chatId);
+    if ("channelId" in record) return telegramUserId(record.channelId);
+    const text = String(value).trim();
+    if (/^[0-9]+$/.test(text)) return text;
+    const inner = record.value;
+    if (typeof inner === "string" || typeof inner === "number" || typeof inner === "bigint") {
+      return telegramUserId(inner);
+    }
+  }
   throw new Error("Telegram user id is missing.");
 }
 
-function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
+function accountFromGramUser(user: unknown): PublicTelegramAccount {
+  if (!user || typeof user !== "object") throw new Error("Telegram did not return the signed-in user.");
+  const record = user as {
+    id?: unknown;
+    username?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  };
+  return {
+    telegramUserId: telegramUserId(record.id),
+    username: record.username ?? null,
+    displayName: displayNameFromUser(record),
+  };
 }
 
-async function loadGramJs(): Promise<{ client: GramJsModule; sessions: GramJsSessions; events: GramJsEvents }> {
-  const [client, sessions, events] = await Promise.all([
+function telegramErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object" || !("errorMessage" in error)) return "";
+  const code = (error as { errorMessage?: unknown }).errorMessage;
+  return typeof code === "string" ? code : "";
+}
+
+async function loadGramJs(): Promise<{
+  client: GramJsModule;
+  sessions: GramJsSessions;
+  events: GramJsEvents;
+  edited: GramEventCtor;
+  deleted: GramEventCtor;
+  raw: GramEventCtor;
+}> {
+  const [client, sessions, events, edited, deleted, raw] = await Promise.all([
     import("telegram") as Promise<unknown> as Promise<GramJsModule>,
     import("telegram/sessions/index.js") as Promise<unknown> as Promise<GramJsSessions>,
     import("telegram/events/index.js") as Promise<unknown> as Promise<GramJsEvents>,
+    import("telegram/events/EditedMessage.js") as Promise<{ EditedMessage: GramEventCtor }>,
+    import("telegram/events/DeletedMessage.js") as Promise<{ DeletedMessage: GramEventCtor }>,
+    import("telegram/events/Raw.js") as Promise<{ Raw: GramEventCtor }>,
   ]);
-  return { client, sessions, events };
+  return {
+    client,
+    sessions,
+    events,
+    edited: edited.EditedMessage,
+    deleted: deleted.DeletedMessage,
+    raw: raw.Raw,
+  };
 }
 
-function readEventMessage(event: unknown): {
+type GramMessage = {
   out?: boolean;
   isPrivate?: boolean;
   isGroup?: boolean;
   isChannel?: boolean;
   id?: unknown;
   message?: unknown;
+  date?: unknown;
   peerId?: unknown;
   sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown };
   media?: unknown;
   downloadMedia?: () => Promise<Buffer | Uint8Array | string | null>;
-} | null {
+  fwdFrom?: {
+    fromId?: unknown;
+    fromName?: string | null;
+    postAuthor?: string | null;
+  } | null;
+  forward?: {
+    sender?: TelegramForwardSource["sender"];
+    chat?: TelegramForwardSource["chat"];
+    getSender?: () => Promise<unknown>;
+    getChat?: () => Promise<unknown>;
+  } | null;
+};
+
+function readEventMessage(event: unknown): GramMessage | null {
   if (!event || typeof event !== "object") return null;
   const record = event as { message?: unknown; isPrivate?: boolean; isGroup?: boolean; isChannel?: boolean };
+  // GramJS messages expose peerId, sender, and isPrivate as prototype getters.
+  // Copying the instance drops those getters and every inbound DM then dies
+  // with "Telegram user id is missing."
   if (record.message && typeof record.message === "object") {
-    return { ...record, ...(record.message as object) };
+    return record.message as NonNullable<ReturnType<typeof readEventMessage>>;
   }
   return record;
+}
+
+export function telegramUpdatePeerId(event: unknown): string {
+  const message = readEventMessage(event);
+  if (!message) throw new Error("Telegram user id is missing.");
+  return telegramUserId(message.sender?.id ?? message.peerId);
+}
+
+function asNamedEntity(value: unknown): TelegramForwardSource["sender"] {
+  if (!value || typeof value !== "object") return null;
+  return value as NonNullable<TelegramForwardSource["sender"]>;
+}
+
+async function readHistoryForward(message: GramMessage): Promise<InboundForward | null> {
+  if (!message.fwdFrom && !message.forward) return null;
+  const inline = describeInboundForward({
+    fromId: message.fwdFrom?.fromId,
+    fromName: message.fwdFrom?.fromName,
+    postAuthor: message.fwdFrom?.postAuthor,
+    sender: message.forward?.sender ?? null,
+    chat: message.forward?.chat ?? null,
+  });
+  if ((inline && visibleForwardName(inline.fromName)) || message.forward?.sender || message.forward?.chat) {
+    return inline ?? unknownForward();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const looked = await Promise.race([
+      readInboundForward(message),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 250);
+      }),
+    ]);
+    return looked ?? inline ?? unknownForward();
+  } catch {
+    return inline ?? unknownForward();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readInboundForward(message: GramMessage): Promise<InboundForward | null> {
+  if (!message.fwdFrom && !message.forward) return null;
+  let sender = message.forward?.sender ?? null;
+  let chat = message.forward?.chat ?? null;
+  if (!sender && message.forward?.getSender) {
+    try {
+      sender = asNamedEntity(await message.forward.getSender()) ?? null;
+    } catch {
+      sender = null;
+    }
+  }
+  if (!sender && !chat && message.forward?.getChat) {
+    try {
+      chat = asNamedEntity(await message.forward.getChat()) ?? null;
+    } catch {
+      chat = null;
+    }
+  }
+  return describeInboundForward({
+    fromId: message.fwdFrom?.fromId,
+    fromName: message.fwdFrom?.fromName,
+    postAuthor: message.fwdFrom?.postAuthor,
+    sender,
+    chat,
+  }) ?? unknownForward();
 }
 
 async function collectAttachments(message: NonNullable<ReturnType<typeof readEventMessage>>): Promise<InboundAttachment[]> {
@@ -118,6 +325,113 @@ async function collectAttachments(message: NonNullable<ReturnType<typeof readEve
   }];
 }
 
+function synchronousForward(message: GramMessage): InboundForward | null {
+  if (!message.fwdFrom && !message.forward) return null;
+  const inline = describeInboundForward({
+    fromId: message.fwdFrom?.fromId,
+    fromName: message.fwdFrom?.fromName,
+    postAuthor: message.fwdFrom?.postAuthor,
+    sender: message.forward?.sender ?? null,
+    chat: message.forward?.chat ?? null,
+  });
+  if (!inline) return null;
+  if (visibleForwardName(inline.fromName) || message.forward?.sender || message.forward?.chat) return inline;
+  return null;
+}
+
+function bubbleFromGram(message: GramMessage): ChatBubble | null {
+  const bubble = mapTelegramMessage(message as TelegramHistoryMessage);
+  if (!bubble) return null;
+  const inline = synchronousForward(message);
+  if (inline) bubble.forward = publicForward(inline);
+  return bubble;
+}
+
+type InboxNotifyPayload = {
+  [K in InboxPeerUpdate["type"]]: Omit<Extract<InboxPeerUpdate, { type: K }>, "companyId" | "accountId">;
+}[InboxPeerUpdate["type"]];
+
+type InboxNotify = (update: InboxNotifyPayload) => void;
+
+function scheduleForward(message: GramMessage, peerId: string, bubble: ChatBubble, notify: InboxNotify) {
+  if (bubble.forward || (!message.fwdFrom && !message.forward)) return;
+  void readHistoryForward(message).then((forward) => {
+    if (!forward) return;
+    notify({
+      type: "upsert",
+      peerId,
+      inserted: false,
+      bubble: { ...bubble, forward: publicForward(forward) },
+    });
+  }).catch(() => undefined);
+}
+
+function bindInboxUpdates(
+  client: GramJsClient,
+  gram: Awaited<ReturnType<typeof loadGramJs>>,
+  notify: InboxNotify,
+) {
+  const onMessage = (event: unknown, inserted: boolean) => {
+    try {
+      const message = readEventMessage(event);
+      if (!message || message.isGroup || message.isChannel || message.isPrivate === false) return;
+      const peerId = telegramUserId(message.peerId);
+      const bubble = bubbleFromGram(message);
+      if (!bubble) return;
+      notify({ type: "upsert", peerId, bubble, inserted });
+      scheduleForward(message, peerId, bubble, notify);
+    } catch {
+      // A profile or id miss must not drop the live update loop.
+    }
+  };
+  client.addEventHandler((event) => onMessage(event, true), new gram.events.NewMessage({}));
+  client.addEventHandler((event) => onMessage(event, false), new gram.edited({}));
+  client.addEventHandler((event) => {
+    const record = event as { deletedIds?: unknown[]; peer?: unknown };
+    const messageIds = Array.isArray(record.deletedIds)
+      ? record.deletedIds.map((id) => String(id)).filter((id) => /^\d{1,16}$/.test(id))
+      : [];
+    if (messageIds.length === 0) return;
+    let peerId: string | null = null;
+    try {
+      if (record.peer != null) peerId = telegramUserId(record.peer);
+    } catch {
+      peerId = null;
+    }
+    notify({ type: "delete", peerId, messageIds });
+  }, new gram.deleted({}));
+  let broken = false;
+  client.addEventHandler((update) => {
+    const record = update as { className?: unknown; state?: unknown };
+    if (record.className === "UpdatesTooLong") {
+      notify({ type: "gap" });
+      return;
+    }
+    if (typeof record.state !== "number") return;
+    if (record.state !== 1) {
+      broken = true;
+      return;
+    }
+    if (!broken) return;
+    broken = false;
+    notify({ type: "gap" });
+  }, new gram.raw({}));
+}
+
+const SESSION_DEVICE_MODEL_MAX = 64;
+
+export function telegramSessionDeviceModel(companyName: string | null | undefined): string {
+  const cleaned = (companyName ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+  return (cleaned || "Paperclip").slice(0, SESSION_DEVICE_MODEL_MAX);
+}
+
+function gramClientOptions(deviceModel: string) {
+  return {
+    connectionRetries: 5,
+    deviceModel: telegramSessionDeviceModel(deviceModel),
+  };
+}
+
 export function createGramJsClientFactory(): TelegramClientFactory {
   return {
     async startQrLogin(input) {
@@ -126,10 +440,10 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         new gram.sessions.StringSession(""),
         input.credentials.apiId,
         input.credentials.apiHash,
-        { connectionRetries: 5 },
+        gramClientOptions(input.deviceModel),
       );
       await client.connect();
-      const password = createDeferred<string>();
+      const passwords = createLoginPasswordGate();
       let settled = false;
       const signedIn = client.signInUserWithQrCode(
         { apiId: input.credentials.apiId, apiHash: input.credentials.apiHash },
@@ -138,34 +452,46 @@ export function createGramJsClientFactory(): TelegramClientFactory {
             const url = telegramQrUrl(code.token);
             input.onQr(qrImageDataUrl(url));
           },
-          password: async (hint) => {
-            input.onPasswordRequired(hint ?? null);
-            return password.promise;
+          password: async (hint) => passwords.ask((message) => {
+            input.onPasswordRequired(hint ?? null, message);
+          }),
+          onError: (error) => {
+            if (passwords.wasCancelled()) return true;
+            const code = telegramErrorCode(error);
+            if (code === "PASSWORD_HASH_INVALID") {
+              passwords.noteFailure("Cloud password was not accepted.");
+              return false;
+            }
+            if (code === "SRP_ID_INVALID") return false;
+            passwords.noteStop(code ? `Telegram login failed (${code}).` : "Telegram login failed.");
+            return true;
           },
-          onError: () => false,
         },
-      ).then(async () => {
+      ).then(async (user) => {
         settled = true;
-        const me = await client.getMe();
-        return {
-          session: client.session.save(),
-          account: {
-            telegramUserId: asUserId(me.id),
-            username: me.username ?? null,
-            displayName: displayNameFromUser(me),
-          } satisfies PublicTelegramAccount,
-        };
+        const session = client.session.save();
+        const account = accountFromGramUser(user);
+        await client.disconnect().catch(() => undefined);
+        if (!session) throw new Error("Telegram session was empty after login.");
+        return { session, account };
       });
+      const finished = signedIn.then(
+        (value) => value,
+        (error: unknown) => {
+          const reason = passwords.stopMessage();
+          throw new Error(reason ?? (error instanceof Error ? error.message : "Telegram login failed."));
+        },
+      );
 
       const handle: QrLoginHandle = {
         async submitPassword(value) {
-          password.resolve(value);
+          passwords.submit(value);
         },
         async waitUntilSignedIn() {
-          return signedIn;
+          return finished;
         },
         async abort() {
-          if (!settled) password.reject(new Error("Telegram login cancelled."));
+          if (!settled) passwords.cancel();
           await client.disconnect().catch(() => undefined);
         },
       };
@@ -178,42 +504,271 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         new gram.sessions.StringSession(input.session),
         input.credentials.apiId,
         input.credentials.apiHash,
-        { connectionRetries: 5 },
+        gramClientOptions(input.deviceModel),
       );
       await client.connect();
       const me = await client.getMe();
       const account: PublicTelegramAccount = {
-        telegramUserId: asUserId(me.id),
+        telegramUserId: telegramUserId(me.id),
         username: me.username ?? null,
         displayName: displayNameFromUser(me),
       };
       client.addEventHandler(async (event) => {
-        const message = readEventMessage(event);
-        if (!message) return;
-        if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
-        const sender = message.sender;
-        const peerId = asUserId(sender?.id ?? message.peerId);
-        const attachments = await collectAttachments(message);
-        const inbound: InboundDirectMessage = {
+        try {
+          const message = readEventMessage(event);
+          if (!message) return;
+          if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
+          const sender = message.sender;
+          const peerId = telegramUserId(sender?.id ?? message.peerId);
+          const attachments = await collectAttachments(message);
+          const forward = await readInboundForward(message);
+          const inbound: InboundDirectMessage = {
+            companyId: input.companyId,
+            accountId: account.telegramUserId,
+            peerId,
+            peerName: sender ? displayNameFromUser(sender) : peerId,
+            messageId: String(message.id ?? ""),
+            text: typeof message.message === "string" ? message.message : "",
+            isPrivate: true,
+            isGroup: false,
+            isOutgoing: false,
+            attachments,
+            forward,
+          };
+          await input.onInbound(inbound);
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : "Telegram inbound failed.");
+        }
+      }, new gram.events.NewMessage({ incoming: true }));
+
+      const notifyInbox: InboxNotify = (update) => {
+        input.onInboxUpdate?.({
+          ...update,
           companyId: input.companyId,
           accountId: account.telegramUserId,
-          peerId,
-          peerName: sender ? displayNameFromUser(sender) : peerId,
-          messageId: String(message.id ?? ""),
-          text: typeof message.message === "string" ? message.message : "",
-          isPrivate: true,
-          isGroup: false,
-          isOutgoing: false,
-          attachments,
-        };
-        await input.onInbound(inbound);
-      }, new gram.events.NewMessage({ incoming: true }));
+        } as InboxPeerUpdate);
+      };
+      bindInboxUpdates(client, gram, notifyInbox);
+
+      const photos = new Map<string, { small?: string | null; big?: string | null }>();
+      const UsersApi = gram.client.Api?.users;
+
+      async function cachedPhoto(entity: unknown, peerId: string, big: boolean): Promise<string | null> {
+        const slot = photos.get(peerId) ?? {};
+        photos.set(peerId, slot);
+        const key = big ? "big" : "small";
+        if (slot[key] !== undefined) return slot[key] ?? null;
+        if (!hasProfilePhoto(entity) || !client.downloadProfilePhoto) {
+          slot[key] = null;
+          return null;
+        }
+        try {
+          const bytes = await client.downloadProfilePhoto(entity, { isBig: big });
+          const url = photoDataUrl(bytes, big ? 280_000 : 80_000);
+          slot[key] = url;
+          return url;
+        } catch {
+          return null;
+        }
+      }
 
       const live: LiveTelegramAccount = {
         account,
         companyId: input.companyId,
-        async sendText(peerId, text) {
-          await client.sendMessage(peerId, { message: text });
+        async sendText(peerId, text, replyTo) {
+          const reply = typeof replyTo === "string" && /^\d{1,16}$/.test(replyTo) ? Number(replyTo) : 0;
+          await client.sendMessage(peerId, reply > 0 ? { message: text, replyTo: reply } : { message: text });
+        },
+        async messageAction(peerId, action: TelegramMessageAction) {
+          const peer = client.getInputEntity ? await client.getInputEntity(peerId) : peerId;
+          if (action.op === "react") {
+            const Reaction = gram.client.Api?.ReactionEmoji;
+            const SendReaction = gram.client.Api?.messages?.SendReaction;
+            if (!client.invoke || !Reaction || !SendReaction) throw new Error("Telegram reactions are unavailable.");
+            await client.invoke(new SendReaction({
+              peer,
+              msgId: Number(action.messageId),
+              reaction: action.emoji ? [new Reaction({ emoticon: action.emoji })] : [],
+              addToRecent: Boolean(action.emoji),
+            }));
+            return;
+          }
+          if (action.op === "pin") {
+            if (action.unpin) {
+              if (!client.unpinMessage) throw new Error("Telegram pin is unavailable.");
+              await client.unpinMessage(peer, Number(action.messageId));
+              return;
+            }
+            if (!client.pinMessage) throw new Error("Telegram pin is unavailable.");
+            await client.pinMessage(peer, Number(action.messageId), { notify: false, pmOneSide: false });
+            return;
+          }
+          if (action.op === "delete") {
+            if (!client.deleteMessages) throw new Error("Telegram delete is unavailable.");
+            await client.deleteMessages(peer, action.messageIds.map((id) => Number(id)), { revoke: action.revoke });
+            return;
+          }
+          if (!client.forwardMessages) throw new Error("Telegram forward is unavailable.");
+          const target = client.getInputEntity ? await client.getInputEntity(action.targetPeerId) : action.targetPeerId;
+          await client.forwardMessages(target, {
+            messages: action.messageIds.map((id) => Number(id)),
+            fromPeer: peer,
+          });
+        },
+        async readHistory(peerId, limit, beforeId) {
+          const bounded = Math.max(1, Math.min(40, Math.floor(limit) || 40));
+          const peer = client.getInputEntity ? await client.getInputEntity(peerId) : peerId;
+          const before = typeof beforeId === "string" && /^\d{1,16}$/.test(beforeId) ? Number(beforeId) : 0;
+          const messages = await client.getMessages(peer, before > 0 ? { limit: bounded, maxId: before } : { limit: bounded });
+          const bubbles: ChatBubble[] = [];
+          for (const message of messages) {
+            if (!message || typeof message !== "object") continue;
+            const gramMessage = message as GramMessage;
+            const bubble = bubbleFromGram(gramMessage);
+            if (!bubble) continue;
+            bubbles.push(bubble);
+            scheduleForward(gramMessage, peerId, bubble, notifyInbox);
+          }
+          bubbles.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+          return bubbles;
+        },
+        async peerNames() {
+          if (!client.getDialogs) return [];
+          const dialogs = await client.getDialogs({ limit: 50 });
+          const rows: Array<{ id: string; name: string }> = [];
+          for (const dialog of dialogs) {
+            if (!dialog || typeof dialog !== "object") continue;
+            const record = dialog as { id?: unknown; name?: unknown; entity?: unknown; isUser?: boolean };
+            if (record.isUser === false) continue;
+            let id = "";
+            try {
+              id = telegramUserId(record.id);
+            } catch {
+              continue;
+            }
+            const fromEntity = entityLabel(record.entity);
+            const fromTitle = typeof record.name === "string" ? record.name.trim() : "";
+            const name = fromEntity || (!/^\d{5,}$/.test(fromTitle) ? fromTitle : "");
+            if (!id || !name) continue;
+            rows.push({ id, name: name.slice(0, 80) });
+          }
+          return rows;
+        },
+        async peerName(peerId) {
+          if (!client.getEntity) return null;
+          try {
+            const name = entityLabel(await client.getEntity(peerId));
+            return name || null;
+          } catch {
+            return null;
+          }
+        },
+        async peerSummaries() {
+          if (!client.getDialogs) return [];
+          const dialogs = await client.getDialogs({ limit: 50 });
+          const rows: PeerSummary[] = [];
+          const photoQueue: Array<{ id: string; entity: unknown }> = [];
+          let photosLeft = 24;
+          for (const dialog of dialogs) {
+            if (!dialog || typeof dialog !== "object") continue;
+            const record = dialog as {
+              id?: unknown;
+              name?: unknown;
+              title?: unknown;
+              entity?: unknown;
+              isUser?: boolean;
+              message?: unknown;
+              unreadCount?: unknown;
+            };
+            if (record.isUser === false) continue;
+            const id = peerIdOf(record.id);
+            const fromEntity = entityLabel(record.entity);
+            const fromTitle = typeof record.name === "string"
+              ? record.name.trim()
+              : typeof record.title === "string"
+                ? record.title.trim()
+                : "";
+            const name = fromEntity || (!/^\d{5,}$/.test(fromTitle) ? fromTitle : "");
+            if (!id || !name) continue;
+            if (photosLeft > 0 && hasProfilePhoto(record.entity)) {
+              photosLeft -= 1;
+              photoQueue.push({ id, entity: record.entity });
+            }
+            const entity = record.entity && typeof record.entity === "object"
+              ? record.entity as { status?: unknown }
+              : null;
+            const mapped = record.message && typeof record.message === "object"
+              ? mapTelegramMessage(record.message as TelegramHistoryMessage)
+              : null;
+            rows.push({
+              id,
+              name: name.slice(0, 80),
+              preview: previewFromMessage(record.message),
+              unread: unreadCount(record.unreadCount),
+              photo: null,
+              presence: presenceFromStatus(entity?.status),
+              activityAt: mapped?.at ?? "",
+            });
+          }
+          if (photoQueue.length > 0) {
+            void (async () => {
+              for (const job of photoQueue) {
+                const photo = await cachedPhoto(job.entity, job.id, false);
+                if (photo) notifyInbox({ type: "photo", peerId: job.id, photo });
+              }
+            })();
+          }
+          return rows;
+        },
+        async peerProfile(peerId) {
+          if (!client.getEntity) throw new Error("Telegram profile is unavailable");
+          let entity: unknown;
+          try {
+            entity = await client.getEntity(peerId);
+          } catch {
+            throw new Error("Telegram profile is unavailable");
+          }
+          let fullUser: Record<string, unknown> | null = null;
+          let fullUsers: unknown[] = [];
+          let fullChats: unknown[] = [];
+          if (client.invoke && UsersApi) {
+            try {
+              const result = await client.invoke(new UsersApi.GetFullUser({ id: entity }));
+              if (result && typeof result === "object") {
+                const packed = result as { fullUser?: unknown; users?: unknown; chats?: unknown };
+                if (packed.fullUser && typeof packed.fullUser === "object") {
+                  fullUser = packed.fullUser as Record<string, unknown>;
+                }
+                if (Array.isArray(packed.users)) fullUsers = packed.users;
+                if (Array.isArray(packed.chats)) fullChats = packed.chats;
+              }
+            } catch {
+              fullUser = null;
+            }
+          }
+          const user = fullUsers.find((item) => item && typeof item === "object") ?? entity;
+          const record = user && typeof user === "object" ? user as Record<string, unknown> : {};
+          const name = entityLabel(user) || entityLabel(entity) || "Telegram";
+          let channel: string | null = null;
+          const wanted = peerIdOf(fullUser?.personalChannelId);
+          if (wanted) {
+            for (const chat of fullChats) {
+              if (peerIdOf((chat as { id?: unknown }).id) !== wanted) continue;
+              channel = publicChannelTitle(entityLabel(chat));
+              break;
+            }
+          }
+          const profile: PeerProfile = {
+            name,
+            username: publicUsername(record.username),
+            phone: publicPhone(record.phone),
+            about: publicAbout(fullUser?.about),
+            photo: await cachedPhoto(record.photo ? user : entity, peerIdOf(record.id) || peerId, true),
+            presence: presenceFromStatus(record.status ?? (entity as { status?: unknown }).status),
+            channel,
+            sharedChats: publicSharedChats(fullUser?.commonChatsCount),
+          };
+          return profile;
         },
         async disconnect() {
           await client.disconnect();

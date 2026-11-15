@@ -25,13 +25,14 @@ export function reduceLogin(current: LoginStatus, event: LoginEvent): LoginStatu
 
   switch (event.type) {
     case "qr":
-      if (current.state === "qr_pending" || current.state === "password_required") {
+      if (current.state === "password_required") return current;
+      if (current.state === "qr_pending") {
         return { state: "qr_pending", loginId: event.loginId, qr: event.qr };
       }
       return current;
     case "password_required":
       if (current.state === "qr_pending" || current.state === "password_required") {
-        return { state: "password_required", loginId: event.loginId, hint: event.hint };
+        return { state: "password_required", loginId: event.loginId, hint: event.hint, message: event.message };
       }
       return current;
     case "connected":

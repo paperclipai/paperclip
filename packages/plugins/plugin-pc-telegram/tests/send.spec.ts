@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeSendText } from "../src/send.js";
+import { authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "../src/send.js";
 import { AGENT_ID, COMPANY_ID, OTHER_AGENT_ID, OTHER_COMPANY_ID } from "./support.js";
 import type { TelegramConnection } from "../src/types.js";
 
@@ -67,5 +67,23 @@ describe("send authorization", () => {
       text: "Hi",
     });
     expect(result.ok).toBe(false);
+  });
+
+  it("lets an operator reply in the dialog without an agent id", () => {
+    const result = authorizeOperatorReply([{ ...connection, assignedAgentId: null }], {
+      companyId: COMPANY_ID,
+      issueOriginId: "1001:2002",
+      text: "Добрый день",
+    });
+    expect(result).toMatchObject({ ok: true, accountId: "1001", peerId: "2002" });
+    expect(authorizeOperatorReply([connection], {
+      companyId: COMPANY_ID,
+      issueOriginId: null,
+      text: "Добрый день",
+    }).ok).toBe(false);
+    expect(authorizeOperatorDialog([connection], {
+      companyId: COMPANY_ID,
+      issueOriginId: "1001:2002",
+    })).toMatchObject({ ok: true, accountId: "1001", peerId: "2002" });
   });
 });
