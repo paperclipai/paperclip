@@ -137,6 +137,13 @@ discarded. The native daemon build cache holds dependency crates only. Its key
 covers the Cargo manifest, Cargo configuration, host and target, but not the
 Runner's own source, so a Runner change does not discard the dependencies.
 
+During a release (`PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR` set), the Runner
+package build does not compile `paperclip-runnerd`. It verifies the
+exact-source release daemon for the publisher's own target (source, digest,
+architecture and build metadata) and stages it at `dist/bin`, so the build
+stamp and the server's vendored Runner stay current. Every other build still
+runs `build:binary`.
+
 After publication, the onboarding smoke checks out the same source SHA and
 installs its test dependencies from the publisher's resolved lockfile with
 `--frozen-lockfile`. The same-run artifact is captured before tracked files are

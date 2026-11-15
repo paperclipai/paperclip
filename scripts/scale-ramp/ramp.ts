@@ -2,7 +2,7 @@ import { readMetrics, type Clock, type Fetcher, type PaperclipClient } from "./c
 import type { Options, Step } from "./config.ts";
 import { evaluate, firstFailure, type CriterionResult, type ServerMetrics, type StepMetrics } from "./criteria.ts";
 import { LIVE_RUN_STATUSES } from "./cleanup.ts";
-import { ensureAgents } from "./setup.ts";
+import { AgentsNotReady, describeAgent, ensureAgents, waitForAgentsReady } from "./setup.ts";
 import { distribution } from "./stats.ts";
 import { mapLimit, taskTag, type RunState, type StateStore } from "./state.ts";
 import { runTiming, taskBrief, taskNonce, taskTitle, type RunEvent } from "./workload.ts";
@@ -19,6 +19,7 @@ export const BOARD_MIX = [
 
 const FAILED_RUN = new Set(["failed", "timed_out"]);
 const RESTING_NOT_DONE = new Set(["cancelled", "blocked", "in_review"]);
+const ENDED_RUN = new Set(["failed", "timed_out", "cancelled", "succeeded", "interrupted"]);
 const RUN_PAGE = 1_000;
 const IDS_PER_READ = 100;
 const RETRY_CHECK_AFTER_MS = 60_000;
@@ -51,6 +52,9 @@ interface RunRecord {
   finishedAt: number | null;
   costUsd: number;
   sampled: boolean;
+  error: string | null;
+  errorCode: string | null;
+  liveness: string | null;
 }
 
 interface StepAccumulator {
@@ -216,14 +220,16 @@ export class Ramp {
         break;
       }
       log(`Step ${step.index + 1}/${options.steps.length}: ${step.concurrency} agents for ${Math.round(step.holdMs / 60_000)} min`);
-      await ensureAgents({ api: this.deps.api, options, state: this.deps.state, store: this.deps.store, count: step.concurrency });
       const accumulator: StepAccumulator = { step, startedAt: clock.now(), endedAt: null, runningSamples: [], boardMs: [], boardRequests: 0,
         boardFailures: 0, serverSamples: [], ttftMs: [], firstActivityMs: [], sampled: 0 };
       this.accumulators.push(accumulator);
-      this.nextPollAt = 0;
-      this.nextBoardAt = 0;
-      const until = accumulator.startedAt + step.holdMs;
-      stop = await this.loop(until, step.concurrency);
+      stop = await this.prepareStep(step);
+      if (!stop) {
+        this.nextPollAt = 0;
+        this.nextBoardAt = 0;
+        accumulator.startedAt = clock.now();
+        stop = await this.loop(accumulator.startedAt + step.holdMs, step.concurrency);
+      }
       accumulator.endedAt = clock.now();
       const atEnd = evaluate(this.metrics(step.index), options.thresholds);
       results.push({ index: step.index, concurrency: step.concurrency, holdMs: step.holdMs, metrics: this.metrics(step.index), criteriaAtEnd: atEnd, criteriaFinal: atEnd });
@@ -253,6 +259,97 @@ export class Ramp {
     };
   }
 
+  private async prepareStep(step: Step): Promise<StopReason | null> {
+    try {
+      if (step.index === 0) {
+        const stop = await this.preflight();
+        if (stop) return stop;
+      }
+      if (this.deps.shouldStop()) return { stepIndex: step.index, reason: "interrupted before the step", criterion: null };
+      await ensureAgents({ api: this.deps.api, options: this.deps.options, state: this.deps.state, store: this.deps.store, count: step.concurrency });
+      return await this.awaitAgents(step.concurrency, step.index);
+    } catch (error) {
+      if (!(error instanceof AgentsNotReady)) throw error;
+      this.deps.log(`Stopping: ${error.message}`);
+      return { stepIndex: step.index, reason: error.message, criterion: "agents_ready" };
+    }
+  }
+
+  private async awaitAgents(count: number, stepIndex: number): Promise<StopReason | null> {
+    const { api, clock, options, state, log, shouldStop } = this.deps;
+    let stop: StopReason | null = null;
+    await waitForAgentsReady({ api, clock, companyId: this.companyId, agentIds: state.agentIds.slice(0, count), timeoutMs: options.agentReadyTimeoutMs,
+      pollMs: Math.min(options.pollMs, 5_000), shouldStop, log,
+      tick: async () => {
+        if (!this.tasks.size) return false;
+        await this.poll(false);
+        stop = this.immediateStop(stepIndex);
+        return stop !== null;
+      } });
+    return stop;
+  }
+
+  private async preflight(): Promise<StopReason | null> {
+    const { api, clock, options, state, store, log } = this.deps;
+    await ensureAgents({ api, options, state, store, count: 1 });
+    const notReady = await this.awaitAgents(1, 0);
+    if (notReady) return notReady;
+    if (this.deps.shouldStop()) return { stepIndex: 0, reason: "interrupted before the step", criterion: null };
+    log(`Preflight: one task on one agent must start within ${Math.round(options.startTimeoutMs / 60_000)} min before the rest are created`);
+    await this.topUp(1, 0, Number.POSITIVE_INFINITY);
+    const task = [...this.tasks.values()][0];
+    if (!task) return { stepIndex: 0, reason: "the preflight task was not created", criterion: "run_started" };
+    for (;;) {
+      if (this.deps.shouldStop()) return { stepIndex: 0, reason: "interrupted", criterion: null };
+      await this.poll();
+      const immediate = this.immediateStop(0);
+      if (immediate) return immediate;
+      if (this.anyStarted()) {
+        log(`Preflight passed: the first task started ${Math.round((clock.now() - task.createdAt) / 1_000)} s after it was created`);
+        this.current().runningSamples.length = 0;
+        return null;
+      }
+      const ended = this.runsOf(task.id).find(run => run.finishedAt !== null || ENDED_RUN.has(run.status));
+      if (task.outcome !== "open" || ended) {
+        return this.stall(0, task, `the preflight task ended before any run started`);
+      }
+      const stop = await this.noStartStop(0);
+      if (stop) return stop;
+      await clock.sleep(options.pollMs);
+    }
+  }
+
+  private anyStarted(): boolean {
+    for (const run of this.runs.values()) if (run.startedAt !== null || run.status === "running") return true;
+    return false;
+  }
+
+  private async noStartStop(stepIndex: number): Promise<StopReason | null> {
+    const { clock, options } = this.deps;
+    if (!this.tasks.size || this.anyStarted()) return null;
+    const first = [...this.tasks.values()].sort((a, b) => a.createdAt - b.createdAt)[0]!;
+    if (clock.now() - first.createdAt < options.startTimeoutMs) return null;
+    return this.stall(stepIndex, first, `no run started within ${Math.round(options.startTimeoutMs / 60_000)} min of the first task`);
+  }
+
+  private async stall(stepIndex: number, task: TaskRecord, headline: string): Promise<StopReason> {
+    const { api, log } = this.deps;
+    const [view, agents] = await Promise.all([
+      api.get<Json>(`/api/issues/${task.id}`).catch(() => null),
+      api.get<Json[]>(`/api/companies/${this.companyId}/agents`).catch(() => [] as Json[]),
+    ]);
+    const run = this.runsOf(task.id).at(-1);
+    const agent = agents.find(candidate => String(candidate.id) === task.agentId);
+    const runLine = run
+      ? `its run ${run.id} is ${run.status}${run.errorCode ? ` (${run.errorCode})` : ""}${run.error ? `: ${run.error.slice(0, 300)}` : ""}${run.liveness ? `; liveness: ${run.liveness}` : ""}`
+      : "Paperclip lists no run for it";
+    const blocker = view?.executionBlocker ? `; execution blocker: ${JSON.stringify(view.executionBlocker).slice(0, 300)}` : "";
+    const reason = `${headline}. Task ${task.nonce} is ${view?.status ?? task.status}`
+      + `${blocker}; ${runLine}; ${agent ? describeAgent(agent) : `agent ${task.agentId} is not listed`}`;
+    log(`Stopping: ${reason}`);
+    return { stepIndex, reason, criterion: "run_started" };
+  }
+
   private async loop(until: number, concurrency: number, draining = false): Promise<StopReason | null> {
     const { clock, options } = this.deps;
     const stepIndex = this.current().step.index;
@@ -265,7 +362,7 @@ export class Ramp {
       if (clock.now() >= this.nextPollAt) {
         this.nextPollAt = clock.now() + options.pollMs;
         await this.poll();
-        const stop = this.immediateStop(stepIndex);
+        const stop = this.immediateStop(stepIndex) ?? await this.noStartStop(stepIndex);
         if (stop) return stop;
         if (!draining) await this.topUp(concurrency, stepIndex, until);
         else if (this.openTasks().length === 0) return null;
@@ -337,13 +434,14 @@ export class Ramp {
     }
   }
 
-  private async poll(): Promise<void> {
+  private async poll(recordSample = true): Promise<void> {
     await this.readRuns();
     await this.readTasks();
     await this.checkRetry();
     await this.sampleEvents();
     let running = 0;
     for (const run of this.runs.values()) if (run.status === "running") running += 1;
+    if (!recordSample) return;
     this.current().runningSamples.push(running);
     if (this.deps.options.metricsUrl) {
       const sample = await readMetrics(this.deps.fetcher, this.deps.options.metricsUrl, this.deps.metricsToken, this.deps.clock);
@@ -362,6 +460,9 @@ export class Ramp {
     this.runs.set(id, {
       id, taskId, agentId: String(row.agentId), status: String(row.status), createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
       finishedAt: ms(row.finishedAt), costUsd: num(row.costUsd) ?? previous?.costUsd ?? 0, sampled: previous?.sampled ?? false,
+      error: typeof row.error === "string" && row.error ? row.error : null,
+      errorCode: typeof row.errorCode === "string" && row.errorCode ? row.errorCode : null,
+      liveness: typeof row.livenessReason === "string" && row.livenessReason ? row.livenessReason : null,
     });
     const own = this.runsByTask.get(taskId) ?? new Set<string>();
     own.add(id);
