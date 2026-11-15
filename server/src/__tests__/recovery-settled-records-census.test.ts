@@ -12,6 +12,7 @@ import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
 import { executionControlSchedule, registerExecutionControlWork } from "../services/execution-control-work.js";
 import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { createOwnershipReportState, recheckSettlingKinds, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
@@ -286,4 +287,18 @@ describe.skipIf(!support.supported)("recovery passes over settled records (censu
     const settledPass = await census(() => runOwnershipReconciliationPass(db, { state }));
     expect([...settledPass.byShape.keys()].filter(key => /remote-(workspace-unsaved-files|snapshot-ledger)-settlement/.test(key))).toEqual([]);
   }, 300_000);
+
+  it("skips a dirty workspace whose writer id is not a UUID without failing the listing", async () => {
+    const valid = runRow({ executionStage: "preparing", finishedAt: minutesAgo(2) });
+    const rows: Rows = { runs: [valid], workspaces: [workspaceRow({ epoch: 1, writerRunId: valid.id, dirty: true, location: true })],
+      operations: [], snapshots: [] };
+    const malformed = workspaceRow({ epoch: 1, writerRunId: null, dirty: true, location: true });
+    malformed.metadata.remoteWorkspace.writerRunId = "not-a-run-id" as unknown as null;
+    rows.workspaces.push(malformed);
+    await insert(rows);
+    const kind = OWNABLE_KINDS.find(entry => entry.id === "remote_workspace_unsaved_files")!;
+    const listed = await kind.listInProgress!(db, 200, 0);
+    expect(listed.records.map(record => record.recordId)).toEqual([rows.workspaces[0]!.id]);
+  }, 120_000);
 });
+
