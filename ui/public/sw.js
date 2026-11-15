@@ -98,6 +98,27 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = event.notification.data;
+  const href = data && typeof data.href === "string" ? data.href : "";
+  event.waitUntil((async () => {
+    const target = href ? new URL(href, self.location.origin).href : self.location.origin + "/";
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      if (href && typeof client.navigate === "function") {
+        try {
+          const navigated = await client.navigate(target);
+          if (navigated && typeof navigated.focus === "function") return navigated.focus();
+        } catch {}
+      }
+      if (typeof client.focus === "function") return client.focus();
+    }
+    if (self.clients.openWindow) return self.clients.openWindow(target);
+    return undefined;
+  })());
+});
+
 self.addEventListener("fetch", (event) => {
   // Vite owns development module revalidation and HMR. Passing that graph
   // through an offline worker can forward bodyless 304 responses on reload.

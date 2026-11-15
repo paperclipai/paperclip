@@ -18,6 +18,7 @@ import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
+import { DesktopNotificationNavigationBinder } from "./components/DesktopNotificationsSettings";
 import { ToastProvider, useToastActions, type ToastInput } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { DesignSandboxProvider } from "./context/DesignSandboxContext";
@@ -133,6 +134,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
             <CompanyProvider>
               <EditorAutocompleteProvider>
                 <ToastProvider>
+                  <DesktopNotificationNavigationBinder />
                   <MutationErrorToastBridge />
                   <PrimaryAgentProvider>
                   <LiveUpdatesProvider>
