@@ -475,6 +475,22 @@ export interface ConfigFieldSchema {
   meta?: Record<string, unknown>;
 }
 
+export interface ConfigFieldAiConnectionMeta {
+  harness: string;
+  providers?: string[];
+  protocols?: string[];
+}
+
+export interface AdapterAiConnectionRuntimeValue {
+  connectionId: string;
+  name?: string;
+  provider?: string;
+  method?: string;
+  routing?: { kind: string; protocol: string; baseUrl: string } | null;
+  env?: Record<string, string>;
+  error?: string;
+}
+
 export interface AdapterConfigSchema {
   fields: ConfigFieldSchema[];
 }

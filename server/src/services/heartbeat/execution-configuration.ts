@@ -27,6 +27,7 @@ import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
 import { resolveAssignedConnectionInstructionsForRun, resolveMcpConnectionSkillsForRun } from "../native-runtime/assigned-mcp-tools.js";
 import { applyMcpConnectionSkills } from "../mcp-skill-runtime.js";
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
+import { resolveAdapterAiConnectionFields } from "../adapter-ai-connection-fields.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
 import { environmentSkillConfig } from "../environment-skills.js";
@@ -93,6 +94,7 @@ export interface HeartbeatExecutionConfigurationInput {
   // The executor must observe these before a later preparation step can throw.
   onFailureSecretsResolved: (readSecrets: () => string[]) => void;
   onManagedAiRuntimeAcquired: (runtime: ManagedAiRuntime) => void;
+  onSchemaAiRuntimeAcquired?: (runtime: ManagedAiRuntime) => void;
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
@@ -115,7 +117,7 @@ export function buildHeartbeatWorkspaceConfiguration(
 
 /** Assembles effective run configuration; the executor retains cleanup ownership. */
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
-  const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
+  const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onSchemaAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
   const time = createHeartbeatPreparationTiming(run.id);
   const { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest } = input.task;
   const { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput } = input.environment;
@@ -270,6 +272,13 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
   }
+  const schemaAiConnections = await resolveAdapterAiConnectionFields(db, {
+    companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType,
+    config: resolvedConfig, onRuntime: onSchemaAiRuntimeAcquired ?? ((runtime) => { void runtime.cleanup().catch(() => undefined); }),
+  });
+  Object.assign(resolvedConfig, schemaAiConnections.values);
+  identityRedactor.addSecretValues(schemaAiConnections.secretValues);
+  onFailureSecretsResolved(() => [...collectRunFailureSecretValues(resolvedConfig.env, secretKeys), ...schemaAiConnections.secretValues]);
   if (secretManifest.length > 0) {
     context.paperclipSecrets = {
       manifest: secretManifest,
