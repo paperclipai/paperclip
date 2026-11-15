@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
+import { installDatabaseWorkSignals, publishDatabaseWorkSettled } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { beginIdleTrackedWork, idleWorkSnapshot, isIdleTaskDrainActive, readTaskDrain, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
@@ -398,4 +398,68 @@ it("invalidates owner reconciliation synchronously before awaiting an active sto
   expect(stopped).toBe(false);
   finish(); await worker.ready; await stopping;
   expect(stopped).toBe(true);
+});
+
+describe("settled hints a task cannot apply", () => {
+  function settledFixture(onSettled: (hints?: ReadonlySet<string>) => void) {
+    const s = setup();
+    const t = { ...task(), onSettled: vi.fn(onSettled) };
+    const worker = s.coordinator.register(DELIVERY_QUEUES.feedback, t);
+    return { s, t, worker };
+  }
+  const received = (mock: ReturnType<typeof vi.fn>) => mock.mock.calls.map(([hints]) => hints === undefined ? null : [...hints as ReadonlySet<string>]);
+
+  it("still wakes the task, unscoped, and logs a warning when it rejects a hint", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(hints => {
+        if (hints && [...hints].some(hint => !hint.startsWith("company:"))) throw new Error("unknown hint shape");
+      });
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "{\"newShape\":1}");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["{\"newShape\":1}"], null]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]![0])).toContain(`Delivery settlement could not be applied for ${DELIVERY_QUEUES.feedback}`);
+      expect(s.onError).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it("wakes the task once without retrying when even the unscoped settlement throws", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(() => { throw new Error("broken"); });
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "company:1");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["company:1"], null]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledTimes(2);
+      t.onSettled.mockClear(); warn.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([null]);
+      expect(t.run).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(t.run).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
+  });
+
+  it("passes recognised hints through once, without a warning", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(() => {});
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "company:1");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["company:1"]]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
 });

@@ -3,6 +3,7 @@ import { HttpError, badRequest } from "../../errors.js";
 import { SessionAuthorityEpoch } from "./native-session-executor.js";
 import type { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { executeRunnerApi } from "./runner-api-client.js";
+import { TOOL_CALL_LOOP_REFUSAL_LIMIT, TOOL_CALL_LOOP_RUN_REFUSAL_LIMIT, ToolCallLoopError } from "./repeated-tool-failure-guard.js";
 
 const context = { companyId: "company-a", issueId: "issue-a", issueIdentifier: "API-1", runId: "run-a", workMode: "standard" };
 
@@ -51,6 +52,39 @@ describe("repeated identical failing tool calls", () => {
     }
     expect(authority.execute).toHaveBeenCalledTimes(2);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("after N refusals the guard raises a turn-stopping loop error", async () => {
+    const { authority, epoch } = epochWith(async () => { throw badRequest("body is required"); });
+    const call = (n: number) => ({ tool: "call_api", callId: `loop-${n}`, arguments: dropped });
+    await failure(epoch, call(1));
+    await failure(epoch, call(2));
+    for (let n = 1; n < TOOL_CALL_LOOP_REFUSAL_LIMIT; n++) {
+      const refused = await failure(epoch, call(2 + n));
+      expect(refused).not.toBeInstanceOf(ToolCallLoopError);
+      expect(refused?.message).toMatch(/^This call was not run/);
+    }
+    const stopped = await failure(epoch, call(2 + TOOL_CALL_LOOP_REFUSAL_LIMIT));
+    expect(stopped).toBeInstanceOf(ToolCallLoopError);
+    expect(stopped).toMatchObject({ code: "agent_tool_call_loop", tool: "call_api", refusals: TOOL_CALL_LOOP_REFUSAL_LIMIT,
+      argumentNames: ["operationId", "pathParams", "query", "responseText"] });
+    expect(authority.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops the turn once refusals across different calls reach the run limit", async () => {
+    const { epoch } = epochWith(async () => { throw badRequest("body is required"); });
+    let stopped: Error | null = null;
+    let refusals = 0;
+    for (let variant = 0; !stopped && variant < TOOL_CALL_LOOP_RUN_REFUSAL_LIMIT; variant++) {
+      const args = { ...dropped, pathParams: { id: `issue-${variant}` } };
+      for (let n = 0; n < 2 + TOOL_CALL_LOOP_REFUSAL_LIMIT - 1 && !stopped; n++) {
+        const error = await failure(epoch, { tool: "call_api", callId: `v${variant}-${n}`, arguments: args });
+        if (error instanceof ToolCallLoopError) stopped = error;
+        else if (error?.message.startsWith("This call was not run")) refusals++;
+      }
+    }
+    expect(stopped).toBeInstanceOf(ToolCallLoopError);
+    expect(refusals + 1).toBe(TOOL_CALL_LOOP_RUN_REFUSAL_LIMIT);
   });
 
   it("runs the call again once its arguments change", async () => {

@@ -54,7 +54,7 @@ export function parseK15HoldSeconds(options: { faults: readonly string[] }, raw:
 export const K15_OVERLAP_SECONDS_RANGE: readonly [number, number] = [5, 600];
 
 /**
- * The staging deploy shape (README "Redeploy without a volume, with overlap"):
+ * The staging deploy shape (SCENARIOS.md "Redeploy without a volume, with overlap"):
  *
  * - `--k15-overlap-seconds <n>` or `<min>-<max>`: a K15 boots the next deploy generation beside the old server,
  *   switches traffic (the wave's stable port) to it once it is ready, keeps the old server running for the seeded

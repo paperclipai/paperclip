@@ -7,7 +7,7 @@ import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
 import { githubReviewCheckState } from "./review-check-state.js";
 
 type Scope = { companyId: string; endpointId?: string; repositoryId?: string; number?: number; issueId?: string };
-type Entry = Scope & { id: string; dueAt: number };
+type Entry = Scope & { id: string; dueAt: number; stateRead: boolean };
 
 export const GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS = 30_000;
 
@@ -48,18 +48,21 @@ export function registerGitHubReviewCheckWork(
       cursor ? gt(chatActions.id, cursor) : undefined, actionId ? eq(chatActions.id, actionId) : undefined,
     )).orderBy(asc(chatActions.id)).limit(100);
   }
-  async function entry(row: Awaited<ReturnType<typeof page>>[number]): Promise<Entry> {
+  /** `readState` compares the current check status with the published one, so
+   * a change is published before the saved poll deadline. */
+  async function entry(row: Awaited<ReturnType<typeof page>>[number], readState = true): Promise<Entry> {
     const { action } = row;
     const event = action.payload.event as GitHubReviewEventContext;
     let dueAt = action.result?.retryAt ? Date.parse(String(action.result.retryAt)) : 0;
     if (!Number.isFinite(dueAt)) throw new Error("GitHub review check has an invalid retry deadline");
-    if (action.status === "received") {
+    if (action.status === "received" && readState) {
       const current = await githubReviewCheckState(db, action);
       if (current.disposition !== "publish" || current.state !== action.result?.state) dueAt = 0;
     }
     if (row.leaseExpiresAt) dueAt = Math.max(dueAt, Date.parse(row.leaseExpiresAt));
     return { id: action.id, companyId: action.companyId, endpointId: action.endpointId,
-      repositoryId: event.repositoryId, number: event.pullNumber, issueId: row.reviewIssueId ?? undefined, dueAt };
+      repositoryId: event.repositoryId, number: event.pullNumber, issueId: row.reviewIssueId ?? undefined, dueAt,
+      stateRead: readState || action.status !== "received" };
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.chatGitHubReviewChecks,
@@ -69,14 +72,24 @@ export function registerGitHubReviewCheckWork(
       (!scope.repositoryId || value.repositoryId === scope.repositoryId) && (!scope.number || value.number === scope.number) &&
       (!scope.issueId || value.issueId === scope.issueId)),
     reconstructionIntervalMs: githubReviewCheckReconstructionIntervalMs,
+    // A rebuild that did not read the status must not postpone a change that
+    // an earlier read found due. check() reads the status again.
+    mergeEntry: (pending: Entry, loaded: Entry) => loaded.stateRead ? loaded
+      : { ...loaded, dueAt: Math.min(pending.dueAt, loaded.dueAt) },
     load: async (scope?: Scope, signal?: AbortSignal) => {
       const entries: Entry[] = [];
       let cursor: string | undefined;
+      // A company-wide hint says only that something in the company changed.
+      // Its rebuild keeps each check's saved poll deadline, where dispatch reads
+      // the current status anyway. A change to a check's run or pull request
+      // sends a hint for its task or pull request, and startup (no scope) reads
+      // every status, so both still publish a change at once.
+      const readState = !scope || !!(scope.endpointId || scope.repositoryId || scope.number || scope.issueId);
       while (canRun() && !signal?.aborted) {
         const rows = await page(scope, cursor);
         for (const row of rows) {
           if (!canRun() || signal?.aborted) throw signal?.reason ?? new Error("GitHub review check recovery stopped");
-          entries.push(await entry(row));
+          entries.push(await entry(row, readState));
         }
         if (rows.length < 100) return entries;
         cursor = rows[rows.length - 1].action.id;
