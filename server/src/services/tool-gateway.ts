@@ -319,6 +319,7 @@ const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // create) so a live create keeps its own row.
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
+const GATEWAY_RUN_SUBJECT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // A tool listing decides access for every tool in the company. The decisions
 // of one listing share a read cache, so this cap only limits how many of them
 // (and their uncached reads, such as rate-limit counters) run at the same time.
@@ -13749,7 +13750,7 @@ export function createToolGatewayService(
               and (${toolMcpGatewayTokens.subjectType} <> 'heartbeat_run'
                 or ${toolMcpGatewayTokens.subjectId} is null
                 or not exists (select 1 from ${heartbeatRuns}
-                  where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId}
+                  where ${heartbeatRuns.id} = (case when ${toolMcpGatewayTokens.subjectId} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then ${toolMcpGatewayTokens.subjectId}::uuid end)
                     and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)})))
             order by ${toolMcpGatewayTokens.expiresAt} limit 1)
           union all
@@ -13775,14 +13776,14 @@ export function createToolGatewayService(
             or(
               ne(toolMcpGatewayTokens.subjectType, "heartbeat_run"),
               isNull(toolMcpGatewayTokens.subjectId),
-              sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId} and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)}))`,
+              sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = (case when ${toolMcpGatewayTokens.subjectId} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then ${toolMcpGatewayTokens.subjectId}::uuid end) and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)}))`,
             ),
           ))
           .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
           .limit(500);
         let deletableTokenIds = expiredTokens.map((token) => token.id);
         const runScopedSubjectIds = expiredTokens
-          .filter((token) => token.subjectType === "heartbeat_run" && token.subjectId)
+          .filter((token) => token.subjectType === "heartbeat_run" && token.subjectId && GATEWAY_RUN_SUBJECT_ID_PATTERN.test(token.subjectId))
           .map((token) => token.subjectId as string);
         if (runScopedSubjectIds.length > 0) {
           const activeRunIds = new Set(
