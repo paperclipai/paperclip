@@ -31,6 +31,7 @@ function fakeProbes() {
     mainThreadCpuMs: () => state.mainMs,
     statementCount: () => state.statements,
     uptimeSec: () => state.uptime,
+    dedicatedConnections: () => ({ limit: 24, inUse: 3, peakInUse: 9, waiting: 1, queued: 12, overLimit: 0, nestedOverLimit: 0 }),
   };
   const advance = (ms: number, load: { busy: number; cpu?: number; statementsPerSecond?: number }) => {
     state.now += ms;

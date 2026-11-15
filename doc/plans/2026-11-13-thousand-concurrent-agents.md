@@ -471,8 +471,11 @@ export PAPERCLIP_SCALE_METRICS_URL=https://$H/api/instance/server-metrics
 | `agentApiPreHandlerP99Ms` | agent API request arrival to the API router, p99 (null with no agent requests) | two middlewares |
 | `leaseRenewalsMissed` | counter since process start: native run leases whose deadline passed unrenewed | lease deadline timer |
 
-`processCpu`, `runEventLatenessSamples` and `agentApiPreHandlerSamples` are
-extra context. `poolWaitP99Ms` is absent: postgres.js exposes no cheap hook
+`processCpu`, `runEventLatenessSamples`, `agentApiPreHandlerSamples` and
+`dedicatedConnections` are extra context. `dedicatedConnections` is the
+process's dedicated-connection bound at the time of the request: `limit`,
+`inUse`, `waiting` (gauges), `peakInUse`, `queued`, `overLimit` and
+`nestedOverLimit` (counts since start); queueing there shows a restart burst. `poolWaitP99Ms` is absent: postgres.js exposes no cheap hook
 for time spent queued for a connection, so pool wait stays not measured. With
 several processes, each request reaches one of them; the harness keeps the
 highest gauge and sums the counter's growth per `processId`. Without the

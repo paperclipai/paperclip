@@ -9,7 +9,7 @@ import {
   type RecordableHistogram,
 } from "node:perf_hooks";
 import type { RequestHandler } from "express";
-import { databaseStatementCount } from "@paperclipai/db";
+import { databaseStatementCount, type DedicatedDbConnectionStats } from "@paperclipai/db";
 import { readBuildCommit } from "../build-commit.js";
 
 export const SERVER_METRICS_ENV = "PAPERCLIP_SERVER_METRICS";
@@ -36,6 +36,7 @@ export type ServerMetricsSnapshot = {
   agentApiPreHandlerP99Ms: number | null;
   agentApiPreHandlerSamples: number;
   leaseRenewalsMissed: number;
+  dedicatedConnections: DedicatedDbConnectionStats | null;
 };
 
 export type ServerMetricsProbes = {
@@ -46,6 +47,7 @@ export type ServerMetricsProbes = {
   mainThreadCpuMs: () => number | null;
   statementCount: () => number;
   uptimeSec: () => number;
+  dedicatedConnections: () => DedicatedDbConnectionStats | null;
 };
 
 type Checkpoint = {
@@ -79,6 +81,7 @@ const defaultProbes: ServerMetricsProbes = {
   mainThreadCpuMs: readLinuxMainThreadCpuMs,
   statementCount: databaseStatementCount,
   uptimeSec: () => process.uptime(),
+  dedicatedConnections: () => null,
 };
 
 const round = (value: number, digits: number) => Number(value.toFixed(digits));
@@ -197,6 +200,7 @@ export class ServerMetricsCollector {
       agentApiPreHandlerP99Ms: preHandler.p99Ms,
       agentApiPreHandlerSamples: preHandler.samples,
       leaseRenewalsMissed: this.missedLeaseRenewals,
+      dedicatedConnections: this.probes.dedicatedConnections(),
     };
   }
 
@@ -218,8 +222,8 @@ export function serverMetricsEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
   throw new Error(`${SERVER_METRICS_ENV} must be "true" or "false", got: ${env[SERVER_METRICS_ENV]}`);
 }
 
-export function startServerMetrics(): ServerMetricsCollector {
-  active ??= new ServerMetricsCollector();
+export function startServerMetrics(dedicatedConnections?: () => DedicatedDbConnectionStats | null): ServerMetricsCollector {
+  active ??= new ServerMetricsCollector(dedicatedConnections ? { probes: { dedicatedConnections } } : {});
   return active;
 }
 

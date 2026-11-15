@@ -11,7 +11,7 @@ import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
 import { eq } from "drizzle-orm";
-import { chatEndpoints } from "@paperclipai/db";
+import { chatEndpoints, dedicatedDbConnectionStats } from "@paperclipai/db";
 import { fastResponseRoutes } from "./routes/fast-responses.js";
 import { fastResponseService } from "./services/fast-responses.js";
 import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
@@ -503,7 +503,7 @@ export async function createApp(
   },
 ) {
   const app = express();
-  const serverMetrics = (opts.serverMetricsEnabled ?? serverMetricsEnabledFromEnv(process.env)) ? startServerMetrics() : null;
+  const serverMetrics = (opts.serverMetricsEnabled ?? serverMetricsEnabledFromEnv(process.env)) ? startServerMetrics(() => dedicatedDbConnectionStats(db)) : null;
   if (serverMetrics) app.use("/api", serverMetricsArrival());
   // First, so the reported server time includes admission and database waits.
   app.use("/api", apiServerTiming());

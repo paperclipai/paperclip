@@ -17,7 +17,7 @@ const PATH = "/api/instance/server-metrics";
 const FIELDS = [
   "schema", "processId", "buildRevision", "uptimeSec", "sampledAt", "windowMs", "mainThreadCpu", "processCpu",
   "eventLoopUtilization", "eventLoopDelayP99Ms", "statementsPerSecond", "runEventLatenessP99Ms", "runEventLatenessSamples",
-  "agentApiPreHandlerP99Ms", "agentApiPreHandlerSamples", "leaseRenewalsMissed",
+  "agentApiPreHandlerP99Ms", "agentApiPreHandlerSamples", "leaseRenewalsMissed", "dedicatedConnections",
 ].sort();
 
 type Db = ReturnType<typeof createDb>;
@@ -103,6 +103,8 @@ describePostgres("instance server metrics route", () => {
         expect(typeof first.body[field], field).toBe("number");
       }
       expect(first.body.eventLoopUtilization).toBeGreaterThanOrEqual(0);
+      expect(first.body.dedicatedConnections).toMatchObject({ limit: expect.any(Number), inUse: expect.any(Number), waiting: expect.any(Number),
+        queued: expect.any(Number) });
       expect(first.body.eventLoopUtilization).toBeLessThanOrEqual(1);
 
       const statementsBefore = databaseStatementCount();

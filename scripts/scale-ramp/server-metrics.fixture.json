@@ -14,5 +14,14 @@
   "runEventLatenessSamples": 50,
   "agentApiPreHandlerP99Ms": 15.007,
   "agentApiPreHandlerSamples": 50,
-  "leaseRenewalsMissed": 1
+  "leaseRenewalsMissed": 1,
+  "dedicatedConnections": {
+    "limit": 24,
+    "inUse": 3,
+    "peakInUse": 9,
+    "waiting": 1,
+    "queued": 12,
+    "overLimit": 0,
+    "nestedOverLimit": 0
+  }
 }
