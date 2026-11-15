@@ -128,10 +128,15 @@ describe("remote agent directory checkpoint locking", () => {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
     })();
-    const saved = await copies.checkpointWarm({ companyId, runId: copy.runId, target: executionTarget });
-    const elapsedMs = performance.now() - startedAt;
-    sampling = false;
-    await sampler;
+    let saved: Awaited<ReturnType<typeof copies.checkpointWarm>>;
+    let elapsedMs: number;
+    try {
+      saved = await copies.checkpointWarm({ companyId, runId: copy.runId, target: executionTarget });
+      elapsedMs = performance.now() - startedAt;
+    } finally {
+      sampling = false;
+      await sampler;
+    }
     expect(saved, JSON.stringify({ code: saved?.errorCode, message: saved?.errorMessage })).toMatchObject({ state: "warm_saved", errorCode: null });
     expect(await fs.readFile(path.join(root, "memory.txt"), "utf8")).toBe("turn one\n");
     console.info(JSON.stringify({ metric: "remote_checkpoint_directory_lock", runnerCalls: calls.length,
