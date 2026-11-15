@@ -17,7 +17,8 @@ export function linkPreviewQueryOptions(context: LinkPreviewLoader, target: Link
     },
     staleTime: (query: { state: { data?: LinkPreviewResult } }) => query.state.data?.maxAgeMs ?? 60_000,
     gcTime: 5 * 60_000,
-    retry: false as const, refetchOnMount: false as const,
+    retry: false as const, // query-error-ok: Optional previews preserve saved status and cache failure backoff; automatic retries would exceed the lookup budget.
+    refetchOnMount: false as const,
     refetchOnWindowFocus: false as const, refetchOnReconnect: false as const,
   };
 }

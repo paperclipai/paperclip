@@ -86,7 +86,8 @@ export function createLinkPreviewPageLoader(client: QueryClient, context: LinkPr
       // shared client so both lifetimes reuse the same HTTP request.
       void client.fetchQuery({
         queryKey: ["link-preview", context.companyId, context.userId, "cached-batch", targets.map(target => target.canonicalUrl).sort()],
-        queryFn: () => context.readCached(targets), staleTime: 0, gcTime: 0, retry: false,
+        queryFn: () => context.readCached(targets), staleTime: 0, gcTime: 0,
+        retry: false, // query-error-ok: Optional hydration must settle within one deadline so idle enrichment can continue when the cache is unavailable.
       }).then(({ results }) => {
         if (disposed) return;
         for (const link of batch) {
