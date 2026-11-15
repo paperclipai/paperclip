@@ -661,7 +661,7 @@ cap. The quiet period lets a continuation the product wakes after a run ends (fo
 subtasks finish) start before the read, so the task is graded by that continuation, not as `nothing pending`. A task still running at the cap is not counted in the number; the headline
 reports how many with the age of their last activity, and the wave fails. The grade uses the same 5-minute threshold:
 after the drain, a run with no event for 5 minutes, a queued wake, a scheduled retry or a working notice with no
-progressing run behind it is not pending work, so the task is `nothing pending`. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
+progressing run behind it is not pending work, so the task is `nothing pending`. Queued wakes behind a queued or running run wait for that run by design, so the detail does not call them never dispatched. The single read then covers every task of the wave's company that had a run (probes and agent-created subtasks included), the
 way the board shows it:
 
 | Verdict | When |
@@ -2155,7 +2155,7 @@ re-arms the task's own triggered faults instead of using their offsets.
   temporary instance is deleted.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
-- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time. While a provider turn is active and no tool runs, one model request is outstanding: R5 allows up to 10 minutes of quiet before it counts a dead run. A slow OpenRouter request took 303.6 s in w-20261115T044649-s7106/t028, and common provider clients time out a request at 10 minutes.
 - The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
 - `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.
