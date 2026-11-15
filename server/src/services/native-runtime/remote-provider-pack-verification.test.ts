@@ -51,8 +51,20 @@ describe("installed provider pack compatibility", () => {
     try {
       // Exercise the old complete-manifest comparison in a real Node process.
       // Only provenance changed; provider bytes and interface are identical.
-      await expect(verifyRemoteProviderPack(input)).rejects.toThrow("manifest mismatch");
+      await expect(verifyRemoteProviderPack(input)).rejects.toMatchObject({
+        message: expect.stringContaining("manifest mismatch"), failureCheck: "manifest_mismatch:runnerSourceRevision" });
       expect(execute).toHaveBeenCalledOnce();
+      await expect(verifyRemoteProviderPack({ ...input, manifest: installed })).rejects.toMatchObject({
+        message: expect.stringContaining("nodeCommand digest mismatch"), failureCheck: "artifact_digest:nodeCommand" });
+      await rm(join(root, "provider-pack.json"));
+      await expect(verifyRemoteProviderPack(input)).rejects.toMatchObject({ failureCheck: "manifest_unreadable" });
+      const combined = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        const result = await execute(request);
+        return { ...result, stdout: `${result.stdout}${result.stderr}`, stderr: "" };
+      });
+      await expect(verifyRemoteProviderPack({ ...input, runner: { execute: combined } }))
+        .rejects.toMatchObject({ failureCheck: "manifest_unreadable" });
+      await writeFile(join(root, "provider-pack.json"), JSON.stringify(installed));
       execute.mockClear();
       const selected = await verifyRemoteProviderPack({ ...input,
         installation: { root, manifest: installed, immutable: true }, provider: { kind: "opencode" } });
@@ -70,6 +82,31 @@ describe("installed provider pack compatibility", () => {
       provider: { kind: "opencode" }, requireExactIdentity: options.requireExactIdentity,
       requireCurrentOpenCodeProxy: options.requireCurrentOpenCodeProxy });
   };
+  it.each([
+    ["interface", "compatibility_revision"], ["contracts", "contract_digest"], ["platform", "target"], ["schema", "schema"],
+    ["artifact_path", "artifact:nodeCommand"], ["digest", "manifest_digest"], ["legacy", "compatibility_revision"],
+    ["legacy_contracts", "contract_digest_missing"],
+  ])("names the failed check for an incompatible %s", async (field, failureCheck) => {
+    let pack = manifest("a");
+    if (field === "interface") pack.payload.compatibility!.opencode += 1;
+    if (field === "contracts") pack.payload.contractDigest = sha("other-contracts");
+    if (field === "legacy") delete pack.payload.compatibility;
+    if (field === "legacy_contracts") delete pack.payload.contractDigest;
+    if (field === "platform") pack.payload.target.architecture = "arm64";
+    if (field === "schema") pack.schema = "unknown";
+    if (field === "artifact_path") pack.payload.artifacts.nodeCommand.path = "../node";
+    pack = reseal(pack);
+    if (field === "digest") pack.digest = sha("corrupt");
+    await expect(check(pack)).rejects.toMatchObject({ failureCheck });
+  });
+  it("names unprotected, exact-identity and proxy rejections", async () => {
+    await expect(check(manifest("b"), { immutable: false })).rejects.toMatchObject({ failureCheck: "installation_unprotected" });
+    await expect(check(manifest("a"), { requireExactIdentity: true })).rejects.toMatchObject({ failureCheck: "exact_identity" });
+    await expect(check(manifest("a"), { requireCurrentOpenCodeProxy: true })).rejects.toMatchObject({ failureCheck: "opencode_proxy" });
+    const unpinned = manifest("b");
+    (unpinned.payload.pins as Record<string, unknown>).opencode = null;
+    await expect(check(reseal(unpinned))).rejects.toMatchObject({ failureCheck: "opencode_pin_missing" });
+  });
   it.each(["interface", "contracts", "platform", "schema", "artifact_path", "digest", "legacy", "legacy_contracts"])("rejects an incompatible %s", async field => {
     let pack = manifest("a");
     if (field === "interface") pack.payload.compatibility!.opencode += 1;

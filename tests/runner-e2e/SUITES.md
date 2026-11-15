@@ -1861,7 +1861,7 @@ Results can include a `startupReuse` entry for each run. The dashboard shows
 receipt-derived warmth, the environment/lease, workspace, Runner, provider
 process and session decisions, and observed provider launches. Private attempt
 evidence includes `snapshots/startup-reuse.json`. See the
-[run-log contract](../../doc/run-log-events.md#startup-reuse-evidence) for the
+[startup reuse receipt](../../packages/adapter-utils/src/startup-reuse.ts) for the
 closed states and reasons. Historical runs without receipts show unknown
 values. Provider-session continuity does not establish physical process reuse.
 

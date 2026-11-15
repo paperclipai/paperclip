@@ -461,6 +461,12 @@ not evidence that its Cloud journey passed.
 
 ## Reuse and daily QA promotion
 
+Task property and document journeys open the current side panel or the classic
+Properties control before they act. Property reads exclude inert and accessibility-hidden
+panels, select the Properties tab when needed, and check the row in the viewport.
+Document navigation waits for the available authoring controls after each reload.
+These browser regressions do not establish a new deployed QA pass.
+
 The classic matrix and deployment-targeted stories share Plan revision actions,
 artifact download/oracle code, Skill Studio editing and protected-action decisions.
 Their target adapters own login, agent/connection provisioning, environment
