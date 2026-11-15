@@ -4762,7 +4762,7 @@ export function recoveryService(
         || await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
       // Another server is still settling the run: look again when its lease
       // lapses, since later generic skips may never reach their own check.
-      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id);
+      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id, latestRun);
       if (settlingUntil) {
         onDeferredDeadline?.(settlingUntil.getTime());
         handled.add(issue.id);

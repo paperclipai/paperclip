@@ -19,8 +19,8 @@ export function preparationOnlyWriterCondition(): SQL {
     ...WORK_STARTED_EVENT_PREFIXES.map(prefix => sql`event.event_type like ${`${prefix}%`}`),
   ], sql` or `);
   return sql`(${WRITER_RUN_ID} is null or exists (select 1 from heartbeat_runs writer
-    where ${WRITER_RUN_ID} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-      and writer.id = (${WRITER_RUN_ID})::uuid and writer.company_id = ${executionWorkspaces.companyId}
+    where writer.id = (case when ${WRITER_RUN_ID} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (${WRITER_RUN_ID})::uuid end) and writer.company_id = ${executionWorkspaces.companyId}
       and writer.execution_stage = 'preparing' and writer.runtime_mode_resolved_at is null
       and writer.process_pid is null and writer.process_group_id is null
       and writer.native_session_id is null and writer.runner_instance_id is null
