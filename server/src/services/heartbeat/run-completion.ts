@@ -41,7 +41,7 @@ import { isConversation, settleConversationTurn } from "../agent-conversations.j
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { agentTaskSessions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
@@ -477,7 +477,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       outcome = "failed";
     }
 
-    const nextSessionState = resolveNextSessionState({
+    let nextSessionState = resolveNextSessionState({
       adapterType: agent.adapterType,
       codec: sessionCodec,
       adapterResult,
@@ -486,6 +486,24 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       previousDisplayId: runtimeForAdapter.sessionDisplayId,
       previousLegacySessionId: runtimeForAdapter.sessionId,
     });
+    let checkpointParams: Record<string, unknown> | null = null;
+    if (run.runtimeMode === "legacy" && taskKey && outcome !== "succeeded" && !adapterResult.clearSession &&
+        !nextSessionState.params && !nextSessionState.displayId && !nextSessionState.legacySessionId) {
+      const [checkpoint] = await db.select().from(agentTaskSessions).where(and(
+        eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.agentId, agent.id),
+        eq(agentTaskSessions.adapterType, agent.adapterType), eq(agentTaskSessions.taskKey, taskKey),
+        eq(agentTaskSessions.lastRunId, run.id),
+      )).limit(1);
+      if (checkpoint) {
+        nextSessionState = resolveNextSessionState({
+          adapterType: agent.adapterType, codec: sessionCodec, outcome,
+          adapterResult: { ...adapterResult, sessionParams: checkpoint.sessionParamsJson,
+            sessionId: null, sessionDisplayId: checkpoint.sessionDisplayId },
+          previousParams: null, previousDisplayId: null, previousLegacySessionId: null,
+        });
+        checkpointParams = nextSessionState.params ? checkpoint.sessionParamsJson : null;
+      }
+    }
     const rawUsage = normalizeUsageTotals(adapterResult.usage);
     const sessionUsageResolution = await resolveNormalizedUsageForSession({
       agentId: agent.id,
@@ -557,7 +575,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           agentId: agent.id,
           adapterType: agent.adapterType,
           taskKey,
-          sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+          sessionParamsJson: checkpointParams ?? attachPaperclipSessionMetadataToSessionParams(
             nextSessionState.params,
             configuredModel,
             sessionConfigMetadata,
