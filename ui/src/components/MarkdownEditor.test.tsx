@@ -1816,7 +1816,7 @@ describe("MarkdownEditor", () => {
     });
 
     expect(handleChange).toHaveBeenCalledWith(
-      `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
+      `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")})\u00a0`,
     );
 
     await act(async () => {
@@ -1849,7 +1849,7 @@ describe("MarkdownEditor", () => {
     });
 
     expect(handleChange).toHaveBeenCalledWith(
-      `[PAP-102](${buildIssueReferenceHref("PAP-102")}) `,
+      `[PAP-102](${buildIssueReferenceHref("PAP-102")})\u00a0`,
     );
 
     await act(async () => {
