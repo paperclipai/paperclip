@@ -23,7 +23,7 @@ import { activityService } from "../services/activity.js";
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
-import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
+import { assertGovernedHandoffMutationAllowed, assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
 import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
@@ -5823,6 +5823,9 @@ export function issueRoutes(
       operation: "comment", issueId: issue.id,
       texts: [typeof req.body?.body === "string" ? req.body.body : "", typeof req.body?.comment === "string" ? req.body.comment : ""] });
     if (req.actor.runId) await assertNoCaseHandoffMutation(db, req.actor.runId, issue.id);
+    if (req.actor.runId) {
+      assertGovernedHandoffMutationAllowed(await loadActorRunContext(req, issue.companyId), issue);
+    }
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
@@ -5962,10 +5965,13 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (req.actor.source === "agent_jwt" && req.actor.runId &&
-        issue.assigneeAgentId === null && issue.assigneeUserId) {
-      const run = await heartbeat.getRun(req.actor.runId);
-      if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
+    if (req.actor.source === "agent_jwt" && req.actor.runId) {
+      if (issue.assigneeAgentId === null && issue.assigneeUserId) {
+        const run = await heartbeat.getRun(req.actor.runId);
+        if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
+      } else {
+        assertGovernedHandoffMutationAllowed(await loadActorRunContext(req, issue.companyId), issue);
+      }
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
@@ -15332,6 +15338,7 @@ export function issueRoutes(
         return;
       }
       let interruptedRunId: string | null = null;
+      let preserveActorExecutionOnHandoff = false;
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(existing);
       const isAgentWorkUpdate =
@@ -15791,7 +15798,21 @@ export function issueRoutes(
             runId: runToStopForReassignment.id,
           });
         }
-        if (runToStopForReassignment && !isHumanSelfHandoff) {
+        const isGovernedSelfHandoff = transition.workflowControlledAssignment &&
+          parseObject(transition.patch.executionState).status === "pending" && existing.executionRunId === req.actor.runId &&
+          req.actor.type === "agent" && req.actor.source === "agent_jwt" &&
+          req.actor.agentId === existing.assigneeAgentId &&
+          typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId !== req.actor.agentId &&
+          nextAssigneeUserId === null && runToStopForReassignment?.runtimeMode === "legacy" &&
+          runToStopForReassignment.status === "running" && runToStopForReassignment.id === req.actor.runId &&
+          runToStopForReassignment.agentId === req.actor.agentId &&
+          runToStopForReassignment.companyId === existing.companyId &&
+          runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        if (isGovernedSelfHandoff) {
+          interruptedRunId = runToStopForReassignment.id;
+          preserveActorExecutionOnHandoff = true;
+        }
+        if (runToStopForReassignment && !isHumanSelfHandoff && !isGovernedSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
             cancelled = await heartbeat.cancelRun(
@@ -15935,7 +15956,8 @@ export function issueRoutes(
         ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
-        actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+        actorRunStopId: !preserveActorExecutionOnHandoff && actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+        ...(preserveActorExecutionOnHandoff ? { preserveActorExecutionOnHandoff: true, handoffMutationId: issueMutationStopId } : {}),
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
       const shouldCollectCompletionPublication =
@@ -16129,6 +16151,7 @@ export function issueRoutes(
                   mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: transactionalCommentSourceTrust,
+                  ...(preserveActorExecutionOnHandoff ? { governedHandoffMutationId: issueMutationStopId } : {}),
                 },
                 tx,
               );
@@ -16739,6 +16762,7 @@ export function issueRoutes(
           },
           {
             authorizationReason: issueMutationAuthorizationReason,
+            ...(preserveActorExecutionOnHandoff ? { governedHandoffMutationId: issueMutationStopId } : {}),
             clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
             mirrorToSlack: actor.actorType === "user",
             sourceTrust: await sourceTrustForActorWrite(issue, actor),

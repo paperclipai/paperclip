@@ -599,3 +599,7 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Governed legacy self-handoffs
+
+A running legacy agent may submit its own task to the next agent selected by the execution policy without cancelling the requesting process before the task update commits. The task update retains the outgoing execution lock under the task and run locks. The next participant receives the source run ID and waits for that run to settle through ordinary execution ownership and cleanup gates. The same transaction saves a source-run handoff marker in the run context. That marker prevents later mutations by that run, including after an assignment back. A successor with another run ID is not revoked by the copied marker. Task mutation and comment admission read the source context to enforce this fence, and comment writes recheck it under the task and run locks. Only the server-owned mutation ID for the handoff request permits that request’s own comment, in the same transaction. It is not read from HTTP input. Earlier rows without a marker keep their existing behavior; no schema migration is needed. Manual reassignment, another caller, another active run, native execution and human handoff keep their existing behavior.

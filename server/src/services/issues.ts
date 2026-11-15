@@ -48,7 +48,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
-import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
+import { assertGovernedHandoffMutationAllowed, assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -214,6 +214,7 @@ import {
   applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { assertQualityReviewPolicyMutation, assertQualityReviewPolicyReuse, assertRequiredQualityReviewComplete, requiredQualityReview } from "./required-quality-review.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -11596,6 +11597,8 @@ export function issueService(db: Db) {
         /** Server-owned transfer being applied; never accepted from HTTP input. */
         caseHandoffId?: string;
         actorRunStopId?: string | null;
+        preserveActorExecutionOnHandoff?: boolean;
+        handoffMutationId?: string;
         actorUserId?: string | null;
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
@@ -11695,6 +11698,8 @@ export function issueService(db: Db) {
         actorRunId,
         caseHandoffId,
         actorRunStopId,
+        preserveActorExecutionOnHandoff,
+        handoffMutationId,
         actorUserId,
         companyGuard,
         workspaceSelectionActor,
@@ -12100,7 +12105,26 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
+          assertHandedOffRunTaskOwnership(actorRun && { ...actorRun, id: actorRunId }, receiptExisting);
+          if (preserveActorExecutionOnHandoff) {
+            const state = parseIssueExecutionState(patch.executionState);
+            if (!handoffMutationId || !actorRun || actorRun.runtimeMode !== "legacy" || actorRun.status !== "running" ||
+                receiptExisting.executionRunId !== actorRunId || receiptExisting.assigneeAgentId !== actorAgentId ||
+                actorRun.contextSnapshot?.issueId !== receiptExisting.id || (patch.status ?? receiptExisting.status) !== "in_review" ||
+                state?.status !== "pending" || state.currentParticipant?.type !== "agent" ||
+                state.currentParticipant.agentId !== patch.assigneeAgentId || patch.assigneeAgentId === actorAgentId ||
+                patch.assigneeUserId) {
+              throw conflict("The handoff execution owner changed", { code: "workflow_handoff_owner_changed" });
+            }
+            await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
+              || jsonb_build_object('governedSelfHandoff', ${JSON.stringify({ runId: actorRunId, issueId: receiptExisting.id, mutationId: handoffMutationId })}::jsonb)` })
+              .where(and(eq(heartbeatRuns.id, actorRunId), eq(heartbeatRuns.companyId, receiptExisting.companyId), eq(heartbeatRuns.agentId, actorAgentId)));
+            patch.executionRunId = receiptExisting.executionRunId;
+            patch.executionAgentNameKey = receiptExisting.executionAgentNameKey;
+            patch.executionLockedAt = receiptExisting.executionLockedAt;
+          }
+        } else if (preserveActorExecutionOnHandoff) {
+          throw forbidden("A governed handoff requires its running agent");
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {
@@ -13617,6 +13641,7 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         /** Server-only final assistant response, never a tool/progress comment. */
         completionReply?: boolean;
+        governedHandoffMutationId?: string;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
@@ -13661,6 +13686,14 @@ export function issueService(db: Db) {
         .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+      if (actor.agentId && actor.runId) {
+        const [run] = await dbOrTx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+          contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.agentId, actor.agentId),
+          )).for("share");
+        assertGovernedHandoffMutationAllowed(run, { id: issueId, companyId: issue.companyId }, options?.governedHandoffMutationId);
+      }
 
       if (issue.conversationAgentId && actor.userId && !(await instanceSettingsService(dbOrTx).getExperimental()).enableAgentChat) {
         throw unprocessable("Agent Chat is disabled in Experimental settings");

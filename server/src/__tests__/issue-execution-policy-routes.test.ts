@@ -171,6 +171,7 @@ type TestActor =
     }
   | {
       type: "agent";
+      source?: "agent_jwt";
       agentId: string;
       companyId: string;
       runId: string | null;
@@ -796,6 +797,63 @@ describe("issue execution policy routes", () => {
       }),
       expect.anything(),
     );
+  });
+
+  it("commits an owned legacy review handoff without cancelling its requesting run", async () => {
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1",
+      status: "in_progress", assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null, executionRunId: "55555555-5555-4555-8555-555555555555",
+      createdByUserId: "local-board", identifier: "TEST-1", title: "Review this change",
+      executionState: null, executionPolicy: normalizeIssueExecutionPolicy({ stages: [{
+        id: "11111111-1111-4111-8111-111111111111", type: "review",
+        participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+      }] }) };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch, updatedAt: new Date() }));
+    mockHeartbeatService.getRun.mockResolvedValue({ id: issue.executionRunId,
+      companyId: issue.companyId, agentId: issue.assigneeAgentId, runtimeMode: "legacy",
+      status: "running", contextSnapshot: { issueId: issue.id } } as never);
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("The caller stopped before the mutation committed"));
+    const res = await request(await createApp({ type: "agent", source: "agent_jwt",
+      agentId: issue.assigneeAgentId, companyId: issue.companyId, runId: issue.executionRunId }))
+      .patch(`/api/issues/${issue.id}`).send({ status: "in_review" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ preserveActorExecutionOnHandoff: true, actorRunStopId: null });
+    expect(res.body).toMatchObject({ status: "in_review", assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      executionState: expect.objectContaining({ status: "pending" }) });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({ reason: "execution_review_requested",
+        payload: expect.objectContaining({ interruptedRunId: issue.executionRunId }) }));
+    mockIssueService.getById.mockResolvedValue({ ...issue, ...res.body });
+    mockHeartbeatService.getRun.mockResolvedValue({ id: issue.executionRunId, companyId: issue.companyId,
+      agentId: issue.assigneeAgentId, runtimeMode: "legacy", status: "running", contextSnapshot: {
+        issueId: issue.id, governedSelfHandoff: { runId: issue.executionRunId, issueId: issue.id },
+      } } as never);
+    mockIssueService.update.mockClear();
+    const originalSelectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table: unknown) => {
+      if (getTableName(table as never) === "case_handoffs") {
+        return { where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) };
+      }
+      if (getTableName(table as never) !== "heartbeat_runs") return originalSelectFrom(table);
+      const rows = [{ id: issue.executionRunId, companyId: issue.companyId, agentId: issue.assigneeAgentId,
+        contextSnapshot: { issueId: issue.id, governedSelfHandoff: { runId: issue.executionRunId, issueId: issue.id } } }];
+      const result = { then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+      return { where: () => ({ ...result, for: () => result, limit: () => result,
+        orderBy: () => ({ ...result, limit: () => result }) }) };
+    });
+    const late = await request(await createApp({ type: "agent", source: "agent_jwt",
+      agentId: issue.assigneeAgentId, companyId: issue.companyId, runId: issue.executionRunId }))
+      .patch(`/api/issues/${issue.id}`).send({ title: "Late outgoing edit" });
+    expect(late.status, JSON.stringify(late.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    const lateComment = await request(await createApp({ type: "agent", source: "agent_jwt",
+      agentId: issue.assigneeAgentId, companyId: issue.companyId, runId: issue.executionRunId }))
+      .post(`/api/issues/${issue.id}/comments`).send({ body: "Late outgoing comment" });
+    expect(lateComment.status, JSON.stringify(lateComment.body)).toBe(403);
+    expect(lateComment.body.details?.code).toBe("issue_handed_off");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {

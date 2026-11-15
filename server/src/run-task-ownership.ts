@@ -7,6 +7,7 @@ import { forbidden } from "./errors.js";
  */
 export function assertHandedOffRunTaskOwnership(
   run: {
+    id?: string;
     companyId: string;
     runtimeMode: string;
     contextSnapshot?: Record<string, unknown> | null;
@@ -18,6 +19,7 @@ export function assertHandedOffRunTaskOwnership(
     assigneeUserId: string | null;
   },
 ) {
+  assertGovernedHandoffMutationAllowed(run, issue);
   if ((run?.runtimeMode === "legacy" || run?.runtimeMode === "native") && run.companyId === issue.companyId &&
       run.contextSnapshot?.issueId === issue.id &&
       issue.assigneeAgentId === null && issue.assigneeUserId) {
@@ -25,5 +27,18 @@ export function assertHandedOffRunTaskOwnership(
       code: "issue_handed_off",
       issueId: issue.id,
     });
+  }
+}
+
+export function assertGovernedHandoffMutationAllowed(
+  run: { id?: string; companyId: string; contextSnapshot?: Record<string, unknown> | null } | null | undefined,
+  issue: { id: string; companyId: string },
+  mutationId?: string,
+) {
+  const handoff = run?.contextSnapshot?.governedSelfHandoff;
+  if (run?.id && run.companyId === issue.companyId && handoff && typeof handoff === "object" &&
+      "runId" in handoff && handoff.runId === run.id && "issueId" in handoff && handoff.issueId === issue.id &&
+      !(mutationId && "mutationId" in handoff && handoff.mutationId === mutationId)) {
+    throw forbidden("This run handed off the task; end the turn", { code: "issue_handed_off", issueId: issue.id });
   }
 }
