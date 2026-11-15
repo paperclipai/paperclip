@@ -130,7 +130,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -17217,7 +17217,8 @@ async function createRunnerdBackendWithinSessionClaim(
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
         manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
         signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
-        acceptProvenanceDifferences: !retainProviderPack && providerPackAuthority !== null,
+        acceptProvenanceDifferences: providerPackProvenanceReuseAllowed({ retainProviderPack, explicitProviderPackSelection,
+          authoritySelectable: providerPackAuthority !== null }),
       });
       if (prepared.manifest.digest !== expectedProviderPackManifest.digest) {
         providerPackAuthority!.select(prepared.manifest);

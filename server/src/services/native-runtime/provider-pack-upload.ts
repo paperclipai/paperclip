@@ -1,5 +1,3 @@
-import { lstat } from "node:fs/promises";
-import { join } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
@@ -9,12 +7,6 @@ import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 import { providerPackLayersArgument } from "./provider-pack-layers.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const verifiedDirectories = new Set<string>();
-
-async function directoryIdentity(root: string, digest: string): Promise<string> {
-  const entries = await Promise.all([root, join(root, "provider-pack.json")].map(path => lstat(path)));
-  return [root, digest, ...entries.flatMap(entry => [entry.dev, entry.ino, entry.size, entry.mtimeMs, entry.ctimeMs])].join("\0");
-}
 
 /** Upload a pack and verify the installed bytes before exposing it to a provider. */
 export async function uploadVerifiedProviderPack(input: {
@@ -44,13 +36,7 @@ export async function uploadVerifiedProviderPack(input: {
   const source = input.manifest ? await measure("provider_pack.source", () => resolveProviderPackUploadSource({
     root: input.root, sourceDigest: input.sourceDigest, manifest: input.manifest!, signal: input.signal,
   })) : { root: input.root, archiveOnly: false };
-  const verifyDirectory = () => measure("provider_pack.directory.verify", async () => {
-    const identity = await directoryIdentity(source.root, input.expectedDigest);
-    if (verifiedDirectories.has(identity)) return;
-    await input.verifyDirectory(source.root);
-    if (verifiedDirectories.size >= 64) verifiedDirectories.clear();
-    verifiedDirectories.add(identity);
-  });
+  const verifyDirectory = () => measure("provider_pack.directory.verify", async () => input.verifyDirectory(source.root));
   // Archive installation reads the sealed archives, not the expanded tree.
   // Hash the directory only when it is actually the upload source. The
   // installed pack still passes full verification against the selected identity.

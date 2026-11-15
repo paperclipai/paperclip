@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -68,7 +68,15 @@ async function directoryBytes(root: string): Promise<number> {
   return total;
 }
 
-function simulatedSandbox(home: string) {
+function assertConfinedSandboxPath(remoteDir: string, candidate: string) {
+  const root = posix.normalize(remoteDir);
+  const normalized = posix.normalize(candidate);
+  if (normalized !== root && !normalized.startsWith(`${root}/`)) {
+    throw new Error(`sync target path escapes the workspace remote dir: ${candidate}`);
+  }
+}
+
+function simulatedSandbox(home: string, workspace: string) {
   const usage = { simulatedMs: 0, executes: 0, bytesUploaded: 0 };
   const runner: CommandManagedRuntimeRunner = {
     execute: async request => {
@@ -89,6 +97,7 @@ function simulatedSandbox(home: string) {
         let bytes = 0;
         for (const file of operation.files) {
           if (file.kind !== "directory" || !file.sourcePath) throw new Error("unexpected transfer");
+          assertConfinedSandboxPath(workspace, file.targetPath);
           bytes += await directoryBytes(file.sourcePath);
           await mkdir(dirname(file.targetPath), { recursive: true });
           await cp(file.sourcePath, file.targetPath, { recursive: true });
@@ -133,7 +142,7 @@ describe("provider pack selection harness", () => {
       await writePack(image, "a", large);
       await writeFile(join(image, "dist/cli/acpx-runtime-sidecar.cjs"), "tampered\n");
     }
-    const { runner, usage } = simulatedSandbox(home);
+    const { runner, usage } = simulatedSandbox(home, workspace);
     const cpuBefore = process.cpuUsage();
     const startedAt = performance.now();
     const prepared = await prepareRemoteProviderPackOnTarget({
@@ -147,6 +156,12 @@ describe("provider pack selection harness", () => {
       + `executes=${usage.executes} serverCpu=${((cpu.user + cpu.system) / 1000).toFixed(0)}ms dbStatements=0`);
     return { prepared, usage };
   };
+
+  it("confines simulated uploads to the workspace", async () => {
+    const { runner } = simulatedSandbox(root, join(root, "workspace"));
+    await expect(runner.syncIn!([{ operationId: "escape", files: [{ kind: "directory", sourcePath: join(root, "server-pack"),
+      targetPath: join(root, "workspace", "..", "outside"), mode: 0o700 }] }])).rejects.toThrow("escapes the workspace");
+  });
 
   it.each<[Scenario, "preinstalled" | "uploaded", "preinstalled" | "uploaded"]>([
     ["exact", "preinstalled", "preinstalled"],
