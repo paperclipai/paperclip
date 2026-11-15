@@ -143,9 +143,18 @@ export async function readChatControlNativeParent(
         // A committed continuation or failed-turn retry effect that targets
         // this intent is its proof. Refusing the retry stranded the task
         // with no queued work.
-        inArray(statusDecisionEffects.effectKind, NATIVE_STATUS_WAKE_EFFECT_KINDS),
-        eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
-        eq(statusDecisionEffects.targetId, intent.id),
+        // A bound blocker records the owner wake it queued in its payload.
+        or(
+          and(
+            inArray(statusDecisionEffects.effectKind, NATIVE_STATUS_WAKE_EFFECT_KINDS),
+            eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
+            eq(statusDecisionEffects.targetId, intent.id),
+          ),
+          and(
+            eq(statusDecisionEffects.effectKind, "bind_blocker"),
+            sql`${statusDecisionEffects.payload}->>'wakeId' = ${intent.id}`,
+          ),
+        ),
         eq(statusDecisionEffects.deliveryState, "delivered"),
       ),
     )

@@ -131,4 +131,36 @@ describe("classifyNativeEvidence", () => {
       reasonCode: "interaction_resolved",
     });
   });
+
+  describe("blocker owner", () => {
+    const reviewerId = "00000000-0000-4000-8000-000000000201";
+    const agentRows = [{ id: reviewerId, name: "Chief of Review" }];
+    const agentsDb = {
+      select: () => ({
+        from: () => ({
+          where: () => Object.assign(Promise.resolve(agentRows), { limit: () => Promise.resolve(agentRows) }),
+        }),
+      }),
+    } as unknown as Db;
+    const blocked = (owner: Record<string, unknown>, scope = "current_track") => ({
+      reportedWorkDisposition: "blocked",
+      summary: "Waiting for review",
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [{ description: "Review", blocksCompletion: true }] },
+      blocker: { reasonCode: "review_required", owner, unblockAction: "Review the draft.", scope },
+    });
+
+    it("keeps the agent the report names, resolved from its short name", async () => {
+      const assessment = await classifyNativeEvidence({ ...input, db: agentsDb, result: blocked({ kind: "agent", name: "COR" }) });
+      expect(assessment.blocker).toEqual({
+        unblockAction: "Review the draft.", boardOwned: false, ownerKind: "agent", ownerAgentId: reviewerId, scope: "current_track",
+      });
+    });
+
+    it("gives a person owner to the board instead of the reporting agent", async () => {
+      const assessment = await classifyNativeEvidence({ ...input, db: agentsDb, result: blocked({ kind: "user", name: "Avery Example" }, "task_wide") });
+      expect(assessment.blocker).toEqual({
+        unblockAction: "Review the draft.", boardOwned: true, ownerKind: "user", ownerAgentId: null, scope: "task_wide",
+      });
+    });
+  });
 });
