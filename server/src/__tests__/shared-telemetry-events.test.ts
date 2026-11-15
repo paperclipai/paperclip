@@ -5,6 +5,7 @@ import {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackAgentTaskRun,
+  trackCloudOrganizationIdentified,
   trackInteractionCreated,
   trackInteractionResolved,
   trackInstallCompleted,
@@ -23,6 +24,16 @@ function runtimeValue<T>(value: string): T {
 }
 
 describe("shared telemetry agent events", () => {
+  it("links the installation to the organization reference that Paperclip Cloud supplies", () => {
+    const client = createClient();
+    const organizationRef = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    trackCloudOrganizationIdentified(client, { organizationRef });
+
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
+    expect(client.track).toHaveBeenCalledWith("cloud.organization_identified", { organization_ref: organizationRef });
+  });
+
   it("includes agent_id for agent.created", () => {
     const client = createClient();
 

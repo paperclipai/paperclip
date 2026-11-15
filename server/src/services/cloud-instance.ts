@@ -76,6 +76,14 @@ export function isCloudManagedInstance(
   );
 }
 
+const CLOUD_TELEMETRY_ORGANIZATION_REF_PATTERN = /^[0-9a-f]{64}$/;
+
+export function cloudTelemetryOrganizationRef(env: CloudInstanceEnv = process.env): string | null {
+  if (!isCloudManagedInstance(env)) return null;
+  const ref = normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF);
+  return ref !== null && CLOUD_TELEMETRY_ORGANIZATION_REF_PATTERN.test(ref) ? ref : null;
+}
+
 export function isCloudStagingInstance(env: CloudInstanceEnv = process.env): boolean {
   const host = normalizeOptionalEnvValue(env.PAPERCLIP_PRIMARY_HOST);
   return isCloudManagedInstance(env) && host !== null && /^[a-z0-9-]+\.staging\.paperclip\.app$/i.test(host);

@@ -3,9 +3,11 @@ import {
   TelemetryClient,
   resolveTelemetryConfig,
   loadOrCreateState,
+  trackCloudOrganizationIdentified,
   trackServerStarted,
 } from "@paperclipai/shared/telemetry";
 import { resolvePaperclipInstanceRoot } from "./home-paths.js";
+import { cloudTelemetryOrganizationRef } from "./services/cloud-instance.js";
 import { serverVersion } from "./version.js";
 
 let client: TelemetryClient | null = null;
@@ -26,6 +28,8 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
       serverVersion,
     );
     trackServerStarted(pendingClient, { os_platform: process.platform });
+    const organizationRef = cloudTelemetryOrganizationRef();
+    if (organizationRef) trackCloudOrganizationIdentified(pendingClient, { organizationRef });
     pendingClient.startPeriodicFlush(60_000);
     client = pendingClient;
     return client;

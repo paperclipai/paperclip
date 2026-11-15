@@ -54,6 +54,56 @@ describe("server telemetry startup", () => {
     ]);
   });
 
+  describe("Cloud organization link", () => {
+    const organizationRef = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    async function startAndCollect() {
+      const { TelemetryClient } = await import("@paperclipai/shared/telemetry");
+      const track = vi.spyOn(TelemetryClient.prototype, "track");
+      const { initTelemetry } = await import("../telemetry.js");
+      const client = initTelemetry({ enabled: true });
+      await client!.flush();
+      const sent = vi.mocked(fetch).mock.calls.map((call) => String(call[1]?.body)).join(" ");
+      return { names: track.mock.calls.map((call) => call[0] as string), track, sent };
+    }
+
+    it("attempts the link once on a managed Cloud instance, and sends nothing for it before approval", async () => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+      vi.stubEnv("PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID", "account-acme-rockets");
+      vi.stubEnv("PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF", organizationRef);
+
+      const { names, track, sent } = await startAndCollect();
+
+      expect(names).toEqual(["server.started", "cloud.organization_identified"]);
+      expect(track).toHaveBeenLastCalledWith("cloud.organization_identified", { organization_ref: organizationRef });
+      expect(sent).toContain("server.started");
+      expect(sent).not.toContain("cloud.organization_identified");
+      expect(sent).not.toContain(organizationRef);
+      expect(sent).not.toContain("acme");
+    });
+
+    it.each([
+      ["no reference", undefined],
+      ["an account group ID in place of the reference", "account-acme-rockets"],
+    ])("does not attempt the link with %s", async (_label, value) => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+      vi.stubEnv("PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID", "account-acme-rockets");
+      if (value !== undefined) vi.stubEnv("PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF", value);
+
+      const { names, sent } = await startAndCollect();
+
+      expect(names).toEqual(["server.started"]);
+      expect(sent).not.toContain("acme");
+    });
+
+    it("does not attempt the link outside a managed Cloud instance", async () => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "");
+      vi.stubEnv("PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF", organizationRef);
+
+      expect((await startAndCollect()).names).toEqual(["server.started"]);
+    });
+  });
+
   it("disables telemetry after a state failure without aborting startup or retrying", async () => {
     stateFactory.mockImplementationOnce(() => {
       throw Object.assign(new Error("private telemetry path cannot be written"), { code: "EACCES" });

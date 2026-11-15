@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cloudTelemetryOrganizationRef,
   getCloudStackContext,
   isCloudManagedInstance,
   isCloudStagingInstance,
@@ -31,6 +32,35 @@ describe("isCloudManagedInstance", () => {
 
   it("does not treat a blank tenant token alone as a managed signal", () => {
     expect(isCloudManagedInstance({ PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "   " })).toBe(false);
+  });
+});
+
+describe("cloudTelemetryOrganizationRef", () => {
+  const managed = { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token" };
+  const ref = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  it("returns the reference that Paperclip Cloud supplies to a managed instance", () => {
+    expect(cloudTelemetryOrganizationRef({ ...managed, PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF: ` ${ref} ` })).toBe(ref);
+  });
+
+  it("returns nothing outside a managed instance", () => {
+    expect(cloudTelemetryOrganizationRef({ PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF: ref })).toBeNull();
+  });
+
+  it.each([
+    ["no reference", undefined],
+    ["an account group ID", "account-acme-rockets"],
+    ["a stack slug", "acme-rockets"],
+    ["upper case hex", ref.toUpperCase()],
+    ["a short value", ref.slice(1)],
+    ["a long value", `${ref}0`],
+    ["an empty value", "  "],
+  ])("returns nothing for %s", (_label, value) => {
+    expect(cloudTelemetryOrganizationRef({
+      ...managed,
+      PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID: "account-acme-rockets",
+      PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF: value,
+    })).toBeNull();
   });
 });
 
