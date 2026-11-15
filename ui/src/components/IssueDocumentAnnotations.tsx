@@ -121,7 +121,7 @@ export function IssueDocumentAnnotations({
     staleTime: 30_000,
   });
   const allThreads = annotationsQuery.data ?? [];
-  const { agentMap, userProfileMap } = useAnnotationAuthorMaps({
+  const { agentMap, userProfileMap, retryAuthorNames } = useAnnotationAuthorMaps({
     companyId: allThreads[0]?.companyId ?? null,
     agentMap: agentMapProp,
     userProfileMap: userProfileMapProp,
@@ -284,6 +284,7 @@ export function IssueDocumentAnnotations({
       desktopWidth={showDesktopGutter ? DESKTOP_ANNOTATION_PANEL_WIDTH : undefined}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
+      onRetryAuthorNames={retryAuthorNames}
     />
   ) : null;
 
@@ -353,6 +354,7 @@ export function IssueDocumentAnnotations({
             newCommentDisabled={newCommentDisabled}
             agentMap={agentMap}
             userProfileMap={userProfileMap}
+            onRetryAuthorNames={retryAuthorNames}
           />
         ) : null}
       </section>
@@ -408,27 +410,39 @@ function useAnnotationAuthorMaps({
 }) {
   const selectedCompanyId = useOptionalCompany()?.selectedCompanyId ?? null;
   const companyId = threadCompanyId ?? selectedCompanyId;
-  const { data: agents } = useQuery({
+  const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId ?? ""),
     queryFn: () => agentsApi.list(companyId!),
     enabled: !agentMap && !!companyId,
   });
-  const { data: directory } = useQuery({
+  const directoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId ?? ""),
     queryFn: () => accessApi.listUserDirectory(companyId!),
     enabled: !userProfileMap && !!companyId,
   });
+  const agents = agentsQuery.data;
+  const directoryUsers = directoryQuery.data?.users;
   const loadedAgentMap = useMemo<AnnotationAgentMap>(
     () => new Map((agents ?? []).map((agent) => [agent.id, agent])),
     [agents],
   );
   const loadedUserProfileMap = useMemo(
-    () => buildCompanyUserProfileMap(directory?.users),
-    [directory?.users],
+    () => buildCompanyUserProfileMap(directoryUsers),
+    [directoryUsers],
   );
+  // Only a failure with no usable data hides names; stale cached data still names authors.
+  const agentsFailed = !agentMap && agentsQuery.isError && !agents;
+  const directoryFailed = !userProfileMap && directoryQuery.isError && !directoryUsers;
+  const { refetch: refetchAgents } = agentsQuery;
+  const { refetch: refetchDirectory } = directoryQuery;
+  const retryAuthorNames = useCallback(() => {
+    if (agentsFailed) void refetchAgents();
+    if (directoryFailed) void refetchDirectory();
+  }, [agentsFailed, directoryFailed, refetchAgents, refetchDirectory]);
   return {
     agentMap: agentMap ?? loadedAgentMap,
     userProfileMap: userProfileMap ?? loadedUserProfileMap,
+    retryAuthorNames: agentsFailed || directoryFailed ? retryAuthorNames : undefined,
   };
 }
 
