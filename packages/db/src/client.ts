@@ -446,7 +446,8 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
   } finally {
     hold.active = false;
     try {
-      if (dedicated && completed && !set.closed && !set.ended.has(dedicated) && set.idle.length < DEDICATED_CONNECTION_IDLE_MAX) {
+      if (dedicated && completed && !set.closed && !set.ended.has(dedicated)
+        && (set.idle.length < DEDICATED_CONNECTION_IDLE_MAX || set.idle.length + set.inUse <= set.limit)) {
         set.idle.push(dedicated);
       } else if (dedicated && !set.ended.has(dedicated)) {
         await dedicated.$client.end({ timeout: 1 });
