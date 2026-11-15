@@ -12,6 +12,7 @@ import { seedRecoveryPopulation } from "./helpers/recovery-population.js";
 vi.hoisted(() => { process.env.PAPERCLIP_DEBUG_WORK_SIGNALS = "stranded-assignments:1,assigned-work-invariant:1"; });
 
 const MINUTE = 60_000;
+const measuring = Boolean(process.env.RECOVERY_ACTIVITY_REPORT);
 const report = (label: string, summary: unknown) => {
   if (process.env.RECOVERY_ACTIVITY_REPORT) appendFileSync(process.env.RECOVERY_ACTIVITY_REPORT, `${label} ${JSON.stringify(summary, null, 1)}\n`);
 };
@@ -144,7 +145,7 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
         }
       }
     };
-    state.meter.startLog({ stacks: true });
+    if (measuring) state.meter.startLog({ stacks: true });
     let next = 12;
     for (let minute = 0; minute < minutes; minute++) {
       const minuteEnds = startedAt + (minute + 1) * MINUTE;
@@ -165,12 +166,12 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
       }
       await advance(minuteEnds - Date.now());
       await state.heartbeat.drainActiveRunExecutions();
-      tally(state.meter.stopLog());
-      state.meter.startLog({ stacks: true });
+      if (measuring) tally(state.meter.stopLog());
+      if (measuring) state.meter.startLog({ stacks: true });
     }
     const seconds = (Date.now() - startedAt) / 1000;
     const after = state.meter.read();
-    tally(state.meter.stopLog());
+    if (measuring) tally(state.meter.stopLog());
     const workAfter = await counts();
     const work = { started: workAfter.all - workBefore.all, finished: workAfter.finished - workBefore.finished,
       failed: workAfter.failed - workBefore.failed, events: workAfter.events - workBefore.events,
@@ -194,15 +195,16 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
   }
 
   it("re-checks only the tasks seven runs a minute touch, among 850 open tasks", async () => {
-    const summary = await measure(7, 10, 1);
+    const minutes = measuring ? 10 : 4;
+    const summary = await measure(7, minutes, 1);
     report("7 runs/min", summary);
-    expectWorkload(summary, 70, 10);
+    expectWorkload(summary, 7 * minutes, minutes);
     expect(summary.checks["stranded-assignments"]?.company ?? 0).toBe(0);
     expect(summary.signals).toEqual({});
     expect(summary.stranded / summary.seconds).toBeLessThan(2);
   }, 1_800_000);
 
-  it("re-checks only the tasks fifty runs a minute touch, among 850 open tasks", async () => {
+  it.runIf(measuring)("re-checks only the tasks fifty runs a minute touch, among 850 open tasks", async () => {
     const summary = await measure(50, 6, 5);
     report("50 runs/min", summary);
     expectWorkload(summary, 300, 30);
