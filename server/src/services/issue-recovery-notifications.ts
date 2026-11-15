@@ -10,6 +10,7 @@ export type IssueRecoveryScope = { companyId: string; issueId?: string; graphRun
 
 export const ISSUE_RECOVERY_MAX_ISSUE_IDS = 100;
 export const ISSUE_RECOVERY_BACKSTOP_MS = 5 * 60_000;
+export const ISSUE_RECOVERY_FULL_BACKSTOP_MS = 60 * 60_000;
 const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 const COMPANY_QUEUES: DeliveryQueue[] = [DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.taskWatchdogs];

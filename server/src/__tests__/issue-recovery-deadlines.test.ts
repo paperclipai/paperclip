@@ -113,7 +113,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     const [run] = await state.db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date(),
       contextSnapshot: { issueId: task.id } }).returning({ id: heartbeatRuns.id });
     const backlog = async (count: number) => (await state.db.insert(issues).values(Array.from({ length: count }, (_, index) => ({
-      companyId, title: `Backlog ${index}`, status: "todo", assigneeAgentId: other.id,
+      companyId, title: `Backlog ${index}`, status: "todo", assigneeAgentId: other.id, createdAt: new Date(), updatedAt: new Date(),
     }))).returning({ id: issues.id })).map(row => row.id);
     return { runId: run.id, taskId: task.id, siblingId: sibling.id, backlog, affected: [parent.id, task.id, dependent.id].sort() };
   }

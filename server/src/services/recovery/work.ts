@@ -3,13 +3,14 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from 
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
-import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryBackstopHint, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
+import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_FULL_BACKSTOP_MS, issueRecoveryBackstopHint, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
   from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { workSignalDebug } from "@paperclipai/db/work-signal-debug";
 import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
+import { changedTaskCondition } from "./changed-tasks.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; fromDeadline?: true };
+type Entry = { id: string; companyId: string; dueAt: number; fromDeadline?: true; origin?: "reload" | "backstop" | "company" | "hint" };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number, detail?: { unchanged: boolean }) => void };
 const PAGE_SIZE = 100;
 
@@ -33,22 +34,35 @@ export function registerIssueRecoveryWork(
     schedulingSuppressed(): Promise<boolean>;
     /** The assigned-work invariant (assigned-work-sweep.ts). */
     assignedWork?: {
-      listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[] }, cursor: string | null, limit: number):
+      listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; changedSince?: Date }, cursor: string | null, limit: number):
         Promise<Array<{ id: string; companyId: string; updatedAt: Date }>>;
       checkIssue(scope: Scope): Promise<unknown>;
     };
   },
   canRun: () => boolean,
-  options: { backstopMs?: number } = {},
+  options: { backstopMs?: number; fullBackstopMs?: number } = {},
 ) {
+  const backstopMs = options.backstopMs ?? ISSUE_RECOVERY_BACKSTOP_MS;
+  const fullBackstopMs = options.fullBackstopMs ?? options.backstopMs ?? ISSUE_RECOVERY_FULL_BACKSTOP_MS;
   function fullPasses() {
-    const completedAt = new Map<string, number>();
+    const completedAt = new Map<string, number>(), changedAt = new Map<string, number>();
+    const scans = new Map<string, Date | null>();
+    const lastFull = (companyId: string) => Math.max(completedAt.get("*") ?? 0, completedAt.get(companyId) ?? 0);
+    const lastLook = (companyId: string) => Math.max(lastFull(companyId), changedAt.get(companyId) ?? 0);
     return {
-      backstop: (scope: IssueRecoveryScope | undefined) => scope?.backstop
-        ? Math.max(completedAt.get("*") ?? 0, completedAt.get(scope.companyId) ?? 0) + (options.backstopMs ?? ISSUE_RECOVERY_BACKSTOP_MS)
-        : null,
-      loaded(scope: IssueRecoveryScope | undefined, complete: boolean) {
-        if (complete && !scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) completedAt.set(scope?.companyId ?? "*", Date.now());
+      backstop: (scope: IssueRecoveryScope | undefined) => scope?.backstop ? lastLook(scope.companyId) + backstopMs : null,
+      changedSince(scope: IssueRecoveryScope | undefined, key: string, firstPage: boolean): Date | null {
+        if (!scope?.backstop) return null;
+        if (firstPage || !scans.has(key)) scans.set(key, Date.now() - lastFull(scope.companyId) >= fullBackstopMs ? null
+          : new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS));
+        return scans.get(key) ?? null;
+      },
+      loaded(scope: IssueRecoveryScope | undefined, key: string, complete: boolean) {
+        if (!complete) return;
+        const changed = scans.get(key) ?? null;
+        scans.delete(key);
+        if (changed && scope) changedAt.set(scope.companyId, Date.now());
+        else if (!scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) completedAt.set(scope?.companyId ?? "*", Date.now());
       },
     };
   }
@@ -94,8 +108,10 @@ export function registerIssueRecoveryWork(
         if (!enabled) { cursors.delete(key); return []; }
         if (await toCompany(scope, worker)) return { rows: null, complete: true };
         const cursor = cursors.get(key);
+        const changedSince = passes.changedSince(scope, key, !cursor);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
           scope ? eq(issues.companyId, scope.companyId) : undefined,
+          changedSince ? changedTaskCondition(changedSince) : undefined,
           scope?.issueId ? eq(issues.id, scope.issueId) : undefined,
           scope?.issueIds ? inArray(issues.id, scope.issueIds) : undefined,
           cursor ? gt(issues.id, cursor) : undefined,
@@ -107,13 +123,15 @@ export function registerIssueRecoveryWork(
         )).orderBy(asc(issues.id)).limit(PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
-        passes.loaded(scope, complete);
-        return { rows: rows.map(row => ({ ...row, dueAt: Date.now() })), complete };
+        passes.loaded(scope, key, complete);
+        const origin = !workSignalDebug.enabled ? undefined : !scope ? "reload" as const : scope.backstop ? "backstop" as const
+          : scope.issueId || isGraph(scope) ? "hint" as const : "company" as const;
+        return { rows: rows.map(row => ({ ...row, dueAt: Date.now(), ...(origin ? { origin } : {}) })), complete };
       },
       check: async entry => {
         if (!enabled) return null;
         if (workSignalDebug.enabled) workSignalDebug.event(queue, "check", { issueId: entry.id, companyId: entry.companyId,
-          wake: entry.fromDeadline ? "deadline" : "load", dueAt: entry.dueAt });
+          wake: entry.fromDeadline ? "deadline" : entry.origin ?? "load", dueAt: entry.dueAt });
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
@@ -145,11 +163,12 @@ export function registerIssueRecoveryWork(
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
         if (await toCompany(scope, worker)) return { rows: null, complete: true };
+        const changedSince = passes.changedSince(scope, key, !cursors.has(key));
         const rows = await sweep.listSuspects(scope ? { companyId: scope.companyId, issueId: scope.issueId,
-          issueIds: scope.issueIds } : {}, cursors.get(key) ?? null, PAGE_SIZE);
+          issueIds: scope.issueIds, ...(changedSince ? { changedSince } : {}) } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
-        passes.loaded(scope, complete);
+        passes.loaded(scope, key, complete);
         return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now(),
           ...(scope?.backstop ? { fromBackstop: true as const } : {}) })), complete };
       },
