@@ -1632,7 +1632,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       expect.arrayContaining([
         expect.objectContaining({
           phase: "worktree_prepare",
-          command: "git checkout PAP-447-add-worktree-support",
+          command: "git checkout --no-overwrite-ignore PAP-447-add-worktree-support",
           metadata: expect.objectContaining({
             branchIncoherenceRepair: true,
             expectedBranchName: "PAP-447-add-worktree-support",
@@ -2997,7 +2997,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       expect.arrayContaining([
         expect.objectContaining({
           phase: "worktree_prepare",
-          command: "git checkout PAP-454-repair-clean-branch-mismatch",
+          command: "git checkout --no-overwrite-ignore PAP-454-repair-clean-branch-mismatch",
           metadata: expect.objectContaining({
             branchIncoherenceRepair: true,
             expectedBranchName: expectedBranch,
