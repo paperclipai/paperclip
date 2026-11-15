@@ -645,6 +645,8 @@ export interface HarnessSession {
     turnId?: string;
     reason?: string;
     signal?: AbortSignal;
+    /** Passive failure cleanup must not revoke a still-recoverable external turn. */
+    failureCleanup?: boolean;
   }): Promise<void>;
   settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];

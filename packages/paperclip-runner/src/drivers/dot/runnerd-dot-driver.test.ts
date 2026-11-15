@@ -284,6 +284,120 @@ it.each(["local", "local pending finish", "custom local directory", "external la
   }
 }, 45000);
 
+
+it.each([
+  { title: "preserves the accepted external turn when known-dead failure cleanup cannot deliver cancellation", failureCleanup: true },
+  { title: "preserves a genuine Stop queued after the external daemon dies across recovery", failureCleanup: false },
+])("$title", async ({ failureCleanup }) => {
+  const root = await mkdtemp(join(tmpdir(), "dot-dead-cleanup-"));
+  await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
+  const input = execution(root), runnerState = join(root, "external-runtime/runner");
+  await mkdir(runnerState, { recursive: true });
+  let send: ((operation: ExternalProviderOperation) => Promise<void>) | undefined;
+  let authority: controlPlane.DurablePrpControlPlane | undefined;
+  let child: ReturnType<typeof spawn> | undefined;
+  let completion: Promise<unknown> | undefined;
+  let calls = 0, dispatches = 0;
+  const revocations: Array<{ kind: "authority_revoked"; externalStopConfirmed: unknown }> = [];
+  const settlements = new Map<string, unknown>();
+  const identity = { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
+    normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId };
+  const options: RunnerdDotDriverOptions = {
+    execution: input, stateDirectory: join(root, "state"), identity, runnerStateDirectory: runnerState,
+    runnerBinary: process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? defaultCapabilityRunnerdBinary(),
+    readProviderState: async () => {
+      try { return JSON.parse(await readFile(join(runnerState, "dot-provider-state.json"), "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+    },
+    controlPlaneRegistration: async core => {
+      authority = core; await core.start();
+      return { connectUrl: core.connectUrl, release: () => core.stop() };
+    },
+    runnerProcessLauncher: spec => {
+      const owned = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
+      const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
+        owned.once("error", reject); owned.once("close", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
+      });
+      child = owned; completion = done;
+      return { child: owned, startedAt: new Date().toISOString(), completion: done };
+    },
+    dynamicTools: [{ name: "synthetic_counter", description: "Read a synthetic counter", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    dynamicToolHandler: async () => ({ count: ++calls }),
+    port: { dispatch: async event => {
+      dispatches++;
+      if (event.payload.kind === "authority_revoked") revocations.push({ kind: "authority_revoked", externalStopConfirmed: event.payload.externalStopConfirmed });
+    }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
+      attach: async callback => { send = callback; return async () => { send = undefined; }; } },
+  };
+  const makeBackend = () => createNativeSessionBackend(input, { dotRunnerOptions: options,
+    dynamicTools: options.dynamicTools, dynamicToolHandler: options.dynamicToolHandler });
+  const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
+    requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
+    normalizedSessionId: input.session.normalizedSessionId!, turnId: identity.turnId, assignmentRevision: 1,
+    action, input: args, digest: externalOperationDigest(action, args),
+  });
+  let session: Awaited<ReturnType<ReturnType<typeof makeBackend>["openSession"]>> | undefined;
+  let firstFailure: unknown;
+  try {
+    session = await makeBackend().openSession({ identity: { ...input.binding, sessionId: identity.normalizedSessionId }, workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: "Read the synthetic counter." } });
+    await send!(operation("accept", {}));
+    const call = operation("tool", { name: "synthetic_counter", arguments: {} });
+    await send!(call);
+    await vi.waitFor(() => expect(settlements.get(call.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
+    const snapshot = await session.snapshot();
+    expect(snapshot.activeTurnId).toBe(identity.turnId);
+    const originalPid = child!.pid;
+    expect(child!.kill("SIGTERM")).toBe(true);
+    await completion;
+    expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true);
+    // Use the actual facade contract for passive failure cleanup and a genuine Stop.
+    const cleanup = session.cancel!({ reason: "Known Runner transport failure", signal: new AbortController().signal, ...(failureCleanup ? { failureCleanup: true } : {}) });
+    await expect(cleanup.cleanup).rejects.toThrow(/^dot_runner_process_exited_recovery_required:/);
+    await expect(session.close({ reason: "Known Runner transport failure" })).rejects.toThrow(/^dot_runner_process_exited_recovery_required:/);
+    const failureCleanupCommands = ["dot_cancel", "dot_close"].filter(id => authority!.getCommand(id) !== undefined);
+    await session.detachControllerForRestart!();
+    const recovered = await makeBackend().recoverSession!(snapshot, { signal: new AbortController().signal });
+    expect(recovered.recovered).toBe(true);
+    session = recovered.session!;
+    expect(child!.pid).not.toBe(originalPid);
+    if (!failureCleanup) {
+      expect(failureCleanupCommands).toEqual(["dot_cancel", "dot_close"]);
+      expect((await session.snapshot()).activeTurnId).toBeNull();
+      expect(JSON.parse(await readFile(join(runnerState, "dot-provider-state.json"), "utf8")).lifecycle).toBe("closed");
+      expect(calls).toBe(1);
+      await vi.waitFor(() => expect(revocations).toEqual([{ kind: "authority_revoked", externalStopConfirmed: false }]), { timeout: 10000 });
+      expect(dispatches).toBe(2); // Original offer plus the one actual authority-revocation event.
+      await session.close({ reason: "Stopped test complete" });
+      return;
+    }
+    expect((await session.snapshot()).activeTurnId).toBe(identity.turnId);
+    expect(failureCleanupCommands).toEqual([]);
+    // A changed start still hits the original canonical replay fence.
+    await expect(session.startTurn({ message: { role: "user", text: "Different restart continuation." }, continuation: true }))
+      .rejects.toThrow("Durable PRP command replay conflicts with persisted state.");
+    await send!(call);
+    expect(calls).toBe(1);
+    expect(dispatches).toBe(1);
+    // Current, deliverable Stop remains effective after successful recovery.
+    await session.cancel!({ reason: "Authorized test Stop", signal: new AbortController().signal }).cleanup;
+    expect(JSON.parse(await readFile(join(runnerState, "dot-provider-state.json"), "utf8")).lifecycle).toBe("fenced");
+    await session.close({ reason: "Test complete" });
+  } catch (error) {
+    firstFailure = error; throw error;
+  } finally {
+    const failures: unknown[] = [];
+    try { await session?.detachControllerForRestart?.(); } catch (error) { failures.push(error); }
+    try {
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await completion;
+    } catch (error) { failures.push(error); }
+    try { await rm(root, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(firstFailure === undefined ? failures : [firstFailure, ...failures],
+      "Known-dead failure cleanup regression teardown failed", { cause: firstFailure ?? failures[0] });
+  }
+}, 45000);
+
 it("rejects a mismatched Grok driver before any provider state is attached", async () => {
   const input = execution("/synthetic/pinned-instructions", "grok_bot");
   expect(() => parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "openai_dot_mcp" } })).toThrow();

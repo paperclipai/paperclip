@@ -360,7 +360,10 @@ class RunnerdExternalSession implements HarnessSession {
   async read() { return await this.#command("session.snapshot", {}, `${this.codec.commandPrefix}_snapshot_${randomUUID()}`); }
   async reconcile() { return { ...await this.read(), externalStopConfirmed: false, usage: null, cost: null }; }
   async usage() { return null; }
-  async interrupt() { await this.#command("run.cancel", {}, `${this.codec.commandPrefix}_cancel`); }
+  async interrupt(input?: Parameters<NonNullable<HarnessSession["interrupt"]>>[0]) {
+    if (input?.failureCleanup === true && this.#failure) throw this.#failure;
+    await this.#command("run.cancel", {}, `${this.codec.commandPrefix}_cancel`);
+  }
   async snapshot(): Promise<PersistedHarnessSession> {
     const state = await this.read();
     // Target-owned state is authoritative. Also retain the controller's recovery
@@ -399,10 +402,11 @@ class RunnerdExternalSession implements HarnessSession {
     }).catch(() => {});
     return cleanup;
   }
-  async close(input: { reason: string; force?: boolean }) {
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }) {
     if (this.#closed) return this.detachControllerForRestart();
     const confirmedExit = () => this.#processCompletionFulfilled && this.#process?.isExitConfirmed?.() === true;
     if (!confirmedExit()) {
+      if (input.retainUnsettledRemoteRunner === true && this.#failure) throw this.#failure;
       try {
         if (input.force) await this.interrupt();
         await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
