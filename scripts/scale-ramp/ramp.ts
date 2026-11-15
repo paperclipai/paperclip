@@ -99,6 +99,7 @@ export interface RampOutcome {
   taskCapReached: boolean;
   recordedSpendUsd: number | null;
   spendReadError: string | null;
+  unpricedCostEvents: number;
   runsListTruncated: boolean;
   metricsSource: "endpoint" | "not provided" | "unavailable";
 }
@@ -200,6 +201,7 @@ export class Ramp {
   private spendUsd: number | null = null;
   private spendReadFailures = 0;
   private spendReadError: string | null = null;
+  private unpricedCostEvents = 0;
   private fallbackCursor = 0;
   private runsListTruncated = false;
   private metricsSource: RampOutcome["metricsSource"];
@@ -264,7 +266,8 @@ export class Ramp {
     }
     return {
       steps: results, stop, drained, openTasksAtEnd: this.openTasks().length, tasksCreated: this.tasks.size, taskCapReached: this.taskCapReached,
-      recordedSpendUsd: finalSpendRead ? this.spendUsd : null, spendReadError: finalSpendRead ? null : this.spendReadError, runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
+      recordedSpendUsd: finalSpendRead ? this.spendUsd : null, spendReadError: finalSpendRead ? null : this.spendReadError,
+      unpricedCostEvents: this.unpricedCostEvents, runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
     };
   }
 
@@ -416,7 +419,13 @@ export class Ramp {
     this.spendReadFailures = 0;
     this.spendReadError = null;
     let cents = 0;
-    for (const row of rows) if (agentIds.has(String(row.agentId))) cents += num(row.costCents) ?? 0;
+    let unpriced = 0;
+    for (const row of rows as Json[]) {
+      if (!agentIds.has(String(row.agentId))) continue;
+      cents += num(row.costCents) ?? 0;
+      unpriced += num(row.unpricedEventCount) ?? 0;
+    }
+    this.unpricedCostEvents = unpriced;
     this.spendUsd = Math.round(cents) / 100;
     return true;
   }

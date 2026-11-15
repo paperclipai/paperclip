@@ -30,6 +30,7 @@ export interface FakeConfig {
   recoverFailedRunAfterMs: number | null;
   retrySameRunAfterMs: number | null;
   sameRunRetryDurationMs: number | null;
+  unpricedEventsPerAgent: number;
   terminationDelayMs: number;
   leaseLingerMs: number;
   costPerRunUsd: number;
@@ -96,6 +97,7 @@ export class FakePaperclip {
       recoverFailedRunAfterMs: null,
       retrySameRunAfterMs: null,
       sameRunRetryDurationMs: null,
+      unpricedEventsPerAgent: 0,
       terminationDelayMs: 0,
       leaseLingerMs: 0,
       costPerRunUsd: 0.01,
@@ -273,7 +275,7 @@ export class FakePaperclip {
           if (query.get("period") !== "all" && new Date(run.finishedAt!).toISOString().slice(0, 7) !== month) continue;
           cents.set(run.agentId, (cents.get(run.agentId) ?? 0) + this.config.costPerRunUsd * 100);
         }
-        return json(200, [...cents].map(([agentId, costCents]) => ({ agentId, costCents })));
+        return json(200, [...cents].map(([agentId, costCents]) => ({ agentId, costCents, unpricedEventCount: this.config.unpricedEventsPerAgent })));
       }
       if (c === "agents") {
         if (method === "GET") return json(200, [...this.agents.values()].filter(agent => agent.companyId === companyId && agent.status !== "terminated"));

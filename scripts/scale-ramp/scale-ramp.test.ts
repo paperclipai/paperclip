@@ -706,6 +706,16 @@ describe("ramp against the fake API", () => {
     assert.equal(result.recordedSpendUsd, Math.round(finished.length * 25) / 100);
   });
 
+  it("grades a run incomplete when some cost events have no known price", async () => {
+    const out = await tempDir();
+    const h = harness({ metricsUrl: METRICS_URL, metrics: goodMetrics, unpricedEventsPerAgent: 1 }, { PAPERCLIP_SCALE_METRICS_URL: METRICS_URL });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(result.verdict, "incomplete");
+    assert.ok(result.incompleteReasons.some(reason => /2 cost events have no known price/.test(reason)), result.incompleteReasons.join("; "));
+    assert.match(result.sources.modelSpend!, /no known price/);
+  });
+
   it("stops when recorded spend cannot be read, and reports spend as not measured", async () => {
     const out = await tempDir();
     const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/costs/by-agent") && count > 2
