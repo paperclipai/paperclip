@@ -187,10 +187,10 @@ describe.skipIf(!support.supported)("obsolete task watchdog settlement", () => {
       .values({
         companyId: f.company.id,
         issueId: f.reviewId,
-        kind: "question",
+        kind: "ask_user_questions",
         status: "pending",
         title: "New human wait",
-        payload: {},
+        payload: {version: 1, questions: [{id: "decision", prompt: "Continue?", selectionMode: "single", options: [{id: "yes", label: "Yes"}, {id: "no", label: "No"}]}]},
       });
     expect(
       (await f.service.readIdleSchedule(db, Date.now(), owner)).blocked,
@@ -281,10 +281,10 @@ describe.skipIf(!support.supported)("obsolete task watchdog settlement", () => {
       await db.insert(issueThreadInteractions).values({
         companyId: f.company.id,
         issueId: mode === "business_question" ? f.source.id : f.reviewId,
-        kind: "question",
+        kind: "ask_user_questions",
         status: "pending",
         title: "Need a decision",
-        payload: {},
+        payload: {version: 1, questions: [{id: "decision", prompt: "Continue?", selectionMode: "single", options: [{id: "yes", label: "Yes"}, {id: "no", label: "No"}]}]},
       });
     if (mode === "paused")
       await db
