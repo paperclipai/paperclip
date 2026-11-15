@@ -2109,6 +2109,24 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(next.executionWorkspace.cwd, repository.relativePath, "README.md"), "utf8")).toBe("source content\n");
   });
 
+  it("restores a task directory under a retained strategy when the reviewer defaults to worktrees", async () => {
+    const { input, issue } = await fixture();
+    input.policy.useIsolatedTaskDirectory = true;
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id,
+      sourceRunId: input.run.id, retainedSourceIds: [] };
+    const first = await prepareHeartbeatWorkspace(db, input);
+    await writeFile(join(first.executionWorkspace.cwd, "delivery.txt"), "original delivery\n");
+    await reuse(input, first.persistedExecutionWorkspace!);
+    input.task.freshWorkspace = null;
+    input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+    const next = await prepareHeartbeatWorkspace(db, input);
+    expect(next.persistedExecutionWorkspace!.id).toBe(first.persistedExecutionWorkspace!.id);
+    expect(next.executionWorkspace.cwd).toBe(first.executionWorkspace.cwd);
+    expect(await readFile(join(next.executionWorkspace.cwd, "delivery.txt"), "utf8")).toBe("original delivery\n");
+  });
+
   it("creates a real isolated worktree and reuses its recorded workspace", async () => {
     const { input, source, issue } = await fixture(true);
     const first = await prepareHeartbeatWorkspace(db, input);
