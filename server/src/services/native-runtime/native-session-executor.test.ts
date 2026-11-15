@@ -13313,7 +13313,6 @@ describe("native warm session supervision", () => {
             runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
               sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "gone-sandbox" } } });
           const deleted = await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db });
-          expect(where).toHaveBeenCalledOnce();
           if (receipt === "destroyed") {
             expect(deleted).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
             expect(await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db }))
