@@ -1,3 +1,4 @@
+import type { QueryFunctionContext } from "@tanstack/react-query";
 import type { LinkPreviewResult, LinkPreviewTarget } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
@@ -11,8 +12,8 @@ export interface LinkPreviewLoader {
 export function linkPreviewQueryOptions(context: LinkPreviewLoader, target: LinkPreviewTarget) {
   return {
     queryKey: queryKeys.linkPreview(context.companyId, context.userId, target.canonicalUrl),
-    queryFn: async (): Promise<LinkPreviewResult> => {
-      try { return await context.load(target); } catch { return { preview: null, maxAgeMs: 60_000 }; }
+    queryFn: async ({ client, queryKey }: QueryFunctionContext): Promise<LinkPreviewResult> => {
+      try { return await context.load(target); } catch { return { preview: client.getQueryData<LinkPreviewResult>(queryKey)?.preview ?? null, maxAgeMs: 60_000 }; }
     },
     staleTime: (query: { state: { data?: LinkPreviewResult } }) => query.state.data?.maxAgeMs ?? 60_000,
     gcTime: 5 * 60_000,

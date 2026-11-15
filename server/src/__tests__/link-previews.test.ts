@@ -86,6 +86,23 @@ describe("demand-driven link preview cache", () => {
     expect(resolve).toHaveBeenCalledTimes(2);
     finish(unavailable);
   });
+  it("bounds a stalled database write and holds its concurrency slot until settlement", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const write = vi.fn(async () => {}).mockImplementationOnce(() => new Promise<void>(done => { finish = done; }));
+    const resolve = vi.fn(async (target: import("@paperclipai/shared").LinkPreviewTarget) => ({ preview: { target, title: "Known", state: "open" as const, author: null, updatedAt: null }, maxAgeMs: 60_000 }));
+    const service = createLinkPreviewService([{ key: "github", resolve }], {
+      store: { read: async () => new Map(), write }, timeoutMs: 20, maxConcurrent: 1,
+    });
+    const first = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(21);
+    expect((await first).preview?.state).toBe("open");
+    expect(await service.get(scope, url + "1")).toEqual(unavailable);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    finish(); await vi.advanceTimersByTimeAsync(1);
+    await service.get(scope, url + "1");
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
   it("aborts a real stalled HTTP read while an unrelated lookup remains responsive", async () => {
     const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write("{"); });
     server.listen(0, "127.0.0.1");

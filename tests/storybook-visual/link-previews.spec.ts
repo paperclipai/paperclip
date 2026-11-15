@@ -190,9 +190,9 @@ test("page load restores stored status and refreshes stale data on idle without 
   let cached = 0, resolved = 0;
   let release!: () => void;
   const refresh = new Promise<void>(done => { release = done; });
-  await page.route("**/api/companies/company-storybook/link-previews/cached", async route => {
+  await page.route("**/api/companies/company-storybook/link-previews/cached?*", async route => {
     cached++;
-    expect(route.request().postDataJSON()).toEqual({ urls: [canonicalUrl] });
+    expect(new URL(route.request().url()).searchParams.getAll("url")).toEqual([canonicalUrl]);
     await route.fulfill({ json: { results: { [canonicalUrl]: { preview, maxAgeMs: 0 } } } });
   });
   await page.route("**/api/companies/company-storybook/link-preview?*", async route => {

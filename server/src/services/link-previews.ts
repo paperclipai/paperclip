@@ -58,34 +58,38 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
 
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout>;
-      const deadline = new Promise<LinkPreviewResult>(resolve => {
-        timer = setTimeout(() => { controller.abort(); resolve(UNAVAILABLE); }, options.timeoutMs ?? 5_000);
-      });
-      // Keep an underlying operation in the concurrency budget until it settles,
-      // even if a credential backend ignores cancellation after our deadline.
-      activeOperations++;
       let previous = cached;
-      let restored = false;
       const checkedAt = now();
+      const fallback = (): LinkPreviewResult => ({ preview: cache.get(key)?.result.preview ?? previous?.result.preview ?? null, maxAgeMs: 60_000 });
+      const deadline = new Promise<LinkPreviewResult>(resolve => {
+        timer = setTimeout(() => {
+          controller.abort();
+          const current = cache.get(key);
+          resolve(current && current.expiresAt > now() ? remaining(current) : fallback());
+        }, options.timeoutMs ?? 5_000);
+      });
+      // All underlying work, including uncancellable SQL, retains its slot until
+      // settlement. The caller's deadline does not release the resource budget.
+      activeOperations++;
       const operation = Promise.resolve().then(async () => {
         if (!previous && options.store) {
           previous = (await options.store.read(scope, [target]).catch(() => new Map<string, StoredLinkPreview>())).get(target.canonicalUrl);
         }
-        if (previous && previous.expiresAt > now()) { restored = true; return remaining(previous); }
-        if (controller.signal.aborted) return UNAVAILABLE;
-        return provider.resolve(target, scope, controller.signal);
-      }).catch(() => UNAVAILABLE).finally(() => { activeOperations--; });
-      const request = Promise.race([operation, deadline]).then(async result => {
-        if (restored && previous) { remember(key, previous); return remaining(previous); }
+        if (controller.signal.aborted) return fallback();
+        if (previous && previous.expiresAt > now()) { remember(key, previous); return remaining(previous); }
+        const result = await provider.resolve(target, scope, controller.signal).catch(() => UNAVAILABLE);
+        if (controller.signal.aborted) return fallback();
         const bounded = { ...result, maxAgeMs: Math.max(1_000, Math.min(result.maxAgeMs, 60 * 60_000)) };
-        // An outage must not erase the last known status; negative freshness still applies.
         if (!bounded.preview && previous?.result.preview) bounded.preview = previous.result.preview;
         const entry = { result: bounded, expiresAt: now() + bounded.maxAgeMs };
         remember(key, entry);
-        if (options.store && !(previous && previous.expiresAt > now())) {
-          await options.store.write(scope, target, entry, checkedAt).catch(() => {});
-        }
-        return bounded;
+        if (options.store) await options.store.write(scope, target, entry, checkedAt).catch(() => {});
+        return remaining(entry);
+      }).catch(fallback).finally(() => { activeOperations--; });
+      const request = Promise.race([operation, deadline]).then(result => {
+        const current = cache.get(key);
+        if (!current || current.expiresAt <= now()) remember(key, { result, expiresAt: now() + result.maxAgeMs });
+        return result;
       }).finally(() => {
         clearTimeout(timer!);
         if (inFlight.get(key) === request) inFlight.delete(key);

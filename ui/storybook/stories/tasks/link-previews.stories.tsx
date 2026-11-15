@@ -63,7 +63,7 @@ const meta = {
         maxAgeMs: 60_000,
       }),
     }, {
-      path: "/api/companies/company-storybook/link-previews/cached", method: "POST",
+      path: "/api/companies/company-storybook/link-previews/cached", method: "GET",
       read: () => ({ results: {} }),
     }]);
     return fixture.cleanup;

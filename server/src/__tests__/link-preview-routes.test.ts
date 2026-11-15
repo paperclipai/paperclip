@@ -42,17 +42,22 @@ describe("link preview routes", () => {
   });
   it("reads a bounded batch only after viewer and company authorization", async () => {
     const { server, cached, get } = app({ ...board, companyIds: [...board.companyIds] });
-    const response = await request(server).post("/companies/company-a/link-previews/cached").send({ urls: ["https://github.com/acme/web/pull/42"] });
+    const response = await request(server).get("/companies/company-a/link-previews/cached").query({ url: ["https://github.com/acme/web/pull/42"] });
     expect(response.status).toBe(200);
     expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(cached).toHaveBeenCalledWith({ companyId: "company-a", userId: "alice" }, ["https://github.com/acme/web/pull/42"]);
     expect(get).not.toHaveBeenCalled();
-    for (const body of [{}, { urls: [3] }, { urls: ["x".repeat(2049)] }, { urls: Array(51).fill("a") }]) {
-      expect((await request(server).post("/companies/company-a/link-previews/cached").send(body)).status).toBe(400);
+    for (const body of [{}, { url: ["x".repeat(2049)] }, { url: Array(51).fill("a") }]) {
+      expect((await request(server).get("/companies/company-a/link-previews/cached").query(body)).status).toBe(400);
     }
     const denied = app({ ...board, companyIds: ["company-b"] });
-    expect((await request(denied.server).post("/companies/company-a/link-previews/cached").send({ urls: [] })).status).toBe(403);
+    expect((await request(denied.server).get("/companies/company-a/link-previews/cached")).status).toBe(403);
     expect(denied.cached).not.toHaveBeenCalled();
+  });
+  it("lets active viewer-role members read stored statuses", async () => {
+    const { server, cached } = app({ ...board, companyIds: [...board.companyIds], memberships: [{ companyId: "company-a", membershipRole: "viewer", status: "active" }] });
+    expect((await request(server).get("/companies/company-a/link-previews/cached").query({ url: "https://github.com/acme/web/pull/42" })).status).toBe(200);
+    expect(cached).toHaveBeenCalledTimes(1);
   });
   it("bounds and validates the URL input", async () => {
     const { server, get } = app({ ...board, companyIds: [...board.companyIds] });

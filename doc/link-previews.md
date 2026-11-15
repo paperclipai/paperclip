@@ -20,7 +20,8 @@ feed events. Cache HTTP responses use `private, no-store`.
 The browser registers mounted rich links after render. Up to 200 unique links
 per active company view are eligible for automatic enrichment; further links
 still work on hover/focus. One request reads up to 50 cached previews using one
-indexed database select, without provider calls or task joins. Duplicate links
+indexed database select, without provider calls or task joins. The read-only GET
+route also supports viewer-role members. Encoded request URLs stay below 6 KB. Duplicate links
 share one browser query. Fresh browser results take precedence over older database
 reads. Cache failures are quiet and do not block the task page.
 
@@ -33,7 +34,9 @@ New links from subsequent page content get their own one-shot enrichment.
 
 The existing provider timeout, fixed-host lookup, managed connection selection,
 public-access checks, negative cache window and process concurrency bound remain.
-Provider results are stored before the successful lookup response completes.
+Provider results are stored before the successful lookup response completes when
+the store is available within the shared five-second deadline. Stalled SQL keeps
+its concurrency slot until it settles; the deadline still releases the response.
 Database outages fall back to the optional process cache/provider path. Successful
 and unavailable results normally remain fresh for one minute; provider backoff
 can extend that window up to one hour. Expired records retain last known status

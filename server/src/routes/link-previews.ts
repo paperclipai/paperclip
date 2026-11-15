@@ -20,15 +20,15 @@ export function linkPreviewRoutes(db: Db, service = createLinkPreviewService([cr
     res.json(await service.get({ companyId, userId: req.actor.userId ?? null }, href));
   });
   // Read-only batch: page hydration never waits for a remote provider.
-  router.post("/companies/:companyId/link-previews/cached", async (req, res) => {
+  router.get("/companies/:companyId/link-previews/cached", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
-    const urls = req.body?.urls;
-    if (!Array.isArray(urls) || urls.length > LINK_PREVIEW_BATCH_LIMIT
+    const urls = typeof req.query.url === "string" ? [req.query.url] : req.query.url;
+    if (!Array.isArray(urls) || !urls.length || urls.length > LINK_PREVIEW_BATCH_LIMIT
       || urls.some(url => typeof url !== "string" || url.length > 2048)) throw badRequest("A bounded list of link URLs is required");
     res.set("Cache-Control", "private, no-store");
-    res.json(await service.cached({ companyId, userId: req.actor.userId ?? null }, urls));
+    res.json(await service.cached({ companyId, userId: req.actor.userId ?? null }, urls as string[]));
   });
   return router;
 }

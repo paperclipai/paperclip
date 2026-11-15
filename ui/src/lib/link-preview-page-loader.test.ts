@@ -105,6 +105,21 @@ describe("page link enrichment", () => {
     expect(f.context.readCached).toHaveBeenCalledTimes(1);
     expect(f.client.getQueryData(linkPreviewQueryOptions(f.context, target).queryKey)).toEqual(result);
   });
+  it("retains saved status when automatic refresh has a network error", async () => {
+    const f = fixture();
+    f.client.setQueryData(linkPreviewQueryOptions(f.context, target).queryKey, { ...result, maxAgeMs: 0 });
+    f.context.load.mockRejectedValue(new Error("network unavailable"));
+    f.loader.register(target); f.loaded(); await settle(); f.runIdle(); await settle();
+    expect(f.client.getQueryData<LinkPreviewResult>(linkPreviewQueryOptions(f.context, target).queryKey)?.preview).toEqual(result.preview);
+    expect(f.context.readCached).not.toHaveBeenCalled();
+  });
+  it("bounds encoded batch URLs for long resource names", async () => {
+    const f = fixture();
+    for (let i = 0; i < 100; i++) f.loader.register(recognizeLinkPreview(`https://github.com/acme/${"a".repeat(1900)}/pull/${i + 1}`)!);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.context.readCached.mock.calls.flatMap(([targets]) => targets)).toHaveLength(100);
+    expect(f.context.readCached.mock.calls.every(([targets]) => targets.reduce((n, target) => n + encodeURIComponent(target.canonicalUrl).length + 5, 0) <= 6_000)).toBe(true);
+  });
   it("keeps failures quiet and lets hover work when cached hydration fails", async () => {
     const f = fixture();
     f.context.readCached.mockRejectedValue(new Error("cache unavailable"));

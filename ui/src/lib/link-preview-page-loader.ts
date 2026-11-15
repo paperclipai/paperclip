@@ -69,7 +69,14 @@ export function createLinkPreviewPageLoader(client: QueryClient, context: LinkPr
       for (const link of links.values()) {
         if (!link.hydrated && client.getQueryData(linkPreviewQueryOptions(context, link.target).queryKey) !== undefined) link.hydrated = true;
       }
-      const batch = [...links.values()].filter(link => !link.hydrated).slice(0, LINK_PREVIEW_BATCH_LIMIT);
+      const batch: Array<{ target: LinkPreviewTarget; count: number; hydrated: boolean; attempted: boolean }> = [];
+      let bytes = 0;
+      for (const link of links.values()) {
+        if (link.hydrated) continue;
+        const size = encodeURIComponent(link.target.canonicalUrl).length + 5;
+        if (batch.length >= LINK_PREVIEW_BATCH_LIMIT || bytes + size > 6_000) break;
+        batch.push(link); bytes += size;
+      }
       if (!batch.length) { scheduleIdle(); return; }
       hydrating = true;
       const startedAt = Date.now();

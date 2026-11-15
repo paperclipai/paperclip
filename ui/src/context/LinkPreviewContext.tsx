@@ -31,8 +31,9 @@ export function LinkPreviewProvider({ companyId, userId, children, autoLoad = tr
     if (!value || !autoLoad) return;
     const loader = createLinkPreviewPageLoader(client, {
       ...value,
-      readCached: targets => api.post<LinkPreviewBatchResult>(`/companies/${companyId}/link-previews/cached`,
-        { urls: targets.map(target => target.canonicalUrl) }, { timeoutMs: 6_000, cache: "no-store" }),
+      readCached: targets => api.get<LinkPreviewBatchResult>(`/companies/${companyId}/link-previews/cached?${
+        new URLSearchParams(targets.map(target => ["url", target.canonicalUrl]))
+      }`, { timeoutMs: 6_000, cache: "no-store" }),
     });
     pageLoader.current = loader;
     return () => { loader.dispose(); if (pageLoader.current === loader) pageLoader.current = null; };
