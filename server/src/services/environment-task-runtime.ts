@@ -18,6 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
+import { runnerLaunchIdentityDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
 
 export type PluginTaskDescription = Extract<PluginEnvironmentTaskResult, { kind: "description" }>;
@@ -61,6 +62,12 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   expectedTaskId?: string;
 }): Promise<PluginEnvironmentTaskResult> {
   const operation = environmentTaskOperationSchema.parse(input.operation);
+  if (operation.kind === "prepare" && (operation.identityDigest !== undefined || operation.runDigest !== undefined)) {
+    const identityDigest = runnerLaunchIdentityDigest(operation.requirements as Parameters<typeof runnerLaunchIdentityDigest>[0]);
+    if (operation.identityDigest !== identityDigest || operation.runDigest !== runnerLaunchRunDigest(identityDigest, operation.requirements.identity)) {
+      throw new Error("Plugin Runner launch digest mismatch");
+    }
+  }
   const [row] = await db.select({ lease: environmentLeases, environment: environments, run: heartbeatRuns })
     .from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))

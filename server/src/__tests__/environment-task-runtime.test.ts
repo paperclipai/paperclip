@@ -5,6 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
+import { runnerLaunchIdentityDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
 vi.mock("../services/provider-fresh-workspace.js", () => ({
@@ -343,6 +344,33 @@ describe("plugin-provided Runner execution", () => {
     const denied = worker(result);
     await expect(executeEnvironmentTask(database(row(), []).db, denied as never, { companyId: "company", leaseId, operation })).rejects.toThrow("project unavailable");
     expect(denied.call).not.toHaveBeenCalled();
+  });
+  it("accepts prepare launch digests only when they match the requirements", async () => {
+    const operation = { kind: "prepare" as const, projectIds: [projectId], requirements: {
+      schema: "paperclip.runner.launch-requirements.v1" as const,
+      identity: { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
+        normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+      provider: "codex" as const, model: "selected", instructions: "Core instructions", runtimeContext: null,
+      settings: {}, approvalPolicy: "on-request" as const, readOnly: false,
+      preparedConversation: false, includeCollaborationModeInstructions: true,
+    } };
+    const identityDigest = runnerLaunchIdentityDigest(operation.requirements);
+    const runDigest = runnerLaunchRunDigest(identityDigest, operation.requirements.identity);
+    const result = { kind: "prepared", taskId: "attempt-1", launch: { configurationId: "configuration-1",
+      requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
+    const accepted = worker(result);
+    await expect(executeEnvironmentTask(database().db, accepted as never, { companyId: "company", leaseId,
+      operation: { ...operation, identityDigest, runDigest } })).resolves.toEqual(result);
+    expect(accepted.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
+      operation: expect.objectContaining({ identityDigest, runDigest }) }), 15_000);
+    const forged = `sha256:${"b".repeat(64)}`;
+    for (const digests of [{ identityDigest: forged, runDigest }, { identityDigest, runDigest: forged },
+      { identityDigest }, { runDigest }]) {
+      const refused = worker(result);
+      await expect(executeEnvironmentTask(database().db, refused as never, { companyId: "company", leaseId,
+        operation: { ...operation, ...digests } })).rejects.toThrow("launch digest mismatch");
+      expect(refused.call).not.toHaveBeenCalled();
+    }
   });
   it.each([false, true])("prepares scoped configuration with submit-time auth %s", async atSubmit => {
     const operation = { kind: "prepare" as const, projectIds: [projectId], requirements: {

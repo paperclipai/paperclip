@@ -93,11 +93,25 @@ export function bindRunnerLaunchResources(
   };
 }
 
-export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunchRequirements): string {
-  const canonical = JSON.stringify(requirements, (_key, value: unknown) =>
-    value && typeof value === "object" && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+function canonicalDigest(value: unknown): string {
+  const canonical = JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunchRequirements): string {
+  return canonicalDigest(requirements);
+}
+
+export function runnerLaunchIdentityDigest(requirements: RunnerProviderLaunchRequirements): string {
+  const { runId: _runId, turnId: _turnId, itemId: _itemId, ...identity } = requirements.identity;
+  return canonicalDigest({ schema: "paperclip.runner.launch-identity-digest.v1", requirements: { ...requirements, identity } });
+}
+
+export function runnerLaunchRunDigest(identityDigest: string, identity: Pick<DurableRecoveryIdentity, "runId" | "turnId" | "itemId">): string {
+  return canonicalDigest({ schema: "paperclip.runner.launch-run-digest.v1", identityDigest,
+    runId: identity.runId, turnId: identity.turnId, itemId: identity.itemId });
 }
 
 function runnerLaunchPolicy(requirements: RunnerProviderLaunchRequirements): Record<string, unknown> {

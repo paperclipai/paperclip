@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
-import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
+import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, runnerLaunchIdentityDigest, runnerLaunchRunDigest, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
@@ -50,6 +50,7 @@ export function createPluginRunnerTaskOwner(input: {
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
   resumeLaunchInputsVersion?: 1;
+  launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
@@ -143,7 +144,9 @@ export function createPluginRunnerTaskOwner(input: {
     if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
       throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
+    const identityDigest = input.launchDigestVersion === 1 ? runnerLaunchIdentityDigest(requirements) : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
+      ...(identityDigest ? { identityDigest, runDigest: runnerLaunchRunDigest(identityDigest, requirements.identity) } : {}),
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)

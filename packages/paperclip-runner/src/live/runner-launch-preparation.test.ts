@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions, NATIVE_RUNTIME_ASSET_SCHEMA } from "../contracts/runtime-context.js";
 import { describe, expect, it } from "vitest";
-import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchRequirementsDigest, runnerProviderLaunchRequirements,
+import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchIdentityDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements,
   validatePreparedRunnerLaunch, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
 const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run",
@@ -94,5 +94,37 @@ describe("environment-owned launch contract", () => {
       expect(() => validatePreparedRunnerLaunch(request, { ...prepared, provider: { ...prepared.provider, ...update } }))
         .toThrow("runner_prepared_launch_requirements_mismatch");
     }
+  });
+});
+
+describe("launch identity and run digests", () => {
+  const nextRun = { ...identity, runId: "next-run", turnId: "next-turn", itemId: "next-item" };
+  const withIdentity = (value: typeof identity) => ({ ...requirements(), identity: value });
+
+  it("keeps the identity digest across runs of one Runner and changes the run digest", () => {
+    const first = runnerLaunchIdentityDigest(requirements());
+    expect(runnerLaunchIdentityDigest(withIdentity(nextRun))).toBe(first);
+    expect(first).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(first).not.toBe(runnerLaunchRequirementsDigest(requirements()));
+    const run = runnerLaunchRunDigest(first, identity);
+    expect(run).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(runnerLaunchRunDigest(first, nextRun)).not.toBe(run);
+    expect(runnerLaunchRunDigest(first, { ...identity, itemId: "other-item" })).not.toBe(run);
+    expect(runnerLaunchRunDigest(first, identity)).toBe(run);
+  });
+
+  it.each([
+    ["runner instance", withIdentity({ ...identity, runnerInstanceId: "other-runner" })],
+    ["environment lease", withIdentity({ ...identity, environmentLeaseId: "other-lease" })],
+    ["session", withIdentity({ ...identity, normalizedSessionId: "other-session" })],
+    ["instructions", { ...requirements(), instructions: "Changed instructions" }],
+    ["model", { ...requirements(), model: "other-model" }],
+    ["approval policy", { ...requirements(), approvalPolicy: "never" as const }],
+    ["settings", { ...requirements(), settings: { ...requirements().settings, disableCodexWebSearch: true } }],
+  ])("changes the identity digest when the %s changes", (_label, changed) => {
+    const before = runnerLaunchIdentityDigest(requirements());
+    const after = runnerLaunchIdentityDigest(changed as RunnerProviderLaunchRequirements);
+    expect(after).not.toBe(before);
+    expect(runnerLaunchRunDigest(after, identity)).not.toBe(runnerLaunchRunDigest(before, identity));
   });
 });
