@@ -363,7 +363,6 @@ describe("plugin-provided Runner execution", () => {
       companyId: "company", runId: "run", agentId: "agent", projectIds: [projectId], operation,
     }), 15_000);
     expect(store.sets).toHaveLength(atSubmit || checked ? 2 : 1);
-    // A check made inside preparation is a completed proof; only a deferred one is marked for submit.
     if (atSubmit || checked) expect(new PgDialect().sqlToQuery(store.sets[1].metadata as never).params).toContain(JSON.stringify({
       runnerTaskProjectAuthValidation: { configurationId: "configuration-1", provider: "openai", projectIds: [projectId],
         ...(checked ? {} : { atSubmit: true }) },
