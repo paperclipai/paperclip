@@ -38,10 +38,16 @@ describe("repeated identical failing tool calls", () => {
     expect(second?.message).toContain("Arguments received each time: operationId, pathParams, query, responseText.");
     expect(second?.message).toContain("Paperclip will not run this exact call again in this run");
 
+    // Both the correction and the refusal name a call the model can copy.
+    const example = '{"operationId":"PATCH /api/issues/{id}","pathParams":{"id":"issue-a"},"body":{"title":"<title>"}}';
+    expect(first?.message).toContain(`for example: ${example}`);
+    expect(second?.message).toContain(example);
+
     for (const n of [3, 4, 5]) {
       const blocked = await failure(epoch, call(n));
       expect(blocked?.message).toMatch(/^This call was not run: call_api already failed 2 times/);
       expect(blocked?.message).toContain(first!.message);
+      expect(blocked?.message).toContain(example);
     }
     expect(authority.execute).toHaveBeenCalledTimes(2);
     expect(fetcher).not.toHaveBeenCalled();
@@ -91,5 +97,89 @@ describe("repeated identical failing tool calls", () => {
     await expect(epoch.execute({ tool: "list_projects", callId: "other", arguments: {} })).resolves.toBe("other");
     release();
     await expect(slow).resolves.toBe("slow");
+  });
+
+  // A route's own validation rejection comes back as data, not as a thrown error.
+  const rejected = (status: number | null, data: unknown = { error: "Validation error", details: [{ path: ["status"], message: "Invalid enum value" }] }) =>
+    ({ ok: false, status, apiOperationId: "PATCH /api/issues/{id}", contentType: "application/json", data });
+  const invalid = { operationId: "PATCH /api/issues/{id}", pathParams: { id: "issue-a" }, body: { status: "started" } };
+
+  it("counts a route's validation rejection returned as ok:false, corrects the second and does not run the third", async () => {
+    const { authority, epoch } = epochWith(async () => rejected(422));
+    const call = (n: number) => ({ tool: "call_api", callId: `r${n}`, arguments: invalid });
+
+    expect(await epoch.execute(call(1))).toEqual(rejected(422));
+    const second = await epoch.execute(call(2)) as Record<string, unknown>;
+    expect(second).toMatchObject({ ok: false, status: 422, data: rejected(422).data });
+    expect(second.guidance).toContain("failed 2 times with the same arguments");
+    expect(second.guidance).toContain("Arguments received each time: body, operationId, pathParams.");
+    expect(second.guidance).toContain("Paperclip will not run this exact call again in this run");
+
+    for (const n of [3, 4]) {
+      const blocked = await failure(epoch, call(n));
+      expect(blocked).toBeInstanceOf(HttpError);
+      expect((blocked as HttpError).status).toBe(422);
+      expect(blocked?.message).toMatch(/^This call was not run: call_api already failed 2 times/);
+      expect(blocked?.message).toContain("The response each time was HTTP 422: ");
+      expect(blocked?.message).toContain("Invalid enum value");
+    }
+    expect(authority.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("still runs a changed call after refusing a returned rejection", async () => {
+    const { authority, epoch } = epochWith(async call => (call.arguments as typeof invalid).body.status === "started" ? rejected(400) : { ok: true, status: 200 });
+    for (const n of [1, 2, 3]) await epoch.execute({ tool: "call_api", callId: `r${n}`, arguments: invalid }).catch(() => null);
+    await expect(epoch.execute({ tool: "call_api", callId: "fixed", arguments: { ...invalid, body: { status: "in_progress" } } }))
+      .resolves.toEqual({ ok: true, status: 200 });
+    expect(authority.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["server error", 500], ["unavailable", 503], ["rate limit", 429], ["timeout", 408], ["conflict", 409], ["not found", 404], ["no response", null],
+  ] as const)("keeps retrying a returned %s (%s), which may succeed unchanged", async (_label, status) => {
+    const { authority, epoch } = epochWith(async () => rejected(status, { error: "try again" }));
+    for (const n of [1, 2, 3, 4]) {
+      const result = await epoch.execute({ tool: "call_api", callId: `t${n}`, arguments: invalid }) as Record<string, unknown>;
+      expect(result).toEqual(rejected(status, { error: "try again" }));
+    }
+    expect(authority.execute).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    ["rate limit", new HttpError(429, "Too many requests")],
+    ["conflict", new HttpError(409, "Issue was updated by someone else")],
+    ["timeout", Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })],
+  ])("keeps retrying a thrown %s, which may succeed unchanged", async (_label, transient) => {
+    const { authority, epoch } = epochWith(async () => { throw transient; });
+    for (const n of [1, 2, 3]) expect(await failure(epoch, { tool: "call_api", callId: `${n}`, arguments: invalid })).toBe(transient);
+    expect(authority.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it("forgets a returned rejection once a different call succeeds, because the state it checked may have changed", async () => {
+    let unblocked = false;
+    const { authority, epoch } = epochWith(async call => call.tool === "call_api"
+      ? (unblocked ? { ok: true, status: 200 } : rejected(422, { error: "Resolve the blockers first" }))
+      : (unblocked = true, { ok: true }));
+    const patch = (n: number) => ({ tool: "call_api", callId: `s${n}`, arguments: invalid });
+    await epoch.execute(patch(1));
+    await epoch.execute(patch(2));
+    await expect(epoch.execute({ tool: "update_blockers", callId: "unblock", arguments: { blockedByIssueIds: [] } })).resolves.toEqual({ ok: true });
+    await expect(epoch.execute(patch(3))).resolves.toEqual({ ok: true, status: 200 });
+    expect(authority.execute).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps counting a returned rejection when unrelated calls in between fail transiently", async () => {
+    const { authority, epoch } = epochWith(async call => call.tool === "call_api"
+      ? rejected(422)
+      : { ok: false, status: call.callId === "u1" ? 503 : call.callId === "u2" ? 429 : null, error: "try again" });
+    const patch = (n: number) => ({ tool: "call_api", callId: `i${n}`, arguments: invalid });
+    await epoch.execute(patch(1));
+    await epoch.execute({ tool: "list_agents", callId: "u1", arguments: {} });
+    const second = await epoch.execute(patch(2)) as Record<string, unknown>;
+    expect(second.guidance).toContain("failed 2 times with the same arguments");
+    await epoch.execute({ tool: "list_agents", callId: "u2", arguments: {} });
+    await epoch.execute({ tool: "list_agents", callId: "u3", arguments: {} });
+    expect((await failure(epoch, patch(3)))?.message).toMatch(/^This call was not run/);
+    expect(authority.execute.mock.calls.filter(([call]) => call.tool === "call_api")).toHaveLength(2);
   });
 });

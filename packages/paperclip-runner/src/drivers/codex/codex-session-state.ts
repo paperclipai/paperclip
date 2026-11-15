@@ -7,6 +7,7 @@ import type {
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   PersistedHarnessSemanticResult,
+  PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import {
@@ -91,7 +92,9 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
-export class CodexSessionState {
+const MAX_BOUNDARY_SNAPSHOTS = 8;
+
+export abstract class CodexSessionState {
   readonly transport: CodexAppServerTransport;
   runId: string;
   readonly normalizedSessionId: string;
@@ -145,6 +148,7 @@ export class CodexSessionState {
    * the turn/start response arrives.
    */
   turnStartSettled: Promise<void> = Promise.resolve();
+  recoveryReconciled: Promise<void> = Promise.resolve();
   protocolFailed = false;
   protocolFailureCode: string | null = null;
   protocolFailureMessage: string | null = null;
@@ -576,6 +580,25 @@ export class CodexSessionState {
       emittedAt: this.now().toISOString(),
       payload,
     });
+  }
+
+  protected abstract persistedSnapshot(): PersistedHarnessSession;
+
+  readonly #boundarySnapshots = new Map<number, PersistedHarnessSession>();
+
+  captureBoundary(sourceSeq: number): void {
+    this.#boundarySnapshots.set(sourceSeq, structuredClone({ ...this.persistedSnapshot(), lastSourceSequence: sourceSeq }));
+    for (const seq of this.#boundarySnapshots.keys()) {
+      if (this.#boundarySnapshots.size <= MAX_BOUNDARY_SNAPSHOTS) break;
+      this.#boundarySnapshots.delete(seq);
+    }
+  }
+
+  boundarySnapshot(sourceSeq: number): PersistedHarnessSession | null {
+    this.assertProtocolIntegrity();
+    const snapshot = this.#boundarySnapshots.get(sourceSeq);
+    for (const seq of [...this.#boundarySnapshots.keys()]) if (seq <= sourceSeq) this.#boundarySnapshots.delete(seq);
+    return snapshot === undefined ? null : structuredClone(snapshot);
   }
 
   emitGoalCapabilities(): void {

@@ -1,7 +1,7 @@
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
-export type RunDispatchScope = { companyId: string };
+export type RunDispatchScope = { companyId: string; issueId?: string | null; runId?: string | null };
 
 export async function notifyQueuedRunDispatch(transaction: object, scope?: RunDispatchScope) {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.queuedRunDispatch,
@@ -9,7 +9,8 @@ export async function notifyQueuedRunDispatch(transaction: object, scope?: RunDi
 }
 
 export async function notifyRunDispatch(transaction: object, scope?: RunDispatchScope) {
-  await notifyIssueRecovery(transaction, scope ? { companyId: scope.companyId } : undefined);
+  if (scope?.issueId || scope?.runId) await notifyIssueGraphRecovery(transaction, scope);
+  else await notifyIssueRecovery(transaction, scope ? { companyId: scope.companyId } : undefined);
   const hint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.nativeProcessSessions, hint);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement, hint);

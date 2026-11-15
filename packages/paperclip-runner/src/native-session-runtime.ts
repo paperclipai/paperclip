@@ -46,6 +46,7 @@ import {
   type PrpTerminalState,
 } from "./protocol/replay-contract.js";
 import { parsePaperclipQuestionSet } from "./contracts/question-set.js";
+import { awaitsProviderTurn, createProviderTurnWait, type ProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import {
   retainedRunnerdCleanupProofIsCurrent,
   type RetainedRunnerdCleanupProof,
@@ -416,6 +417,7 @@ export interface ExecuteNativeSessionOptions {
     turnId: string | null;
     event: PrpEvent;
   }) => PrpStructuredRunResult | null;
+  providerTurnWait?: ProviderTurnWaitOptions;
 }
 
 function isTurnTerminal(event: PrpEvent): boolean {
@@ -1189,8 +1191,16 @@ async function consumeTurn(
   /** Settles a compaction-only turn, which reports no semantic result. */
   compactionResult?: PrpStructuredRunResult,
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
+  providerTurnWaitOptions?: ProviderTurnWaitOptions,
+  resumedProviderTurnWait?: PrpEvent,
+  checkpointProviderTurn?: (signal: AbortSignal, sourceSeq: number) => Promise<unknown>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const providerTurnWait = createProviderTurnWait({
+    session,
+    options: providerTurnWaitOptions,
+    overallDeadlineMs: timeoutMs > 0 ? Date.now() + timeoutMs : null,
+  });
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
@@ -1389,11 +1399,33 @@ async function consumeTurn(
       return settleDurableResult(initialGovernedWait.sourceEvent, initialGovernedWait.result,
         "Paperclip resumed settlement of this durable governed interaction.");
     }
+    const endProviderTurnWait = async (terminal: PrpEvent) => {
+      if (providerTurnWait.ending !== null && semanticResultProposal === null && governedResult === null &&
+          inputTimers.size === 0 && await resumeInterruptedTurn?.(terminal, appendAbort.signal)) return null;
+      await settlePendingDeltas();
+      return { event: terminal, eventCount, highestContiguousSourceSeq, governedResult };
+    };
+    let pendingRead: Promise<IteratorResult<PrpEvent>> | null = null;
+    let forcedEndTaken = false;
+    if (resumedProviderTurnWait) providerTurnWait.begin(resumedProviderTurnWait);
     while (true) {
-      const next = await eventIterator.next().catch((error) => {
-        throw providerFailure ?? error;
-      });
+      if (pendingRead === null) {
+        pendingRead = eventIterator.next().catch((error) => {
+          throw providerFailure ?? error;
+        });
+        void pendingRead.catch(() => undefined);
+      }
+      const next = providerTurnWait.started && !forcedEndTaken
+        ? await Promise.race([pendingRead, providerTurnWait.forced])
+        : await pendingRead;
       if (stopConsumer) throw new Error("native event consumer stopped");
+      if (next === null) {
+        forcedEndTaken = true;
+        const ended = await endProviderTurnWait(providerTurnWait.awaitedTerminal!);
+        if (ended === null) continue;
+        return ended;
+      }
+      pendingRead = null;
       if (next.done) {
         if (providerFailure) throw providerFailure;
         throw new Error(
@@ -1438,6 +1470,15 @@ async function consumeTurn(
           highestContiguousSourceSeq,
           receipt.highestContiguousSourceSeq,
         );
+      }
+      if (providerTurnWait.endedBy(event)) {
+        const ended = await endProviderTurnWait(providerTurnWait.awaitedTerminal!);
+        if (ended !== null) return ended;
+      }
+      providerTurnWait.observe(event);
+      if (event.eventType === "turn.started" && payload.origin === "provider") {
+        await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+        appendAbort.signal.throwIfAborted();
       }
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
@@ -1659,6 +1700,12 @@ async function consumeTurn(
             governedResult: compactionResult,
           };
         }
+        if (semanticResultProposal === null && governedResult === null && inputTimers.size === 0 &&
+            awaitsProviderTurn(event) && providerTurnWait.begin(event)) {
+          await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+          appendAbort.signal.throwIfAborted();
+          continue;
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         await settlePendingDeltas();
@@ -1810,6 +1857,7 @@ async function consumeTurn(
         quarantineSession("provider_event_teardown_timed_out");
     }
     if (timer !== undefined) clearTimeout(timer);
+    providerTurnWait.dispose();
     removeExternalAbort();
   }
 }
@@ -2894,8 +2942,8 @@ export async function executeNativeSession(
     if (reconciledRecoveryCheckpoint !== null) {
       await persistCheckpoint(reconciledRecoveryCheckpoint);
     }
-    const checkpoint = async (signal?: AbortSignal) => {
-      const snapshot = await session.snapshot(signal ? { signal } : undefined);
+    const checkpoint = async (signal?: AbortSignal, sourceSeq?: number) => {
+      const snapshot = await session.snapshot(signal ? { signal, ...(sourceSeq === undefined ? {} : { sourceSeq }) } : undefined);
       signal?.throwIfAborted();
       await persistCheckpoint(snapshot, signal);
       return snapshot;
@@ -3112,7 +3160,8 @@ export async function executeNativeSession(
         recovered &&
         persistedSession?.dispositionOnlyRecoveryConsumed &&
         !recoveredSnapshot.semanticResult &&
-        !recoveredActiveTurnId,
+        !recoveredActiveTurnId &&
+        recoveredSnapshot.awaitingProviderTurn !== true,
       );
       const dispositionRecoveryTurnId =
         persistedSession?.dispositionOnlyRecoveryTurnId ??
@@ -3161,6 +3210,18 @@ export async function executeNativeSession(
         replayedDisposition !== null || dispositionFallback !== null;
       const recoveryTerminal =
         replayedDisposition?.terminal ?? dispositionFallback;
+      const awaitedTurnId = persistedSession?.terminalTurns?.at(-1)?.turnId ?? null;
+      const awaitedTerminal = recovered && recoveredSnapshot.awaitingProviderTurn === true && !recoveredActiveTurnId &&
+          !recoveredSnapshot.semanticResult && !governedWait && !checkpointedDispositionTerminal && awaitedTurnId !== null
+        ? (await replayCheckpointedTurnTerminal({
+            controlPlane: options.controlPlane,
+            runId: input.binding.runId,
+            sourceInstanceId: options.runnerInstanceId,
+            priorTerminalTurnIds: [],
+            expectedTurnId: awaitedTurnId,
+          }))?.terminal ?? null
+        : null;
+      const resumedProviderTurnWait = awaitedTerminal !== null && awaitsProviderTurn(awaitedTerminal) ? awaitedTerminal : undefined;
       const consumptionAbort = new AbortController();
       const consuming =
         (governedTerminal || governedWait?.settlement) && governedWait
@@ -3198,6 +3259,9 @@ export async function executeNativeSession(
                 ? sessionCompactionResult(input, options.sessionCompaction.requestId)
                 : undefined,
               supersededByRestartContinuation,
+              options.providerTurnWait,
+              resumedProviderTurnWait,
+              checkpoint,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -3221,7 +3285,8 @@ export async function executeNativeSession(
           (!recoveredActiveTurnId &&
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
-            !dispositionRecoveryStillOwned));
+            !dispositionRecoveryStillOwned &&
+            !resumedProviderTurnWait));
         if (options.sessionCompaction) {
           // Compaction summarizes existing provider context. A new session or
           // one that is still running a turn has nothing safe to compact.
