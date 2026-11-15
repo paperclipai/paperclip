@@ -453,10 +453,18 @@ function directProperties(values: Record<string, unknown>): Properties {
   return properties;
 }
 
-function connectorUseEventId(companyId: string, connectionId: string, day: string): string {
-  const hex = createHash("sha256").update(`cloud-product-event:connector.used:${companyId}:${connectionId}:${day}`).digest("hex");
+function stableEventId(key: string): string {
+  const hex = createHash("sha256").update(`cloud-product-event:${key}`).digest("hex");
   const variant = ((Number.parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
+}
+
+function connectorUseEventId(companyId: string, connectionId: string, day: string): string {
+  return stableEventId(`connector.used:${companyId}:${connectionId}:${day}`);
+}
+
+function agentFirstRunEventId(companyId: string, agentId: string): string {
+  return stableEventId(`agent.first_run:${companyId}:${agentId}`);
 }
 
 function runUsageProperties(usage: unknown): Properties {
@@ -598,7 +606,7 @@ export async function recordAgentFirstRunCloudProductEvent(
       entityType: "agent",
       entityId: agent.id,
       properties: { role: agent.role, adapterType: agent.adapterType },
-    }, options.now ?? Date.now());
+    }, options.now ?? Date.now(), undefined, agentFirstRunEventId(agent.companyId, agent.id));
   });
 }
 

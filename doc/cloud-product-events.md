@@ -54,7 +54,7 @@ so `origin` alone does not identify it.
 | Event | Source | Entity | Properties |
 | --- | --- | --- | --- |
 | `run.finished` | An agent run changes to a final status. `emitAgentTaskRun` calls `recordRunFinishedCloudProductEvent`. | `heartbeat_run` | `outcome`, `errorCode`, `failureClass`, `adapterType`, `model`, `durationSeconds`, `inputTokens`, `outputTokens`, `cachedTokens` |
-| `agent.first_run` | The first run of an agent ends. `finalizeAgentStatus` calls `recordAgentFirstRunCloudProductEvent`. | `agent` | `role`, `adapterType` |
+| `agent.first_run` | The first run of an agent ends. `finalizeAgentStatus` calls `recordAgentFirstRunCloudProductEvent`. The event ID is fixed for the company and the agent, so a retry of the first run writes no second event. | `agent` | `role`, `adapterType` |
 | `connector.used` | A call to a tool connection ends. `emitConnectionInvoked` calls `recordConnectorUsedCloudProductEvent`. | `tool_connection` | `connectorKey`, `status` |
 | `plan.approved` | A person accepts a confirmation request for the plan document of the task. `acceptRequestConfirmation` calls `recordDirectCloudProductEvent`. | `issue` | none |
 

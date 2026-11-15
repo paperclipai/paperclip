@@ -797,6 +797,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
 
     expect(await recordAgentFirstRunCloudProductEvent(db, { id: agentId, companyId, role: "cto", adapterType: "codex_local", metadata: null })).toBe(true);
+    expect(await recordAgentFirstRunCloudProductEvent(db, { id: agentId, companyId, role: "cto", adapterType: "codex_local", metadata: null })).toBe(false);
     expect(await recordAgentFirstRunCloudProductEvent(db, {
       id: builtInAgentId,
       companyId,
