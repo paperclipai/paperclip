@@ -130,19 +130,42 @@ function rows(body: unknown): Json[] {
   return [];
 }
 
-export function serverMetrics(samples: ReadonlyArray<Record<string, unknown>>): ServerMetrics {
+type Sample = Record<string, unknown>;
+const processOf = (sample: Sample) => typeof sample.processId === "string" ? sample.processId : "";
+
+function counterBaseline(first: Sample, earlier: readonly Sample[], runStartedAt: number | null, counter: string): number {
+  const processId = processOf(first);
+  for (let index = earlier.length - 1; index >= 0; index -= 1) {
+    const value = num(earlier[index]![counter]);
+    if (processOf(earlier[index]!) === processId && value !== null) return value;
+  }
+  const uptimeSec = num(first.uptimeSec);
+  const sampledAt = num(first.sampledAt);
+  if (runStartedAt !== null && uptimeSec !== null && sampledAt !== null && sampledAt - uptimeSec * 1_000 > runStartedAt) return 0;
+  return num(first[counter]) ?? 0;
+}
+
+function counterGrowth(samples: readonly Sample[], earlier: readonly Sample[], runStartedAt: number | null, counter: string): number | null {
+  const byProcess = new Map<string, Sample[]>();
+  for (const sample of samples) {
+    if (num(sample[counter]) === null) continue;
+    const processId = processOf(sample);
+    byProcess.set(processId, [...byProcess.get(processId) ?? [], sample]);
+  }
+  if (byProcess.size === 0) return null;
+  let growth = 0;
+  for (const processSamples of byProcess.values()) {
+    const last = num(processSamples[processSamples.length - 1]![counter])!;
+    growth += Math.max(0, last - counterBaseline(processSamples[0]!, earlier, runStartedAt, counter));
+  }
+  return growth;
+}
+
+export function serverMetrics(samples: ReadonlyArray<Sample>, history: { earlier?: readonly Sample[]; runStartedAt?: number | null } = {}): ServerMetrics {
   const max = (key: string) => {
     const values = samples.map(sample => num(sample[key])).filter((value): value is number => value !== null);
     return values.length ? Math.max(...values) : null;
   };
-  const missedByProcess = new Map<string, number[]>();
-  for (const sample of samples) {
-    const value = num(sample.leaseRenewalsMissed);
-    if (value === null) continue;
-    const processId = typeof sample.processId === "string" ? sample.processId : "";
-    missedByProcess.set(processId, [...missedByProcess.get(processId) ?? [], value]);
-  }
-  const missed = [...missedByProcess.values()];
   return {
     mainThreadCpuMax: max("mainThreadCpu"),
     eventLoopUtilizationMax: max("eventLoopUtilization"),
@@ -151,7 +174,7 @@ export function serverMetrics(samples: ReadonlyArray<Record<string, unknown>>): 
     poolWaitP99MsMax: max("poolWaitP99Ms"),
     runEventLatenessP99MsMax: max("runEventLatenessP99Ms"),
     agentApiPreHandlerP99MsMax: max("agentApiPreHandlerP99Ms"),
-    leaseRenewalsMissed: missed.length ? missed.reduce((sum, values) => sum + Math.max(0, values[values.length - 1]! - values[0]!), 0) : null,
+    leaseRenewalsMissed: counterGrowth(samples, history.earlier ?? [], history.runStartedAt ?? null, "leaseRenewalsMissed"),
     samples: samples.length,
   };
 }
@@ -474,7 +497,10 @@ export class Ramp {
       firstActivityMs: distribution(accumulator.firstActivityMs),
       runDurationMs: distribution(runs.flatMap(run => run.startedAt !== null && run.finishedAt !== null ? [run.finishedAt - run.startedAt] : [])),
       board: { requests: accumulator.boardRequests, failures: accumulator.boardFailures, ms: distribution(accumulator.boardMs) },
-      server: serverMetrics(accumulator.serverSamples),
+      server: serverMetrics(accumulator.serverSamples, {
+        earlier: this.accumulators.slice(0, stepIndex).flatMap(earlier => earlier.serverSamples),
+        runStartedAt: this.accumulators[0]?.startedAt ?? null,
+      }),
       recordedSpendUsd: Math.round(spend * 100) / 100,
     };
   }

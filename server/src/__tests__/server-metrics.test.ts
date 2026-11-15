@@ -83,6 +83,48 @@ describe("server metrics collector", () => {
     expect(quiet.statementsPerSecond).toBeCloseTo(20, 2);
   });
 
+  it("expires buckets by elapsed time when the rotation timer fires late", () => {
+    const { probes, advance } = fakeProbes();
+    const metrics = collector(probes);
+    for (let bucket = 0; bucket < 6; bucket += 1) {
+      advance(10_000, { busy: 0.1, statementsPerSecond: 10 });
+      metrics.rotate();
+    }
+    metrics.recordRunEventLatenessMs(5_000);
+    advance(35_000, { busy: 0.5, statementsPerSecond: 100 });
+    metrics.rotate();
+    const late = metrics.snapshot();
+    expect(late.windowMs).toBe(55_000);
+    expect(late.statementsPerSecond).toBeCloseTo((20 * 10 + 35 * 100) / 55, 2);
+    expect(late.runEventLatenessSamples).toBe(1);
+  });
+
+  it("reports the real window after a block longer than the window, and the block shows in it", () => {
+    const { probes, advance } = fakeProbes();
+    const metrics = collector(probes);
+    for (let bucket = 0; bucket < 6; bucket += 1) {
+      advance(10_000, { busy: 0.1 });
+      metrics.rotate();
+    }
+    metrics.recordRunEventLatenessMs(20);
+    advance(300_000, { busy: 1 });
+    metrics.rotate();
+    const blocked = metrics.snapshot();
+    expect(blocked.windowMs).toBe(300_000);
+    expect(blocked.eventLoopUtilization).toBeCloseTo(1, 4);
+    expect(blocked.runEventLatenessSamples).toBe(1);
+    advance(10_000, { busy: 0.2 });
+    metrics.rotate();
+    expect(metrics.snapshot()).toMatchObject({ windowMs: 10_000, runEventLatenessSamples: 0 });
+    for (let bucket = 0; bucket < 5; bucket += 1) {
+      advance(10_000, { busy: 0.2 });
+      metrics.rotate();
+    }
+    const recovered = metrics.snapshot();
+    expect(recovered.windowMs).toBe(50_000);
+    expect(recovered.eventLoopUtilization).toBeCloseTo(0.2, 4);
+  });
+
   it("reports latency percentiles only for the window and absent when nothing was recorded", () => {
     const { probes, advance } = fakeProbes();
     const metrics = collector(probes);
@@ -114,13 +156,13 @@ describe("server metrics collector", () => {
   });
 
   it("records into the process collector only while it runs", () => {
-    recordRunEventCommitted(new Date(Date.now() - 500).toISOString());
+    recordRunEventCommitted(new Date(Date.now() - 500).toISOString(), Date.now());
     recordMissedLeaseRenewal();
     expect(activeServerMetrics()).toBeNull();
     const started = startServerMetrics();
     expect(startServerMetrics()).toBe(started);
-    recordRunEventCommitted(new Date(Date.now() - 500).toISOString());
-    recordRunEventCommitted("not a time");
+    recordRunEventCommitted(new Date(Date.now() - 500).toISOString(), Date.now());
+    recordRunEventCommitted("not a time", Date.now());
     recordMissedLeaseRenewal();
     const snapshot = started.snapshot();
     expect(snapshot.runEventLatenessSamples).toBe(1);

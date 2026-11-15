@@ -269,6 +269,30 @@ describe("server metrics endpoint contract", () => {
     assert.equal(parsed.leaseRenewalsMissed, 3);
   });
 
+  it("counts the full counter of a process that started during the run, so a restart cannot hide a missed renewal", () => {
+    const runStartedAt = 1_000_000;
+    const earlier = [{ processId: "a", uptimeSec: 3_600, sampledAt: runStartedAt + 10_000, leaseRenewalsMissed: 4 }];
+    const parsed = serverMetrics([
+      { processId: "a", uptimeSec: 3_630, sampledAt: runStartedAt + 40_000, leaseRenewalsMissed: 4 },
+      { processId: "b", uptimeSec: 20, sampledAt: runStartedAt + 70_000, leaseRenewalsMissed: 1 },
+      { processId: "b", uptimeSec: 35, sampledAt: runStartedAt + 85_000, leaseRenewalsMissed: 1 },
+    ], { earlier, runStartedAt });
+    assert.equal(parsed.leaseRenewalsMissed, 1);
+  });
+
+  it("keeps a process's counter baseline from earlier steps", () => {
+    const runStartedAt = 1_000_000;
+    const earlier = [
+      { processId: "a", uptimeSec: 3_600, sampledAt: runStartedAt + 10_000, leaseRenewalsMissed: 4 },
+      { processId: "a", uptimeSec: 3_650, sampledAt: runStartedAt + 60_000, leaseRenewalsMissed: 6 },
+    ];
+    const parsed = serverMetrics([{ processId: "a", uptimeSec: 3_700, sampledAt: runStartedAt + 110_000, leaseRenewalsMissed: 7 }],
+      { earlier, runStartedAt });
+    assert.equal(parsed.leaseRenewalsMissed, 1);
+    assert.equal(serverMetrics([{ processId: "a", uptimeSec: 3_700, sampledAt: runStartedAt + 110_000, leaseRenewalsMissed: 7 }], { runStartedAt })
+      .leaseRenewalsMissed, 0, "a process that predates the run and is first seen now starts from its first sample");
+  });
+
   it("sends the board token to a metrics URL on the target origin, and no token to another origin", () => {
     const options = parseOptions(["--base-url", ORIGIN, "--target-kind", "test-stack"], { PAPERCLIP_SCALE_METRICS_URL: SERVER_METRICS_URL }, 0);
     assert.equal(metricsCredential(options, readSecrets({ PAPERCLIP_SCALE_TOKEN: TOKEN }, null)), TOKEN);

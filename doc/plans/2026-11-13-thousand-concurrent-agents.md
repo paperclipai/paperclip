@@ -478,7 +478,10 @@ process's dedicated-connection bound at the time of the request: `limit`,
 `nestedOverLimit` (counts since start); queueing there shows a restart burst. `poolWaitP99Ms` is absent: postgres.js exposes no cheap hook
 for time spent queued for a connection, so pool wait stays not measured. With
 several processes, each request reaches one of them; the harness keeps the
-highest gauge and sums the counter's growth per `processId`. Without the
+highest gauge and sums the counter's growth per `processId`; a process
+whose `uptimeSec` shows it started during the run counts its whole counter.
+After an event-loop block longer than the window, `windowMs` reports the real,
+longer span so the block stays visible. Without the
 endpoint, the four server criteria are not measured, and a run can be at best
 `incomplete`. The harness does not read the database.
 

@@ -141,15 +141,21 @@ export class ServerMetricsCollector {
   }
 
   rotate(): void {
+    const now = this.checkpoint();
+    const started = this.starts[this.current]!;
+    const steps = Math.min(this.starts.length - 1, Math.max(1, Math.floor((now.at - started.at) / this.bucketMs)));
     if (this.eventLoopDelay) {
       this.delayP99Ns[this.current] = this.eventLoopDelay.percentile(99);
       this.eventLoopDelay.reset();
     }
-    this.current = (this.current + 1) % this.starts.length;
-    this.lateness[this.current]!.reset();
-    this.preHandler[this.current]!.reset();
-    this.delayP99Ns[this.current] = 0;
-    this.starts[this.current] = this.checkpoint();
+    for (let step = 0; step < steps; step += 1) {
+      this.current = (this.current + 1) % this.starts.length;
+      this.lateness[this.current]!.reset();
+      this.preHandler[this.current]!.reset();
+      this.delayP99Ns[this.current] = 0;
+      this.starts[this.current] = null;
+    }
+    this.starts[this.current] = now;
   }
 
   recordRunEventLatenessMs(ms: number): void {
@@ -173,8 +179,11 @@ export class ServerMetricsCollector {
 
   snapshot(): ServerMetricsSnapshot {
     const now = this.checkpoint();
-    const oldestIndex = this.starts[(this.current + 1) % this.starts.length] ? (this.current + 1) % this.starts.length : 0;
-    const oldest = this.starts[oldestIndex]!;
+    let oldest = this.starts[this.current]!;
+    for (let offset = 1; offset < this.starts.length; offset += 1) {
+      const start = this.starts[(this.current + offset) % this.starts.length];
+      if (start) { oldest = start; break; }
+    }
     const windowMs = Math.max(1, now.at - oldest.at);
     let delayP99Ns = this.eventLoopDelay?.percentile(99) ?? 0;
     for (let index = 0; index < this.starts.length; index += 1) {
@@ -236,10 +245,10 @@ export function activeServerMetrics(): ServerMetricsCollector | null {
   return active;
 }
 
-export function recordRunEventCommitted(emittedAt: string | null | undefined): void {
+export function recordRunEventCommitted(emittedAt: string | null | undefined, committedAtMs: number): void {
   if (!active || !emittedAt) return;
   const emitted = Date.parse(emittedAt);
-  if (Number.isFinite(emitted)) active.recordRunEventLatenessMs(Date.now() - emitted);
+  if (Number.isFinite(emitted)) active.recordRunEventLatenessMs(committedAtMs - emitted);
 }
 
 export function recordMissedLeaseRenewal(): void {

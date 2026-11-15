@@ -110,7 +110,7 @@ describePostgres("instance server metrics route", () => {
       const statementsBefore = databaseStatementCount();
       for (let index = 0; index < 5; index += 1) expect((await call("/api/agents/me", keys.agent)).status).toBe(200);
       expect(databaseStatementCount()).toBeGreaterThan(statementsBefore);
-      recordRunEventCommitted(new Date(Date.now() - 750).toISOString());
+      recordRunEventCommitted(new Date(Date.now() - 750).toISOString(), Date.now());
       recordMissedLeaseRenewal();
 
       const second = await call(PATH, keys.admin);

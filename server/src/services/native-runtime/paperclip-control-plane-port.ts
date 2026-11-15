@@ -477,10 +477,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#assertActive(options);
     const pendingObservation = this.#deferredEventObservers.get(observerKey);
     const persisted = await appendHeartbeatRunEvent(this.#db, input);
+    const committedAtMs = Date.now();
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
     let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
-    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt);
+    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt, committedAtMs);
     if (options?.deferPostCommitObservers) {
       this.#deferredEventObservers.set(observerKey, observation);
       void observation.then(() => {
@@ -504,10 +505,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     persisted: AppendHeartbeatRunEventResult,
     persistenceStartedAt: number,
     persistenceEndedAt: number,
+    committedAtMs: number,
   ): Promise<void> {
     try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
     if (persisted.disposition === "committed") {
-      recordRunEventCommitted(event.emittedAt);
+      recordRunEventCommitted(event.emittedAt, committedAtMs);
       try {
         publishLiveEvent({
           companyId: this.#binding.companyId,
@@ -592,11 +594,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       for (const pending of batch) pending.reject(error);
       return;
     }
+    const committedAtMs = Date.now();
     for (const [index, pending] of batch.entries()) {
       const persisted = receipts[index]!;
       const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
       try {
-        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
+        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt, committedAtMs);
       } catch (error) {
         pending.reject(error);
         continue;
