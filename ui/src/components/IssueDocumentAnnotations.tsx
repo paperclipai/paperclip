@@ -8,6 +8,7 @@ import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { useOptionalCompany } from "@/context/CompanyContext";
+import { useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import {
@@ -430,15 +431,17 @@ function useAnnotationAuthorMaps({
     () => buildCompanyUserProfileMap(directoryUsers),
     [directoryUsers],
   );
-  // Only a failure with no usable data hides names; stale cached data still names authors.
-  const agentsFailed = !agentMap && agentsQuery.isError && !agents;
-  const directoryFailed = !userProfileMap && directoryQuery.isError && !directoryUsers;
-  const { refetch: refetchAgents } = agentsQuery;
-  const { refetch: refetchDirectory } = directoryQuery;
+  // A view of kind "error" failed with no cached data, so names are missing.
+  const agentsView = useQueryView(agentsQuery);
+  const directoryView = useQueryView(directoryQuery);
+  const agentsFailed = !agentMap && agentsView.kind === "error";
+  const directoryFailed = !userProfileMap && directoryView.kind === "error";
+  const { retry: retryAgents } = agentsView;
+  const { retry: retryDirectory } = directoryView;
   const retryAuthorNames = useCallback(() => {
-    if (agentsFailed) void refetchAgents();
-    if (directoryFailed) void refetchDirectory();
-  }, [agentsFailed, directoryFailed, refetchAgents, refetchDirectory]);
+    if (agentsFailed) retryAgents();
+    if (directoryFailed) retryDirectory();
+  }, [agentsFailed, directoryFailed, retryAgents, retryDirectory]);
   return {
     agentMap: agentMap ?? loadedAgentMap,
     userProfileMap: userProfileMap ?? loadedUserProfileMap,
