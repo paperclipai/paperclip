@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import * as schema from "@paperclipai/db/schema/index";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
   activityLog, agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueReadStates, issueRelations, issues, issueThreadInteractions, toolApplications, toolConnections,
@@ -101,7 +103,13 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     await ctx.db.insert(issues).values({ id: privateId, companyId: f.companyId, title: "Secret", visibility: "private", createdByUserId: "other" });
     const [child] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Child", parentId: privateId }).returning();
     const payload = { entityType: "issue", entityId: child!.id, details: { _previous: { parentId: f.rows[0]!.id } } };
-    expect(await recentSubtaskParents(ctx.db, f.actor, f.companyId, payload)).toEqual({ recentSubtaskParentIds: [f.rows[0]!.id] });
+    const queries: string[] = [];
+    const observedDb = drizzle(ctx.db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as typeof ctx.db;
+    const reads = new Map<string, Promise<unknown>>();
+    for (let delivery = 0; delivery < 2; delivery++) {
+      expect(await recentSubtaskParents(observedDb, f.actor, f.companyId, payload, reads)).toEqual({ recentSubtaskParentIds: [f.rows[0]!.id] });
+    }
+    expect(queries.filter(query => query.startsWith('select "parent_id" from "issues"'))).toHaveLength(1);
     await ctx.db.update(issues).set({ parentId: f.rows[1]!.id }).where(eq(issues.id, child!.id));
     expect(new Set((await recentSubtaskParents(ctx.db, f.actor, f.companyId, payload)).recentSubtaskParentIds)).toEqual(new Set(f.rows.map(row => row.id)));
     await ctx.db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, f.rows[0]!.id));

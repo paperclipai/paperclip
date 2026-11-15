@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
+import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
@@ -328,6 +328,7 @@ export function setupLiveEventsWebSocketServer(
         if (!allowed) return null;
       }
       const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
+      let navigationTask: { id: string; parentId: string | null } | undefined;
       if (issueId) {
         readBindings.push({ companyId: event.companyId, scopeKind: "issue", issueId });
       }
@@ -336,9 +337,13 @@ export function setupLiveEventsWebSocketServer(
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
-        }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId))))[0]);
+          // Reuse this narrow binding for navigation hints after authorization.
+          parentId: issues.parentId,
+        }).from(heartbeatRuns).leftJoin(issues, and(eq(issues.id, heartbeatRuns.issueId), eq(issues.companyId, heartbeatRuns.companyId)))
+          .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId))))[0]);
         if (!run) return null;
         readBindings.push(run);
+        if (run.issueId) navigationTask = { id: run.issueId, parentId: run.parentId };
       }
       if (!(await sharedDeliveryRead(reads, `read:${issueId ?? ""}:${runId ?? ""}`, async () =>
         (await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).every(Boolean)))) return null;
@@ -358,7 +363,7 @@ export function setupLiveEventsWebSocketServer(
       if (event.type.startsWith("heartbeat.run.")) {
         if (!runId) return null;
         return event.type === "heartbeat.run.status" || event.type === "heartbeat.run.queued"
-          ? { ...event, payload: { ...event.payload, ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads) } }
+          ? { ...event, payload: { ...event.payload, ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads, navigationTask) } }
           : event;
       }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;

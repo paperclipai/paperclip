@@ -9,13 +9,16 @@ import { sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-deliver
 export async function recentSubtaskParents(
   db: Db, actor: AuthorizationActor, companyId: string, payload: Record<string, unknown>,
   reads?: LiveDeliveryReads,
+  knownTask?: { id: string; parentId: string | null },
 ) {
   if (payload.entityType && payload.entityType !== "issue" && payload.entityType !== "heartbeat_run") return {};
   const issueId = payload.entityType === "issue" ? payload.entityId : payload.issueId;
   if (actor.type !== "board" || typeof issueId !== "string") return {};
-  const [task] = await sharedDeliveryRead(reads, `navigation-parent:${issueId}`, () =>
+  // Materialize the query as one promise. A Drizzle query is a thenable and
+  // would execute again when the delivery cache attaches its rejection handler.
+  const task = knownTask?.id === issueId ? knownTask : (await sharedDeliveryRead(reads, `navigation-parent:${issueId}`, async () =>
     db.select({ parentId: issues.parentId }).from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).limit(1));
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).limit(1)))[0];
   const details = payload.details as Record<string, unknown> | null | undefined;
   const previous = details?._previous as Record<string, unknown> | null | undefined;
   const ids = [...new Set([task?.parentId, details?.parentId, previous?.parentId]
