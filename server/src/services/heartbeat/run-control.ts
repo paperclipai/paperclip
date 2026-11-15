@@ -726,6 +726,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (!issueId || wake.idempotencyKey?.startsWith("chat-inbound:")) return;
     const response = await readQueuedInteractionResponse(db, companyId, issueId, payload);
     if (!commentIds.length && !response) return;
+    const [target] = await db.select({ status: issues.status }).from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+    if (!target || target.status === "done" || target.status === "cancelled") {
+      const now = new Date();
+      await db.update(agentWakeupRequests).set({
+        status: "cancelled", finishedAt: now, updatedAt: now,
+        error: `Saved input was not delivered because the task is ${target?.status ?? "missing"}.`,
+      }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
+      return;
+    }
     // Resolved cards are immutable input. Only an explicit Interrupt click can
     // authorize continuation across a stopped execution; ordinary completion
     // uses normal deferred-wake promotion.

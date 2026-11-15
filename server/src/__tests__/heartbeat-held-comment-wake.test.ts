@@ -467,6 +467,23 @@ describePostgres("saved intents while another run's accounting is pending", () =
     expect(deliveries(f.commentId)).toHaveLength(1);
   }, 180_000);
 
+  it("closes saved input for a cancelled task instead of re-delivering it on every pass", async () => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.update(agentWakeupRequests).set({
+      payload: sql`${agentWakeupRequests.payload} || jsonb_build_object('queuedCommentInterrupt', jsonb_build_object('actorId', ${f.userId}::text))`,
+    }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.wakeId);
+    await heartbeat.resumeQueuedCommentInterrupt(f.companyId, f.wakeId);
+    expect(await readWake(f.wakeId)).toMatchObject({ status: "cancelled" });
+    const retries = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.idempotencyKey} like ${`queued-comment-%:${f.wakeId}`}`));
+    expect(retries).toEqual([]);
+    expect(deliveries(f.commentId)).toHaveLength(0);
+  }, 180_000);
+
   // Chaos s9401/t72: a message queued its own run while the first run was
   // finishing. The first run completed the task, so the queued run was
   // cancelled as a stale continuation and the unread message was dropped.
