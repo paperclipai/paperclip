@@ -331,6 +331,9 @@ export class RunProcessLineage {
   private markerCache = new Map<string, boolean>();
   private changed = false;
   private lastTableSeq = 0;
+  // Recorded processes seen live by this lineage, as opposed to known only
+  // from a saved or absorbed record. Not saved.
+  private readonly seenLive = new Set<string>();
 
   constructor(runId: string, entries: Iterable<RunLineageEntry> = []) {
     this.runId = runId;
@@ -409,6 +412,7 @@ export class RunProcessLineage {
   private record(entry: ProcEntry) {
     const key = identityKey(entry);
     const leader = entry.sid === entry.pid || entry.pgid === entry.pid;
+    this.seenLive.add(key);
     const existing = this.recorded.get(key);
     if (existing) {
       if (leader && !existing.leader) {
@@ -514,10 +518,20 @@ export class RunProcessLineage {
     }
     if (!stale) for (const [key, entry] of this.recorded) {
       const live = entries.get(entry.pid);
-      if (live && live.startTime === entry.startTime) continue;
+      if (live && live.startTime === entry.startTime) {
+        this.seenLive.add(key);
+        continue;
+      }
       const memberStart = latestMemberStart.get(entry.pid);
-      if (!entry.leader || memberStart === undefined || (live && live.startTime !== entry.startTime)) {
+      // A leader known only from a saved record may have exited before a
+      // gap (for example a server restart) in which its PID was reused by
+      // another session: the members present now can be unrelated, so they
+      // cannot bound its session. Its members that existed when it was last
+      // seen were recorded then and stay owned by their own records.
+      const unbounded = entry.memberStartLimit === undefined && !this.seenLive.has(key);
+      if (!entry.leader || memberStart === undefined || unbounded || (live && live.startTime !== entry.startTime)) {
         this.recorded.delete(key);
+        this.seenLive.delete(key);
         this.changed = true;
         continue;
       }
