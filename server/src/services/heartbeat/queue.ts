@@ -2125,7 +2125,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // task's next explicit wake here. It reconsiders the exact saved receipt
     // through normal admission (a refusal rewrites the receipt in place) and
     // adopts it atomically, so it is delivered once. It runs before the
-    // stranded-queue pass.
+    // stranded-queue pass, which touches each saved wake.
     const pauseLifted = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
@@ -2266,6 +2266,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${String(wake.payload?.issueId)}`,
         or(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.nativeIssueId}::text = ${String(wake.payload?.issueId)}`),
       )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+      if (!wake.idempotencyKey?.startsWith("chat-inbound:")) await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ));
       if (!latest || !latest.finishedAt || !isHeartbeatRunTerminalStatus(latest.status)) continue;
       if (latest.runtimeMode !== "legacy" && latest.runtimeMode !== "native") continue;
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) {
