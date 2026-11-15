@@ -37,7 +37,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { InteractionPreparationNotice } from "./InteractionPreparationNotice";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
-import { PromptText } from "./PromptText";
+import { PromptText, SecondaryMarkdownText } from "./PromptText";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
@@ -231,7 +231,7 @@ function compactDecisionNote(interaction: IssueThreadInteraction, prompts: Reado
 }
 
 function CompactDecisionNote({ note }: { note: string | null }) {
-  return note ? <p data-decision-note className="text-sm text-muted-foreground">{note}</p> : null;
+  return note ? <div data-decision-note className="text-sm text-muted-foreground"><SecondaryMarkdownText>{note}</SecondaryMarkdownText></div> : null;
 }
 
 /** The ask on a compact decision: the largest text on the card (UI1). */
@@ -1422,7 +1422,7 @@ function AskUserQuestionsCard({
                 </div>
                 <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span>
               </div>
-              {question.helpText ? <span className="text-xs leading-4.5 text-muted-foreground">{question.helpText}</span> : null}
+              {question.helpText ? <div className="text-xs leading-4.5 text-muted-foreground"><SecondaryMarkdownText externalReferences={externalReferences}>{question.helpText}</SecondaryMarkdownText></div> : null}
               <span className="sr-only" id={`${interaction.id}-${question.id}-requirements`}>
                 {question.selectionMode === "single" ? "Choose one answer." : "Choose one or more answers."} {question.required ? "Required." : "Optional."}
               </span>
@@ -1495,7 +1495,7 @@ function AskUserQuestionsCard({
                   </div>
                   {question.helpText ? (
                     <div className="mt-1 text-sm leading-6 text-muted-foreground">
-                      <MarkdownBody externalReferences={externalReferences} mediaMode="reference">{question.helpText}</MarkdownBody>
+                      <SecondaryMarkdownText externalReferences={externalReferences}>{question.helpText}</SecondaryMarkdownText>
                     </div>
                   ) : null}
                 </div>
@@ -4530,7 +4530,7 @@ export function IssueThreadInteractionCard({
         {compactDecision ? <>
           {!bodyNamesDecision ? <CompactDecisionAsk><PromptText>{compactTitle}</PromptText></CompactDecisionAsk> : null}
           {/* Questions and confirmations put the note under their ask (UI1). */}
-          {interaction.summary && !summaryIsRepeated && !bodyNamesDecision && !connectionAuthorization && interaction.kind !== "connection_intent" ? <p className="text-sm text-muted-foreground">{interaction.summary}</p> : null}
+          {interaction.summary && !summaryIsRepeated && !bodyNamesDecision && !connectionAuthorization && interaction.kind !== "connection_intent" ? <div className="text-sm text-muted-foreground"><SecondaryMarkdownText externalReferences={externalReferences}>{interaction.summary}</SecondaryMarkdownText></div> : null}
           {interaction.status === "pending" ? <div className={addressedElsewhere && !audienceStated ? undefined : "sr-only"}><InteractionAudienceLine audience={audience} variant="compact" /></div> : null}
         </> : <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1 basis-64">
@@ -4589,9 +4589,9 @@ export function IssueThreadInteractionCard({
                 reader is the person who may consent. Rendering the summary here
                 as well would be the second body PAP-17859 removed. */}
             {interaction.summary && !connectionAuthorization && interaction.kind !== "connection_intent" ? (
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                {interaction.summary}
-              </p>
+              <div className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+                <SecondaryMarkdownText externalReferences={externalReferences}>{interaction.summary}</SecondaryMarkdownText>
+              </div>
             ) : null}
             {interaction.status === "pending" ? (
               <InteractionAudienceLine audience={audience} className="mt-3" />

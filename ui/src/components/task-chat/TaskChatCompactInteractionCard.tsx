@@ -33,6 +33,7 @@ import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionC
 import { ToolActionAuditHashCopy } from "@/components/ToolActionAuditHashCopy";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { SecondaryMarkdownText } from "@/components/PromptText";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -418,9 +419,9 @@ function ReceiptDisclosure({
     request = (
       <div className="grid gap-3">
         {questionSet.description ? (
-          <MarkdownBody className="text-sm text-muted-foreground" externalReferences={externalReferences} mediaMode="reference">
-            {questionSet.description}
-          </MarkdownBody>
+          <div className="text-sm text-muted-foreground">
+            <SecondaryMarkdownText externalReferences={externalReferences}>{questionSet.description}</SecondaryMarkdownText>
+          </div>
         ) : null}
         {questionSet.questions.map((question) => {
           const answer = response?.answers[question.id];
@@ -443,9 +444,9 @@ function ReceiptDisclosure({
                 {question.prompt}
               </MarkdownBody>
               {question.helpText ? (
-                <MarkdownBody className="mt-0.5 text-xs text-muted-foreground" externalReferences={externalReferences} mediaMode="reference">
-                  {question.helpText}
-                </MarkdownBody>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  <SecondaryMarkdownText externalReferences={externalReferences}>{question.helpText}</SecondaryMarkdownText>
+                </div>
               ) : null}
               <p className="mt-1 text-sm font-medium text-foreground">
                 Answer: {values.length > 0 ? values.join(", ") : "No answer"}

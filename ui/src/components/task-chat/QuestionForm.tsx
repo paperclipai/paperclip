@@ -14,6 +14,7 @@ import type { MentionOption } from "@/components/MarkdownEditor";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { NeedsYouPanel } from "@/components/coordinator/NeedsYouCardKit";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { SecondaryMarkdownText } from "@/components/PromptText";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -570,7 +571,7 @@ function QuestionFormForRequest({
         </div>
         {question.helpText ? (
           <div className="mt-1 text-xs leading-4 text-muted-foreground">
-            <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{question.helpText}</MarkdownBody>
+            <SecondaryMarkdownText linkIssueReferences={false}>{question.helpText}</SecondaryMarkdownText>
           </div>
         ) : null}
       </div>
