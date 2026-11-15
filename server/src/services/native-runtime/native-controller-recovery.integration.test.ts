@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, controllerInstances, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
@@ -24,6 +24,9 @@ import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepa
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
 import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../controller-instance-lease.js";
+import { readProcessStartedAt } from "../hot-restart.js";
 
 describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable discovery and import", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -533,6 +536,112 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
     expect(claims).toHaveLength(1);
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
+  });
+
+  async function seedWarmFollowUpOnOldServer() {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-9", title: "Answer the follow-up", description: null, prompt: "Continue.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 600_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue.", criteria: [{ id: "objective", requirement: "Save the result." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, driverKind: "codex_app_server",
+      providerSessionId: "warm-provider-session", activeTurnId: null, pendingRuntimeRequests: [] };
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(), runnerProfileJson: { ...fixture.profile, nativeExecutionInput: previous,
+      sessionCheckpoint: checkpoint, nativeControllerRecovery: createNativeControllerRecovery(checkpoint, compatibility,
+        { runId: fixture.scope.runId, runnerInstanceId: fixture.native.runnerInstanceId, normalizedSessionId: fixture.scope.normalizedSessionId }) } })
+      .where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current, sessionCheckpoint: { ...checkpoint, identity: { ...checkpoint.identity, runId } } } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: `Warm ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId: "warm-sandbox", status: "released",
+      metadata: { remoteCwd: "/workspace" } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const inspect = () => inspectRemoteWarmSessionRecovery({ db, execution: current, identity,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+        remoteCwd: "/workspace", sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "warm-sandbox" } } as never,
+      readControlState: () => ({ identity, commands: [{ type: "turn.start", status: "completed" }],
+        committedEvents: [{ eventType: "run.terminal", envelope: identity }] }),
+      matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
+      loadCheckpoint: () => checkpoint, canReuseProcess: () => true,
+    });
+    const recordOwner = (owner: Partial<typeof nativeRunFinalizations.$inferInsert>) => db.update(nativeRunFinalizations)
+      .set(owner).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    return { fixture, runId, current, identity, inspect, recordOwner };
+  }
+
+  it("waits while the outgoing server that ran the finished turn still holds its warm session, then takes it over once that server exits", async () => {
+    const oldServer = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], { stdio: "ignore" });
+    try {
+      await new Promise(resolve => oldServer.once("spawn", resolve));
+      const startedAt = await readProcessStartedAt(oldServer.pid!);
+      expect(startedAt).toBeTruthy();
+      const { inspect, recordOwner, runId, current } = await seedWarmFollowUpOnOldServer();
+      await recordOwner({ controllerBootId: randomUUID(), controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
+        controllerProcessStartedAt: new Date(startedAt!), leaseOwner: null, leaseExpiresAt: null });
+      const before = Date.now();
+      const waiting = await inspect().catch(error => error);
+      expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      expect(waiting.retryAt.getTime()).toBeGreaterThan(before);
+      expect(waiting.retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 10_000);
+      await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+        .toMatchObject({ phase: "retryable_failure", attempt: 0, failureCode: NATIVE_RETAINED_OWNER_WAIT, resultId: null });
+      const [task] = await db.select().from(issues).where(eq(issues.executionRunId, runId));
+      expect(task?.status).toBe("in_progress");
+
+      const exited = new Promise(resolve => oldServer.once("exit", resolve));
+      oldServer.kill("SIGKILL");
+      await exited;
+      const recovered = await inspect();
+      expect(recovered?.identity.runId).not.toBe(runId);
+      expect(recovered?.reuseProcess).toBe(true);
+    } finally {
+      oldServer.kill("SIGKILL");
+    }
+  });
+
+  it("waits for a live outgoing server in another process space until its controller lease ends", async () => {
+    const { inspect, recordOwner } = await seedWarmFollowUpOnOldServer();
+    const oldBoot = randomUUID();
+    await recordOwner({ controllerBootId: oldBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    registerControllerInstanceDb(db);
+    try {
+      await expect(inspect()).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBoot));
+      await expect(inspect()).resolves.not.toBeNull();
+    } finally { resetControllerInstanceLeaseForTests(); }
+  });
+
+  it("stops waiting for a live outgoing server once the finished turn's warm window has closed", async () => {
+    const oldServer = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], { stdio: "ignore" });
+    try {
+      await new Promise(resolve => oldServer.once("spawn", resolve));
+      const startedAt = await readProcessStartedAt(oldServer.pid!);
+      const { inspect, recordOwner, fixture } = await seedWarmFollowUpOnOldServer();
+      await recordOwner({ controllerBootId: randomUUID(), controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
+        controllerProcessStartedAt: new Date(startedAt!), leaseOwner: null, leaseExpiresAt: null });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 3_600_000) }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      await expect(inspect()).resolves.not.toBeNull();
+    } finally {
+      oldServer.kill("SIGKILL");
+    }
   });
 
   it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {

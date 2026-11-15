@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueComments, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, budgetPolicies, issueComments, issues, type Db } from "@paperclipai/db";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
@@ -65,12 +65,17 @@ const DEFERRED_RETRY_BACKOFF = sql`interval '30 seconds'`;
  * issue by id. All notifications publish on commit.
  */
 export async function promoteDeferredWorkIntents(tx: object, input: {
-  companyId: string; trigger: WorkIntentHoldTrigger; issueId?: string | null;
+  companyId: string; trigger: WorkIntentHoldTrigger; issueId?: string | null; runId?: string | null;
 }) {
+  const hardStop = input.trigger === "accounting_settled" && input.runId ? (await (tx as Pick<Db, "select">)
+    .select({ id: budgetPolicies.id }).from(budgetPolicies).where(and(eq(budgetPolicies.companyId, input.companyId),
+      eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true))).limit(1)).length > 0 : true;
+  const scope = input.trigger === "lock_released" && input.issueId ? { companyId: input.companyId, issueId: input.issueId }
+    : input.trigger === "accounting_settled" && input.runId && !hardStop ? { companyId: input.companyId, runId: input.runId } : null;
   // Register the work signals before the write they announce.
-  await notifyRunDispatch(tx, { companyId: input.companyId });
+  await notifyRunDispatch(tx, scope ?? { companyId: input.companyId });
   await notifyDeferredExecutionEligibility(tx, { companyId: input.companyId });
-  await notifyIssueRecovery(tx, { companyId: input.companyId });
+  if (!scope) await notifyIssueRecovery(tx, { companyId: input.companyId });
   if (input.issueId) await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
   const db = tx as Pick<Db, "update">;
   await db.update(agentWakeupRequests).set({

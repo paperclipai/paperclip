@@ -94,7 +94,7 @@ export function createHeartbeatAgentStatus(db: Db) {
       const nextStatus = running ? "running" : settledStatus(outcome, options?.keepIdleOnFailure);
       const now = new Date();
       await notifyStrandedAgentStatus(tx, { companyId: existing.companyId, agentId });
-      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId, sourceKind: "agent_error_alert" });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const [updated] = await tx.update(agents).set({
         status: nextStatus,
@@ -152,7 +152,7 @@ export function createHeartbeatAgentStatus(db: Db) {
             eq(heartbeatRuns.agentId, candidate.id)))
           .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         const nextStatus = settledStatus(lastRun?.status);
-        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId });
+        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId, sourceKind: "agent_error_alert" });
         const [agent] = await tx.update(agents).set({ status: nextStatus,
           errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, updatedAt: now,
         }).where(and(eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),

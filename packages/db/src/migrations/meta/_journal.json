@@ -3396,6 +3396,13 @@
       "when": 1794623177597,
       "tag": "0486_heartbeat_runs_company_finished_index",
       "breakpoints": true
+    },
+    {
+      "idx": 487,
+      "version": "7",
+      "when": 1794639469687,
+      "tag": "0487_heartbeat_runs_settled_process_indexes",
+      "breakpoints": true
     }
   ]
 }

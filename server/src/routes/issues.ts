@@ -27,6 +27,7 @@ import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
 import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -7713,6 +7714,8 @@ export function issueRoutes(
     response?: QueuedInteractionResponse | null;
   };
 
+  const QUEUED_INTERRUPT_HANDOFF_WAIT = { reason: "interrupt_handoff", message: "Sending your messages." } as const;
+
   async function findQueuedCommentWake(
     executor: IssueQueueDb,
     issue: { id: string; companyId: string; assigneeAgentId: string | null },
@@ -7895,10 +7898,15 @@ export function issueRoutes(
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
+    // The user's Interrupt click is delivering these messages. Its stopped run
+    // settling is not something to read about under the composer; the task
+    // notice owns any wait that needs the user.
+    const interruptHandoff = queueState?.state === "deferred" && readObject(wake?.payload).queuedCommentInterrupt != null;
     const queue = buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
-      executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
-        ? { reason: wait.reason, message: wait.message } : null,
+      executionWait: interruptHandoff ? QUEUED_INTERRUPT_HANDOFF_WAIT
+        : typeof wait.reason === "string" && typeof wait.message === "string"
+          ? { reason: wait.reason, message: wait.message } : null,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
       activeRunId: input.activeRun?.id ?? null,
@@ -18395,6 +18403,11 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
       await issueThreadInteractionService(db).listForIssue(id);
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.runId) {
+      await recordDeclinedInteractionRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
+        issue, interactions: interactions as Parameters<typeof recordDeclinedInteractionRead>[1]["interactions"] })
+        .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the declined actions a run read"));
+    }
     res.json(interactions);
   });
 

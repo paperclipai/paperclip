@@ -9,7 +9,8 @@ import { attentionRetentionService, registerAttentionRetentionWork } from "../se
 import { workspaceOperationService } from "../services/workspace-operations.js";
 import * as workspaceOperationLogs from "../services/workspace-operation-log-store.js";
 import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
-import { writeExecutionControl } from "../services/execution-control-notifications.js";
+import { notifyExecutionRunWork, writeExecutionControl } from "../services/execution-control-notifications.js";
+import { createHeartbeatAgentStatus } from "../services/heartbeat/agent-status.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { attentionService } from "../services/attention.js";
 import { companyService } from "../services/companies.js";
@@ -26,6 +27,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_RETENTION_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -249,6 +251,93 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
+  it("reads only the fields its decisions use from large runs, reviews and agents", async () => {
+    const payload = "saved-execution-input".repeat(2_000);
+    await db.update(agents).set({ adapterConfig: { instructions: payload }, runtimeConfig: { notes: payload } }).where(eq(agents.id, agentId));
+    const origins = await db.insert(issues).values(Array.from({ length: 50 }, () => ({ companyId,
+      title: randomUUID(), status: "in_review", assigneeAgentId: agentId, description: payload, updatedAt: old() }))).returning();
+    const runs = await db.insert(heartbeatRuns).values(origins.map(origin => ({ companyId, agentId, status: "failed",
+      contextSnapshot: { issueId: origin.id, prompt: payload }, runnerProfileJson: { instructions: payload },
+      stdoutExcerpt: payload, createdAt: old(), finishedAt: old() }))).returning({ id: heartbeatRuns.id });
+    await db.insert(heartbeatRunEvents).values(runs.map(run => ({ companyId, agentId, runId: run.id,
+      seq: 1, eventType: "lifecycle", message: "Bounded retry exhausted: byte fixture" })));
+    const [paused] = await db.insert(agents).values({ companyId, name: "Paused", role: "engineer", status: "paused",
+      adapterConfig: { instructions: payload } }).returning({ id: agents.id });
+    await db.insert(issueThreadInteractions).values(origins.slice(0, 10).map(row => ({ companyId, issueId: row.id,
+      kind: "ask_user_questions" as const, addresseeAgentId: paused.id, payload: { version: 1 as const, questions: [] } })));
+    const observed = createDb(externalUrl ?? temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents }, capture);
+    const decisions = new Map<string, string>();
+    try {
+      const service = attentionRetentionService(observed);
+      for (const sourceKind of ["failed_run", "review", "issue_thread_interaction"] as const) {
+        for (let page = 0; page < 3; page++) {
+          const loaded = await service.load({ companyId, sourceKind });
+          for (const entry of loaded.rows ?? []) decisions.set(entry.id, `${entry.sourceKind}:${entry.dueAt}:${entry.activityAt}`);
+          if (loaded.complete) break;
+        }
+      }
+      capture.flush();
+    } finally { capture.flush(); await observed.$client.end(); }
+    const bytes = (table: string) => events.filter(event => event.table === table && event.operation === "select")
+      .reduce((total, event) => total + Number(event.responseValueBytes), 0);
+    const kinds = [...decisions.values()].reduce((counts, value) => {
+      const kind = value.split(":")[0]; counts[kind] = (counts[kind] ?? 0) + 1; return counts; }, {} as Record<string, number>);
+    expect(kinds).toEqual({ failed_run: 50, review: 40, issue_thread_interaction: 10 });
+    expect(bytes("heartbeat_runs")).toBeLessThan(20_000);
+    expect(bytes("agents")).toBeLessThan(5_000);
+    expect(bytes("issues")).toBeLessThan(60_000);
+  });
+
+  it("reads blocker retention state once per page, not once per blocked task", async () => {
+    const blockers = await db.insert(issues).values(Array.from({ length: 160 }, () => ({ companyId, title: randomUUID(),
+      status: "todo", createdByAgentId: agentId, createdAt: old(), updatedAt: old() }))).returning({ id: issues.id });
+    const blocked = await db.insert(issues).values(blockers.map(() => ({ companyId, title: randomUUID(), status: "blocked",
+      createdByAgentId: agentId, createdAt: old(), updatedAt: old() }))).returning({ id: issues.id });
+    await db.insert(issueRelations).values(blocked.map((row, index) => ({ companyId, issueId: blockers[index].id,
+      relatedIssueId: row.id, type: "blocks" as const })));
+    const at = old();
+    const kept = blockers.slice(0, 40), archived = blockers.slice(40, 80), plain = blockers.slice(80, 120), missing = blockers.slice(120);
+    await db.insert(decisionRetention).values([
+      ...kept.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at, keep: true })),
+      ...archived.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at, archivedAt: new Date() })),
+      ...plain.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at })),
+    ]);
+    const service = attentionRetentionService(db), scope = { companyId, sourceKind: "blocker_attention" as const };
+    const observed = createDb(externalUrl ?? temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { decisionRetention }, capture);
+    const retentionReads: string[] = [];
+    observed.$client.options.debug = (_connection, query) => { if (query.includes('from "decision_retention"')) retentionReads.push(query); };
+    const entries: Array<{ id: string; sourceId: string; rootId: string; variant?: string }> = [];
+    let pages = 0;
+    try {
+      const observedService = attentionRetentionService(observed);
+      for (; pages < 4; pages++) {
+        const loaded = await observedService.load(scope);
+        entries.push(...(loaded.rows ?? []));
+        if (loaded.complete) { pages++; break; }
+      }
+      capture.flush();
+    } finally { capture.flush(); await observed.$client.end(); }
+    const retentionBytes = events.filter(event => event.table === "decision_retention")
+      .reduce((total, event) => total + Number(event.responseValueBytes), 0);
+    expect(retentionBytes).toBeLessThan(10_000);
+    expect(retentionReads.length).toBeLessThanOrEqual(pages);
+    expect(retentionReads.every(query => !query.includes('"source_activity_at"'))).toBe(true);
+    const listed = new Set(entries.filter(entry => entry.variant === "terminal").map(entry => entry.sourceId));
+    expect(listed).toEqual(new Set([...plain, ...missing].map(row => row.id)));
+    const byRoot = new Map(blocked.map((row, index) => [row.id, blockers[index].id]));
+    for (const root of [blocked[0].id, blocked[40].id]) {
+      const candidate = { sourceKind: "blocker_attention" as const, sourceId: root, companyId, activityAt: at.toISOString(),
+        deadlineAt: Number.MAX_SAFE_INTEGER, issueId: root, id: `blocker_attention:${root}:terminal`, rootId: root,
+        variant: "terminal" as const, dueAt: Number.MAX_SAFE_INTEGER };
+      expect(byRoot.get(root)).toBeTruthy();
+      expect(await service.check(candidate)).toBeNull();
+    }
+  });
+
   it("batches 100 failed runs and rechecks late visibility and supersession before archive", async () => {
     const origins = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "todo", updatedAt: old() }))).returning();
@@ -291,7 +380,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const queries = [...statements];
     expect(page.rows).toHaveLength(200); expect(page.complete).toBe(false);
     const retentionReads = queries.filter(query => query.includes('from "decision_retention"'));
-    expect(retentionReads).toHaveLength(200);
+    expect(retentionReads).toHaveLength(1);
     expect(queries.length - retentionReads.length).toBeLessThanOrEqual(30);
     const terminal = page.rows!.find(entry => entry.rootId === roots[99].id && entry.variant === "terminal")!;
     expect(terminal.sourceId).toBe(terminals[99].id);
@@ -875,6 +964,24 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     } finally { unsubscribe(); }
     const scoped = JSON.stringify({ companyId, issueIds: [issue.id, parent.id].sort() });
     expect(hints).toEqual([scoped, scoped]);
+  });
+
+  it("scopes run lifecycle attention hints to the run's task graph and agent status to agent alerts", async () => {
+    const parent = await insertIssue("blocked");
+    const issue = await insertIssue("todo", { parentId: parent.id });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed",
+      contextSnapshot: { issueId: issue.id } }).returning();
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, async () => undefined, { companyId, runId: run.id });
+      await db.transaction(tx => notifyExecutionRunWork(tx, { companyId, runId: run.id }));
+      await createHeartbeatAgentStatus(db).finalizeAgentStatus(agentId, "failed");
+    } finally { unsubscribe(); }
+    const scoped = JSON.stringify({ companyId, issueIds: [issue.id, parent.id].sort() });
+    expect(hints).toEqual([scoped, scoped, JSON.stringify({ companyId, sourceKind: "agent_error_alert" })]);
   });
 
   it("accepts ordinary liveness incident creation and completion with a none leaf sentinel", async () => {
