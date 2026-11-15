@@ -129,4 +129,18 @@ describe("a legacy run whose saved files are gone", () => {
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), sql`${activityLog.details}->>'outcome' = 'not_started'`));
     expect(refused).toHaveLength(0);
   }, 90_000);
+
+  it("does not report a continuation again once it is stuck waiting for delivery", async () => {
+    const f = await sourceGone(false);
+    const heartbeat = heartbeatService(db);
+    let clock = Date.now();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts), now: () => new Date(clock) });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId })).toMatchObject({ outcome: "repaired" });
+    // Nothing delivers it. Once its pending bound passes, a new wake adds nothing.
+    clock += 2 * 60 * 60_000;
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId })).not.toMatchObject({ outcome: "repaired" });
+    const queued = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), sql`${activityLog.details}->>'outcome' = 'queued'`));
+    expect(queued).toHaveLength(1);
+  }, 90_000);
 });
