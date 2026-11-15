@@ -92,7 +92,8 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? 'pauseStop')`));
         }
         const blocker = await heartbeat.agentInvocationStopBlocker(ids, reason,
-          { preservePauseDeferred: agent.lifecycleState === "pausing" });
+          { preservePauseDeferred: agent.lifecycleState === "pausing",
+            ...(agent.lifecycleOperation?.id ? { trigger: `lifecycle:${agent.lifecycleOperation.id}` } : {}) });
         if (blocker) return { pending: blocker };
       }
       return "complete";

@@ -30,7 +30,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-native-stop.js";
 import { nativeSha256 } from "../native-runtime/canonical.js";
 import { callbacks, runControlPostgresSupport, setupRunControlDatabase } from "./__tests__/run-control-fixtures.js";
-import { LEASE_RELEASE_MAX_ATTEMPTS } from "../environment-lease-release-deferral.js";
+import { LEASE_RELEASE_FAST_ATTEMPTS, LEASE_RELEASE_SLOW_RETRY_MS } from "../environment-lease-release-deferral.js";
 import { agentExecutionStopBlocker } from "../agent-execution-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
@@ -935,17 +935,41 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect(Date.parse(second.retryAt) - before).toBeGreaterThanOrEqual(60_000);
   });
 
-  it("stops retrying a release after repeated deferrals and reports why the agent cannot stop", async () => {
+  it("never gives up on a failing release: hourly retries after the fast backoff, then release and wake the stopping agent", async () => {
     const { company, agent, runId, deferral } = await deferralFixture("legacy");
+    const leaseId = (await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId)))[0]!.id;
+    await db.update(agents).set({ lifecycleState: "terminating", lifecycleOperation: { id: randomUUID(), hostComplete: false,
+      completedPluginIds: [], attempts: 3, retryAt: new Date(Date.now() + 60_000).toISOString() } }).where(eq(agents.id, agent.id));
     const deps = callbacks(db);
-    vi.mocked(deps.envOrchestrator.releaseForRun).mockResolvedValue({ released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] });
+    let outageCalls = 0;
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockImplementation(async () => {
+      outageCalls += 1;
+      return { released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] };
+    });
     const control = createHeartbeatRunControl(db, deps);
-    for (let attempt = 1; attempt <= LEASE_RELEASE_MAX_ATTEMPTS + 2; attempt++) {
+    const fastSteps = LEASE_RELEASE_FAST_ATTEMPTS;
+    const dueRetriesInThreeHours = fastSteps + 3;
+    let firstFailure: string | undefined;
+    for (let attempt = 1; attempt <= dueRetriesInThreeHours; attempt++) {
+      const before = Date.now();
       await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+      const current = await deferral() as Record<string, unknown> & { retryAt: string };
+      firstFailure ??= current.failingSince as string;
+      expect(current).toMatchObject({ reason: "release_failed", attempts: attempt, failingSince: firstFailure });
+      const delay = Date.parse(current.retryAt) - before;
+      if (attempt > fastSteps) expect(delay).toBeGreaterThanOrEqual(LEASE_RELEASE_SLOW_RETRY_MS - 1_000);
+      else expect(delay).toBeLessThanOrEqual(15 * 60_000 + 1_000);
     }
-    const final = await deferral() as Record<string, unknown>;
-    expect(final).toMatchObject({ reason: "release_failed", attempts: LEASE_RELEASE_MAX_ATTEMPTS, exhaustedAt: expect.any(String) });
-    expect(await agentExecutionStopBlocker(db, [agent.id])).toBe("environment_lease_release_exhausted");
+    expect(outageCalls).toBe(dueRetriesInThreeHours);
+    expect(await agentExecutionStopBlocker(db, [agent.id])).toBe("environment_lease_release_deferred:release_failed");
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockImplementation(async () => {
+      await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date(), cleanupStatus: "success" })
+        .where(eq(environmentLeases.id, leaseId));
+      return { released: [{} as never], errors: [] };
+    });
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]!.status).toBe("expired");
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.lifecycleOperation).not.toHaveProperty("retryAt");
   });
 
   it("records a destroy held back by a busy warm session", async () => {

@@ -20,9 +20,8 @@ export async function agentExecutionStopBlocker(db: Db, agentIds: string[]): Pro
     inArray(environmentLeases.heartbeatRunId, runIds),
     inArray(sql`${environmentLeases.metadata}->>'agentId'`, agentIds),
   ));
-  if (leases.some(lease => lease.status === "active" && readLeaseReleaseDeferral(lease.metadata)?.exhaustedAt)) {
-    return "environment_lease_release_exhausted";
-  }
+  const deferred = leases.find(lease => lease.status === "active" && readLeaseReleaseDeferral(lease.metadata));
+  if (deferred) return `environment_lease_release_deferred:${readLeaseReleaseDeferral(deferred.metadata)!.reason}`;
   if (leases.some(lease => (!lease.releasedAt && !(lease.status === "retained" && lease.cleanupStatus === "success")) || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return "environment_lease_unreleased";
   const coordinators = await db.select().from(nativeRunFinalizations)
     .where(inArray(nativeRunFinalizations.runId, runIds));

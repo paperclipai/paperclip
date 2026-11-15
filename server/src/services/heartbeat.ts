@@ -4452,8 +4452,8 @@ export function heartbeatService(
       .where(and(inArray(heartbeatRuns.agentId, agentIds),
         or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
           and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))),
-        sql`not coalesce((${environmentLeases.metadata}->'releaseDeferral'->>'retryAt')::timestamptz > now(), false)`,
-        sql`not coalesce(${environmentLeases.metadata}->'releaseDeferral' ? 'exhaustedAt', false)`));
+        sql`not (coalesce((${environmentLeases.metadata}->'releaseDeferral'->>'retryAt')::timestamptz > now(), false)
+          and ${environmentLeases.metadata}->'releaseDeferral'->>'trigger' is not distinct from ${options.trigger ?? null}::text)`));
     const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
     let blocker: string | null = null;
     for (const run of runs) {
@@ -4467,7 +4467,8 @@ export function heartbeatService(
       }
       if (needsRelease.has(run.id)) {
         await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId,
-          agentId: run.agentId, status: run.status, providerResourceDisposition: "destroy" });
+          agentId: run.agentId, status: run.status, providerResourceDisposition: "destroy",
+          ...(options.trigger ? { trigger: options.trigger } : {}) });
       }
     }
     return blocker ?? agentExecutionStopBlocker(db, agentIds);

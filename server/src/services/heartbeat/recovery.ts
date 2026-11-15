@@ -2,7 +2,7 @@ import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { isRunHandedOffForShutdown, markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
-import { readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
+import { leaseReleaseRetriedThisProcess, markLeaseReleaseRetriedThisProcess, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -1681,9 +1681,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     localRuns: { has(runId: string): boolean }, onDeferredDeadline?: (at: number) => void): Promise<boolean> {
     if (!lease.heartbeatRunId || localRuns.has(lease.heartbeatRunId)) return false;
     const deferral = readLeaseReleaseDeferral(lease.metadata);
-    if (deferral?.exhaustedAt) return false;
     const retryAt = deferral ? Date.parse(deferral.retryAt) : Number.NaN;
-    if (deferral && retryAt > Date.now()) {
+    if (deferral && retryAt > Date.now() && leaseReleaseRetriedThisProcess(lease.id)) {
       onDeferredDeadline?.(retryAt);
       return false;
     }
@@ -1701,6 +1700,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       onDeferredDeadline?.(heldUntil);
       return false;
     }
+    markLeaseReleaseRetriedThisProcess(lease.id);
     await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
       status: run.status, failureReason: run.error ?? undefined,
       providerResourceDisposition: deferral ? deferral.providerResourceDisposition ?? undefined : "destroy" });

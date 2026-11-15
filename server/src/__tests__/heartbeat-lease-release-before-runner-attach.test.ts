@@ -206,6 +206,57 @@ describeEmbeddedPostgres("environment lease release between sandbox acquire and 
     await expectSandboxReleased(fixture);
   }, 60_000);
 
+  async function terminate(fixture: Awaited<ReturnType<typeof seed>>) {
+    const lifecycle = createAgentLifecycle(db);
+    const worker = configureAgentLifecycle(db, createLifecycleDriver(db, fixture.manager));
+    workers.push(worker);
+    await lifecycle.terminateAgent(fixture.agentId);
+    await worker.process(fixture.agentId);
+    return (await db.select().from(agents).where(eq(agents.id, fixture.agentId)))[0]!;
+  }
+
+  it("finishes a release that lock conflicts held back, preserving the files, once the locks clear", async () => {
+    const fixture = await seed("runner_launch");
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: fixture.manager });
+    let ready!: () => void, unlock!: () => void;
+    const locked = new Promise<void>(resolve => { ready = resolve; });
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, fixture.issueId)).for("update");
+      ready(); await released;
+    });
+    await locked;
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await heartbeat.releaseEnvironmentLeasesForRun({ runId: fixture.runId, companyId: fixture.companyId,
+          agentId: fixture.agentId, status: "cancelled", providerResourceDisposition: "destroy" });
+        expect((await lease(fixture.leaseId)).metadata?.releaseDeferral).toMatchObject({ reason: "workspace_retention_busy", attempts: attempt });
+      }
+    } finally { unlock(); await holder; }
+    const deferred = await lease(fixture.leaseId);
+    await db.update(environmentLeases).set({ metadata: { ...deferred.metadata, releaseDeferral: {
+      ...(deferred.metadata?.releaseDeferral as object), retryAt: new Date(Date.now() - 1_000).toISOString() } } })
+      .where(eq(environmentLeases.id, fixture.leaseId));
+    await heartbeat.sweepOrphanedActiveLeases({ companyId: fixture.companyId, leaseId: fixture.leaseId, backoffMs: 5 * 60_000 });
+    await expectSandboxReleased(fixture);
+    expect((await run(fixture.runId)).resultJson).toHaveProperty("workspaceRestoreRecovery.schema", "paperclip.workspace-restore-recovery.v1");
+    expect((await terminate(fixture)).lifecycleState).toBe("terminated");
+  }, 60_000);
+
+  it("attempts a slow-phase deferred release at once when the agent is terminated", async () => {
+    const fixture = await seed("runner_launch");
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const current = await lease(fixture.leaseId);
+    await db.update(environmentLeases).set({ metadata: { ...current.metadata, releaseDeferral: { reason: "release_failed",
+      attempts: 8, retryAt: new Date(Date.now() + 60 * 60_000).toISOString(), failingSince: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+      providerResourceDisposition: "destroy" } } }).where(eq(environmentLeases.id, fixture.leaseId));
+    expect((await terminate(fixture)).lifecycleState).toBe("terminated");
+    await expectSandboxReleased(fixture);
+  }, 60_000);
+
   it.each(PRE_LAUNCH)("the orphan lease check releases a sandbox a cancelled run leaked during %s", async window => {
     const fixture = await seed(window);
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
