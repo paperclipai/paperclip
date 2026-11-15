@@ -2888,8 +2888,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         // Process loss spends the durable failure retry budget that
-        // enqueueProcessLossRetry schedules against (execution-semantics
-        // "Shutdown, process loss, and provider failure"). Checking it here
+        // enqueueProcessLossRetry schedules against. Checking it here
         // keeps "retrying once" honest and lets an exhausted chain fall
         // through to the interaction continuation path below.
         // A conversation run that a restart ended draws on the server-restart

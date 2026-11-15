@@ -43,9 +43,9 @@ Use authorized diagnostic access. If company scoping blocks a read, use an
 already-authorized diagnostic path or label the missing evidence; do not bypass
 the boundary.
 
-Read repository instructions and the relevant current execution contract. In this
-repository, use `doc/execution-semantics.md` for ownership, continuation, waiting,
-finalization, and recovery. Inspect recent changes and open/merged repairs in the
+Read repository instructions. In this repository, the code and tests under
+`server/src/services/heartbeat/` and `server/src/services/recovery/` define
+ownership, continuation, waiting, finalization, and recovery. Inspect recent changes and open/merged repairs in the
 affected area. A correct fix that has not reached the target is a deployment gap;
 do not create a second patch without evidence that the first is insufficient.
 Choose code repair, configuration repair, or recovery from that evidence. If an
