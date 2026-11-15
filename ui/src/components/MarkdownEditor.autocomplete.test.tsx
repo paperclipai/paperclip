@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { $getSelection, $isRangeSelection, getNearestEditorFromDOMNode } from "lexical";
@@ -63,8 +63,16 @@ describe("MarkdownEditor autocomplete separators", () => {
     ["project", "@Paper", "@Paperclip", true],
     ["task", "@TST", "TST-123", true],
   ])("keeps a space after a completed %s and types outside its link", async (_kind, value, completion, linked) => {
+    const onChange = vi.fn();
+    function ControlledEditor() {
+      const [markdown, setMarkdown] = useState(value);
+      return <MarkdownEditor value={markdown} onChange={(next) => {
+        onChange(next);
+        setMarkdown(next);
+      }} actionCommands={commands} mentions={mentions} />;
+    }
     await act(async () => {
-      root.render(<MarkdownEditor value={value} onChange={() => {}} actionCommands={commands} mentions={mentions} />);
+      root.render(<ControlledEditor />);
     });
 
     const editable = container.querySelector<HTMLElement>('[contenteditable="true"]')!;
@@ -84,15 +92,16 @@ describe("MarkdownEditor autocomplete separators", () => {
     await act(async () => {
       editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => {
+      expect(editable.textContent).toBe(`${completion} `);
+      const caretPrefix = document.createRange();
+      caretPrefix.selectNodeContents(editable);
+      const selection = window.getSelection()!;
+      caretPrefix.setEnd(selection.anchorNode!, selection.anchorOffset);
+      expect(caretPrefix.toString()).toBe(`${completion} `);
     });
-    expect(editable.textContent?.replace(/\u00a0/g, " ")).toBe(`${completion} `);
-    const caretPrefix = document.createRange();
-    caretPrefix.selectNodeContents(editable);
-    const selection = window.getSelection()!;
-    caretPrefix.setEnd(selection.anchorNode!, selection.anchorOffset);
-    expect(caretPrefix.toString().replace(/\u00a0/g, " ")).toBe(`${completion} `);
+    expect(onChange.mock.lastCall?.[0]).toMatch(/ $/);
+    expect(onChange.mock.lastCall?.[0]).not.toContain("\u00a0");
     expect(document.querySelector('[data-testid="mention-autocomplete-menu"]')).toBeNull();
 
     const editor = getNearestEditorFromDOMNode(editable)!;
@@ -104,7 +113,9 @@ describe("MarkdownEditor autocomplete separators", () => {
         if ($isRangeSelection(selection)) selection.insertText("next");
       });
     });
-    expect(editable.textContent?.replace(/\u00a0/g, " ")).toBe(`${completion} next`);
+    expect(editable.textContent).toBe(`${completion} next`);
     expect(editable.querySelector("a")?.textContent ?? null).toBe(linked ? completion : null);
+    expect(onChange.mock.lastCall?.[0]).toMatch(/ next$/);
+    expect(onChange.mock.lastCall?.[0]).not.toContain("\u00a0");
   });
 });

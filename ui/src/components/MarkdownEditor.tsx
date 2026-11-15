@@ -60,7 +60,7 @@ import {
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { unescapeIntrawordUnderscores } from "../lib/underscore-markdown";
 import { unescapeEqualsSigns } from "../lib/equals-markdown";
-import { restoreTrailingMarkdownSpaces } from "../lib/trailing-markdown-spaces";
+import { preserveTrailingMarkdownSpaces, restoreTrailingMarkdownSpaces } from "../lib/trailing-markdown-spaces";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -181,7 +181,7 @@ function prepareMarkdownForEditor(value: string): string {
   // HTML construct would throw and drop the whole component to raw source.
   // Escaping those brackets keeps ordinary prose — `<name>`, `</close>` — in the
   // rich editor. `toStoredMarkdown` reverses it on the way out.
-  return escapeUnsupportedAngleBrackets(withImages);
+  return preserveTrailingMarkdownSpaces(escapeUnsupportedAngleBrackets(withImages));
 }
 
 /**
@@ -621,7 +621,7 @@ function autocompleteMarkdown(option: AutocompleteOption): string {
   const token = option.kind === "skill" || option.kind === "routine" || option.kind === "action"
     ? slashCommandMarkdown(option)
     : mentionMarkdown(option);
-  return `${token}\u00a0`;
+  return `${token} `;
 }
 
 export function shouldAcceptAutocompleteKey(
@@ -737,7 +737,11 @@ export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
   const selection = window.getSelection();
   if (!selection) return false;
   const range = document.createRange();
-  range.selectNodeContents(target);
+  let end: Node = target;
+  while (end.lastChild) end = end.lastChild;
+  // A root-element selection can make Lexical insert a new paragraph. Keep
+  // typing in the final text node when the editable ends with text.
+  range.selectNodeContents(end.nodeType === Node.TEXT_NODE ? end : target);
   range.collapse(false);
   selection.removeAllRanges();
   selection.addRange(range);
@@ -1233,7 +1237,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       if (!state) return false;
       if (option.kind === "action" && option.disabled) return false;
       const current = latestValueRef.current;
-      const next = applyMention(current, state, option);
+      const next = preserveTrailingMarkdownSpaces(applyMention(current, state, option));
       if (next !== current) {
         latestValueRef.current = next;
         echoIgnoreMarkdownRef.current = next;
