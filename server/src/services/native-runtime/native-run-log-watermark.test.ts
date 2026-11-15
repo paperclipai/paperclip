@@ -18,6 +18,7 @@ import { createObjectRunLogStore } from "../object-run-log-store.js";
 import { nativeSha256 } from "./canonical.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "./native-run-log-export.js";
 import { readRecoverableRunLog, recoverSettledNativeRunLog } from "./native-run-log-recovery.js";
+import { invalidateInstanceSettingsCache } from "../instance-settings-cache.js";
 
 // Use an explicit guarded test database or a new owned embedded fixture.
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_LOG_WATERMARK_DATABASE_URL");
@@ -348,7 +349,7 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
     const f = await fixture();
     const setMasking = async (value: boolean) => db.execute(sql`insert into instance_settings(general)
       values(${JSON.stringify({ censorUsernameInLogs: value })}::jsonb)
-      on conflict(singleton_key) do update set general=excluded.general`);
+      on conflict(singleton_key) do update set general=excluded.general`).finally(invalidateInstanceSettingsCache);
     const redaction = async () => ({ enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
       userNames: ["fixture-operator"], homeDirs: ["/home/fixture-operator"] });
     await setMasking(enabled);
