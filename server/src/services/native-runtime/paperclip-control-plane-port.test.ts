@@ -2,6 +2,7 @@ import { nativeResponsePresentationWork } from "./native-response-presentation-w
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
+import { startServerMetrics, stopServerMetrics } from "../server-metrics.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -548,6 +549,21 @@ describe("PaperclipControlPlanePort conformance", () => {
       payload: { itemId: "ending-item", kind: "commandExecution", text: "***REDACTED***" } }]);
   });
 
+  it("records the lateness of each committed runner event once for the server metrics", async () => {
+    const metrics = startServerMetrics();
+    try {
+      const f = await terminalObserverFixture();
+      const event = { ...f.event, emittedAt: new Date(Date.now() - 2_000).toISOString() };
+      await f.port.appendEvent(event);
+      await f.port.appendEvent(event);
+      const snapshot = metrics.snapshot();
+      expect(snapshot.runEventLatenessSamples).toBe(1);
+      expect(snapshot.runEventLatenessP99Ms).toBeGreaterThanOrEqual(1_900);
+    } finally {
+      stopServerMetrics(metrics);
+    }
+  });
+
   it("completes a native run when a bound secret equals a protocol word", async () => {
     const observed: PrpEvent[] = [];
     const f = await terminalObserverFixture({ secrets: ["interrupted", "completed", "succeeded", "satisfied"],
@@ -1019,6 +1035,27 @@ describe("PaperclipControlPlanePort conformance", () => {
       .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
     return { port, binding, identity, runnerId, event, stored, streamed };
   };
+
+  it("measures every row of a streaming batch from the batch commit, not after earlier rows' observers", async () => {
+    const metrics = startServerMetrics();
+    const recorded: number[] = [];
+    const record = metrics.recordRunEventLatenessMs.bind(metrics);
+    metrics.recordRunEventLatenessMs = (ms: number) => { recorded.push(ms); record(ms); };
+    try {
+      const f = await streamingFixture({ streamingBatchMs: 600_000, onCommittedEvent: async (event) => {
+        if (event.sourceSeq === 2) await new Promise(resolve => setTimeout(resolve, 1_200));
+      } });
+      await f.port.appendEvent(f.event(1), f.streamed);
+      const deltas = [2, 3, 4].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed));
+      await f.port.appendEvent(f.event(5, "tool.execution.started"));
+      await Promise.all(deltas);
+      const batch = recorded.slice(1, 4);
+      expect(batch).toHaveLength(3);
+      expect(Math.max(...batch) - Math.min(...batch)).toBeLessThan(500);
+    } finally {
+      stopServerMetrics(metrics);
+    }
+  });
 
   it("commits the first text delta at once and later deltas in one batch before the next other event", async () => {
     const committed: number[] = [];

@@ -416,6 +416,30 @@ describe("R5 live evidence", () => {
     expect(gradeR5(quietB5({}))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
   });
 
+  it("does not flag a slow model request while the provider turn is active with no tool running (w-20261115T044649-s7106/t028)", () => {
+    const slow = JSON.parse(readFileSync(path.join(import.meta.dirname, "fixtures/t028-slow-provider-turn.json"), "utf8")) as { samples: TaskSample[] };
+    const gap = slow.samples.filter(sample => sample.runs?.[0]?.lastEvidenceAt === "2026-11-15T05:22:13.005Z");
+    expect(gap.at(-1)!.at - gap[0]!.at).toBeGreaterThan(300_000);
+    expect(gap.every(sample => sample.runs![0]!.providerTurnActive && !sample.runs![0]!.toolInFlight)).toBe(true);
+    expect(gradeR5(record(slow.samples)).verdict).toBe("pass");
+  });
+
+  const quietTurn = (live: { providerTurnActive?: boolean }, quietMs: number) => {
+    const start = Date.parse("2026-11-15T05:00:00Z");
+    const run = { id: "r1", status: "running", createdAt: null, startedAt: new Date(start - 600_000).toISOString(), finishedAt: null,
+      errorCode: null, retryOfRunId: null, wakeCommentIds: [], livenessState: null, lastEvidenceAt: new Date(start).toISOString(), ...live };
+    const offsets = Array.from({ length: Math.floor(quietMs / 30_000) + 1 }, (_, index) => index * 30_000);
+    return record(offsets.map(offset => ({ at: start + offset, reachable: true, serverReady: true, issueStatus: "in_progress", runs: [run] })));
+  };
+
+  it("still fails a silent run with no active provider turn, and a provider turn silent past the provider-latency bound", () => {
+    expect(gradeR5(quietTurn({}, 240_000))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeR5(quietTurn({ providerTurnActive: false }, 240_000))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeR5(quietTurn({ providerTurnActive: true }, 570_000)).verdict).toBe("pass");
+    expect(gradeR5(quietTurn({ providerTurnActive: true }, 630_000))).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^silent_dead_run r1 .* for 630s/) });
+  });
+
   it("derives tool-in-flight and process liveness from run events", async () => {
     const startedAt = new Date().toISOString();
     const identity = { processPid: 4242, processGroupId: 4242, processStartedAt: "2026-11-06T10:00:00.000Z", targetKind: "local" };

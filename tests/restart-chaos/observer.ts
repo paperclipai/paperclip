@@ -881,6 +881,7 @@ export class TaskObserver {
     if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
     const afterEnd = followUpAfterEndRange();
     if (afterEnd && this.plan.stagingMix?.followUpAfterMs != null) return (this.record.stagingMix?.afterEndFollowUps?.length ?? 0) < afterEnd.count;
+    if (this.plan.stagingMix?.followUpAfterMs != null && !this.record.stagingMix?.followUp) return true;
     return false;
   }
 

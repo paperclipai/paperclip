@@ -1,6 +1,6 @@
 /**
  * Environment-provider fault waves (EP1). See env-provider-faults.ts for the
- * oracle and README.md ("Environment-provider faults") for usage.
+ * oracle and SCENARIOS.md ("Environment-provider faults") for usage.
  *
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/env-provider-wave.ts \
  *     --fault EP1 --adapters codex --tasks 2 --seed 71

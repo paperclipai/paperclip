@@ -23,7 +23,7 @@ import { NativePredecessorRetirementUnprovenError } from "./predecessor-retireme
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "../heartbeat/agent-directory-busy.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
-import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { inspectRemoteWarmSessionRecovery, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
 import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../controller-instance-lease.js";
 import { readProcessStartedAt } from "../hot-restart.js";
@@ -433,6 +433,27 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: nextDeadline })).toEqual([]);
   });
 
+  it("keeps a warm follow-up that inherited its predecessor's process identity on the same run until the outgoing owner's deadline", async () => {
+    const fixture = await seed(), runId = randomUUID();
+    const scope = { ...fixture.scope, runId };
+    const deadline = new Date(Date.now() + 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
+      nativeSessionId: scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      processPid: 609, processGroupId: 609, processStartedAt: new Date(Date.now() - 120_000),
+      runnerProfileJson: { nativeExecutionInput: { binding: scope }, inheritedProcessIdentityRunId: fixture.scope.runId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed" });
+    await deferNativeControllerRecovery(db, { ...scope, retryAt: deadline });
+    const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(finalization).toMatchObject({ phase: "retryable_failure", attempt: 0, leaseOwner: null,
+      nextAttemptAt: deadline, failureCode: NATIVE_RETAINED_OWNER_WAIT });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+    expect(run.runnerProfileJson).toMatchObject({ inheritedProcessIdentityRunId: fixture.scope.runId });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline })).toHaveLength(1);
+  });
+
   it.each(["committed", "workspace_finalizing"])("defers a remote warm continuation while its %s predecessor has a finalization lease", async phase => {
     const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID();
     const previous = parseNativeExecutionInput({
@@ -642,6 +663,26 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     } finally {
       oldServer.kill("SIGKILL");
     }
+  });
+
+  it("keeps a follow-up waiting for a live outgoing server until that server has checkpointed the session after the turn", async () => {
+    const { recordOwner, current, fixture } = await seedWarmFollowUpOnOldServer();
+    const oldBoot = randomUUID();
+    await recordOwner({ controllerBootId: oldBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    registerControllerInstanceDb(db);
+    try {
+      const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
+        priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
+      await expect(wait(null)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() - 60_000))).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() + 1_000))).resolves.toBeUndefined();
+      await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBoot));
+      await expect(wait(null)).resolves.toBeUndefined();
+    } finally { resetControllerInstanceLeaseForTests(); }
   });
 
   it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {
@@ -915,14 +956,21 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
-  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop"])("does not publish an admission wait after authority changes: %s", async scenario => {
+  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop", "own-process", "inherited-then-own-process", "inherited-then-own-identity"])("does not publish an admission wait after authority changes: %s", async scenario => {
     const fixture = await seed(), runId = randomUUID();
     const scope = { ...fixture.scope, runId };
+    const ownProcess = scenario.startsWith("own-process") || scenario.startsWith("inherited-then-own");
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
       status: scenario === "stopped" ? "cancelled" : "running", runtimeMode: "native",
       resultJson: scenario === "operator-stop" ? { cancellation: { source: "operator", expected: true,
         initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() } } : null,
-      runnerProfileJson: { nativeExecutionInput: { binding: scope } } });
+      ...(ownProcess ? { processPid: 4242, processGroupId: 4242, processStartedAt: new Date() } : {}),
+      runnerProfileJson: { nativeExecutionInput: { binding: scope },
+        ...(scenario.startsWith("inherited-then-own") ? { inheritedProcessIdentityRunId: fixture.scope.runId } : {}) } });
+    if (scenario.startsWith("inherited-then-own")) {
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+        eventType: scenario === "inherited-then-own-process" ? "native.process_start_requested" : "native.process_identity_recorded" });
+    }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed",
       attempt: scenario === "provider-attempt" ? 1 : 0,
@@ -933,6 +981,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       retryAt: new Date(Date.now() + 60_000) }))
       .rejects.toThrow("wait_authority_changed");
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("observed");
+    if (ownProcess) {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].processPid).toBe(4242);
+    }
   });
 
   it("reports bounded retained-pointer coverage without loading historical payloads", async () => {
