@@ -2745,6 +2745,23 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
+    it("tells the owning agent to set the task state instead of resolving its own repair", async () => {
+      const nextAction = "The original owner must replace the parked summary with a terminal, live, blocked, monitored, or typed waiting disposition.";
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId, status: "active", kind: "deliberate_wait_without_target",
+        ownerType: "agent", ownerAgentId, returnOwnerAgentId: ownerAgentId, nextAction,
+        wakePolicy: { type: "bounded_owner_disposition_repair", retryAgentId: ownerAgentId, attempt: 1, maxAttempts: 2 },
+      });
+      const res = await request(await createApp(ownerActor())).post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details?.code).toBe("disposition_repair_owner_must_set_state");
+      expect(res.body.details?.nextAction).toBe(nextAction);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
     it.each(["owner", "budget", "approval", "pause", "run", "blocker", "pausedAgent", "terminatedAgent"])("keeps the %s gate authoritative for a board retry", async gate => {
       seedRetry();
       if (gate === "owner") mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: peerAgentId }));
