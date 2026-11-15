@@ -1,7 +1,7 @@
 # Plan: 1,000 concurrent agents on one workspace
 
-Date: 2026-11-13. Status: Phase 1 changes 1a to 1e and 1h are merged; 1f, 1g
-and Phase 2 are not started.
+Date: 2026-11-13. Status: Phase 1 changes 1a to 1e and 1h are merged; 1g is
+done for run-log uploads (see "Change 1g"); 1f and Phase 2 are not started.
 
 ## Finish line
 
@@ -211,6 +211,39 @@ What it shows:
   than its statement count suggests; the next changes should be judged by CPU
   per operation, not only by statements.
 
+## Change 1g: shared limiters at 200 and 1,000 runs
+
+Run-log uploads now have one slot per 10 open run logs (at least 4, at most
+21), and object journal operations have the upload slots plus 4 for reads (at
+most 25, half of the S3 client's 50 sockets). Simulation with 50 ms per
+object write, 0.7 log records per run per second, 20 s window:
+
+| Runs | Build | Concurrent writes | Log lines committed in window / offered | Commit delay p50 / p99 |
+| --- | --- | --- | --- | --- |
+| 200 | before (4 slots) | 4 | 1,473 / 2,669 | 8.0 s / 13.5 s |
+| 200 | after | 20 | 2,646 / 2,790 | 1.1 s / 1.3 s |
+| 1,000 | before (4 slots) | 4 | 1,229 / 13,499 | 43.8 s / 62.3 s |
+| 1,000 | after | 21 | 7,789 / 13,667 | 7.7 s / 12.6 s |
+
+Not changed, and why:
+
+- Controller checkpoint pool (3 connections). Since #21553 a routine save is
+  one pipelined statement, so the pool is limited by backend execution and
+  commit time, not round trips. At 1 to 3 ms per save on a hosted database it
+  allows about 1,000–3,000 saves/s. Demand at 1,000 runs is about 380/s
+  (load model) to 1,400/s (recorded checkpoint rows). A larger pool needs a
+  per-process connection budget for the hosted database, which is an owner
+  decision.
+- `withDedicatedDbConnection` has no bound on connections in use (it keeps at
+  most 4 idle). Workspace source and lifecycle locks nest two of them, so a
+  bound must not let outer holders block inner ones. Steady state at 1,000
+  runs is about 10–20 connections; a burst of run starts after a restart can
+  open up to two per starting run.
+- Lease renewal (2 connections, 200 rows per statement), agent-file saves (2
+  connections, a short read-only check when nothing changed), run dispatch
+  (24 claims per agent pass, chained at once) and recovery per-pass caps do
+  not limit a healthy run at 1,000 runs.
+
 ## Considered and not done
 
 - **Stop writing `run.performance.span` rows.** These spans are the largest
@@ -292,6 +325,16 @@ that fail at once, 180-second window that includes one 5-minute backstop pass.
 The master row has much less run churn than the earlier rows, so compare the
 per-window totals with care. In that window the one backstop pass loaded 260
 tasks into the stranded queue; run events loaded 147.
+
+A graceful shutdown now releases the process identity of the settled native
+runs that the stopping server ran, once it sees that their local processes
+exited. It uses one candidate read and one update for all runs (7 statements
+for 40 runs). Before this change, those runs kept `process_pid` and
+`process_group_id` after the deploy. A successor in another container cannot
+release them. A successor on the same host releases them at startup at about
+10 statements per run (401 statements for 40 runs); after a graceful shutdown
+it does one statement. Runs still running at shutdown, sandbox runs, and runs
+of other servers keep their records.
 
 ### Phase 2: several controller processes (target: 1,000)
 

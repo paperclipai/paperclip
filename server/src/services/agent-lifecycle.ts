@@ -1,6 +1,7 @@
 import { prepareMuseReceiverAuthorityMutation } from "../modules/external-agents/index.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyBudgetResumeAgentReady } from "./budget-resume-continuation.js";
+import { readmitAgentContinuations } from "./recovery/continuation-delivery-attempt.js";
 import { currentControllerProcessStamp } from "./controller-process-identity.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -72,6 +73,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
         await notifyNativeReviewResponse(tx, { companyId, agentId });
         await notifyChatInboundWakeNotices(tx, { companyId });
         await notifyBudgetResumeAgentReady(tx, agentId);
+        await readmitAgentContinuations(tx, { companyId, agentId });
       }
     },
     reportFailure(context, error) {
