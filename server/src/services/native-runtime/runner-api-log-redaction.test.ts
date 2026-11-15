@@ -29,6 +29,20 @@ describe("API payload persistence redaction", () => {
     const result = redactRunnerApiPayloads({ result: { operationId: "save_api_response", data: { value: "private-fixture-value" } } });
     expect(JSON.stringify(result)).not.toContain("private-fixture-value");
   });
+  it("keeps a cost report's date range in the saved receipt, and nothing else from the request", () => {
+    const input = { operationId: "GET /api/companies/{companyId}/costs/by-agent", pathParams: { companyId: "company-fixture" },
+      query: { from: "2026-11-09T00:00:00-03:00", to: "2026-11-16", limit: 5 } };
+    const saved = redactRunnerApiPayloads({ item: { type: "tool_use", name: "call_api", input } });
+    expect(saved.item.input).toMatchObject({ operationId: input.operationId, apiPayloadRedacted: true, costRange: { from: input.query.from, to: input.query.to } });
+    expect(JSON.stringify(saved)).not.toContain("company-fixture");
+    expect((saved.item.input as any).apiPayloadSha256).toBe((redactRunnerApiPayloads(input) as any).apiPayloadSha256);
+    expect(redactRunnerApiPayloads(saved)).toEqual(saved);
+    // An unranged report records an empty range; a value the costs route would reject, or another operation, records none.
+    expect((redactRunnerApiPayloads({ ...input, query: undefined }) as any).costRange).toEqual({});
+    expect((redactRunnerApiPayloads({ ...input, query: { period: "all" } }) as any).costRange).toEqual({ period: "all" });
+    expect(redactRunnerApiPayloads({ ...input, query: { from: "private-fixture-value" } })).not.toHaveProperty("costRange");
+    expect(redactRunnerApiPayloads({ operationId: "GET /api/companies/{companyId}/heartbeat-runs", query: { from: "2026-11-09" } })).not.toHaveProperty("costRange");
+  });
   it("preserves unrelated tool output and JSON text formatting", () => {
     const value = { result: { operationId: "get_task_context", data: { title: "Work" } }, text: '{ "ordinary": "output" }' };
     expect(redactRunnerApiPayloads(value)).toEqual(value);

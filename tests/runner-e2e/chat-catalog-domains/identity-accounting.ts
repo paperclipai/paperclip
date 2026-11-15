@@ -68,16 +68,20 @@ async function nativeUnresolvedContext(ctx: ChatCatalogContext, retryable: boole
 }
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** One chat-agent product call: call_api saves its input as a digest, keeping only the operation, ok and status. */
-export interface LeadApiCall { runId: string; operationId: string; digest: string; ok: boolean; status: number }
+export interface LeadApiCall { runId: string; operationId: string; digest: string; ok: boolean; status: number;
+  /** A company cost report's `from`/`to`/`period` inputs, which the saved receipt keeps (`{}` for an unranged read). */
+  costRange?: { from?: string; to?: string; period?: string } }
 /** Pair each redacted call_api use with its result by run and item id. Payloads and wording are never read. */
 export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadApiCall[] {
-  const uses = new Map<string, { operationId: string; digest: string }>(); const calls: LeadApiCall[] = [];
+  const uses = new Map<string, { operationId: string; digest: string; costRange?: LeadApiCall["costRange"] }>(); const calls: LeadApiCall[] = [];
   for (const row of events) {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), item = objectRecord(objectRecord(envelope.payload).item);
     const runId = String(row.runId ?? envelope.runId ?? "");
     if (item.type === "tool_use" && item.name === "call_api") {
       const input = objectRecord(item.input);
-      if (typeof input.operationId === "string") uses.set(`${runId}:${String(item.id)}`, { operationId: input.operationId, digest: String(input.apiPayloadSha256 ?? "") });
+      const range = objectRecord(input.costRange), costRange = input.costRange && typeof input.costRange === "object" && !Array.isArray(input.costRange)
+        ? Object.fromEntries((["from", "to", "period"] as const).filter(key => typeof range[key] === "string").map(key => [key, range[key] as string])) : undefined;
+      if (typeof input.operationId === "string") uses.set(`${runId}:${String(item.id)}`, { operationId: input.operationId, digest: String(input.apiPayloadSha256 ?? ""), ...(costRange ? { costRange } : {}) });
       continue;
     }
     if (item.type !== "tool_result") continue;
@@ -160,6 +164,19 @@ export function coveringCostReportDigests(companyId: string, window: { startedAt
   coveringCache.set(key, digests);
   return digests;
 }
+/** A company cost report read whose saved `from`/`to` (parsed as the costs route parses them) covers the window. An
+ * unranged or all-time read covers everything; a month read covers a window inside the current UTC month at the window's
+ * end. Receipts saved before the range was kept carry no `costRange` and fall back to digest matching. */
+export function costRangeCovers(call: Pick<LeadApiCall, "operationId" | "costRange">, segments: readonly string[], window: { startedAt: string; finishedAt: string }) {
+  const segment = /^GET \/api\/companies\/\{companyId\}\/costs\/([a-z-]+)$/.exec(call.operationId)?.[1];
+  const range = call.costRange; if (!segment || !segments.includes(segment) || !range) return false;
+  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt);
+  if (range.period === "all") return range.from === undefined && range.to === undefined;
+  if (range.period === "month") { const a = new Date(started), b = new Date(finished); return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth(); }
+  if (range.period !== undefined) return false;
+  const from = range.from === undefined ? -Infinity : new Date(range.from).getTime(), to = range.to === undefined ? Infinity : new Date(range.to).getTime();
+  return !Number.isNaN(from) && !Number.isNaN(to) && from <= started && to >= finished;
+}
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
   // A run with cost events shows in every report whose range covers those events; a pending run only in the reports
@@ -186,6 +203,7 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
+      || !!window && costRangeCovers(call, segments, window)
       || rangedDigests.has(call.digest)
       || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
       || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
