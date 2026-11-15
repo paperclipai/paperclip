@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { IssueComment, IssueRecentComments } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { readFromIssueChatBootstrap } from "./issue-chat-bootstrap";
+import { isRestoredSavedRead } from "./persisted-query-cache";
 import { queryKeys } from "./queryKeys";
 
 export function mergeWindowComments(...windows: readonly IssueComment[][]): IssueComment[] {
@@ -14,7 +15,10 @@ export function getIssueRecentCommentsQueryOptions(queryClient: QueryClient, iss
   return {
     queryKey: recentKey,
     queryFn: async ({ signal }: { signal: AbortSignal }): Promise<IssueRecentComments> => {
-      const previous = queryClient.getQueryData<IssueRecentComments>(recentKey);
+      // A window restored from the saved read cache was never confirmed in this
+      // page (a comment may have been deleted since): read it like a cold open
+      // and replace it, never merge it.
+      const previous = isRestoredSavedRead(queryClient, recentKey) ? undefined : queryClient.getQueryData<IssueRecentComments>(recentKey);
       // A cold open may already have this window in a loading bootstrap.
       if (!previous) {
         return readFromIssueChatBootstrap(queryClient, recentKey, issueRef, (item) => item.recentComments, () => issuesApi.recentComments(issueRef, { signal }));

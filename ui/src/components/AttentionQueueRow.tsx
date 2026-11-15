@@ -1,23 +1,27 @@
 import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  AlarmClock,
+  Bot,
   CalendarClock,
   ChevronDown,
   ChevronUp,
   ExternalLink,
   Loader2,
-  MoreHorizontal,
-  RotateCcw,
-  X,
+  UserRound,
 } from "lucide-react";
-import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
+import { type Agent, type AttentionDetailImage, type AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
-import { useToastActions } from "../context/ToastContext";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { queryKeys } from "../lib/queryKeys";
+import { ApprovalCardPanel } from "./ApprovalCardPanel";
+import { DecisionCardFooter } from "./DecisionCardFooter";
+import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./coordinator/NeedsYouCardKit";
+import { useToastActions } from "../context/ToastContext";
+import { invalidateAttentionRecordViews } from "../lib/attention-record-views";
+import { claimReviseDraftWork, clearReviseDraft, releaseReviseDraftWork, reviseDraftKey, useReviseDraft, type ReviseDraftWork } from "../lib/revise-draft-store";
 import { describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
 import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
@@ -33,27 +37,20 @@ import {
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
+import { AttentionAudienceLine } from "./AttentionViews";
+import { attentionAudienceLineNamesResponders } from "../lib/attention-views";
+import { AttentionObligationEvidence } from "./AttentionObligationEvidence";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
+import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionStaleChip } from "./AttentionCloseMenu";
+import { BudgetAlertActions, FailedRunActions } from "./AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
 import { DecisionResolver } from "./DecisionResolver";
 import { StalledReviewActions } from "./StalledReviewActions";
 import { readIssueReviewPolicyMetadata } from "../lib/review-policy";
-
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
+import { attentionOtherAudienceUserId } from "../lib/attention-close";
 
 // Decision-action buttons: a comfortable tap target when the row is narrow
 // (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
@@ -61,34 +58,29 @@ const DAY_MS = 24 * HOUR_MS;
 // the row also reflows correctly inside narrow side panels, not just on phones.
 const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
 
-/** Tomorrow at 9am local time. */
-function tomorrowMorningIso(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(9, 0, 0, 0);
-  return d.toISOString();
-}
-
-/** Snooze presets, resolved to a future ISO timestamp at click time. */
-const SNOOZE_PRESETS: ReadonlyArray<{ label: string; resolve: () => string }> = [
-  { label: "1 hour", resolve: () => new Date(Date.now() + HOUR_MS).toISOString() },
-  { label: "4 hours", resolve: () => new Date(Date.now() + 4 * HOUR_MS).toISOString() },
-  { label: "Tomorrow morning", resolve: tomorrowMorningIso },
-  { label: "Next week", resolve: () => new Date(Date.now() + 7 * DAY_MS).toISOString() },
-];
-
 interface AttentionQueueRowProps {
   item: AttentionItem;
   companyId: string;
   expanded: boolean;
   /** Receives the row's item so the parent can pass one stable callback for every row. */
   onToggleExpand: (item: AttentionItem) => void;
+  /** "Archive for me" in the Close… menu: hides the card for you only (PAP-749 Rule 6). */
   onDismiss: (item: AttentionItem) => void;
+  /** "Snooze for me" in the Close… menu. */
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
-  /** Restore a snoozed/dismissed row (curtain variant only). */
+  /** "Withdraw request" closes it for everyone; only cards whose `closeModes` allow it. */
+  onWithdraw?: (item: AttentionItem, reason: string) => void;
+  /** "Transfer to @x" (interactions only). */
+  onTransfer?: (item: AttentionItem, userId: string) => void;
+  /** A close or transfer of this card is in flight. */
+  closing?: boolean;
+  /**
+   * Restore a card you archived or snoozed (the Archived view, PAP-749 plan
+   * §3). The row then says when it was archived or when it comes back, and
+   * its Close… menu offers Restore instead of Archive. The card stays
+   * answerable like any other row.
+   */
   onRestore?: (item: AttentionItem) => void;
-  /** "active" renders the live queue row; "hidden" renders a curtain row. */
-  variant?: "active" | "hidden";
   agentMap?: Map<string, Agent>;
   /** Company agents, for the triage strip's route-to-agent picker. */
   agents?: Agent[];
@@ -96,7 +88,15 @@ interface AttentionQueueRowProps {
   showTriage?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  /** Claim an ownerless card (PAP-749). Pass one stable callback for every row. */
+  onClaim?: (item: AttentionItem) => void;
+  claiming?: boolean;
   selected?: boolean;
+  /**
+   * The rest of this card's obligation (PAP-749 plan §2, Rule 11), folded in
+   * as one line each. Pass a stable array; the row is memoized.
+   */
+  evidence?: readonly AttentionItem[];
 }
 
 /**
@@ -113,14 +113,19 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
+  onWithdraw,
+  onTransfer,
+  closing = false,
   onRestore,
-  variant = "active",
   agentMap,
   agents,
   showTriage = false,
   currentUserId,
   userLabelMap,
+  onClaim,
+  claiming = false,
   selected = false,
+  evidence,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
   // Colour + glyph are borrowed wholesale from the task status system, so a
@@ -128,10 +133,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const status = attentionStatus(item);
   // The task this row belongs to, whichever field the feed put it in.
   const taskRef = attentionTaskRef(item);
-  const isHidden = variant === "hidden";
-  const inline = !isHidden && isInlineResolvable(item);
+  const inline = isInlineResolvable(item);
   const href = item.subject.href;
-  const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);
   const hasImages = images.length > 0;
@@ -143,8 +146,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // expand to reveal the per-card triage strip (PAP-16032 §4.5). Any of these
   // gives a header/thumbnail click somewhere to go. Non-inline, image-less rows
   // with no triage keep the explicit Open button and never toggle on a stray click.
-  const triageEnabled = showTriage && !isHidden;
-  const expandable = inline || (!isHidden && hasImages) || triageEnabled;
+  const triageEnabled = showTriage;
+  const expandable = inline || hasImages || triageEnabled;
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
@@ -157,15 +160,18 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   };
 
   // Which rows contribute an action bar. Inline rows carry compact decision
-  // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
-  const compactActions = !isHidden ? collectCompactActions(item) : [];
+  // verbs; deep-link rows carry an Open button.
+  // A card for a different person asks "This is for @x. Continue?" before any
+  // answer (PAP-749 plan §6), so it offers no one-click verbs while collapsed.
+  const forOther = attentionOtherAudienceUserId(item, currentUserId) !== null;
+  const compactActions = !forOther ? collectCompactActions(item) : [];
   // Who the server will let resolve this interaction. A collapsed row offers
   // Accept/Reject before anything fetches the interaction, so the audience
   // travels with the feed item; null for every non-interaction source and for a
   // feed built before the metadata existed (PAP-17287).
   const audience = describeAttentionResolverAudience(item);
+  const audienceLineNamesResponders = attentionAudienceLineNamesResponders(item, currentUserId);
   const showOpen = !inline && !!href;
-  const showRestore = isHidden && !!onRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
   // decision verbs — so the toggle rides alongside them on one row rather than
   // stranding a lone "See less" under the buttons. That makes the collapsed
@@ -197,7 +203,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
    */
   const renderFooter = ({ compact }: { compact: boolean }) => {
     const showCompact = compactActions.length > 0 && (compact || !expanded);
-    if (!toggle && !showCompact && !showOpen && !showRestore) return null;
+    if (!toggle && !showCompact && !showOpen) return null;
     return (
       <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
         {toggle ?? <span />}
@@ -221,12 +227,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </Button>
           )}
 
-          {showRestore && (
-            <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
-              <RotateCcw className="h-3 w-3" />
-              Restore
-            </Button>
-          )}
         </div>
       </div>
     );
@@ -241,7 +241,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         // row's first paint; `auto` keeps the real measured height afterwards.
         "[content-visibility:auto] [contain-intrinsic-size:auto_104px]",
         "motion-safe:transition-[opacity,transform,border-color,background-color] motion-safe:duration-200 motion-safe:ease-out hover:border-border/80",
-        isHidden && "bg-muted/30 opacity-80 hover:opacity-100",
         selected && "border-ring ring-1 ring-ring",
       )}
       id={`attention-row-${item.id}`}
@@ -287,48 +286,33 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               </span>
             </>
           )}
+          {onRestore && item.dismissal?.isActive && (
+            <>
+              <EyebrowSeparator />
+              <AttentionHiddenChip item={item} />
+            </>
+          )}
+          {item.stale && (
+            <>
+              <EyebrowSeparator />
+              <AttentionStaleChip item={item} />
+            </>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
-          {isHidden && snoozedUntil ? (
-            <span
-              className="text-(length:--text-nano) text-muted-foreground"
-              title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
-            >
-              Reappears {reappearLabel(snoozedUntil)}
-            </span>
-          ) : (
-            <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
-          )}
-          {!isHidden && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="text-muted-foreground"
-                  aria-label="Row actions"
-                >
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
-                <DropdownMenuItem onClick={() => onDismiss(item)}>
-                  <X className="h-4 w-4" />
-                  Dismiss
-                </DropdownMenuItem>
-                {href && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem asChild>
-                      <Link to={href}>Open source</Link>
-                    </DropdownMenuItem>
-                  </>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
+          <AttentionCloseMenu
+            item={item}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onWithdraw={onWithdraw}
+            onArchive={onDismiss}
+            onSnooze={onSnooze}
+            onTransfer={onTransfer}
+            onRestore={onRestore}
+            busy={closing}
+          />
         </div>
       </div>
 
@@ -356,6 +340,21 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
       </div>
 
+      {/* Why this card is here (PAP-749 plan §1, Rule 4): "Why me?", "For
+          @name", or why an ownerless card is yours to answer, with Claim. */}
+      <AttentionAudienceLine
+        item={item}
+        currentUserId={currentUserId}
+        userLabelMap={userLabelMap}
+        onClaim={onClaim}
+        claiming={claiming}
+        className="-mt-2"
+      />
+
+      {/* One card for each obligation (PAP-749 Rule 11): the task waiting on
+          this approval, or the work this failed run blocks. */}
+      <AttentionObligationEvidence item={item} evidence={evidence} />
+
       {/* Collapsed-only content. It has no counterpart to morph into — the
           thumbnail strip becomes a full gallery, and an inline row's footer is
           replaced by the resolver's own — so it rides an inverse disclosure and
@@ -369,7 +368,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               {/* The audience reads *before* the verbs it qualifies: a compact
                   Accept sitting alone asks for a decision without saying whose
                   it is (PAP-17287). */}
-              {audience && <InteractionAudienceLine audience={audience} variant="compact" />}
+              {/* The audience line above already names who may answer when
+                  it knows the viewer; a second clause would contradict it
+                  (PAP-767). */}
+              {audience && !audienceLineNamesResponders && <InteractionAudienceLine audience={audience} variant="compact" />}
               {inline && renderFooter({ compact: true })}
             </div>
           </CollapsibleContent>
@@ -388,22 +390,24 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
             {triageEnabled && <DecisionTriageStrip item={item} companyId={companyId} agents={agents} />}
             {inline && (
-              <InlineResolver
-                item={item}
-                companyId={companyId}
-                agentMap={agentMap}
-                currentUserId={currentUserId}
-                userLabelMap={userLabelMap}
-                toggle={toggle}
-              />
+              <AttentionForOtherGate item={item} currentUserId={currentUserId} userLabelMap={userLabelMap}>
+                <InlineResolver
+                  item={item}
+                  companyId={companyId}
+                  agentMap={agentMap}
+                  currentUserId={currentUserId}
+                  userLabelMap={userLabelMap}
+                  toggle={toggle}
+                />
+              </AttentionForOtherGate>
             )}
           </div>
         </CollapsibleContent>
       </Collapsible>
 
-      {/* A non-inline row keeps one footer across both states — its Open or
-          Restore button and its toggle are the same control either way, so it
-          stays put rather than crossfading with itself. */}
+      {/* A non-inline row keeps one footer across both states — its Open
+          button and its toggle are the same control either way, so it stays
+          put rather than crossfading with itself. */}
       {!inline && renderFooter({ compact: false })}
     </div>
   );
@@ -509,12 +513,8 @@ function CompactDecisionActions({
       throw new Error("This decision must be completed from its detail view.");
     },
     onSuccess: (_result, action) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-      if (item.sourceKind === "approval") {
-        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
-      } else {
-        queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-      }
+      // Task detail, chat and the approval page show the same record.
+      invalidateAttentionRecordViews(queryClient, companyId, item);
       pushToast({
         title: compactDecisionSuccessLabel(item.sourceKind, action),
         tone: "success",
@@ -671,53 +671,6 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
   );
 }
 
-/** Snooze submenu: presets + a custom date-time (plan §6). */
-function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void }) {
-  const [customValue, setCustomValue] = useState("");
-  const applyCustom = () => {
-    if (!customValue) return;
-    const ts = new Date(customValue);
-    if (Number.isNaN(ts.getTime())) return;
-    onSnooze(ts.toISOString());
-  };
-  return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger>
-        <AlarmClock className="h-4 w-4" />
-        Snooze
-      </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent>
-        {SNOOZE_PRESETS.map((preset) => (
-          <DropdownMenuItem key={preset.label} onClick={() => onSnooze(preset.resolve())}>
-            {preset.label}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        {/* Custom picker: a non-menu-item region so interacting with the input
-            doesn't close the menu (guard keydown/select against Radix typeahead). */}
-        <div
-          className="flex flex-col gap-1.5 px-2 py-1.5"
-          onKeyDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-            Custom
-          </span>
-          <input
-            type="datetime-local"
-            value={customValue}
-            onChange={(e) => setCustomValue(e.target.value)}
-            className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
-          />
-          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>
-            Snooze until…
-          </Button>
-        </div>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
-  );
-}
-
 /**
  * Who set this row's decide-by deadline, for the card's provenance line
  * ("· set by Prioritizer"). Returns null when unattributed so the chip shows
@@ -728,18 +681,6 @@ function decideByProvenance(item: AttentionItem): string | null {
   if (!attribution) return null;
   if (attribution.type === "agent") return attribution.agentName ?? "an agent";
   return "you";
-}
-
-/** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */
-function reappearLabel(snoozedUntil: string): string {
-  const diffMs = new Date(snoozedUntil).getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "soon";
-  const diffMin = Math.round(diffMs / 60000);
-  if (diffMin < 60) return `in ${diffMin}m`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `in ${diffHr}h`;
-  const diffDay = Math.round(diffHr / 24);
-  return `in ${diffDay}d`;
 }
 
 /**
@@ -802,6 +743,14 @@ function InlineResolver({
     return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
   }
 
+  if (item.sourceKind === "failed_run") {
+    return <FailedRunActions item={item} companyId={companyId} leading={toggle} />;
+  }
+
+  if (item.sourceKind === "budget_alert") {
+    return <BudgetAlertActions item={item} companyId={companyId} leading={toggle} />;
+  }
+
   if (item.sourceKind === "review") {
     // Inline only for stalled reviews (server sets inlineResolvable then); the
     // subject IS the issue, so its id is the decision target.
@@ -828,48 +777,112 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
   );
 }
 
-function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+/** Approve, reject or send back an approval in place (PAP-775, UX1: also on coordinator Needs You). */
+export function ApprovalResolver({ item, companyId, toggle, onResolved, shareDraft = false, presentation = "panel", artifactRow, onViewDetails, footerContext }: {
+  item: AttentionItem;
+  companyId: string;
+  toggle: ReactNode;
+  onResolved?: () => void;
+  /** Another view shows this same approval (PAP-775): share the decision note
+   * and the in-flight action with it, so typing mirrors and nothing sends twice. */
+  shareDraft?: boolean;
+  /**
+   * "card": the Needs You card — what is being approved in an inset panel, then
+   * View details · Reject · Approve, no note. "panel" (default): the full
+   * resolver with the decision note and Request revision, as in the side panel.
+   */
+  presentation?: "card" | "panel";
+  /** Card only: a row for the artifact the card opens, shown as the panel instead of the payload summary. */
+  artifactRow?: ReactNode;
+  /** Supporting request context stays above the card's action footer. */
+  footerContext?: ReactNode;
+  /** Card only: opens the full request (the side panel). No button without it. */
+  onViewDetails?: () => void;
+}) {
   const queryClient = useQueryClient();
-  const [note, setNote] = useState("");
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const onError = (error: unknown) => setActionError(error instanceof Error ? error.message : "The decision could not be saved.");
+  // Keyed by the request's last (re)submission: a revised request starts clean.
+  const draftKey = shareDraft ? reviseDraftKey(`approval:${item.subject.id}`, item.updatedAt) : null;
+  const [sharedDraft, updateSharedDraft] = useReviseDraft(draftKey);
+  const [localNote, setLocalNote] = useState("");
+  const note = draftKey ? sharedDraft.reason : localNote;
+  const setNote = (next: string) => draftKey ? updateSharedDraft({ reason: next }) : setLocalNote(next);
+  const invalidate = () => { if (draftKey) clearReviseDraft(draftKey); invalidateAttentionRecordViews(queryClient, companyId, item); onResolved?.(); };
+  const send = (work: ReviseDraftWork, request: (note?: string) => Promise<unknown>) => async () => {
+    // The other view is already sending this approval: never send it twice.
+    if (draftKey && !claimReviseDraftWork(draftKey, work)) throw new Error("This approval is already being sent.");
+    try {
+      return await request(note.trim() || undefined);
+    } finally {
+      if (draftKey) releaseReviseDraftWork(draftKey);
+    }
   };
   const approve = useMutation({
-    mutationFn: () => approvalsApi.approve(item.subject.id, note.trim() || undefined),
+    mutationFn: send("accept", (decisionNote) => approvalsApi.approve(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const reject = useMutation({
-    mutationFn: () => approvalsApi.reject(item.subject.id, note.trim() || undefined),
+    mutationFn: send("reject", (decisionNote) => approvalsApi.reject(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const revise = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(item.subject.id, note.trim() || undefined),
+    mutationFn: send("revise", (decisionNote) => approvalsApi.requestRevision(item.subject.id, decisionNote)),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
-  const pending = approve.isPending || reject.isPending || revise.isPending;
+  // Either view sending disables both.
+  const working = approve.isPending ? "accept" : reject.isPending ? "reject" : revise.isPending ? "revise" : sharedDraft.working;
+  const pending = working !== null;
+
+  if (presentation === "card") {
+    const hire = item.subject.metadata?.type === "hire_agent";
+    return <>
+      <ApprovalCardPanel item={item} companyId={companyId} artifactRow={artifactRow} onViewDetails={onViewDetails} />
+      {footerContext}
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
+      <DecisionCardFooter leading={toggle}>
+        {onViewDetails ? <Button size="sm" variant="ghost" onClick={onViewDetails}>{hire ? "View configuration" : "View details"}</Button> : null}
+        <Button size="sm" variant="outline" onClick={() => reject.mutate()} disabled={pending}>
+          {working === "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Reject
+        </Button>
+        <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
+          {working === "accept" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {hire ? "Approve hire" : "Approve"}
+        </Button>
+      </DecisionCardFooter>
+    </>;
+  }
 
   // Verb order matches the collapsed row exactly (revise → reject → approve),
   // so expanding never moves the button the operator was already aiming at.
   return (
     <>
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
         placeholder="Optional decision note…"
         className="min-h-16 text-sm"
+        disabled={pending}
       />
       <ResolverFooter toggle={toggle}>
         <Button size="sm" variant="outline" onClick={() => revise.mutate()} disabled={pending}>
-          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {working === "revise" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Request revision
         </Button>
         <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {working === "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Reject
         </Button>
         <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          {working === "accept" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Approve
         </Button>
       </ResolverFooter>
@@ -877,23 +890,59 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
   );
 }
 
-function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+/** Approve or reject a join request in place (PAP-775, UX1). */
+export function JoinRequestResolver({ item, companyId, toggle, onResolved, presentation = "panel" }: {
+  item: AttentionItem;
+  companyId: string;
+  toggle: ReactNode;
+  onResolved?: () => void;
+  /** "card": the Needs You card (who is asking, then Decline · Approve access); "panel" (default): Reject · Approve. */
+  presentation?: "card" | "panel";
+}) {
   const queryClient = useQueryClient();
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
-  };
+  const [actionError, setActionError] = useState<string | null>(null);
+  const onError = (error: unknown) => setActionError(error instanceof Error ? error.message : "The join request could not be saved.");
+  const invalidate = () => { invalidateAttentionRecordViews(queryClient, companyId, item); onResolved?.(); };
   const approve = useMutation({
     mutationFn: () => accessApi.approveJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const reject = useMutation({
     mutationFn: () => accessApi.rejectJoinRequest(companyId, item.subject.id),
     onSuccess: invalidate,
+    onMutate: () => setActionError(null),
+    onError,
   });
   const pending = approve.isPending || reject.isPending;
 
+  if (presentation === "card") {
+    const agent = item.subject.metadata?.requestType === "agent";
+    const adapter = typeof item.subject.metadata?.adapterType === "string" ? item.subject.metadata.adapterType : null;
+    return <>
+      <NeedsYouPanel>
+        <NeedsYouPanelRow icon={agent ? <Bot /> : <UserRound />} title={item.subject.title ?? "Join request"}
+          meta={agent ? ["Agent access", adapter ? getAdapterLabel(adapter) : null].filter(Boolean).join(" · ") : "Member access"} />
+        <NeedsYouPanelNote>{agent ? "Approval adds this agent to the company." : "Approval adds them to the company as a member."}</NeedsYouPanelNote>
+      </NeedsYouPanel>
+      {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
+      <DecisionCardFooter leading={toggle}>
+        <Button size="sm" variant="ghost" onClick={() => reject.mutate()} disabled={pending}>
+          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Decline
+        </Button>
+        <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
+          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Approve access
+        </Button>
+      </DecisionCardFooter>
+    </>;
+  }
+
   return (
+    <>
+    {actionError ? <p role="alert" className="text-sm text-destructive">{actionError}</p> : null}
     <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
         {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -904,5 +953,6 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
         Approve
       </Button>
     </ResolverFooter>
+    </>
   );
 }

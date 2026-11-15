@@ -146,6 +146,48 @@ describe("Coordinator pinned pages", () => {
     act(() => links[1].dispatchEvent(nativeDrag));
     expect(nativeDrag.defaultPrevented).toBe(true);
   });
+  it("reorders mixed pins with the keyboard while preserving hidden slots and saved order", async () => {
+    const storageKey = "paperclip.coordinator.pinned-nav.v1:reviewer";
+    const saved = ["/artifacts", "agent-chat:another-company:hidden", "/dashboard"];
+    localStorage.setItem(storageKey, JSON.stringify(saved));
+    await renderSidebar();
+    const order = () => [...navigation().querySelectorAll(".group\\/coordinator-pin a")].map(link => link.getAttribute("href"));
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const rows = [...container.querySelectorAll(".group\\/coordinator-pin")];
+      const index = rows.indexOf(this);
+      if (index < 0) return nativeRect.call(this);
+      const top = index * 40;
+      return { x: 0, y: top, top, bottom: top + 40, left: 0, right: 240, width: 240, height: 40, toJSON() {} };
+    });
+    const key = async (target: Element, code: string) => {
+      await act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { code, key: code === "Space" ? " " : code, bubbles: true, cancelable: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+    };
+    try {
+      const handle = navigation().querySelector<HTMLButtonElement>('[aria-label="Reorder pinned Artifacts"]')!;
+      handle.focus();
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Escape");
+      expect(order()).toEqual(["/artifacts", "/dashboard"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(saved);
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Space");
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual([saved[2], saved[1], saved[0]]);
+      await act(async () => root.unmount()); root = createRoot(container);
+      await renderSidebar();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      fixture.collapsed = true;
+      await renderSidebar();
+      expect(navigation().querySelector('[aria-label^="Reorder pinned"]')).toBeNull();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+    } finally { rect.mockRestore(); }
+  });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
     fixture.enableCases = enabled;
     await renderSidebar();

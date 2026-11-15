@@ -370,12 +370,12 @@ function PrimeDeskFixtures({
     queryClient.setQueryData(queryKeys.agents.list(companyId), AGENTS);
     queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
     if (items) {
-      // Keep this fixture aligned with the current page query.
+      // Keyed by person and view, like the current page query.
       queryClient.setQueryData(
-        [...queryKeys.attention(companyId), "with-dismissed", null, null],
+        [...queryKeys.attention(companyId), STORYBOOK_USER_ID, "mine", "with-dismissed", null, null],
         feed(items),
       );
-      queryClient.setQueryData(coordinatorAttentionQueryKey(companyId), feed(items));
+      queryClient.setQueryData(coordinatorAttentionQueryKey(companyId, STORYBOOK_USER_ID, "mine"), feed(items));
     }
     if (queueItems) {
       // The queue feed key carries the resolved activity bounds (null/null for

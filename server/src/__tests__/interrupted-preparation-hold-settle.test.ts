@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -153,6 +153,88 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(audit?.details).toMatchObject({ reason: "native_bootstrap_stopped_before_provider", ownerProof: "pid_dead" });
   });
 
+  // Staging release-swap shape: a Runner preparation that was
+  // itself an automatic retry had prepared its remote workspace when the
+  // deploy's SIGTERM interrupted it. Workspace settlement then handed the
+  // workspace on at its saved version (the run never changed it), which turns
+  // the run's reference to `saved`. No restore is owed, but the preparation
+  // proof still demanded a workspace-repair receipt that only exists after a
+  // copy-back, so the hold never settled, every automatic continuation was
+  // refused ("could not start yet"), and the person's Retry waited forever on
+  // previous_execution_unverified.
+  async function shutdownPreparationWithUnchangedWorkspace(options: { released?: boolean;
+    receipt?: (runId: string, snapshotId: string) => Record<string, unknown> } = {}) {
+    const released = options.released !== false;
+    const f = await interruptedPreparation({ run: { scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" } });
+    const workspaceId = randomUUID(), leaseId = randomUUID(), snapshotId = randomUUID();
+    const source = { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git", ref: "a".repeat(40),
+      branchMode: "create", branchName: "IPH-1-change" };
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: f.issueId, mode: "isolated_workspace",
+      strategyType: "git_worktree", name: "Remote workspace", status: "active", providerType: "git_worktree",
+      metadata: {
+        remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4, source, location: null, snapshotId,
+          dirty: !released, writerRunId: released ? null : f.runId },
+        remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 4,
+          runId: f.runId, snapshotId, ...(released ? { releasedAt: new Date().toISOString() } : {}),
+          ...options.receipt?.(f.runId, snapshotId) },
+      } });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: f.issueId, retryReason: "transient_failure",
+        executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", state: released ? "saved" : "prepared",
+          workspaceId, epoch: 4, leaseId, providerLeaseId: `sandbox-${leaseId}`,
+          remoteCwd: `/home/daytona/paperclip-workspace/.paperclip-workspaces/${workspaceId}-4-${leaseId}`, snapshotId } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    return { ...f, workspaceId };
+  }
+
+  it("replays a shutdown-interrupted preparation whose remote workspace was handed on unchanged", async () => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId)))
+      .toEqual([expect.objectContaining({ scheduledRetryReason: "interrupted_preparation" })]);
+  });
+
+  it("keeps the hold while the interrupted preparation still holds its remote workspace unsaved", async () => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace({ released: false });
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
+  });
+
+  it.each([
+    ["the receipt names another run", () => ({ runId: randomUUID() })],
+    ["the receipt is for another epoch", () => ({ epoch: 3 })],
+    ["the receipt is for another saved version", () => ({ snapshotId: randomUUID() })],
+    ["the receipt has no release time", () => ({ releasedAt: undefined })],
+  ] as const)("keeps the hold of a handed-on preparation when %s", async (_label, receipt) => {
+    heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace({ receipt });
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
+  });
+
+  it("starts a person's Retry of a shutdown-interrupted preparation whose remote workspace was handed on", async () => {
+    const heartbeat = heartbeatService(db);
+    const f = await shutdownPreparationWithUnchangedWorkspace();
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(receipt).toMatchObject({ accepted: true });
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake?.status).not.toBe("deferred_issue_execution");
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.issueId, f.issueId),
+      ne(heartbeatRuns.id, f.runId)))).not.toHaveLength(0);
+  }, 60_000);
+
   it.each([
     ["provider work may have started", async () => {
       const f = await interruptedPreparation();
@@ -271,6 +353,38 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(successors[0]).toMatchObject({ scheduledRetryReason: "interrupted_preparation" });
   });
 
+  // Staging upgrade shape: a replaced server's Runner preparation was reaped as
+  // process_lost while it was the last automatic retry (failure budget spent).
+  // An older release held it for reconciliation ("Automatic recovery stopped").
+  it.each([
+    ["its lease still names the old controller", false],
+    // The real reaped shape: revocation swapped in a random boot id and kept the process stamp.
+    ["the orphan reaper revoked its lease", true],
+  ] as const)("releases an older release's hold on a preparation a server replacement stopped with its failure budget spent when %s", async (_label, revoked) => {
+    heartbeatService(db);
+    const finishedAt = new Date(Date.now() - 10_000);
+    const f = await interruptedPreparation({ run: { status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted", scheduledRetryAttempt: 2,
+      resultJson: { stopReason: "process_lost", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: false, controllerReplaced: true } },
+      contextSnapshot: undefined, finishedAt } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId,
+      executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } },
+      ...(revoked ? { controllerBootId: randomUUID() } : {}) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toEqual([expect.objectContaining({ scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
+    expect(successors[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 2, serverRestarts: 1 });
+  });
+
   it("clears the saved-files gate of a lost-lease preparation that an older release blocked, so one Retry continues it", async () => {
     const heartbeat = heartbeatService(db);
     const f = await leaseLostSavedFilesHold({ keepStatusReceipt: false });
@@ -314,10 +428,9 @@ suite("held interrupted preparations on the shared ownership path", () => {
     for (let round = 0; round < 40; round += 1) {
       await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
-      if (task!.status === "blocked") break;
       expect(task!.status).toBe(status);
       const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest));
-      expect(next).toBeDefined();
+      if (!next) break;
       expect(next!.contextSnapshot).toMatchObject({ retryReason: "interrupted_preparation",
         executionRetryAccounting: { interruptedPreparations: successors + 1 } });
       successors += 1;
@@ -331,11 +444,47 @@ suite("held interrupted preparations on the shared ownership path", () => {
       latest = next!.id;
     }
     expect(successors).toBe(cap);
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status });
+    await db.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date() })
+      .where(and(eq(agentWakeupRequests.companyId, companyId), sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`));
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 31 * 60_000) })
+      .where(and(eq(heartbeatRuns.issueId, issueId), ne(heartbeatRuns.id, firstRunId)));
+    const check = await heartbeat.checkAssignedWorkInvariant({ companyId, issueId });
+    expect(check).toMatchObject({ outcome: cap >= 6 ? "deferred_cap" : "deferred_rate_limit" });
+    expect(check!.retryAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest))).toEqual([]);
     const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
     expect(receipt).toMatchObject({ accepted: true });
   }, 120_000);
+
+  it("leaves the task to the assigned-work sweep, not blocked, when a replaced preparation's lane is spent", async () => {
+    const heartbeat = heartbeatService(db);
+    const controller = await deadController();
+    const issueId = randomUUID(), runId = randomUUID();
+    const finishedAt = new Date(Date.now() - 30 * 60_000);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Replaced preparation", status: "todo",
+      assigneeAgentId: agentId, statusVersion: 2 });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation",
+      responsibleUserId: "local-board", issueId, status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted", runtimeMode: "legacy", executionStage: "preparing",
+      startedAt: new Date(finishedAt.getTime() - 2_000), finishedAt, nextEventSeq: 1,
+      controllerBootId: controller.bootId, controllerProcess: controller.process,
+      scheduledRetryAttempt: 12, scheduledRetryReason: "interrupted_preparation",
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      contextSnapshot: { issueId, retryReason: "interrupted_preparation", executionRetryAccounting: { version: 1,
+        failureRetries: 0, maxTurnContinuations: 0, interruptedPreparations: 12 } },
+      resultJson: { stopReason: "process_lost", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        processLossDiagnostic: { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+          retryEligible: true, controllerReplaced: true } } });
+
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "todo" });
+    expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
+      inArray(issueRecoveryActions.status, ["active", "escalated"])))).toEqual([]);
+  });
 
   it.each([
     ["provider work started", { kind: "bootstrap", providerWorkStarted: true }],

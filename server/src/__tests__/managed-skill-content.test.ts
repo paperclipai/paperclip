@@ -6,7 +6,7 @@ import { skillPackageStore } from "../services/skill-package-store.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 import { eq } from "drizzle-orm";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import { materializeSelectedSkills, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
+import { materializeSelectedSkills, prepareRuntimeContextSource, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -368,6 +368,64 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     await expect(service.deleteSkill(companyId, skill.id)).rejects.toMatchObject({ status: 422 });
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
     await expect(service.deleteSkill(companyId, skill.id)).resolves.toMatchObject({ id: skill.id });
+    process.env.PAPERCLIP_HOME = originalHome;
+  });
+
+  it("reconnects to a live remote Runner without rehydrating its pinned skills until a launch stages them", async () => {
+    const companyId = await company();
+    const service = companySkillService(db);
+    const skill = await service.createLocalSkill(companyId, { name: "Reconnect pinned", markdown: "# reconnect bytes" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Runner" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running",
+      contextSnapshot: { skillVersions: { [skill.key]: skill.currentVersionId }, skillSelectionSnapshot: true } }).returning();
+    const entries = await service.withRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill.key]), snapshotLatest: true,
+      versionSelections: new Map([[skill.key, skill.currentVersionId!]]) }, async entries => entries);
+    const selected = await materializeSelectedSkills(writePaperclipSkillSyncPreference({}, [{ key: skill.key, versionId: skill.currentVersionId }]), entries, false);
+    const context = { ...nativeRuntimeContextFixture(), skills: selected };
+    const binding = { companyId, agentId: agent!.id, runId: run!.id };
+    // A run saved before skill selections were recorded has no proof that preparation checked access.
+    const [older] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running", contextSnapshot: {} }).returning();
+    const originalHome = process.env.PAPERCLIP_HOME!;
+    // A newly deployed server: its skill cache is empty.
+    process.env.PAPERCLIP_HOME = path.join(root, `reconnect-${randomUUID()}`);
+    let release!: () => void;
+    let acquired!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const holder = withSkillVersionCacheLock(db, companyId, async () => { acquired(); await barrier; });
+    await ready;
+    const settledWithin = async <T>(work: Promise<T>, ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([work.then(value => ({ value })), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), ms); })]); }
+      finally { if (timer) clearTimeout(timer); }
+    };
+    let staging: Promise<unknown> | undefined;
+    let fresh: Promise<unknown> | undefined;
+    let unpinned: Promise<unknown> | undefined;
+    try {
+      const reconnect = await settledWithin(prepareRuntimeContextSource(db, binding, context, { deferUntilStaged: true }), 2_000);
+      expect(reconnect, "A live Runner reconnect must not wait on the skill cache").not.toBeNull();
+      expect(reconnect!.value.described).toBe(context);
+      staging = reconnect!.value.forStaging();
+      fresh = prepareRuntimeContextSource(db, binding, context, { deferUntilStaged: false });
+      // Staging a relaunch, and every other start, still rehydrate under the cache lock.
+      expect(await settledWithin(staging, 200)).toBeNull();
+      expect(await settledWithin(fresh, 200)).toBeNull();
+      unpinned = prepareRuntimeContextSource(db, { ...binding, runId: older!.id }, context, { deferUntilStaged: true });
+      expect(await settledWithin(unpinned, 200), "An older reconnect still rehydrates and checks access first").toBeNull();
+    } finally {
+      release();
+      await holder;
+    }
+    const restaged = await staging as Awaited<ReturnType<typeof rehydratePinnedSkillAssets>>;
+    expect(restaged.skills[0]!.bundle.digest).toBe(selected[0]!.bundle.digest);
+    expect(await fs.readFile(path.join(restaged.skills[0]!.bundle.rootPath, "SKILL.md"), "utf8")).toBe("# reconnect bytes");
+    const started = await fresh as Awaited<ReturnType<typeof prepareRuntimeContextSource>>;
+    expect(started.described.skills[0]!.bundle.digest).toBe(selected[0]!.bundle.digest);
+    expect((await unpinned as Awaited<ReturnType<typeof prepareRuntimeContextSource>>).described.skills[0]!.bundle.rootPath)
+      .not.toBe(selected[0]!.bundle.rootPath);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, older!.id));
     process.env.PAPERCLIP_HOME = originalHome;
   });
 

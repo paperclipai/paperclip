@@ -146,6 +146,28 @@ describe.skipIf(!support.supported)("native completion with a configured review 
     } });
   });
 
+  it("routes a finished needs_review report that lists only the review as blocking work to the configured stage", async () => {
+    await finishVerifiedDone({ stage: "user", unprovenEvidence: true, beforeFinish: async (runId, result) => {
+      const reviewOnly = { ...result.completionClaim,
+        remainingWork: [{ description: "Independent human review of the prepared website.html deliverable.", blocksCompletion: true }] };
+      const review = { kind: "review" as const, summary: "Independent human review of website.html by Riley.", ownerClass: "human" as const };
+      await expect(nativeCompletionFeedback(db, runId, { ...result, reportedWorkDisposition: "needs_review",
+        completionClaim: reviewOnly, attentionRequests: [review] })).rejects.toThrow("configured review stage with its own reviewer");
+      await expect(nativeCompletionFeedback(db, runId, { ...result, reportedWorkDisposition: "needs_review", completionClaim: reviewOnly }))
+        .rejects.toThrow("without listing that review as remaining work");
+      await expect(nativeCompletionFeedback(db, runId, { ...result, completionClaim: reviewOnly }))
+        .rejects.toThrow("configured review stage with its own reviewer");
+    } });
+  });
+
+  it("keeps the generic done rejection for unfinished work without a configured review stage", async () => {
+    await finishVerifiedDone({ beforeFinish: async (runId, result) => {
+      await expect(nativeCompletionFeedback(db, runId, { ...result, completionClaim: { ...result.completionClaim,
+        remainingWork: [{ description: "Independent review.", blocksCompletion: true }] } }))
+        .rejects.toThrow("The done report includes unfinished work");
+    } });
+  });
+
   it("keeps the review request path for a review needed before the work can continue", async () => {
     await finishVerifiedDone({ stage: "user", beforeFinish: async (runId, result) => {
       const early = { ...result, reportedWorkDisposition: "needs_review" as const,

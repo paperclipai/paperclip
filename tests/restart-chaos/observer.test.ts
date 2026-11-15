@@ -53,6 +53,37 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
   });
 
+  it("does not finish a staging-mix task on the poll that posts its last after-end follow-up", async () => {
+    const previous = { ...process.env };
+    const delay = REST_CONFIRM_MS + 50;
+    Object.assign(process.env, { RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS: `${delay}-${delay}`, RESTART_CHAOS_MIX_FOLLOW_UP_COUNT: "1" });
+    try {
+      let endedAt = 0;
+      const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+        finishedAt: new Date(endedAt).toISOString() }] });
+      const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+        stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs: 1_000, arriveAtMs: 0, holdMs: 0 } };
+      const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      const start = observer.record.createdAt!;
+      endedAt = start;
+      const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+      await observer.poll(start + 100);
+      expect(comments()).toBe(0);
+      await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+      expect(comments()).toBe(1);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 200 + REST_CONFIRM_MS + 2);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 300 + 2 * REST_CONFIRM_MS + 3);
+      expect(observer.done).toBe(true);
+    } finally {
+      for (const key of ["RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT"]) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);

@@ -139,6 +139,30 @@ counts, process CPU, and elapsed time. The installation dependency returns an
 empty list for this fixture, which has no installed connections. It does not
 measure provider work, whole-run latency, or hosted performance.
 
+## Policy selector matching
+
+A listing decides access once per tool and shares one decision cache. The cache
+holds the company's enabled policies compiled once: selectors are parsed once,
+and policies are indexed by catalog entry, then by tool name for policies
+without a catalog entry selector. Each decision checks only the policies in the
+matching buckets plus the policies that select neither key, in the original
+priority and creation order. Conditions are parsed once per policy. Decisions
+without a cache, including those that consume a rate limit, compile the policies
+they read in the same way. Decisions are unchanged.
+
+To compare against a baseline commit on real PostgreSQL, run from `server/`:
+
+```sh
+pnpm exec tsx scripts/benchmark-tool-policy-matching.ts --baseline-ref origin/master --tools 800 --rounds 9
+```
+
+The probe uses 800 catalog tools and 365 enabled policies shaped like the
+staging company that showed this cost (342 select a catalog entry, 18 a catalog
+entry and connection, 3 several other keys, 17 carry conditions). It checks that
+both versions return the same decisions, then alternates one listing per version
+per round and reports elapsed time, process CPU, the longest event-loop block,
+and selector work per listing.
+
 
 ## Local profile comparison on 2026-11-02
 

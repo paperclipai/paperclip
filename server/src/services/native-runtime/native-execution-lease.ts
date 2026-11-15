@@ -1,4 +1,3 @@
-import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, gt, isNotNull, isNull, notExists, or, sql, type SQL } from "drizzle-orm";
@@ -316,7 +315,9 @@ async function renewNativeSessionExecutionLeaseDeadline(
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
     confirmedDeadline = performance.now() + leaseTtlMs;
-    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
+    // No recovery signal: a renewal only moves the deadline later. Recovery
+    // keeps its deadline at the earlier expiry and re-reads the row then, so a
+    // lapsed lease is still found at its expiry (as for the legacy lease).
     return tx.update(nativeRunFinalizations)
       .set({
         leaseExpiresAt: sql`clock_timestamp() + (${leaseTtlMs} * interval '1 millisecond')`,
@@ -356,14 +357,219 @@ type RenewalInput = {
 };
 export interface NativeExecutionLeaseRenewal { stop(): Promise<void>; remainingMs(): number; }
 
-// Preparation and execution share one renewal timer. Each caller releases its
-// own reference; the final release drains any SQL already in flight.
-const renewals = new WeakMap<Db, Map<string, {
-  input: RenewalInput; references: number; timer: ReturnType<typeof setInterval>;
+type RenewalState = {
+  input: RenewalInput; references: number;
   pending: Promise<void>; busy: boolean; lost: Error | null;
   deadline: ReturnType<typeof setTimeout>; loss: Promise<unknown>;
   confirmedDeadline: number; adopt(confirmedDeadline: number): void;
-}>>();
+  /** `performance.now()` at which the next renewal is due, and the cadence. */
+  nextRenewAt: number; intervalMs: number; ttlMs: number;
+  /** Renews alone (not in a shared batch) after its own renewal failed where others succeeded. */
+  solo: boolean;
+  /** Settles one renewal attempt of `binding` from its batch outcome. */
+  renew(outcome: BatchOutcome, binding: RenewalInput): Promise<RenewalResult>;
+};
+type RenewalResult = "renewed" | "failed" | "settled";
+
+/** A cancelled statement or a deadlock says nothing about the lease; retry it. */
+function retryableRenewalError(error: unknown) {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    // 40P01: taking back a lapsed lease locks the run after the coordinator;
+    // a writer holding them in the other order can deadlock.
+    const code = (cause as { code?: unknown }).code;
+    if (code === "57014" || code === "40P01") return true;
+  }
+  return false;
+}
+
+// Preparation and execution share one renewal. Each caller releases its own
+// reference; the final release drains any SQL already in flight.
+const renewals = new WeakMap<Db, Map<string, RenewalState>>();
+
+/**
+ * Batched renewal (one shared schedule per database).
+ *
+ * Every lease of this process is renewed by one timer. When the first lease
+ * comes due, all leases due within a quarter of their own interval are renewed
+ * with it, so the leases of a process converge on one batch per interval. A
+ * batch is one transaction of constant size per `RENEWAL_BATCH_MAX_ROWS` rows
+ * (statement timeout, row locks, update), instead of one transaction per run.
+ *
+ * The batch keeps the single-run guarantees:
+ * - It locks each coordinator row before it reads the expiry, as the single
+ *   path does, so an owner whose lease expired while another writer held the
+ *   row is never revived (the UPDATE alone could test a stale expiry).
+ * - It extends only a row that this exact owner still holds: run, company,
+ *   task, lease owner, attempt, controller boot id, pid and process start, and
+ *   a live lease. A local lease that lapsed (host sleep) and a row that
+ *   another writer has locked are not decided here: they renew alone through
+ *   `renewNativeSessionExecutionLeaseDeadline`, which takes the run row lock
+ *   for the lapsed case and waits for the busy row, exactly as before.
+ * - The confirmed deadline is sampled after the locks and before the UPDATE.
+ * - A run whose row was locked live and not extended fails with
+ *   `native_session_lease_lost`, independently of the other runs.
+ * Like the single path, a batch sends no recovery signal: a renewal only moves
+ * a deadline later, and recovery re-reads the row at the deadline it holds.
+ * A batch that is cancelled (statement timeout or deadlock) extends nothing,
+ * and its runs retry after `RENEWAL_BATCH_RETRY_MS`. Any other batch failure,
+ * also one thrown while the statement is built, may come from one bad row, so
+ * each of its runs renews alone at once and only a bad row's own run can fail.
+ * A run that fails alone while others in its batch renew keeps renewing
+ * alone. During an outage every single renewal fails too; those runs return
+ * to the batch at their next interval, not after a short retry.
+ */
+const RENEWAL_BATCH_MAX_ROWS = 200;
+const RENEWAL_BATCH_RETRY_MS = 1_000;
+/** A batch still running after this long no longer holds back the next one. */
+const RENEWAL_BATCH_STALLED_MS = 15_000;
+
+type BatchOutcome = { renewed: number } | { lost: true } | { alone: true } | { failed: unknown };
+
+type BatchRow = { state: RenewalState; binding: RenewalInput };
+
+async function renewNativeExecutionLeaseBatch(db: Db, rows: BatchRow[]): Promise<Map<RenewalState, BatchOutcome>> {
+  const outcomes = new Map<RenewalState, BatchOutcome>();
+  const values = (items: BatchRow[], withOwner: boolean) => sql.join(items.map(({ binding, state }) => withOwner
+    ? sql`(${binding.runId}::uuid, ${binding.companyId}::uuid, ${binding.issueId}::uuid, ${binding.leaseOwner}::text, ${binding.attempt}::int,
+      ${binding.controller.bootId}::text, ${binding.controller.pid}::int, ${binding.controller.processStartedAt.toISOString()}::timestamptz,
+      ${state.ttlMs}::int)`
+    : sql`(${binding.runId}::uuid, ${binding.companyId}::uuid, ${binding.issueId}::uuid, ${binding.leaseOwner}::text)`), sql`, `);
+  await livenessDb(db).transaction(async tx => {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${RENEWAL_STATEMENT_TIMEOUT_MS}ms`}, true)`);
+    // Lock first, then read the expiry from the locked row version. A row that
+    // another writer holds is skipped and renews alone, so one busy run cannot
+    // hold the whole batch until its statement timeout.
+    const locked = await tx.execute<{ run_id: string; live: boolean }>(sql`
+      with requested(run_id, company_id, issue_id, lease_owner) as (values ${values(rows, false)})
+      select f.run_id::text as run_id, coalesce(f.lease_expires_at > clock_timestamp(), false) as live
+      from ${nativeRunFinalizations} f
+      join requested q on f.run_id = q.run_id and f.company_id = q.company_id
+        and f.issue_id = q.issue_id and f.lease_owner = q.lease_owner
+      order by f.run_id
+      for update of f skip locked`);
+    const lockedRows = new Map<string, boolean>();
+    for (const row of (locked as unknown as Array<{ run_id: string; live: boolean }> | undefined) ?? []) {
+      lockedRows.set(row.run_id, row.live);
+    }
+    const sampledAt = performance.now();
+    const live: BatchRow[] = [];
+    for (const row of rows) {
+      const isLive = lockedRows.get(row.binding.runId);
+      // Not locked: missing, another owner's, or busy. The single path decides.
+      if (isLive === undefined) outcomes.set(row.state, { alone: true });
+      else if (isLive) live.push(row);
+      // A lapsed local lease may be taken back only under the run row lock.
+      else outcomes.set(row.state, reacquires(row.binding) ? { alone: true } : { lost: true });
+    }
+    if (live.length === 0) return;
+    const renewed = await tx.execute<{ run_id: string }>(sql`
+      with requested(run_id, company_id, issue_id, lease_owner, attempt, boot_id, pid, process_started_at, ttl_ms)
+        as (values ${values(live, true)})
+      update ${nativeRunFinalizations} f
+      set lease_expires_at = clock_timestamp() + (q.ttl_ms * interval '1 millisecond'), updated_at = clock_timestamp()
+      from requested q
+      where f.run_id = q.run_id and f.company_id = q.company_id and f.issue_id = q.issue_id
+        and f.lease_owner = q.lease_owner and f.attempt = q.attempt
+        and f.controller_boot_id = q.boot_id and f.controller_pid = q.pid
+        and f.controller_process_started_at = q.process_started_at
+        and f.lease_expires_at > clock_timestamp()
+      returning f.run_id::text as run_id`);
+    const renewedIds = new Set(((renewed as unknown as Array<{ run_id: string }> | undefined) ?? []).map(row => row.run_id));
+    for (const row of live) {
+      outcomes.set(row.state, renewedIds.has(row.binding.runId) ? { renewed: sampledAt + row.state.ttlMs }
+        // A local lease that lapsed between the lock and the update may still
+        // be taken back; only the single path can decide that.
+        : reacquires(row.binding) ? { alone: true } : { lost: true });
+    }
+  });
+  return outcomes;
+}
+
+function reacquires(binding: RenewalInput) {
+  return !binding.remote && binding.controllerGeneration !== undefined;
+}
+
+type RenewalSchedule = { leases: Set<RenewalState>; timer?: ReturnType<typeof setTimeout>; flushing: number | null };
+const schedules = new WeakMap<Db, RenewalSchedule>();
+
+function renewalSchedule(db: Db): RenewalSchedule {
+  let schedule = schedules.get(db);
+  if (!schedule) schedules.set(db, schedule = { leases: new Set(), flushing: null });
+  return schedule;
+}
+
+function scheduleRenewals(db: Db, schedule: RenewalSchedule) {
+  clearTimeout(schedule.timer);
+  schedule.timer = undefined;
+  let at = Infinity;
+  for (const state of schedule.leases) if (!state.busy && !state.lost) at = Math.min(at, state.nextRenewAt);
+  if (at === Infinity) return;
+  if (schedule.flushing !== null) at = Math.max(at, schedule.flushing + RENEWAL_BATCH_STALLED_MS);
+  schedule.timer = setTimeout(() => runDueRenewals(db, schedule), Math.max(0, at - performance.now()));
+  schedule.timer.unref?.();
+}
+
+function runDueRenewals(db: Db, schedule: RenewalSchedule) {
+  schedule.timer = undefined;
+  const now = performance.now();
+  if (schedule.flushing !== null && now - schedule.flushing < RENEWAL_BATCH_STALLED_MS) {
+    scheduleRenewals(db, schedule);
+    return;
+  }
+  const due = [...schedule.leases].filter(state => !state.busy && !state.lost
+    && state.nextRenewAt - state.intervalMs / 4 <= now);
+  if (!due.some(state => state.nextRenewAt <= now)) { scheduleRenewals(db, schedule); return; }
+  startRenewalBatches(db, schedule, due);
+}
+
+/**
+ * Renews every lease of this process that is not renewing already, now, as one
+ * batch, and resolves when each of them has settled. For tests and diagnostics;
+ * the shared timer renews on its own.
+ */
+export async function renewNativeExecutionLeasesNow(db: Db): Promise<void> {
+  const schedule = schedules.get(db);
+  if (!schedule) return;
+  const due = [...schedule.leases].filter(state => !state.busy && !state.lost);
+  if (due.length === 0) return;
+  startRenewalBatches(db, schedule, due);
+  await Promise.all(due.map(state => state.pending));
+}
+
+function startRenewalBatches(db: Db, schedule: RenewalSchedule, due: RenewalState[]) {
+  const now = performance.now();
+  for (const state of due) { state.busy = true; state.nextRenewAt = now + state.intervalMs; }
+  const flush = now;
+  schedule.flushing = flush;
+  const batches: Promise<unknown>[] = [];
+  for (const state of due) if (state.solo) state.pending = state.renew({ alone: true }, state.input).then(() => undefined);
+  const batched = due.filter(state => !state.solo);
+  for (let offset = 0; offset < batched.length; offset += RENEWAL_BATCH_MAX_ROWS) {
+    const rows = batched.slice(offset, offset + RENEWAL_BATCH_MAX_ROWS).map(state => ({ state, binding: state.input }));
+    // An async function: an error while the statement is built rejects here too.
+    const result = renewNativeExecutionLeaseBatch(db, rows).catch((error: unknown) => error);
+    // Each run settles its own outcome (and any single renewal it needs);
+    // stop() drains exactly that. The next batch waits only for this one.
+    const settled = rows.map(row => result.then(outcomes => row.state.renew(outcomes instanceof Map
+      ? outcomes.get(row.state) ?? { alone: true } : { failed: outcomes }, row.binding)));
+    rows.forEach((row, index) => { row.state.pending = settled[index]!.then(() => undefined); });
+    void result.then(outcomes => {
+      if (outcomes instanceof Map || retryableRenewalError(outcomes)) return;
+      // The batch failed but some runs renewed alone: the runs that failed
+      // alone are the cause, so keep them out of later batches.
+      void Promise.all(settled).then(results => {
+        if (!results.includes("renewed")) return;
+        results.forEach((result, index) => { if (result === "failed") rows[index]!.state.solo = true; });
+      });
+    });
+    batches.push(result);
+  }
+  void Promise.all(batches).finally(() => {
+    if (schedule.flushing === flush) schedule.flushing = null;
+    scheduleRenewals(db, schedule);
+  });
+  scheduleRenewals(db, schedule);
+}
 
 async function attemptAdvancedUnderOwner(binding: RenewalInput): Promise<boolean> {
   const [row] = await livenessDb(binding.db).transaction(async tx => {
@@ -396,10 +602,13 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     state.references += 1;
   } else {
     const ttlMs = input.remote ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
+    const intervalMs = input.remote ? REMOTE_CONTROLLER_LEASE_MS / 3 : NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS;
+    const schedule = renewalSchedule(input.db);
     const lose = (error: unknown) => {
       if (state!.lost) return;
       state!.lost = error instanceof Error ? error : new Error("native_session_lease_lost");
-      clearInterval(state!.timer);
+      schedule.leases.delete(state!);
+      scheduleRenewals(input.db, schedule);
       clearTimeout(state!.deadline);
       state!.loss = Promise.resolve().then(state!.input.onLost).catch(() => undefined);
     };
@@ -408,36 +617,55 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       timer.unref?.();
       return timer;
     };
-    const renew = () => {
-      if (state!.lost || state!.busy) return;
-      state!.busy = true;
-      const binding = state!.input;
-      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
-        reacquire: !binding.remote && binding.controllerGeneration !== undefined
-          ? { controllerGeneration: binding.controllerGeneration } : undefined })
-        .then(confirmedDeadline => {
-          // A late database response cannot restore local authority after loss
-          // or recreate a timer after the final caller has stopped.
-          if (state!.references === 0) return;
-          state!.adopt(confirmedDeadline);
-        })
-        .catch(async (error: unknown) => {
-          if (state!.input !== binding) return;
-          // A cancelled statement can retry at the next tick, but does not
-          // extend the ownership deadline. Never queue overlapping attempts.
-          for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
-            // 40P01: taking back a lapsed lease locks the run after the
-            // coordinator; a writer holding them in the other order can deadlock.
-            const code = (cause as { code?: unknown }).code;
-            if (code === "57014" || code === "40P01") return;
-          }
-          const advanced = await attemptAdvancedUnderOwner(binding).catch(() => null);
-          if (advanced !== false || state!.input !== binding) return;
-          lose(error);
-        }).finally(() => { state!.busy = false; });
+    const renewed = (confirmedDeadline: number) => {
+      // A late database response cannot restore local authority after loss
+      // or recreate a timer after the final caller has stopped.
+      if (state!.references === 0) return;
+      state!.adopt(confirmedDeadline);
     };
-    const timer = setInterval(renew, input.remote ? REMOTE_CONTROLLER_LEASE_MS / 3 : NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS);
-    timer.unref?.();
+    const failed = async (error: unknown, binding: RenewalInput) => {
+      if (state!.input !== binding) return;
+      // A cancelled statement can retry at the next tick, but does not
+      // extend the ownership deadline. Never queue overlapping attempts.
+      if (retryableRenewalError(error)) return;
+      const advanced = await attemptAdvancedUnderOwner(binding).catch(() => null);
+      if (advanced !== false || state!.input !== binding) return;
+      lose(error);
+    };
+    const renew = async (outcome: BatchOutcome, binding: RenewalInput): Promise<RenewalResult> => {
+      let retrySoon = false, moreSql = false;
+      try {
+        if (state!.lost) return "settled";
+        if ("renewed" in outcome) { renewed(outcome.renewed); return "renewed"; }
+        if ("lost" in outcome) { moreSql = true; await failed(new Error("native_session_lease_lost"), binding); return "failed"; }
+        if ("failed" in outcome && retryableRenewalError(outcome.failed)) {
+          // A cancelled shared statement says nothing about any one lease:
+          // extend nothing and retry soon. Each run's own deadline still
+          // detaches it if renewals keep failing.
+          retrySoon = true;
+          state!.nextRenewAt = Math.min(state!.nextRenewAt, performance.now() + RENEWAL_BATCH_RETRY_MS);
+          return "settled";
+        }
+        // Renew alone: the single path decides this row, and when the batch
+        // failed for another reason, a bad row costs only its own run.
+        moreSql = true;
+        return await renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
+          reacquire: reacquires(binding) ? { controllerGeneration: binding.controllerGeneration! } : undefined })
+          .then((confirmed): RenewalResult => { renewed(confirmed); state!.solo = false; return "renewed"; },
+            async (error: unknown): Promise<RenewalResult> => { await failed(error, binding); return "failed"; });
+      } finally {
+        state!.busy = false;
+        // A tick that passed while this attempt was in flight is skipped, as
+        // a fixed interval would skip it: a slow database gets no extra load.
+        if (!retrySoon) {
+          const now = performance.now();
+          while (state!.nextRenewAt <= now) state!.nextRenewAt += intervalMs;
+        }
+        // The batch reschedules once for all of its runs that settled with
+        // it; only a run that needed more SQL reschedules on its own.
+        if (moreSql) scheduleRenewals(input.db, schedule);
+      }
+    };
     const confirmedDeadline = input.confirmedDeadline ?? performance.now() + ttlMs;
     const adopt = (confirmed: number) => {
       if (state!.lost || confirmed <= state!.confirmedDeadline) return;
@@ -445,9 +673,12 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       state!.confirmedDeadline = confirmed;
       state!.deadline = deadline(confirmed - performance.now());
     };
-    state = { input, references: 1, timer, pending: Promise.resolve(), busy: false, lost: null,
-      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve(), adopt };
+    state = { input, references: 1, pending: Promise.resolve(), busy: false, lost: null,
+      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve(), adopt,
+      nextRenewAt: performance.now() + intervalMs, intervalMs, ttlMs, solo: false, renew };
     owners.set(input.leaseOwner, state);
+    schedule.leases.add(state);
+    scheduleRenewals(input.db, schedule);
   }
   const owned = state;
   let stopped = false;
@@ -455,7 +686,9 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     if (!stopped) {
       stopped = true;
       if (--owned.references === 0) {
-        clearInterval(owned.timer);
+        const schedule = renewalSchedule(input.db);
+        schedule.leases.delete(owned);
+        scheduleRenewals(input.db, schedule);
         clearTimeout(owned.deadline);
         owners!.delete(input.leaseOwner);
       }

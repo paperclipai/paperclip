@@ -104,7 +104,7 @@ function websiteDelivery(revising: boolean): ChatCatalogCase {
     const state = { project: p, task: handedOff, worker, priorRunId, filename, producedBody: actual, producedHash: hash(actual), marker, bodyFact, signupHref, originalAttachment, originalProductId, selectedSource, factualContextAttachment: selectedSource.factualContextAttachment };
     await ctx.input.evidence("chat-catalog-actual-prior-website.json", state); return state;
   }, gradeWebsiteDelivery);
-  return { ...base, oracleVersion: revising ? "paperclip.chat-catalog.internal.website-revision.v3" : "paperclip.chat-catalog.internal.website-download.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-source.md"), expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 600_000,
+  return { ...base, oracleVersion: revising ? "paperclip.chat-catalog.internal.website-revision.v3" : "paperclip.chat-catalog.internal.website-download.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-source.md"), expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 600_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-website-delivery.ts", "registered-artifact.ts"],
     async observe(ctx, state): Promise<DeliveryObservation> {
       const o = await observeInternal(ctx, state); const ids = [entity(state, "task").id, ...(ctx.issue() ? [ctx.issue()!.id] : [])];

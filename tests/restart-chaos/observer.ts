@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { stableRequestId } from "./plan-primitives.js";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { isSessionFault, rotateAgentSession } from "./session-faults.js";
 import { awaitingRewake, collectRewakeArtifacts, isRewakeWorkload, rewakeStep } from "./rewake.js";
 import { withLongTurn } from "./long-turn.js";
+import { collectStagingMixArtifacts, followUpAfterEndRange, holdsRetry, stagingMixDefinition, stagingMixStep } from "./staging-mix.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -31,10 +33,7 @@ const MAX_SNAPSHOT_FILES = 2_000;
 
 /** Relative paths of workspace files, excluding VCS and cache directories. */
 
-export function stableRequestId(key: string): string {
-  const hex = createHash("sha256").update(key).digest("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${(8 + (Number.parseInt(hex[16]!, 16) & 3)).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-}
+export { stableRequestId } from "./plan-primitives.js";
 export async function listWorkspaceFiles(root: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (relative: string) => {
@@ -52,6 +51,11 @@ export async function listWorkspaceFiles(root: string): Promise<string[]> {
 }
 
 export const QUEUED_TRIGGER_MAX_EMPTY_SAMPLES = 3;
+
+export function bannerRestDue(since: number, now: number, raw = process.env.RESTART_CHAOS_MIX_BANNER_REST_SECONDS): boolean {
+  if (raw === undefined || raw === "" || !/^[0-9]+$/.test(raw)) return false;
+  return now - since >= Number(raw) * 1000;
+}
 
 function stillQueued(runs: readonly RunSample[]): boolean {
   return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
@@ -208,6 +212,7 @@ export class TaskObserver {
   readonly record: TaskRecord;
   issue: Json | null = null;
   private restCandidateSince: number | null = null;
+  private bannerSince: number | null = null;
   private childrenSettledAt: number | null = null;
   private childStallCheckedAt: number | null = null;
   private stallSince: number | null = null;
@@ -241,7 +246,9 @@ export class TaskObserver {
   readonly journey: JourneyDriver | null;
 
   /** The workload, with `--long-turn-minutes` tool work in front of its first turn (long-turn.ts). */
-  get definition() { return withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes); }
+  get definition() {
+    return this.plan.stagingMix ? stagingMixDefinition(this.plan.stagingMix) : withLongTurn(workloadDefinitions[this.plan.workload], this.plan.longTurnMinutes);
+  }
 
   /**
    * Crash-point suite: create the issue without an assignee, so no wake is
@@ -491,7 +498,12 @@ export class TaskObserver {
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
+    const afterEndPosts = this.record.stagingMix?.afterEndFollowUps?.length ?? 0;
     await this.governanceStep(sample, now);
+    if ((this.record.stagingMix?.afterEndFollowUps?.length ?? 0) > afterEndPosts) {
+      this.restCandidateSince = null;
+      return;
+    }
     if (this.journey && await this.journey.step({ sample, now, pendingFaults: this.pendingFaults,
       quiet: sample.reachable && sample.serverReady && !this.supervisor.faultInProgress })) this.restCandidateSince = null;
     if (await this.observeChildStalls(now)) {
@@ -506,6 +518,10 @@ export class TaskObserver {
       // The comment response is not the agent's answer: require fresh samples.
       this.restCandidateSince = null;
       return;
+    }
+    if (isStalledSample(sample) && this.definition.collect.childDocuments && this.record.issueId) {
+      const children = await this.collectChildren(this.record.issueId).catch(() => null);
+      if (children?.length && childrenPending(children)) sample.waitingOnChildren = true;
     }
     // A task waiting on the board (G1's approval, H1's paused company) is in a named wait, not a stall.
     this.stallSince = isStalledSample(sample) && !this.awaitingBoard() ? (this.stallSince ?? now) : null;
@@ -685,17 +701,41 @@ export class TaskObserver {
     }
     if (!await this.clearDiskFullAtRest(now)) { this.restCandidateSince = null; return; }
     if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
-      if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
-      this.record.retry = await this.retry(sample, now);
-      this.restCandidateSince = null;
-      if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
-      return;
+      if (this.plan.stagingMix?.retryDuringWave && holdsRetry(this.record, this.plan.stagingMix.holdMs, now)) { this.restCandidateSince = null; return; }
+      if (!this.plan.stagingMix || this.plan.stagingMix.retryDuringWave) { await this.boardRetry(sample, now); return; }
+      this.bannerSince ??= now;
+      if (!bannerRestDue(this.bannerSince, now)) {
+        this.restCandidateSince = null;
+        return;
+      }
+    } else {
+      this.bannerSince = null;
     }
     this.record.restAt = this.restCandidateSince ?? now;
     this.record.finalStatus = status;
     this.done = true;
     this.timeline.add("task_rested", { taskId: this.plan.taskId, status, interruption: sample.interruption?.state ?? null,
       canRetry: sample.interruption?.canRetry ?? false, retried: Boolean(this.record.retry) });
+  }
+
+  reopen(now: number): void {
+    this.done = false;
+    this.record.restAt = null;
+    this.record.timedOut = false;
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  async retryAfterSettle(sample: TaskSample, now: number): Promise<void> {
+    this.reopen(now);
+    await this.boardRetry(sample, now);
+    this.record.deadlineAt = now + RETRY_BUDGET_MS;
+  }
+
+  private async boardRetry(sample: TaskSample, now: number): Promise<void> {
+    if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
+    this.record.retry = await this.retry(sample, now);
+    this.restCandidateSince = null;
+    if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);
   }
 
   /** Exactly one click, with the same body ui/src/hooks/useTaskRetry.ts sends. */
@@ -839,6 +879,8 @@ export class TaskObserver {
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     if (this.plan.workload === "Q1" || this.plan.workload === "Q4") return awaitingQuestionAnswer(this.record);
     if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
+    const afterEnd = followUpAfterEndRange();
+    if (afterEnd && this.plan.stagingMix?.followUpAfterMs != null) return (this.record.stagingMix?.afterEndFollowUps?.length ?? 0) < afterEnd.count;
     return false;
   }
 
@@ -880,6 +922,11 @@ export class TaskObserver {
         boardMayAct: this.boardMayAct(sample, "answered"), sequence: this.plan.workload === "Q4",
         note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }),
         ...(sessionFault ? { beforeAnswer: () => rotateAgentSession(this.api, this.lab.agents[this.plan.adapter].id, this.plan.index, now, sessionFault) } : {}) });
+    }
+    if (this.plan.stagingMix) {
+      await stagingMixStep({ api: this.api, record: this.record, task: this.plan.stagingMix, nonce: this.plan.nonce, sample, now,
+        faultInProgress: this.supervisor.faultInProgress, retry: (current, at) => this.boardRetry(current, at),
+        note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
     if (isRewakeWorkload(this.plan.workload)) {
       await rewakeStep({ api: this.api, record: this.record, plan: this.plan, issueId: this.record.issueId, agentId: this.lab.agents[this.plan.adapter].id,
@@ -1023,7 +1070,7 @@ export class TaskObserver {
       const document = await this.api.get<Json>(`/api/issues/${issueId}/documents/${key}`).catch(() => null);
       documents[key] = typeof document?.body === "string" ? document.body : null;
     }
-    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => []);
+    const comments = await this.api.get<Json[]>(`/api/issues/${issueId}/comments`).catch(() => null);
     const workspacePath = await this.workspacePath();
     const snapshotPath = this.record.preFaultWorkspacePath ?? workspacePath;
     if (snapshotPath && this.record.preFaultFiles) {
@@ -1081,6 +1128,7 @@ export class TaskObserver {
         status: String(run.status), errorCode: run.errorCode ?? null, createdAt: run.createdAt ?? null, finishedAt: run.finishedAt ?? null }))).catch(() => []),
       ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
       ...(this.plan.workload === "H2" ? { handoff: await this.collectHandoff(issueId, issue) } : {}),
+      ...(this.plan.stagingMix ? { stagingMix: collectStagingMixArtifacts(this.record, comments) } : {}),
     };
   }
 

@@ -1,4 +1,5 @@
 import { createLiveEventDelivery, sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-delivery.js";
+import { localAgentProcessBoundary } from "../middleware/local-agent-process-boundary.js";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -154,6 +155,7 @@ async function authorizeUpgrade(
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
+      if (!(await localAgentProcessBoundary().grantsImplicitBoard(req.socket))) return null;
       return {
         companyId,
         actorType: "board",
@@ -313,7 +315,7 @@ export function setupLiveEventsWebSocketServer(
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
-      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
+      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log" || event.type === "heartbeat.run.tool_progress") {
         const allowed = await sharedDeliveryRead(reads, "transcript-scope", async () => (await access.decide({
           actor: context!.actor, action: "company_scope:read",
           resource: { type: "company", companyId: event.companyId } })).allowed);

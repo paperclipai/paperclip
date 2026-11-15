@@ -17,6 +17,7 @@ import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { addAbortSignal, Readable } from "node:stream";
 import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
 import { refreshS3CredentialsOnRejection } from "./s3-credential-refresh.js";
+import { S3_CLIENT_MAX_SOCKETS } from "./s3-client-limits.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -138,6 +139,10 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     region,
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
+    requestHandler: {
+      httpAgent: { maxSockets: S3_CLIENT_MAX_SOCKETS },
+      httpsAgent: { maxSockets: S3_CLIENT_MAX_SOCKETS },
+    },
   });
   retryS3RequestTimeouts(client);
   refreshS3CredentialsOnRejection(client);
