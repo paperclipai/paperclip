@@ -1,4 +1,5 @@
 import { expect } from "@playwright/test";
+import { showPropertyRow, visiblePropertyRow } from "./task-panel.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 export async function taskProperties(context: JourneyContext, _session: TargetSession, _campaignId: string, evidence: JourneyEvidence) {
@@ -11,14 +12,8 @@ export async function taskProperties(context: JourneyContext, _session: TargetSe
   // The declared starting point is the task list. Navigation to the task is a user action.
   await page.goto(`${api.origin}/${company.issuePrefix}/issues`);
   await page.getByRole("link").filter({ hasText: issue.title }).first().click();
-  const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true }).first();
-  const assignee = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
-    .filter({ has: page.locator('[data-property-label="Assignee"]') }).filter({ visible: true });
-  const showAssignee = async () => {
-    await expect.poll(async () => await assignee.isVisible() || await properties.isVisible()).toBe(true);
-    if (!await assignee.isVisible()) await properties.click();
-    await expect(assignee).toBeVisible();
-  };
+  const assignee = visiblePropertyRow(page, "Assignee");
+  const showAssignee = () => showPropertyRow(page, "Assignee");
   await showAssignee();
   await assignee.locator("[data-property-value]").getByRole("button").first().click();
   await page.getByRole("button", { name: "Assign to me", exact: true }).click();

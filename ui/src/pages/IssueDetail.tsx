@@ -3305,11 +3305,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     requestId: number;
     handled?: boolean;
   } | null>(null);
-  const [propertiesOpenRequest, setPropertiesOpenRequest] = useState<{
-    issueId: string;
-    requestId: number;
-    handled?: boolean;
-  } | null>(null);
   const [openAttachment, setOpenAttachment] = useState<{ issueId: string; id: string; title: string; requestId: number } | null>(null);
   const [openSkill, setOpenSkill] = useState<{ id: string; name: string } | null>(null);
   const handleSkillOpened = useCallback((skillId: string) => {
@@ -4213,21 +4208,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       requestId: (previous?.requestId ?? 0) + 1,
     }));
   }, [issue?.id]);
-  const requestPropertiesTab = useCallback(() => {
-    if (!issue?.id) return;
-    setPropertiesOpenRequest((previous) => ({
-      issueId: issue.id,
-      requestId: (previous?.requestId ?? 0) + 1,
-    }));
-  }, [issue?.id]);
-  const handlePropertiesOpened = useCallback((requestId: number) => {
-    setPropertiesOpenRequest((request) => request?.requestId === requestId
-      ? { ...request, handled: true } : request);
-  }, []);
-  const openMobileProperties = useCallback(() => {
-    requestPropertiesTab();
-    setMobilePropsOpen(true);
-  }, [requestPropertiesTab]);
   const handleArtifactsOpened = useCallback((requestId: number) => {
     setArtifactsOpenRequest((request) => request?.requestId === requestId
       ? { ...request, handled: true } : request);
@@ -4241,14 +4221,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   const toggleTaskSidePanel = useCallback(() => {
     if (!panelVisible || suppressPanelUntilPlan) {
-      requestPropertiesTab();
       openTaskSidePanel();
       return;
     }
     setPanelVisible(false);
   }, [
     openTaskSidePanel,
-    requestPropertiesTab,
     panelVisible,
     setPanelVisible,
     suppressPanelUntilPlan,
@@ -6431,9 +6409,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             artifactsOpenRequestId={!isMobile && !artifactsOpenRequest?.handled && artifactsOpenRequest?.issueId === panelIssue.id
               ? artifactsOpenRequest.requestId : undefined}
             onArtifactsOpened={handleArtifactsOpened}
-            propertiesOpenRequestId={!isMobile && !propertiesOpenRequest?.handled && propertiesOpenRequest?.issueId === panelIssue.id
-              ? propertiesOpenRequest.requestId : undefined}
-            onPropertiesOpened={handlePropertiesOpened}
           />
         </IssueGalleryContext.Provider>,
         { contentMode: "full-bleed" },
@@ -6485,8 +6460,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     resolvedTasksTab,
     artifactsOpenRequest,
     handleArtifactsOpened,
-    propertiesOpenRequest,
-    handlePropertiesOpened,
     isMobile,
   ]);
 
@@ -6875,7 +6848,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
-    onProperties: openMobileProperties,
+    onProperties: () => setMobilePropsOpen(true),
     onHide: () => {
       updateIssue.mutate(
         { hiddenAt: new Date().toISOString() },
@@ -6889,7 +6862,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         archiveFromInbox.mutate(issue.id);
     },
     onCopy: () => copyIssueToClipboard(),
-    onProperties: openMobileProperties,
+    onProperties: () => setMobilePropsOpen(true),
     onHide: () => {
       updateIssue.mutate(
         { hiddenAt: new Date().toISOString() },
@@ -7956,7 +7929,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             <Button
               variant="ghost"
               size="icon-xs"
-              onClick={openMobileProperties}
+              onClick={() => setMobilePropsOpen(true)}
               title="Properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
@@ -9114,9 +9087,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     artifactsOpenRequestId={isMobile && !artifactsOpenRequest?.handled && artifactsOpenRequest?.issueId === issue.id
                       ? artifactsOpenRequest.requestId : undefined}
                     onArtifactsOpened={handleArtifactsOpened}
-                    propertiesOpenRequestId={isMobile && !propertiesOpenRequest?.handled && propertiesOpenRequest?.issueId === issue.id
-                      ? propertiesOpenRequest.requestId : undefined}
-                    onPropertiesOpened={handlePropertiesOpened}
                     onAttachmentOpened={handleAttachmentOpened}
                     openAttachment={openAttachment?.issueId === issue.id ? openAttachment : null}
                     openSkillId={openSkill?.id ?? null}

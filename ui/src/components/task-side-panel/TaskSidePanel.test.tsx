@@ -352,24 +352,6 @@ describe("TaskSidePanel", () => {
     expect(onArtifactsOpened).toHaveBeenCalledWith(1);
   });
 
-  it("opens Properties in the Coordinator workspace when the user asks to show properties", async () => {
-    coordinator.enabled = true;
-    const onPropertiesOpened = vi.fn();
-    await render(panel({ onPropertiesOpened }));
-    expect(container.querySelector('[role="tab"]')).toBeNull();
-
-    await render(panel({ propertiesOpenRequestId: 1, onPropertiesOpened }));
-    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
-    expect(container.textContent).toContain("Properties content");
-    expect(onPropertiesOpened).toHaveBeenCalledExactlyOnceWith(1);
-
-    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.click());
-    await render(panel({ propertiesOpenRequestId: 1, onPropertiesOpened }));
-    expect(container.querySelector('[data-side-panel-tab-target="properties"]')).toBeNull();
-    await render(panel({ propertiesOpenRequestId: 2, onPropertiesOpened }));
-    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
-  });
-
   it("opens another task's exact plan without requiring an origin plan or reusing origin document data", async () => {
     coordinator.enabled = true;
     fixture.plan = null;
@@ -421,15 +403,6 @@ describe("TaskSidePanel", () => {
     window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
     await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
-    expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
-  });
-
-  it("clears the workspace-file route when the user asks to show properties", async () => {
-    routeFixture.location.search = "?file=README.md&workspace=project";
-    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
-    await render(panel({ fileTabsEnabled: true }));
-    await render(panel({ fileTabsEnabled: true, propertiesOpenRequestId: 1 }));
-    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
     expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
   });
 
