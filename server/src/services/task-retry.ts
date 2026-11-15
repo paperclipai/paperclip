@@ -1,3 +1,5 @@
+import { isNativeRunnerOwnershipHeld } from "./native-runtime/native-runner-ownership.js";
+import { readNativeSessionResumptionAgent } from "./native-runtime/native-session-resumption-admission.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -8,7 +10,7 @@ import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { randomUUID } from "node:crypto";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery, savedFilesUnrecoverable } from "./system-recovery-state.js";
@@ -224,6 +226,51 @@ export async function retireSupersededTaskRetry(db: Db, input: {
     inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
   )).returning({ id: agentWakeupRequests.id });
   return retired.length > 0;
+}
+
+export async function coalesceRestoredNativeTaskRetry(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; requestId: string; sourceRunId: string; actorId: string;
+}): Promise<typeof heartbeatRuns.$inferSelect | null> {
+  const [issue] = await db.select({ id: issues.id, companyId: issues.companyId, status: issues.status,
+    assigneeAgentId: issues.assigneeAgentId, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
+    conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+  }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update").limit(1);
+  if (!issue) return null;
+  if (issue.assigneeAgentId !== input.agentId || issue.executionRunId !== input.sourceRunId ||
+      (issue.checkoutRunId && issue.checkoutRunId !== input.sourceRunId)) return null;
+  const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, issue.companyId), eq(nativeRunFinalizations.issueId, issue.id),
+    eq(nativeRunFinalizations.runId, input.sourceRunId),
+  )).for("update").limit(1);
+  const [run] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.nativeIssueId, issue.id),
+    eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.id, input.sourceRunId),
+  )).for("update").limit(1);
+  if (!coordinator || !run || run.status !== "running" || run.runtimeMode !== "native" ||
+      ["retryable_failure", "terminal_failure", "committed", "applied"].includes(coordinator.phase) ||
+      coordinator.resultId !== null || isNativeRunnerOwnershipHeld(run) ||
+      !coordinator.leaseOwner || !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt.getTime() <= Date.now() ||
+      !await readNativeSessionResumptionAgent(db, { issue, run, coordinator })) return null;
+  const [wake] = await db.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.id, input.requestId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.reason, "task_retry"),
+    eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.requestedByActorId, input.actorId),
+  )).for("update").limit(1);
+  const intent = readTaskRetryIntent(wake?.payload);
+  if (!wake || !intent || intent.generationId !== wake.id || intent.sourceRunId !== run.id ||
+      intent.actorId !== input.actorId || intent.chatActionId || intent.canonicalIntentId || intent.queuedChatRequestId ||
+      wake.payload?.issueId !== issue.id || !await taskRetryMutationAllowed(db, {
+        companyId: issue.companyId, issueId: issue.id, actorId: input.actorId, actorSource: intent.actorSource,
+      })) return null;
+  await assertTaskRetryConversationAllowed(db, issue, input.actorId);
+  await notifyDeferredExecutionWork(db, { companyId: issue.companyId, requestId: wake.id });
+  const [settled] = await db.update(agentWakeupRequests).set({ status: "coalesced", runId: run.id,
+    finishedAt: new Date(), updatedAt: new Date(), payload: sql`${agentWakeupRequests.payload} - 'executionWait'`,
+  }).where(and(eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.id, wake.id),
+    eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+  )).returning({ id: agentWakeupRequests.id });
+  return settled ? run : null;
 }
 
 export async function retireTaskRetriesContinuedBy(db: Db, input: {

@@ -33,7 +33,7 @@ import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellatio
 import { notifyChatResponseAvailability } from "../chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
-import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, coalesceRestoredNativeTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
@@ -3883,6 +3883,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          if (taskRetryActorId && opts.taskRetryRequestId) {
+            const restored = await coalesceRestoredNativeTaskRetry(tx as unknown as Db, {
+              companyId: issue.companyId, issueId: issue.id, agentId, requestId: opts.taskRetryRequestId,
+              sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!, actorId: taskRetryActorId,
+            });
+            if (restored) return { kind: "coalesced" as const, run: restored };
           }
 
           if (opts.failedRunId) {
