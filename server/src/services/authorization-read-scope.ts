@@ -9,26 +9,20 @@ const reads = new AsyncLocalStorage<ReadScope>();
 
 function closeWhenResponseStarts(res: Response, close: () => void) {
   const { write, flushHeaders, writeHead } = res;
-  const restore = () => {
-    res.write = write;
-    res.flushHeaders = flushHeaders;
-    res.writeHead = writeHead;
-    close();
-  };
   res.write = function (this: Response, ...args: Parameters<Response["write"]>) {
-    restore();
+    close();
     return write.apply(this, args);
   } as Response["write"];
   res.flushHeaders = function (this: Response) {
-    restore();
+    close();
     return flushHeaders.call(this);
   };
   res.writeHead = function (this: Response, ...args: Parameters<Response["writeHead"]>) {
-    restore();
+    close();
     return writeHead.apply(this, args);
   } as Response["writeHead"];
-  res.once("finish", restore);
-  res.once("close", restore);
+  res.once("finish", close);
+  res.once("close", close);
 }
 
 export const authorizationReadScope: RequestHandler = (req, res, next) => {

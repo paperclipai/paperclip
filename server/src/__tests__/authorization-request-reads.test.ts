@@ -258,4 +258,33 @@ describe("authorization read scope boundaries", () => {
     const { app } = countingApp(actor as Express.Request["actor"]);
     expect((await request(app).get("/read")).body.admin).toBe("read");
   });
+  it("keeps response hooks that later middleware installs", async () => {
+    const app = express();
+    app.use(authorizationReadScope);
+    app.use((_req, res, next) => {
+      const { writeHead, write } = res;
+      let writes = 0;
+      res.writeHead = function (this: typeof res, ...args: Parameters<typeof res.writeHead>) {
+        this.setHeader("x-late-hook", "kept");
+        return writeHead.apply(this, args);
+      } as typeof res.writeHead;
+      res.write = function (this: typeof res, ...args: Parameters<typeof res.write>) {
+        writes += 1;
+        res.locals.writes = writes;
+        return write.apply(this, args);
+      } as typeof res.write;
+      next();
+    });
+    app.get("/json", (_req, res) => { res.json({ ok: true }); });
+    app.get("/stream", (_req, res) => {
+      res.write("a");
+      res.write("b");
+      res.end(String(res.locals.writes));
+    });
+    const json = await request(app).get("/json").expect(200);
+    expect(json.headers["x-late-hook"]).toBe("kept");
+    const stream = await request(app).get("/stream").expect(200);
+    expect(stream.headers["x-late-hook"]).toBe("kept");
+    expect(stream.text).toBe("ab2");
+  });
 });
