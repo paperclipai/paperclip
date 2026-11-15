@@ -42,7 +42,7 @@ import { ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../acc
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
-import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
+import { attachPaperclipSessionMetadataToSessionParams, buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
@@ -832,6 +832,41 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.upsertTaskSession).toHaveBeenCalledOnce();
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+  });
+
+  it.each(["process", "codex_local", "cursor"].flatMap(adapterType =>
+    ["failed", "cancelled"].map(outcome => ({ adapterType, outcome }))))("retains a first-turn checkpoint for $adapterType when $outcome returns no session", async ({ adapterType, outcome }) => {
+    const f = await fixture();
+    f.agent.adapterType = adapterType;
+    f.input.sessionCodec = getAdapterSessionCodec(adapterType);
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, f.agent.id));
+    const params = attachPaperclipSessionMetadataToSessionParams(
+      { sessionId: randomUUID(), cwd: "/tmp/checkpoint-workspace" }, "test-model", f.input.session.sessionConfigMetadata)!;
+    await f.deps.upsertTaskSession({ companyId: f.run.companyId, agentId: f.agent.id,
+      adapterType: f.agent.adapterType, taskKey: "completion-task", sessionParamsJson: params,
+      sessionDisplayId: params.sessionId, lastRunId: f.run.id, lastError: null });
+    Object.assign(f.input.adapterResult, { exitCode: 1, sessionId: null, sessionParams: null,
+      sessionDisplayId: null, ...(outcome === "cancelled" ? { resultJson: { status: "cancelled" } } : {}) });
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: outcome, sessionIdAfter: params.sessionId });
+    expect(await f.deps.getTaskSession(f.run.companyId, f.agent.id, f.agent.adapterType, "completion-task"))
+      .toMatchObject({ lastRunId: f.run.id, sessionDisplayId: params.sessionId,
+        sessionParamsJson: expect.objectContaining(params) });
+    expect(f.deps.clearTaskSessions).not.toHaveBeenCalled();
+  });
+
+  it.each(["other_run", "explicit_reset", "successful_empty", "final_session"])("does not substitute a live checkpoint for %s", async scenario => {
+    const f = await fixture();
+    const source = scenario === "other_run" ? (await fixture({}, "OTHER")).run.id : f.run.id;
+    await f.deps.upsertTaskSession({ companyId: f.run.companyId, agentId: f.agent.id,
+      adapterType: f.agent.adapterType, taskKey: "completion-task", sessionParamsJson: { sessionId: "live-checkpoint" },
+      sessionDisplayId: "live-checkpoint", lastRunId: source, lastError: null });
+    Object.assign(f.input.adapterResult, { exitCode: scenario === "successful_empty" ? 0 : 1,
+      sessionId: scenario === "final_session" ? "final-session" : null,
+      sessionParams: scenario === "final_session" ? { sessionId: "final-session" } : null,
+      sessionDisplayId: null, clearSession: scenario === "explicit_reset" });
+    await f.completion.completeRun(f.input);
+    expect((await read(f.run.id)).sessionIdAfter).toBe(scenario === "final_session" ? "final-session" : null);
   });
 
   it("clears only the completed task session when the adapter requests a reset", async () => {

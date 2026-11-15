@@ -599,3 +599,7 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Interrupted local session checkpoints
+
+When a legacy run ends unsuccessfully without a usable adapter session, completion retains a persisted task-session checkpoint owned by that same run, task, agent, adapter and company. It keeps the checkpoint parameters and session configuration metadata. A successful empty result and an explicit adapter session reset retain their existing behavior. A checkpoint from another run is not substituted. This persistence rule does not authorize a retry or bypass execution-stop, workspace, configuration or user-authority checks.
