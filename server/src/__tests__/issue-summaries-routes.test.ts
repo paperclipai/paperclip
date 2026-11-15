@@ -30,7 +30,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       { companyId: company.companyId, title: "First", description: "Do not serialize this".repeat(100), status: "todo" },
       { companyId: company.companyId, title: "Second", status: "done" },
     ]).returning();
-    return { ...company, rows };
+    return { ...company, actor: { ...company.actor, source: "session" as const }, rows };
   }
   function app(actor: BoardActor | Express.Request["actor"]) {
     const result = express();
@@ -60,10 +60,10 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       companyId: f.companyId, issueId: row.id, authorUserId: "other", body: "External", createdAt: day(3),
       deletedAt: row.title === "deleted-comment" ? day(4) : null,
     })));
-    await ctx.db.insert(issueComments).values(["human-comment", "derived-comment", "self-after-external"].map(name => ({
+    await ctx.db.insert(issueComments).values(["human-comment", "derived-comment", "self-after-external"].map<typeof issueComments.$inferInsert>(name => ({
       companyId: f.companyId, issueId: id(name), authorUserId: user, body: "Mine",
       createdAt: day(name === "self-after-external" ? 4 : 2),
-      metadata: name === "derived-comment" ? { sourceChannel: "slack" } : null,
+      metadata: name === "derived-comment" ? { version: 1, sections: [], sourceChannel: "slack" } : null,
     })));
     await ctx.db.insert(issueReadStates).values(["read", "withdrawn-read"].map(name => ({
       companyId: f.companyId, issueId: id(name), userId: user, lastReadAt: day(4),
@@ -74,8 +74,8 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       action: name.startsWith("withdrawn") ? "issue.thread_interaction_withdrawn" : name === "activity" ? "issue.updated" : "issue.read_marked",
       createdAt: day(3), details: name.startsWith("withdrawn") ? { handledForUserId: user, receipt: { outcome: "withdrawn", issueId: id(name) } } : null,
     })));
-    await ctx.db.insert(issueThreadInteractions).values(["pending", "not-creator"].map(name => ({
-      companyId: f.companyId, issueId: id(name), kind: "request_confirmation", payload: {},
+    await ctx.db.insert(issueThreadInteractions).values(["pending", "not-creator"].map<typeof issueThreadInteractions.$inferInsert>(name => ({
+      companyId: f.companyId, issueId: id(name), kind: "request_confirmation", payload: { version: 1, prompt: "Confirm this task." },
       addresseeUserId: user, createdByUserId: user, createdAt: day(3),
       effectiveResolverPolicy: name === "not-creator" ? "not_creator" as const : "anyone" as const,
     })));
