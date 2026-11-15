@@ -56,7 +56,8 @@ it("settles an earlier generation's in-flight tool call at attach even when that
     recoverToolCallback({ runId: identity.runId, call: { tool: call.operationId, callId: call.callId, arguments: call.input },
       admission: call.admission, recover: async () => null }));
   const first = createCapabilityRunnerdCodexTransport(options);
-  first.transport.setServerRequestHandler(() => new Promise<Record<string, unknown>>(() => undefined));
+  const firstToolHandler = vi.fn(() => new Promise<Record<string, unknown>>(() => undefined));
+  first.transport.setServerRequestHandler(firstToolHandler);
   const generations: Array<ReturnType<typeof createCapabilityRunnerdCodexTransport>> = [];
   let runnerPid: number | null = null;
   const savedToolResults = async () => (JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { commands: SavedCommand[] })
@@ -69,6 +70,7 @@ it("settles an earlier generation's in-flight tool call at attach even when that
     await vi.waitFor(async () => {
       const saved = JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { committedEvents: Array<{ eventType: string }> };
       expect(saved.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+      expect(firstToolHandler).toHaveBeenCalledTimes(1);
     }, { timeout: 10_000 });
     await first.detachControllerForRestart();
     expect(await savedToolResults()).toEqual([]);
