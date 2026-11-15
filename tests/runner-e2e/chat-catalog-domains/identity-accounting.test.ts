@@ -103,6 +103,13 @@ describe("actual saved native accounting contexts", () => {
       expect(grade(pendingTarget([ranged(week, "answer", 200, operationId)])).passed, operationId).toBe(true);
     const targetRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "original" } }));
     expect(grade(pendingTarget([targetRecord])).passed).toBe(true);
+    // A report ending at 11:43:40Z excludes an event at 11:43:40.598Z (bounds are compared as parsed instants).
+    const subSecond = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:43:40Z" })]);
+    subSecond.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-15T11:43:40.598Z" }] };
+    expect(grade(subSecond).passed).toBe(false);
+    const subSecondExact = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:43:40.598Z" })]);
+    subSecondExact.state.unresolvedBefore = subSecond.state.unresolvedBefore;
+    expect(grade(subSecondExact).passed).toBe(true);
     // Unranged and period=month reads cover the UTC month when the read ran. In-month they count; across a month
     // rollover (event on Oct 31, read on Nov 1) they do not, while an all-time read still does.
     const monthRead = (query: { period?: string } | undefined, eventAt: string, readStart: string, readEnd: string) => {

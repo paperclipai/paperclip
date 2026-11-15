@@ -171,9 +171,13 @@ export function coveringCostReportDigests(companyId: string, window: { startedAt
     }
     families.push(local);
   }
+  // Bounds are compared as the costs route reads them: each string re-parsed (new Date), both bounds inclusive
+  // (resolveCostDateRange keeps explicit bounds; costs filter occurredAt >= from and <= to). A string that drops
+  // milliseconds therefore names an earlier instant than the one it was generated from.
+  const parsed = (value: { text: string }) => new Date(value.text).getTime();
   const queries: Array<Record<string, string>> = [];
   for (const family of families) {
-    const froms = family.filter(value => value.at <= started), tos = family.filter(value => value.at >= finished);
+    const froms = family.filter(value => parsed(value) <= started), tos = family.filter(value => parsed(value) >= finished);
     for (const from of froms) queries.push({ from: from.text });
     for (const to of tos) queries.push({ to: to.text });
     for (const from of froms) for (const to of tos) queries.push({ from: from.text, to: to.text });
