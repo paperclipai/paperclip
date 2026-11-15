@@ -24,7 +24,6 @@ impl Drop for Runner {
 
 const RUN_ID: &str = "run_accept";
 
-/// Sends a WebSocket upgrade and returns the time until the Runner answers it.
 fn upgrade(stream: &mut TcpStream) -> Duration {
     let started = Instant::now();
     stream
@@ -67,7 +66,6 @@ fn spawn_listening_runner() -> (Runner, u16, TcpStream) {
             std::env::temp_dir().join(format!("runner-accept-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-        // No --reconnect-delay-ms: the default (250 ms) is the production setting.
         let process = Command::new(env!("CARGO_BIN_EXE_paperclip-runnerd"))
             .env(
                 "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET",
@@ -127,17 +125,12 @@ fn spawn_listening_runner() -> (Runner, u16, TcpStream) {
 #[test]
 fn listener_answers_the_next_connection_without_waiting_out_the_reconnect_delay() {
     let (_runner, port, mut stale) = spawn_listening_runner();
-    // A connection that drops before authentication, as a superseded
-    // controller route's redial does after a warm authority rotation.
     upgrade(&mut stale);
     drop(stale);
-    // Let the Runner observe the failed attempt and schedule its next accept.
     thread::sleep(Duration::from_millis(30));
 
     let mut current = TcpStream::connect(("127.0.0.1", port)).unwrap();
     let waited = upgrade(&mut current);
-    // A dial-mode wait would hold this connection in the backlog for the
-    // 250 ms reconnect delay (188-313 ms with jitter).
     assert!(
         waited < Duration::from_millis(120),
         "listener answered after {waited:?}"
