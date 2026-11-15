@@ -40,7 +40,7 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { isReattachPhaseActive } from "./heartbeat/run-admission.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
 import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
-import { recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
+import { continuationDeliveryDue, deferForUnwakeableAssignee, recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
@@ -423,6 +423,7 @@ export async function deliverReconciledExecutions(
         and(
           eq(issueRecoveryActions.status, "resolved"),
           sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+          continuationDeliveryDue(new Date()),
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgents.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgents])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
@@ -545,6 +546,7 @@ export async function deliverReconciledExecutions(
             continue;
           }
         }
+        if (await deferForUnwakeableAssignee(db, action)) { seenAgents.add(action.returnOwnerAgentId); continue; }
         if (!await agentHasRoom(action, action.returnOwnerAgentId, kind)) {
           seenAgents.add(action.returnOwnerAgentId);
           continue;
