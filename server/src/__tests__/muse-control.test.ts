@@ -425,7 +425,10 @@ describe("personal Muse control plane",()=>{
         expect(read.comments.find(row=>row.id===standardId)).toMatchObject({body:"Ordinary coordination",sourceTrust:null});
         expect(await db.select().from(issueComments).where(eq(issueComments.issueId,f.issue.id)).orderBy(issueComments.id)).toEqual(stored);
       }
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]).toEqual(committed.run);
+      const {nextEventSeq:readEventSeq,updatedAt:_readAt,...readRun}=(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]!;
+      const {nextEventSeq:committedEventSeq,updatedAt:_committedAt,...committedRun}=committed.run;
+      expect(readRun).toEqual(committedRun);
+      expect(readEventSeq).toBe(committedEventSeq+1);
       expect(committed.run.contextSnapshot).toEqual(writerContext);
       expect(await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id))).toEqual(beforeHolds);
       expect((await db.select({status:assignments.status,acceptedResultAt:assignments.acceptedResultAt,finalizedAt:assignments.finalizedAt}).from(assignments).where(eq(assignments.id,f.assignment.id)))[0]).toEqual({status:"accepted",acceptedResultAt:null,finalizedAt:null});

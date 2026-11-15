@@ -27,6 +27,16 @@ you bind to an agent as exposed to that agent. Limit blast radius with bindings
 provider supports them, and rotation when an agent transcript or downstream
 system might have captured a value.
 
+Paperclip masks the resolved value of each secret-bound environment variable in
+the run output that it stores: the run log, the run excerpts, and the run
+transcript events. This applies to local and native runs. The mask is
+`***REDACTED***`. Paperclip masks only exact text: the full value, the value
+without outer whitespace, its JSON-escaped form, and each line of a multi-line
+value. Paperclip does not mask a value or line that has fewer than 8
+characters. This mask prevents accidental leaks. It is not a security boundary:
+an agent can change a value (for example, encode it in base64) before it prints
+it.
+
 ## Using Secrets In Runs
 
 Creating a company secret does not automatically create an environment variable.

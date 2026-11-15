@@ -390,7 +390,8 @@ export function watchLegacyControllerLease(
     deadline = setTimeout(deadlinePassed, delayMs);
     deadline.unref();
   };
-  armDeadline(Math.max(0, (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
+  const initialRemainingMs = (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now();
+  armDeadline(Math.max(0, initialRemainingMs));
   const assertOwned = async (stage?: "dispatching") => {
     if (stopped) return;
     controller.signal.throwIfAborted();
@@ -447,11 +448,19 @@ export function watchLegacyControllerLease(
       armDeadline(Math.max(0, LEGACY_CONTROLLER_LEASE_MS - (Date.now() - renewedFrom)));
     }
   };
-  const timer = setInterval(() => {
+  const tick = () => {
     if (pending || stopped) return;
     pending = true;
     void assertOwned().catch(() => lost("renewal_error")).finally(() => { pending = false; });
-  }, LEGACY_CONTROLLER_RENEW_MS);
+  };
+  const timer = setInterval(tick, LEGACY_CONTROLLER_RENEW_MS);
   timer.unref();
+  // The watch can start well after the claim that wrote the lease (a slow
+  // batch of claims, a loaded database). A lease older than one renewal
+  // interval is renewed now rather than on the next tick. The renewal is the
+  // same conditional statement as every other one: it only extends a lease
+  // this boot still holds on a running row, so a lease that lapsed and was
+  // revoked, reaped or taken over is still lost.
+  if (initialRemainingMs < LEGACY_CONTROLLER_LEASE_MS - LEGACY_CONTROLLER_RENEW_MS) tick();
   return { assertOwned, stop() { stopped = true; clearInterval(timer); clearTimeout(deadline); } };
 }

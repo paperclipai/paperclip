@@ -12,23 +12,32 @@ function validateTests(tests, file) {
 }
 
 // Keep all cases registered on one source line together, including it.each
-// and loop-generated cases. Balance by collected case count, not line count.
-export function partitionTestLines(tests, count, file) {
+// and loop-generated cases.
+export function partitionTestLines(tests, count, file, durations = {}) {
   validateTests(tests, file);
   assert.ok(Number.isSafeInteger(count) && count > 0, "invalid shard count");
+  const recorded = Object.values(durations).filter((ms) => Number.isFinite(ms) && ms >= 0).sort((a, b) => a - b);
+  const median = recorded.length === 0 ? 1
+    : recorded.length % 2 ? recorded[(recorded.length - 1) / 2]
+      : (recorded[recorded.length / 2 - 1] + recorded[recorded.length / 2]) / 2;
+  const weightOf = (test) => recorded.length === 0 ? 1
+    : Number.isFinite(durations[test.name]) && durations[test.name] >= 0 ? durations[test.name] : median;
   const byLine = new Map();
   for (const test of tests) {
     const line = test.location.line;
-    if (!byLine.has(line)) byLine.set(line, []);
-    byLine.get(line).push(test);
+    if (!byLine.has(line)) byLine.set(line, { cases: [], weight: 0 });
+    const group = byLine.get(line);
+    group.cases.push(test);
+    group.weight += weightOf(test);
   }
   assert.ok(byLine.size >= count, "each shard must contain a source line");
-  const groups = [...byLine].sort((a, b) => b[1].length - a[1].length || a[0] - b[0]);
-  const shards = Array.from({ length: count }, () => ({ lines: [], tests: [] }));
-  for (const [line, cases] of groups) {
-    const shard = shards.reduce((best, next) => next.tests.length < best.tests.length ? next : best);
+  const groups = [...byLine].sort((a, b) => b[1].weight - a[1].weight || a[0] - b[0]);
+  const shards = Array.from({ length: count }, () => ({ lines: [], tests: [], weight: 0 }));
+  for (const [line, group] of groups) {
+    const shard = shards.reduce((best, next) => next.weight < best.weight ? next : best);
     shard.lines.push(line);
-    shard.tests.push(...cases);
+    shard.tests.push(...group.cases);
+    shard.weight += group.weight;
   }
   for (const shard of shards) shard.lines.sort((a, b) => a - b);
   return shards;

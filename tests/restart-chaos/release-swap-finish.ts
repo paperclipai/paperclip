@@ -6,9 +6,10 @@ import type { ChaosApi } from "./api.js";
 import { checkCrossServer, readCrossServerEvidence, type ServerProcessWindow } from "./multi-server.js";
 import { RUN_OWNER_BOOT_ID, type ReleaseSwapDriver } from "./release-swap-driver.js";
 import {
-  gradeReleaseSwapTask, overlappingRuns, releaseSwapMarkdown, summarizeGrades, swapMetrics,
+  drainState, failedOutsideSwaps, gradeReleaseSwapTask, isAutoNotice, overlappingRuns, QUIET_PERIOD_MS, releaseSwapMarkdown, summarizeGrades, swapForFailedRun, swapMetrics,
   type DuplicateFacts, type GradeTaskInput, type RetryClick, type SwapRunFact, type TaskGrade,
 } from "./release-swap-grade.js";
+import { runsStartedDuringSwap, swapMoments, swapMomentsMarkdown } from "./release-swap-moments.js";
 import { issueView, shouldClickRetryAfterSettle } from "./staging-mix-retry.js";
 import type { TimelineEntry } from "./timeline.js";
 import type { Db } from "../../packages/db/src/index.js";
@@ -31,6 +32,7 @@ export interface ReleaseSwapFinishInput {
   record: (kind: string, data: Record<string, unknown>) => void;
   pollMs?: number;
   drainCapMs?: number;
+  quietMs?: number;
   onView?: (issueId: string, issue: Json | null, at: number) => void;
 }
 
@@ -56,10 +58,11 @@ async function drainRuns(input: ReleaseSwapFinishInput, lastStop: number): Promi
   await waitUntil(settledAt, input.cancelled);
   for (;;) {
     const now = Date.now();
-    const progressing = (await companyRuns(input.db, input.companyId)).filter(run => ["queued", "running", "scheduled_retry"].includes(String(run.status))
-      && (num(run.lastActivityAt) ?? 0) >= now - window).length;
+    const state = drainState((await companyRuns(input.db, input.companyId)).map(run => ({ status: String(run.status), createdAt: num(run.createdAt),
+      finishedAt: num(run.finishedAt), lastActivityAt: num(run.lastActivityAt) })), now, window, input.quietMs ?? QUIET_PERIOD_MS);
+    const progressing = state.progressing;
     if (input.cancelled()) return { reason: "cancelled", at: new Date(now).toISOString(), progressing };
-    if (!progressing) return { reason: "quiet", at: new Date(now).toISOString(), progressing };
+    if (state.quiet) return { reason: "quiet", at: new Date(now).toISOString(), progressing };
     if (now >= capAt) return { reason: "cap", at: new Date(now).toISOString(), progressing };
     await delay(Math.min(input.pollMs ?? 30_000, Math.max(1, capAt - now)));
   }
@@ -171,9 +174,11 @@ async function firstEventsAfter(db: Client, stops: ReadonlyArray<{ index: number
 async function duplicateFacts(input: ReleaseSwapFinishInput, facts: readonly SwapRunFact[], waveEnd: number): Promise<DuplicateFacts> {
   const cross = await readCrossServerEvidence(input.db as Db, input.companyId)
     .then(evidence => checkCrossServer({ ...evidence, windows: input.serverWindows })).catch(() => null);
-  const comments = await input.db.$client.unsafe(
-    `select issue_id::text as "issueId", count(*)::int as count from issue_comments
+  const repeated = await input.db.$client.unsafe(
+    `select issue_id::text as "issueId", body, count(*)::int as count from issue_comments
       where company_id::text = $1 and author_agent_id is not null group by issue_id, author_agent_id, body having count(*) > 1`, [input.companyId]) as Row[];
+  const comments = repeated.filter(row => !isAutoNotice(String(row.body ?? "")));
+  const notices = repeated.filter(row => isAutoNotice(String(row.body ?? "")));
   const children = await input.db.$client.unsafe(
     `select parent_id::text as "parentId", title, count(*)::int as count from issues
       where company_id::text = $1 and parent_id is not null and hidden_at is null group by parent_id, title having count(*) > 1`, [input.companyId]) as Row[];
@@ -182,6 +187,7 @@ async function duplicateFacts(input: ReleaseSwapFinishInput, facts: readonly Swa
     doubleExecutors: cross?.violations.filter(violation => violation.rule === "MS_double_executor").map(violation => violation.runId) ?? [],
     duplicateComments: comments.map(row => ({ issueId: String(row.issueId), count: Number(row.count) })),
     duplicateChildren: children.map(row => ({ parentId: String(row.parentId), title: String(row.title), count: Number(row.count) })),
+    autoNoticeRepeats: notices.map(row => ({ issueId: String(row.issueId), count: Number(row.count) })),
   };
 }
 
@@ -262,11 +268,11 @@ export async function finishReleaseSwap(input: ReleaseSwapFinishInput): Promise<
   const chains = await failureChains(db, failed.map(run => String(run.runId)));
   const failedRuns = failed.map(run => ({ runId: String(run.runId), issueId: text(run.issueId), status: String(run.status), errorCode: text(run.errorCode),
     error: text(run.error), finishedAt: num(run.finishedAt), ownerPid: traceOwner.get(String(run.runId)) ?? num(run.ownerPid),
-    swap: [...windows].reverse().find(swap => (num(run.finishedAt) ?? 0) >= swap.requestedAt)?.index ?? null, chain: chains.get(String(run.runId)) ?? [] }));
+    swap: (() => { const fact = facts.find(candidate => candidate.runId === String(run.runId)); return fact ? swapForFailedRun(windows, fact) : null; })(), chain: chains.get(String(run.runId)) ?? [] }));
   const evidence = driver.swaps.map(swap => swap.evidence ? { index: swap.index, ...swap.evidence } : null);
-  const markdown = releaseSwapMarkdown(result, metrics, evidence, duplicates, grades);
+  const markdown = `${releaseSwapMarkdown(result, metrics, evidence, duplicates, grades, failedOutsideSwaps(windows, facts))}\nSwap moments (incoming server spawned and ready, traffic switched, outgoing server sent SIGTERM and exited):\n\n${swapMomentsMarkdown(driver.swaps).join("\n")}\n`;
   await writeFile(path.join(input.waveDir, "release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.release-swap/v1", result, metrics,
-    swaps: driver.swaps, duplicates, failedRuns, grades }, null, 2)}\n`, { mode: 0o600 });
+    swaps: driver.swaps.map(swap => ({ ...swap, moments: swapMoments(swap), runsStartedDuringSwap: runsStartedDuringSwap(swap) })), duplicates, failedRuns, grades }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.waveDir, "release-swap-summary.md"), markdown, { mode: 0o600 });
   input.record("release_swap_graded", { headline: result.headline, byVerdict: result.byVerdict, retry: result.retry,
     failedPerSwap: metrics.map(metric => metric.failedRuns.length), lostWhileOldAlive: metrics.map(metric => metric.lostWhileOldAlive.length) });

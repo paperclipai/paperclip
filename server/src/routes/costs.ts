@@ -108,7 +108,7 @@ export function costRoutes(
     const actor = costReaderActor(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     if (actor.readOnly) throw forbidden("Viewers cannot retry cost recording");
-    res.json(await accountingIntegrityService(db, budgetHooks).retry(companyId, req.body.runId, actor.userId));
+    res.json(await accountingIntegrityService(db, budgetHooks, heartbeat.recoverLegacyAccountingReceipt).retry(companyId, req.body.runId, actor.userId));
   });
 
   router.get("/companies/:companyId/costs/subscriptions", async (req, res) => {
@@ -437,7 +437,7 @@ export function costRoutes(
     res.json(await agents.getById(agentId));
   });
 
-  const integrity = accountingIntegrityService(db, budgetHooks);
+  const integrity = accountingIntegrityService(db, budgetHooks, heartbeat.recoverLegacyAccountingReceipt);
   const billing = billingReconciliationService(db, budgetHooks);
   // Operational accounting evidence and repairs are board-only. These payloads
   // can contain company-wide billing identifiers even for an agent's own run.

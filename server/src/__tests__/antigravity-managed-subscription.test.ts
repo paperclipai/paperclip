@@ -123,7 +123,8 @@ describe("managed Antigravity subscription projection and writeback", () => {
     await expect(access(join(provider, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await writeFile(token, credential("resolved-project"));
     await runtime.cleanup();
-    expect(account.locks).toEqual(["grant:update", "secret:update"]);
+    // Preparation reads the secret version under a share lock before and after resolving it.
+    expect(account.locks).toEqual(["secret:share", "secret:share", "grant:update", "secret:update"]);
     expect(account.rotation).toHaveBeenCalledWith(account.refs[0].secretId,
       { value: credential("resolved-project"), preserveAiSessionEpoch: true }, { userId: "alice" });
     await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
@@ -216,7 +217,7 @@ describe("managed Antigravity subscription projection and writeback", () => {
     } else {
       await expect(runtime.cleanup()).rejects.toThrow("The refreshed Google account does not match the selected connection.");
       expect(account.rotation).not.toHaveBeenCalled();
-      expect(account.locks).toEqual([]);
+      expect(account.locks).toEqual(["secret:share", "secret:share"]);
       expect(account.journal).toMatchObject({ provider: "google", google: { verified: false }, value: credential("resolved-project", "fixture-rotated-refresh") });
       expect(await readFile(token, "utf8")).toBe(credential("resolved-project", "fixture-rotated-refresh"));
     }

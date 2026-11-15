@@ -1,13 +1,12 @@
 import { sql } from "drizzle-orm";
 import { issueRecoveryActions } from "@paperclipai/db";
 import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
-import { CAPTURE_POLICY_REARM_CODES, FINISHED_COORDINATOR_PHASES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
+import { CAPTURE_POLICY_REARM_CODES, FINISHED_COORDINATOR_PHASES, PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
   stopProofRearmsSpent, type SystemRecoveryState } from "./system-recovery-state.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 
 /** Source refusals that repeat on every retry (see workspace-recovery-fallback). */
-export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
-export const PERMANENT_SOURCE_RETRY_CLASSES = ["service_required", "use_alternative_strategy"] as const;
+export { PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES };
 export const RETAINED_SOURCE_FALLBACK_CHECK_KEY = "retainedSourceFallbackCheck";
 /** Holds of an accepted result whose copy-back could not finish. */
 export const EXPORT_HOLD_CAUSES = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"] as const;

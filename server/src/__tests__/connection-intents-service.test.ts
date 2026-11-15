@@ -1,7 +1,7 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -203,6 +203,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(serialized).not.toContain(claims.sub);
   });
 
+  it("tells the agent to configure a single match only when the person asked to set it up", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = String(run!.contextSnapshot?.issueId);
+    const say = (body: string) => db.insert(issueComments).values({
+      companyId: claims.company_id, issueId, authorUserId: "responsible-user", body,
+      createdAt: new Date(Date.now() + 1000),
+    }).returning().then(rows => rows[0]!);
+    const said: string[] = [];
+    try {
+      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?",
+        "Connect Slack, then read my Notion."]) {
+        said.push((await say(body)).id);
+        const result = await connectionIntentService(db).search(claims, "Notion");
+        expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);
+        expect(result.instruction).not.toMatch(/^The person asked you to set up/);
+        expect(result.instruction).toContain("call connection_request with service notion");
+        expect(result.instruction).toMatch(/\[Connect Notion\]\(\/[A-Z0-9]+\/apps\/connect\?source=notion\)/);
+        expect(result.instruction).toContain("Do not create a connection or a saved draft yourself");
+      }
+      said.push((await say("Connect Notion, then continue the launch summary here.")).id);
+      const requested = await connectionIntentService(db).search(claims, "Notion");
+      expect(requested.instruction).toMatch(/^The person asked you to set up this connection\. If method\.management\.allowed, use search_api\/call_api/);
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, said));
+    }
+  });
+
   it("discovers GitHub review bots independently from chat connectors", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
@@ -256,6 +283,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const ranked = await connectionIntentService(db).search(claims, "Synthetic notes service connect my account with an API key");
     expect(ranked.results.length).toBeGreaterThan(1);
     expect(ranked.instruction).toMatch(/^These are ranked connection matches[\s\S]*\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(ranked.instruction).toMatch(/for a catalog app \(a service without the connection: prefix\), link its setup page as \[Connect <app name>\]\(\/[A-Z0-9]+\/apps\/connect\?source=<service>\) instead, because connection_request ends your turn[\s\S]*A saved connection \(service connection:<id>\) has no catalog setup page: use connection_request for it\./);
     const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
     expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
     expect(result.instruction).toContain("Do not create the connection yourself, ask for the key in chat");

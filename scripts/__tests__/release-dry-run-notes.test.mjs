@@ -65,6 +65,13 @@ require_channel_tag_absent_at_head() {
 }
 require_on_master_branch() { :; }
 require_clean_worktree() { :; }
+require_runner_lockfile_current() {
+  if [ "\${FAKE_RUNNER_LOCKFILE_BEHIND:-}" = "1" ]; then
+    echo "Error: a beta or stable release needs a pnpm-lock.yaml that matches the Runner's manifests at HEAD." >&2
+    exit 1
+  fi
+  echo "[fixture] require_runner_lockfile_current"
+}
 require_npm_publish_auth() { :; }
 git_local_tag_exists() { return 1; }
 git_remote_tag_exists() { return 1; }
@@ -185,6 +192,32 @@ test("stable publish still requires release notes before publish work starts", (
   assert.match(result.output, /stable release notes file is required/);
   assert.doesNotMatch(result.output, /==> Step 2\/7: Building workspace artifacts/);
   assert.doesNotMatch(result.calls, /^pnpm /m);
+});
+
+test("beta and stable check the lockfile against the Runner's manifests before any build, in a dry run too", () => {
+  for (const args of [["stable"], ["beta"], ["beta", "--from-candidate"]]) {
+    const current = runRelease([...args, "--skip-verify", "--dry-run"]);
+    assert.match(current.output, /\[fixture\] require_runner_lockfile_current/, args.join(" "));
+
+    const behind = runRelease([...args, "--skip-verify", "--dry-run"], { FAKE_RUNNER_LOCKFILE_BEHIND: "1" });
+    assert.equal(behind.status, 1, args.join(" "));
+    assert.match(behind.output, /needs a pnpm-lock\.yaml that matches the Runner's manifests at HEAD/);
+    assert.doesNotMatch(behind.output, /==> Release plan/);
+    assert.doesNotMatch(behind.calls, /^pnpm /m);
+  }
+});
+
+test("canary and nightly do not check the lockfile, and printing a version does not", () => {
+  for (const args of [["canary", "--skip-verify", "--dry-run"], ["nightly", "--skip-verify", "--dry-run"]]) {
+    const result = runRelease(args, { FAKE_RUNNER_LOCKFILE_BEHIND: "1" });
+    assert.doesNotMatch(result.output, /Runner's manifests/, args[0]);
+    assert.match(result.output, /==> Release plan/, args[0]);
+  }
+  for (const channel of ["stable", "beta"]) {
+    const version = runRelease([channel, "--print-version"], { FAKE_RUNNER_LOCKFILE_BEHIND: "1" });
+    assert.equal(version.status, 0, channel);
+    assert.doesNotMatch(version.output, /Runner's manifests/, channel);
+  }
 });
 
 test("nightly dry-run publishes under the nightly identity without release notes", () => {

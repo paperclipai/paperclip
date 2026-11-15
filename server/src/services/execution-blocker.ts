@@ -8,13 +8,14 @@ import { z } from "zod";
 import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, toolConnections, workspaceOperations, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
+import { heldRetryOffersRetry, heldTaskRetryRefusals } from "./task-retry-eligibility.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { EXECUTION_RECONCILIATION_CAUSES, readRunFailureCause, withoutSqlStatementText, type ExecutionBlocker } from "@paperclipai/shared";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, recoveredWorkMessage, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, recoveredWorkMessage, savedWorkOffersRetry, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
@@ -312,6 +313,14 @@ function ownNativeResumePredicate(runId: string) {
     and ${issueRecoveryActions.evidence}->>'runId' = ${runId}), false)`;
 }
 
+export function restoreHoldPredicate() {
+  return or(
+    unreconciledNativeExportPredicate(),
+    sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+    sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+  );
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
   conversationResetCommentId?: string | null;
   /** The native run being dispatched; its own scheduled resume does not block it. */
@@ -330,11 +339,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
-    or(
-      unreconciledNativeExportPredicate(),
-      sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
-      sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
-    ),
+    restoreHoldPredicate(),
   )).orderBy(desc(issueRecoveryActions.updatedAt)).limit(1);
   // A persisted user /new is an ordered context command, not a retry of uncertain work.
   // The normal issue execution lock still serializes it behind any active turn.
@@ -411,8 +416,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   // hold to protect its files. Offer the same Retry that admission accepts, so
   // an infrastructure failure (such as a restart) is not left to a new message.
   // An intentional Stop keeps "send a new message" as its only continuation.
-  const recoveredFailure = Boolean(restoreHold && (run?.status === "failed" || run?.status === "timed_out") && !workspaceRepairRequired &&
-    workspaceRecoveryState?.status === "recovered");
+  const recoveredFailure = Boolean(restoreHold && savedWorkOffersRetry(workspaceRecoveryState, run?.status, workspaceRepairRequired, action.evidence));
   const canRetry = Boolean((!restoreHold || recoveredFailure) && run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
@@ -435,14 +439,16 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).where(and(
     eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId),
   )).limit(1) : [];
-  const retryOffered = canRetry && (!chatBinding || recoveredFailure);
+  const heldRefusal = canRetry ? (await heldTaskRetryRefusals(db, companyId, [issueId])).get(issueId) : undefined;
+  const retryOffered = canRetry && (!chatBinding || recoveredFailure) && heldRetryOffersRetry(heldRefusal);
   const workspaceRecovery = workspaceRecoveryState?.status === "recovered"
-    ? { ...workspaceRecoveryState, message: recoveredWorkMessage(run?.status, retryOffered) } : workspaceRecoveryState;
+    ? { ...workspaceRecoveryState, message: recoveredWorkMessage(run?.status, retryOffered) }
+    : workspaceRecoveryState && { ...workspaceRecoveryState, canRetry: workspaceRecoveryState.canRetry && retryOffered };
   let nextAction = action.status === "active" && action.cause === EXECUTION_FINALIZATION_DEADLINE_EXCEEDED
     ? EXECUTION_FINALIZATION_DEADLINE_MESSAGE : action.nextAction;
   // Retry is a person's control on this task. Say so, so an agent reading this
   // record points the person to it instead of re-running the work itself.
-  if (canRetry && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
+  if (canRetry && heldRetryOffersRetry(heldRefusal) && !eligibleContinuation) nextAction += ` ${EXECUTION_BLOCKER_PERSON_RETRY_ACTION}`;
   if (chatBinding && !restoreHold) {
     if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
       nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";

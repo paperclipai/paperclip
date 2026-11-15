@@ -294,6 +294,7 @@ export interface TaskSample {
   recoveryOwner?: string | null;
   executionBlocker?: boolean;
   scheduledRetry?: boolean;
+  waitingOnChildren?: boolean;
   runs?: RunSample[];
 }
 

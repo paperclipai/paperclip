@@ -1,9 +1,11 @@
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_NAMES = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const MAX_DATED_RESET_AHEAD_MS = 45 * 24 * 60 * 60_000;
 const RESET_PATTERN = new RegExp(
   "(?:try again at|resets?(?:\\s+(?:at|on))?)\\s+" +
     // Optional calendar date, as in "resets Nov 12, 6pm (UTC)" for a weekly limit.
-    `(?:(${MONTHS.join("|")})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(?:at\\s+)?)?` +
-    "(\\d{1,2})(?::(\\d{2}))?\\s*(?:([ap])\\.?\\s*m\\.?)?(?:\\s*\\(([^)]+)\\)|\\s+([A-Z]{2,5}))?",
+    `(?:(${MONTH_NAMES})\\b\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?,?\\s+(?:at\\s+)?)?` +
+    "(\\d{1,2})(?::(\\d{2}))?\\s*(?:([ap])\\.?\\s*m\\.?)?(?![\\d:])(?:\\s*\\(([^)]+)\\)|\\s+([A-Z]{2,5}))?",
   "i",
 );
 
@@ -20,10 +22,11 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
 
   const monthIndex = match[1] ? MONTHS.indexOf(match[1].slice(0, 3).toLowerCase()) : null;
   const dayOfMonth = match[2] ? Number.parseInt(match[2], 10) : null;
+  const statedYear = match[3] ? Number.parseInt(match[3], 10) : null;
   if (monthIndex !== null && (monthIndex < 0 || !dayOfMonth || dayOfMonth < 1 || dayOfMonth > 31)) return null;
-  const hourValue = Number.parseInt(match[3] ?? "", 10);
-  const minute = Number.parseInt(match[4] ?? "0", 10);
-  const meridiem = (match[5] ?? "").toLowerCase();
+  const hourValue = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "0", 10);
+  const meridiem = (match[6] ?? "").toLowerCase();
   if (!Number.isInteger(hourValue)) return null;
   if (
     meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23
@@ -33,7 +36,7 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
 
   let hour = meridiem ? hourValue % 12 : hourValue;
   if (meridiem === "p") hour += 12;
-  const timeZone = (match[6] ?? match[7])?.trim() || "UTC";
+  const timeZone = (match[7] ?? match[8])?.trim() || "UTC";
 
   try {
     const wallClock = (date: Date) =>
@@ -79,12 +82,13 @@ export function parseProviderQuotaClockReset(error: string, now: Date) {
       // Dec 30 is next year's. A date read after it passed stays in the past,
       // so a caller reading an old message sees an expired reset rather than
       // one a year away.
-      const candidates = [year - 1, year, year + 1]
+      const candidates = (statedYear === null ? [year - 1, year, year + 1] : [statedYear])
         .map((candidateYear) => instant(candidateYear, monthIndex, dayOfMonth))
         .filter((candidate): candidate is Date => candidate !== null);
       if (!candidates.length) return null;
-      return candidates.reduce((nearest, candidate) =>
+      const nearest = candidates.reduce((nearest, candidate) =>
         Math.abs(candidate.getTime() - now.getTime()) < Math.abs(nearest.getTime() - now.getTime()) ? candidate : nearest);
+      return nearest.getTime() > now.getTime() + MAX_DATED_RESET_AHEAD_MS ? null : nearest;
     }
     const month = Number(nowParts.month) - 1;
     const day = Number(nowParts.day);

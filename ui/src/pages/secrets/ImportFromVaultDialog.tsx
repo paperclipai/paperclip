@@ -1,20 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertCircle,
-  AlertTriangle,
-  CheckCircle2,
-  Cloud,
-  Database,
-  ExternalLink,
-  Info,
-  Link2,
-  Loader2,
-  RefreshCw,
-  Search,
-  X,
-  XCircle,
-} from "lucide-react";
+import { ChevronRight, Loader2, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
 import type {
   CompanySecret,
   CompanySecretProviderConfig,
@@ -36,12 +22,12 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -49,7 +35,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
 import { describeError } from "@/api/errors";
 
@@ -99,89 +84,6 @@ function pickDefaultVault(
 
 function awsVaultOptions(configs: CompanySecretProviderConfig[]): CompanySecretProviderConfig[] {
   return configs.filter((vault) => vault.provider === "aws_secrets_manager");
-}
-
-function statusToneClasses(status: RemoteSecretImportCandidate["status"]) {
-  switch (status) {
-    case "duplicate":
-      return "text-muted-foreground border-border/60";
-    case "conflict":
-      return "text-amber-600 border-amber-500/40 dark:text-amber-400";
-    case "ready":
-    default:
-      return "text-emerald-600 border-emerald-500/40 dark:text-emerald-400";
-  }
-}
-
-function statusBadgeLabel(status: RemoteSecretImportCandidate["status"]) {
-  switch (status) {
-    case "duplicate":
-      return "Imported";
-    case "conflict":
-      return "Conflict";
-    case "ready":
-    default:
-      return "Ready";
-  }
-}
-
-function StatusBadge({
-  status,
-}: {
-  status: RemoteSecretImportCandidate["status"];
-}) {
-  const Icon =
-    status === "conflict"
-      ? AlertTriangle
-      : status === "duplicate"
-        ? Link2
-        : CheckCircle2;
-  return (
-    <Badge variant="outline" className={cn("gap-1 px-1.5 py-0 font-normal", statusToneClasses(status))}>
-      <Icon className="h-3 w-3" />
-      {statusBadgeLabel(status)}
-    </Badge>
-  );
-}
-
-function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["status"] }) {
-  switch (status) {
-    case "imported":
-      return (
-        <Badge
-          variant="outline"
-          className="gap-1 px-1.5 py-0 font-normal text-emerald-600 border-emerald-500/40 dark:text-emerald-400"
-        >
-          <CheckCircle2 className="h-3 w-3" /> Created
-        </Badge>
-      );
-    case "skipped":
-      return (
-        <Badge
-          variant="outline"
-          className="gap-1 px-1.5 py-0 font-normal text-muted-foreground border-border/60"
-        >
-          <Link2 className="h-3 w-3" /> Skipped
-        </Badge>
-      );
-    case "error":
-    default:
-      return (
-        <Badge
-          variant="outline"
-          className="gap-1 px-1.5 py-0 font-normal text-destructive border-destructive/40"
-        >
-          <XCircle className="h-3 w-3" /> Failed
-        </Badge>
-      );
-  }
-}
-
-function middleTruncate(value: string, max = 60) {
-  if (value.length <= max) return value;
-  const head = Math.floor((max - 1) / 2);
-  const tail = max - 1 - head;
-  return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
 }
 
 function formatRelativeShort(value: string | null | undefined): string {
@@ -262,44 +164,67 @@ function safeImportProviderMetadata(
   return Object.keys(safe).length > 0 ? safe : null;
 }
 
+interface DraftError {
+  field: "name" | "key" | "description";
+  message: string;
+}
+
 function validateDraftRow(
   draft: DraftSelection,
   existing: CompanySecret[],
   otherDrafts: DraftSelection[],
-): string | null {
-  if (!draft.name.trim()) return "Name is required.";
-  if (draft.name.length > 160) return "Name must be 160 characters or fewer.";
-  if (!draft.key.trim()) return "Key is required.";
-  if (!KEY_PATTERN.test(draft.key)) {
-    return "Key may only contain lowercase letters, numbers, dot, underscore, or hyphen.";
+): DraftError | null {
+  if (!draft.name.trim()) return { field: "name", message: "Give it a name." };
+  if (draft.name.length > 160) {
+    return { field: "name", message: "Use 160 characters or fewer for the name." };
   }
-  if (draft.key.length > 120) return "Key must be 120 characters or fewer.";
-  if (draft.description.length > 500) return "Description must be 500 characters or fewer.";
+  if (!draft.key.trim()) return { field: "key", message: "Give it a key." };
+  if (!KEY_PATTERN.test(draft.key)) {
+    return {
+      field: "key",
+      message: "Keys use lowercase letters, numbers, dots, underscores and hyphens.",
+    };
+  }
+  if (draft.key.length > 120) {
+    return { field: "key", message: "Use 120 characters or fewer for the key." };
+  }
+  if (draft.description.length > 500) {
+    return {
+      field: "description",
+      message: "Use 500 characters or fewer for the description.",
+    };
+  }
 
   const lowerName = draft.name.trim().toLowerCase();
   const lowerKey = draft.key.trim().toLowerCase();
 
   for (const existingSecret of existing) {
     if (existingSecret.name.trim().toLowerCase() === lowerName) {
-      return "A Paperclip secret already uses this name.";
+      return { field: "name", message: "A Paperclip secret already uses this name." };
     }
     if (existingSecret.key.trim().toLowerCase() === lowerKey) {
-      return "A Paperclip secret already uses this key.";
+      return { field: "key", message: "A Paperclip secret already uses this key." };
     }
   }
 
   for (const other of otherDrafts) {
     if (other === draft) continue;
     if (other.name.trim().toLowerCase() === lowerName) {
-      return "Another row in this batch already uses this name.";
+      return { field: "name", message: "Another secret in this import has the same name." };
     }
     if (other.key.trim().toLowerCase() === lowerKey) {
-      return "Another row in this batch already uses this key.";
+      return { field: "key", message: "Another secret in this import has the same key." };
     }
   }
 
   return null;
 }
+
+function secretNoun(count: number) {
+  return count === 1 ? "secret" : "secrets";
+}
+
+const DEFAULT_FAILURE_REASON = "Paperclip could not link this secret.";
 
 function normalizeDraftKey(input: string): string {
   return input
@@ -354,6 +279,12 @@ export function ImportFromVaultDialog({
 
   const [selection, setSelection] = useState<Map<string, DraftSelection>>(new Map());
   const [importResult, setImportResult] = useState<RemoteSecretImportResult | null>(null);
+  // Rows that finished (imported or skipped) across every attempt in this session.
+  const [completedRows, setCompletedRows] = useState<RemoteSecretImportRowResult[]>([]);
+  // Why each remaining row failed on the last attempt, by external reference.
+  const [failures, setFailures] = useState<Map<string, string>>(new Map());
+  // True after the primary button was pressed while the step could not proceed.
+  const [attempted, setAttempted] = useState(false);
 
   // Reset state on open transition.
   useEffect(() => {
@@ -364,6 +295,9 @@ export function ImportFromVaultDialog({
     setPreviewError(null);
     setSelection(new Map());
     setImportResult(null);
+    setCompletedRows([]);
+    setFailures(new Map());
+    setAttempted(false);
     setShowOnlySelected(false);
     const next = pickDefaultVault(providerConfigs, initialProviderConfigId);
     setVaultId(next);
@@ -451,8 +385,8 @@ export function ImportFromVaultDialog({
 
   const draftList = useMemo(() => Array.from(selection.values()), [selection]);
 
-  const reviewErrors = useMemo<Map<string, string>>(() => {
-    const errors = new Map<string, string>();
+  const reviewErrors = useMemo<Map<string, DraftError>>(() => {
+    const errors = new Map<string, DraftError>();
     for (const draft of draftList) {
       const error = validateDraftRow(draft, existingSecrets, draftList);
       if (error) errors.set(draft.candidate.externalRef, error);
@@ -461,17 +395,34 @@ export function ImportFromVaultDialog({
   }, [draftList, existingSecrets]);
 
   const blockedReviewCount = reviewErrors.size;
-  const readyReviewCount = draftList.length - blockedReviewCount;
+  const vaultName =
+    awsVaults.find((vault) => vault.id === vaultId)?.displayName ?? "your vault";
 
   const importMutation = useMutation({
     mutationFn: (input: RemoteImportInput) => secretsApi.remoteImport(companyId, input),
     onSuccess: (result) => {
+      const failedRows = result.results.filter((row) => row.status === "error");
+      const failedRefs = new Set(failedRows.map((row) => row.externalRef));
       setImportResult(result);
-      setStep("result");
+      setCompletedRows((prev) => [
+        ...prev,
+        ...result.results.filter((row) => row.status !== "error"),
+      ]);
+      setFailures(
+        new Map(failedRows.map((row) => [row.externalRef, row.reason ?? DEFAULT_FAILURE_REASON])),
+      );
+      // Finished rows leave the list; the ones that failed stay to be fixed and retried.
+      setSelection((prev) => {
+        const next = new Map<string, DraftSelection>();
+        for (const [ref, draft] of prev) {
+          if (failedRefs.has(ref)) next.set(ref, draft);
+        }
+        return next;
+      });
+      setAttempted(false);
+      setStep(failedRows.length > 0 ? "review" : "result");
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
       onImportComplete?.(result);
-      const vaultName =
-        awsVaults.find((vault) => vault.id === vaultId)?.displayName ?? "AWS";
       if (result.errorCount === draftList.length && result.errorCount > 0) {
         toast.pushToast({
           title: "Import failed",
@@ -480,8 +431,8 @@ export function ImportFromVaultDialog({
         });
       } else {
         toast.pushToast({
-          title: result.errorCount > 0 ? "Import completed with errors" : "Import complete",
-          body: `${result.importedCount} created · ${result.skippedCount} skipped · ${result.errorCount} failed`,
+          title: result.errorCount > 0 ? "Some secrets were not imported" : "Import complete",
+          body: `${result.importedCount} imported · ${result.skippedCount} already in Paperclip · ${result.errorCount} failed`,
           tone: result.errorCount > 0 ? "warn" : "success",
         });
       }
@@ -502,7 +453,6 @@ export function ImportFromVaultDialog({
 
   function handleRefresh() {
     if (!vaultId || step !== "select") return;
-    let cancelled = false;
     const requestId = ++requestIdRef.current;
     setPreviewLoading(true);
     setPreviewError(null);
@@ -514,15 +464,15 @@ export function ImportFromVaultDialog({
         pageSize: PAGE_SIZE,
       })
       .then((result) => {
-        if (cancelled || requestId !== requestIdRef.current) return;
+        if (requestId !== requestIdRef.current) return;
         setPreview({ candidates: result.candidates, nextToken: result.nextToken });
       })
       .catch((error) => {
-        if (cancelled || requestId !== requestIdRef.current) return;
+        if (requestId !== requestIdRef.current) return;
         setPreviewError(error);
       })
       .finally(() => {
-        if (cancelled || requestId !== requestIdRef.current) return;
+        if (requestId !== requestIdRef.current) return;
         setPreviewLoading(false);
       });
   }
@@ -549,7 +499,7 @@ export function ImportFromVaultDialog({
       })
       .catch((error) => {
         toast.pushToast({
-          title: "Could not load more results",
+          title: "Could not load more secrets",
           body: readableErrorMessage(error),
           tone: "error",
         });
@@ -618,10 +568,23 @@ export function ImportFromVaultDialog({
     onOpenChange(false);
   }
 
+  function handleContinue() {
+    if (totalSelected === 0) {
+      setAttempted(true);
+      return;
+    }
+    setAttempted(false);
+    setStep("review");
+  }
+
   function handleSubmitImport() {
     if (!vaultId || importMutation.isPending) return;
-    if (blockedReviewCount > 0) return;
     if (draftList.length === 0) return;
+    if (blockedReviewCount > 0) {
+      setAttempted(true);
+      return;
+    }
+    setAttempted(false);
     const items: RemoteImportSelectionInput[] = draftList.map((draft) => ({
       externalRef: draft.candidate.externalRef,
       name: draft.name.trim(),
@@ -632,6 +595,40 @@ export function ImportFromVaultDialog({
     }));
     importMutation.mutate({ providerConfigId: vaultId, secrets: items });
   }
+
+  const importing = importMutation.isPending;
+  // After an attempt left failures behind, the naming step becomes the place to fix and retry them.
+  const retrying = step === "review" && importResult !== null;
+  const importedTotal = completedRows.filter((row) => row.status === "imported").length;
+
+  const title =
+    step === "select"
+      ? "Import secrets from a vault"
+      : step === "review"
+        ? `Name ${draftList.length} ${secretNoun(draftList.length)}`
+        : importedTotal > 0
+          ? `${importedTotal} ${secretNoun(importedTotal)} imported`
+          : "Nothing new was imported";
+  const description =
+    step === "select"
+      ? "Paperclip links to the secrets you pick. Their values stay in your vault."
+      : step === "review"
+        ? "These are the names your team and agents will see in Paperclip."
+        : importedTotal > 0
+          ? "They are linked to your vault and ready to use."
+          : "These secrets were already in Paperclip.";
+
+  const blockedMessage =
+    !attempted || importing
+      ? null
+      : step === "select" && totalSelected === 0 && !noEligibleVaults
+        ? "Select at least one secret to import."
+        : step === "review" && blockedReviewCount > 0
+          ? `Fix the ${blockedReviewCount} ${secretNoun(blockedReviewCount)} marked above, then import.`
+          : null;
+
+  const showContinue =
+    step === "select" && !noEligibleVaults && !(Boolean(previewError) && totalSelected === 0);
 
   return (
     <Dialog
@@ -645,39 +642,21 @@ export function ImportFromVaultDialog({
       }}
     >
       <DialogContent
-        showCloseButton={false}
-        className="flex max-h-(--sz-85vh) flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className="flex max-h-(--sz-85vh) flex-col gap-4 overflow-hidden p-5 sm:max-w-2xl sm:p-6"
         data-testid="import-from-vault-dialog"
       >
-        <header className="flex items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
-          <div className="flex flex-col gap-1">
-            <DialogTitle className="text-base font-semibold">
-              Import from AWS Secrets Manager
-            </DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Bring AWS-managed secrets into Paperclip as external references.
-            </DialogDescription>
-            <Stepper step={step} />
-          </div>
-          <button
-            type="button"
-            className="rounded-sm text-muted-foreground transition-opacity hover:opacity-100 opacity-70"
-            onClick={() => handleClose()}
-            aria-label="Close import dialog"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </header>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
 
-        <div
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-          aria-live="polite"
-        >
+        <div className="flex min-h-0 flex-1 flex-col gap-4" aria-live="polite">
           {step === "select" && (
             <SelectStep
-              awsVaults={awsVaults}
               eligible={eligible}
+              hasOtherVaults={awsVaults.length > 0}
               vaultId={vaultId}
+              vaultName={vaultName}
               onVaultChange={handleVaultChange}
               searchInput={searchInput}
               onSearchInput={setSearchInput}
@@ -706,123 +685,90 @@ export function ImportFromVaultDialog({
             <ReviewStep
               drafts={draftList}
               reviewErrors={reviewErrors}
+              failures={failures}
+              completedRows={completedRows}
+              retrying={retrying}
               updateDraft={updateDraft}
               removeDraft={removeDraft}
-              importing={importMutation.isPending}
+              importing={importing}
             />
           )}
-          {step === "result" && importResult && (
-            <ResultStep result={importResult} draftList={draftList} />
-          )}
+          {step === "result" && <ResultList rows={completedRows} />}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border/60 bg-muted/20 px-5 py-3">
-          <FooterStatus
-            step={step}
-            totalSelected={totalSelected}
-            readyReviewCount={readyReviewCount}
-            blockedReviewCount={blockedReviewCount}
-            result={importResult}
-          />
-          <div className="flex items-center gap-2">
-            {step !== "result" && (
-              <Button variant="ghost" size="sm" onClick={() => handleClose()}>
-                Cancel
-              </Button>
-            )}
-            {step === "review" && (
+        {blockedMessage && (
+          <p role="alert" className="text-sm text-destructive" data-testid="import-blocked-message">
+            {blockedMessage}
+          </p>
+        )}
+
+        <footer
+          className={cn(
+            "flex items-center gap-3",
+            step === "result" ? "justify-end" : "justify-between",
+          )}
+        >
+          {step === "select" && (
+            <Button type="button" variant="ghost" onClick={() => handleClose()}>
+              Cancel
+            </Button>
+          )}
+          {step === "review" &&
+            (retrying ? (
               <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setStep("select")}
-                disabled={importMutation.isPending}
+                type="button"
+                variant="ghost"
+                onClick={() => handleClose(true)}
+                disabled={importing}
+              >
+                Close
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setAttempted(false);
+                  setStep("select");
+                }}
+                disabled={importing}
               >
                 Back
               </Button>
-            )}
-            {step === "select" && (
-              <Button
-                size="sm"
-                onClick={() => setStep("review")}
-                disabled={totalSelected === 0}
-              >
-                Continue → Review
-              </Button>
-            )}
-            {step === "review" && (
-              <Button
-                size="sm"
-                onClick={handleSubmitImport}
-                disabled={
-                  draftList.length === 0 ||
-                  blockedReviewCount > 0 ||
-                  importMutation.isPending
-                }
-              >
-                {importMutation.isPending ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Importing…
-                  </>
-                ) : (
-                  `Import ${draftList.length}`
-                )}
-              </Button>
-            )}
-            {step === "result" && (
-              <Button size="sm" onClick={() => handleClose(true)}>
-                Done
-              </Button>
-            )}
-          </div>
+            ))}
+          {showContinue && (
+            <Button type="button" onClick={handleContinue}>
+              {totalSelected > 0 ? `Continue with ${totalSelected}` : "Continue"}
+            </Button>
+          )}
+          {step === "review" && draftList.length > 0 && (
+            <Button type="button" onClick={handleSubmitImport} disabled={importing}>
+              {importing && <Loader2 className="animate-spin" aria-hidden />}
+              {importing
+                ? "Importing…"
+                : retrying
+                  ? "Try again"
+                  : `Import ${draftList.length} ${secretNoun(draftList.length)}`}
+            </Button>
+          )}
+          {step === "result" && (
+            <Button type="button" onClick={() => handleClose(true)}>
+              Done
+            </Button>
+          )}
         </footer>
       </DialogContent>
     </Dialog>
   );
 }
 
-function Stepper({ step }: { step: Step }) {
-  const steps: { id: Step; label: string }[] = [
-    { id: "select", label: "Select" },
-    { id: "review", label: "Review" },
-    { id: "result", label: "Result" },
-  ];
-  const activeIndex = steps.findIndex((s) => s.id === step);
-  return (
-    <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-      {steps.map((s, index) => (
-        <span key={s.id} className="flex items-center gap-2">
-          <span
-            className={cn(
-              "inline-flex h-4 w-4 items-center justify-center rounded-full border text-(length:--text-nano)",
-              index === activeIndex
-                ? "border-primary bg-primary text-primary-foreground"
-                : index < activeIndex
-                  ? "border-primary text-primary"
-                  : "border-border/60",
-            )}
-          >
-            {index + 1}
-          </span>
-          <span
-            className={cn(
-              index === activeIndex ? "text-foreground font-medium" : undefined,
-            )}
-          >
-            {s.label}
-          </span>
-          {index < steps.length - 1 && (
-            <span className="text-muted-foreground/60">›</span>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-}
+const linkClass = "underline underline-offset-4 hover:text-foreground";
 
 interface SelectStepProps {
-  awsVaults: CompanySecretProviderConfig[];
   eligible: CompanySecretProviderConfig[];
+  hasOtherVaults: boolean;
   vaultId: string | null;
+  vaultName: string;
   onVaultChange: (id: string) => void;
   searchInput: string;
   onSearchInput: (value: string) => void;
@@ -849,9 +795,10 @@ interface SelectStepProps {
 
 function SelectStep(props: SelectStepProps) {
   const {
-    awsVaults,
     eligible,
+    hasOtherVaults,
     vaultId,
+    vaultName,
     onVaultChange,
     searchInput,
     onSearchInput,
@@ -878,288 +825,245 @@ function SelectStep(props: SelectStepProps) {
 
   if (noEligibleVaults) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6" data-testid="select-empty-vaults">
-        <EmptyState
-          icon={Cloud}
-          message="No AWS provider vault configured. Add one to import secrets."
-          action={onManageVaults ? "Manage vaults" : undefined}
-          onAction={onManageVaults}
-        />
-      </div>
+      <p className="text-sm text-muted-foreground" data-testid="select-empty-vaults">
+        {hasOtherVaults
+          ? "None of your vaults is ready to import from yet."
+          : "No vault is connected yet."}{" "}
+        {onManageVaults && (
+          <button type="button" className={linkClass} onClick={onManageVaults}>
+            {hasOtherVaults ? "Check them in Vaults" : "Connect one in Vaults"}
+          </button>
+        )}
+      </p>
     );
   }
 
   const showSearchSpinner = previewLoading && Boolean(debouncedQuery);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-5 py-3">
-        <label className="text-xs uppercase tracking-wide text-muted-foreground">Vault</label>
-        {awsVaults.length === 1 && eligible.length === 1 ? (
-          <span className="text-xs font-medium" data-testid="vault-static-label">
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        {eligible.length === 1 && (
+          <span className="shrink-0 text-sm text-muted-foreground" data-testid="vault-static-label">
             {eligible[0].displayName}
           </span>
-        ) : (
-          <Select
-            value={vaultId ?? undefined}
-            onValueChange={onVaultChange}
-          >
-            <SelectTrigger size="sm" className="text-xs" aria-label="Select AWS vault">
-              <SelectValue placeholder="Select an AWS vault" />
+        )}
+        {eligible.length > 1 && (
+          <Select value={vaultId ?? undefined} onValueChange={onVaultChange}>
+            <SelectTrigger aria-label="Vault">
+              <SelectValue placeholder="Choose a vault" />
             </SelectTrigger>
             <SelectContent>
-              {awsVaults.map((vault) => {
-                const blocked = !isAwsSelectable(vault);
-                return (
-                  <SelectItem
-                    key={vault.id}
-                    value={vault.id}
-                    disabled={blocked}
-                    aria-disabled={blocked}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span>{vault.displayName}</span>
-                      {vault.isDefault && (
-                        <Badge variant="outline" className="px-1 py-0 text-(length:--text-nano)">default</Badge>
-                      )}
-                      {vault.status === "warning" && (
-                        <Badge variant="outline" className="px-1 py-0 text-(length:--text-nano) text-amber-500 border-amber-500/40">warning</Badge>
-                      )}
-                      {blocked && (
-                        <Badge variant="outline" className="px-1 py-0 text-(length:--text-nano) text-muted-foreground">
-                          {vault.status === "coming_soon" ? "coming soon" : vault.status}
-                        </Badge>
-                      )}
-                    </span>
-                  </SelectItem>
-                );
-              })}
+              {eligible.map((vault) => (
+                <SelectItem key={vault.id} value={vault.id}>
+                  {vault.displayName}
+                  {vault.isDefault ? " · default" : ""}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         )}
-
-        <div className="relative ml-auto w-64">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative min-w-48 flex-1">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
           <Input
             value={searchInput}
             onChange={(event) => onSearchInput(event.target.value)}
-            placeholder="Search by name, ARN, tag"
-            className="pl-7 pr-7 text-xs"
-            aria-label="Search remote secrets"
+            placeholder="Search by name"
+            className="pl-9 pr-9"
+            aria-label="Search the vault"
             data-testid="vault-search"
           />
           {showSearchSpinner && (
-            <Loader2 className="absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-muted-foreground" />
+            <Loader2
+              className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground"
+              aria-hidden
+            />
           )}
         </div>
-
         <Button
-          variant="outline"
-          size="sm"
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground"
           onClick={onRefresh}
           disabled={previewLoading || !vaultId}
-          aria-label="Refresh remote secrets"
+          aria-label="Refresh the list"
         >
-          <RefreshCw className={cn("h-3.5 w-3.5", previewLoading && "animate-spin")} />
+          <RefreshCw className={cn(previewLoading && "animate-spin")} aria-hidden />
         </Button>
       </div>
 
       {selectedNotVisible > 0 && (
-        <div className="flex items-center justify-between border-b border-border/60 bg-muted/20 px-5 py-1.5 text-xs text-muted-foreground">
-          <span>
-            {selection.size} selected · {selectedNotVisible} not visible with current search
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs"
+        <p className="text-xs text-muted-foreground">
+          {selection.size} selected. {selectedNotVisible} {selectedNotVisible === 1 ? "is" : "are"}{" "}
+          hidden by this search.{" "}
+          <button
+            type="button"
+            className={linkClass}
             onClick={() => onShowOnlySelectedChange(!showOnlySelected)}
           >
             {showOnlySelected ? "Show all" : "Show selected"}
-          </Button>
-        </div>
+          </button>
+        </p>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="vault-table-scroll">
-        {previewError ? (
-          <PreviewErrorBanner error={previewError} onRetry={onRefresh} />
-        ) : previewLoading && candidates.length === 0 ? (
-          <SkeletonRows rows={8} />
-        ) : candidates.length === 0 ? (
-          <EmptyCandidates query={debouncedQuery} />
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 z-10 bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
-              <tr>
-                <th className="px-3 py-2 text-left">
-                  <Checkbox
-                    checked={headerCheckboxState}
-                    onCheckedChange={() => toggleAllLoaded()}
-                    aria-label={`Select all loaded (${selectableInLoaded.length})`}
-                    disabled={selectableInLoaded.length === 0}
-                  />
-                </th>
-                <th className="px-2 py-2 text-left font-medium">Remote name</th>
-                <th className="px-2 py-2 text-left font-medium">Reference</th>
-                <th className="px-2 py-2 text-left font-medium">Last changed</th>
-                <th className="px-2 py-2 text-left font-medium">Suggested name</th>
-                <th className="px-2 py-2 text-left font-medium">State</th>
-              </tr>
-            </thead>
-            <tbody data-testid="vault-table-body">
-              {visibleCandidates.map((candidate) => {
-                const isSelected = selection.has(candidate.externalRef);
-                const meta = (candidate.providerMetadata ?? {}) as Record<string, unknown>;
-                const lastChanged =
-                  typeof meta.lastChangedAt === "string"
-                    ? meta.lastChangedAt
-                    : typeof meta.lastChangedDate === "string"
-                      ? meta.lastChangedDate
-                      : null;
-                return (
-                  <tr
-                    key={candidate.externalRef}
-                    className={cn(
-                      "border-b border-border/60 transition-colors",
-                      candidate.importable
-                        ? "cursor-pointer hover:bg-accent/40"
-                        : "cursor-not-allowed text-muted-foreground",
-                      isSelected && "bg-accent/60",
-                    )}
-                    onClick={() => toggleRow(candidate)}
-                    data-testid={`vault-row-${candidate.externalRef}`}
-                    data-row-state={candidate.status}
-                  >
-                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
-                      <Checkbox
-                        checked={isSelected}
-                        onCheckedChange={() => toggleRow(candidate)}
-                        disabled={!candidate.importable}
-                        aria-label={`Select ${candidate.remoteName}`}
-                      />
-                    </td>
-                    <td className="px-2 py-2.5">
-                      <div className="text-sm font-medium leading-tight">{candidate.remoteName}</div>
-                    </td>
-                    <td className="px-2 py-2.5 text-xs">
-                      <span
-                        className="font-mono text-muted-foreground"
-                        title={candidate.externalRef}
-                      >
-                        {middleTruncate(candidate.externalRef, 50)}
-                      </span>
-                    </td>
-                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {formatRelativeShort(lastChanged)}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs font-mono">{candidate.key}</td>
-                    <td className="px-2 py-2.5 text-xs">
-                      <div className="flex items-center gap-1.5">
-                        <StatusBadge status={candidate.status} />
-                        {candidate.status === "duplicate" &&
-                          candidate.conflicts.find((c) => c.type === "exact_reference")?.existingSecretId && (
-                            <span className="text-(length:--text-micro) text-muted-foreground">
-                              Already imported
-                            </span>
-                          )}
-                      </div>
-                      {candidate.status === "conflict" && candidate.conflicts.length > 0 && (
-                        <div className="mt-0.5 text-(length:--text-micro) text-amber-600 dark:text-amber-400">
-                          {candidate.conflicts[0].message}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {pageLoading && (
-                <tr>
-                  <td colSpan={6} className="p-0">
-                    <SkeletonRows rows={4} />
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
-
-        {hasNextPage && !previewError && (
-          <div className="flex items-center justify-between border-t border-border/60 px-5 py-2 text-xs text-muted-foreground">
-            <span>
-              {candidates.length} loaded
-              {selectableInLoaded.length > 0 && (
-                <span> · {selectableInLoaded.length} selectable</span>
-              )}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onLoadMore}
-              disabled={pageLoading}
-              data-testid="vault-load-more"
-            >
-              {pageLoading ? (
-                <>
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Loading…
-                </>
-              ) : (
-                `Load ${PAGE_SIZE} more`
-              )}
-            </Button>
+      {previewError ? (
+        <PreviewError error={previewError} onRetry={onRefresh} onManageVaults={onManageVaults} />
+      ) : previewLoading && candidates.length === 0 ? (
+        <SkeletonRows rows={8} />
+      ) : candidates.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          {debouncedQuery
+            ? `Nothing in ${vaultName} matches “${debouncedQuery}”.`
+            : `Paperclip can't see any secrets in ${vaultName}.`}
+        </p>
+      ) : (
+        <div
+          className="flex min-h-0 flex-col overflow-y-auto border-y border-border"
+          data-testid="vault-list-scroll"
+        >
+          <div className="flex items-center gap-3 border-b border-border px-2 py-2 text-xs font-medium text-muted-foreground">
+            <Checkbox
+              checked={headerCheckboxState}
+              onCheckedChange={() => toggleAllLoaded()}
+              aria-label={hasNextPage ? "Select all loaded so far" : "Select all"}
+              disabled={selectableInLoaded.length === 0}
+              data-testid="vault-select-all"
+            />
+            <span className="min-w-0 flex-1 truncate">Secret in {vaultName}</span>
+            <span className="w-24">Last changed</span>
           </div>
-        )}
-      </div>
-    </div>
+          <ul className="divide-y divide-border" data-testid="vault-list">
+            {visibleCandidates.map((candidate) => {
+              const isSelected = selection.has(candidate.externalRef);
+              const meta = (candidate.providerMetadata ?? {}) as Record<string, unknown>;
+              const lastChanged =
+                typeof meta.lastChangedAt === "string"
+                  ? meta.lastChangedAt
+                  : typeof meta.lastChangedDate === "string"
+                    ? meta.lastChangedDate
+                    : null;
+              const conflictNote =
+                candidate.status === "conflict" ? candidate.conflicts[0]?.message : undefined;
+              return (
+                <li
+                  key={candidate.externalRef}
+                  className={cn(
+                    "flex items-center gap-3 px-2 py-2.5",
+                    candidate.importable
+                      ? "cursor-pointer hover:bg-accent/50"
+                      : "text-muted-foreground",
+                  )}
+                  onClick={() => toggleRow(candidate)}
+                  data-testid={`vault-row-${candidate.externalRef}`}
+                  data-row-state={candidate.status}
+                >
+                  <span className="flex" onClick={(event) => event.stopPropagation()}>
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => toggleRow(candidate)}
+                      disabled={!candidate.importable}
+                      aria-label={candidate.remoteName}
+                    />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate font-mono text-sm">{candidate.remoteName}</span>
+                    {conflictNote && (
+                      <span className="text-xs text-muted-foreground">{conflictNote}</span>
+                    )}
+                  </span>
+                  {!candidate.importable && (
+                    <span className="shrink-0 text-xs">Already in Paperclip</span>
+                  )}
+                  <span className="w-24 shrink-0 text-sm tabular-nums text-muted-foreground">
+                    {formatRelativeShort(lastChanged)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {pageLoading && <SkeletonRows rows={4} />}
+          {hasNextPage && (
+            <div className="flex items-center justify-between gap-3 border-t border-border px-2 py-2 text-xs text-muted-foreground">
+              <span>{candidates.length} shown so far</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onLoadMore}
+                disabled={pageLoading}
+                data-testid="vault-load-more"
+              >
+                {pageLoading && <Loader2 className="animate-spin" aria-hidden />}
+                {pageLoading ? "Loading…" : `Load ${PAGE_SIZE} more`}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
-function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+function PreviewError({
+  error,
+  onRetry,
+  onManageVaults,
+}: {
+  error: unknown;
+  onRetry: () => void;
+  onManageVaults?: () => void;
+}) {
   const isPermission = isPermissionError(error);
   const isThrottling = isThrottlingError(error);
-  const message = readableErrorMessage(error);
   return (
-    <div
-      className="m-5 flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-      role="alert"
-      data-testid="preview-error-banner"
-    >
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-      <div className="flex-1">
-        <div className="font-medium">
+    <div role="alert" className="flex flex-col gap-2" data-testid="preview-error-banner">
+      <p className="flex items-start gap-2 text-sm text-destructive">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span>
           {isPermission
-            ? "AWS denied list access"
+            ? "AWS denied access. Paperclip's role can't list the secrets in this vault."
             : isThrottling
-              ? "AWS throttled the listing request"
-              : "Could not load remote secrets"}
-        </div>
-        <div className="mt-1 text-xs leading-relaxed text-destructive/80">
-          {isPermission
-            ? "The AWS principal behind this vault is missing secretsmanager:ListSecrets. Update IAM and try again."
-            : message}
-        </div>
-        <div className="mt-2 flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
-          </Button>
-          {isPermission && (
+              ? "AWS is limiting requests right now. Wait a moment, then try again."
+              : "Paperclip couldn't load the secrets in this vault."}{" "}
+          {isPermission && onManageVaults && (
+            <button type="button" className="underline underline-offset-4" onClick={onManageVaults}>
+              Fix it in Vaults
+            </button>
+          )}
+        </span>
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {isPermission ? (
+          <>
+            The role needs the <code className="font-mono">secretsmanager:ListSecrets</code>{" "}
+            permission.{" "}
             <a
               href="https://docs.aws.amazon.com/service-authorization/latest/reference/list_awssecretsmanager.html"
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs font-medium underline"
+              className={linkClass}
             >
-              IAM reference <ExternalLink className="h-3 w-3" />
+              AWS permission reference
             </a>
-          )}
-        </div>
-      </div>
+          </>
+        ) : (
+          readableErrorMessage(error)
+        )}
+      </p>
+      <Button type="button" variant="outline" size="sm" className="self-start" onClick={onRetry}>
+        Try again
+      </Button>
     </div>
   );
 }
 
 function SkeletonRows({ rows }: { rows: number }) {
   return (
-    <div className="flex flex-col gap-1.5 p-3">
+    <div className="flex flex-col gap-1.5 py-2">
       {Array.from({ length: rows }).map((_, idx) => (
         <Skeleton key={idx} className="h-8 w-full" />
       ))}
@@ -1167,316 +1071,224 @@ function SkeletonRows({ rows }: { rows: number }) {
   );
 }
 
-function EmptyCandidates({ query }: { query: string }) {
-  if (query) {
-    return (
-      <EmptyState
-        icon={Search}
-        message={`No remote secrets match "${query}".`}
-      />
-    );
-  }
-  return (
-    <EmptyState
-      icon={Database}
-      message="No secrets visible to this vault."
-    />
-  );
-}
-
 interface ReviewStepProps {
   drafts: DraftSelection[];
-  reviewErrors: Map<string, string>;
+  reviewErrors: Map<string, DraftError>;
+  failures: Map<string, string>;
+  completedRows: RemoteSecretImportRowResult[];
+  retrying: boolean;
   updateDraft: (externalRef: string, patch: Partial<DraftSelection>) => void;
   removeDraft: (externalRef: string) => void;
   importing: boolean;
 }
 
-function ReviewStep({ drafts, reviewErrors, updateDraft, removeDraft, importing }: ReviewStepProps) {
-  if (drafts.length === 0) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-        <EmptyState
-          icon={Info}
-          message="No secrets selected. Go back to pick remote secrets to import."
-        />
-      </div>
-    );
-  }
+function ReviewStep({
+  drafts,
+  reviewErrors,
+  failures,
+  completedRows,
+  retrying,
+  updateDraft,
+  removeDraft,
+  importing,
+}: ReviewStepProps) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [doneOpen, setDoneOpen] = useState(false);
 
-  const blocked = reviewErrors.size;
-  const ready = drafts.length - blocked;
+  const importedCount = completedRows.filter((row) => row.status === "imported").length;
+  const skippedCount = completedRows.length - importedCount;
+  const failedCount = drafts.filter((draft) => failures.has(draft.candidate.externalRef)).length;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border/60 bg-muted/20 px-5 py-3 text-xs">
-        <span className="font-medium">{ready} secrets ready to import</span>
-        {blocked > 0 && (
-          <span className="text-amber-600 dark:text-amber-400">
-            {blocked} need attention before import
+    <>
+      {retrying && (
+        <p
+          role="alert"
+          className="flex items-start gap-2 text-sm text-destructive"
+          data-testid="result-summary"
+        >
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            {importedCount} imported.{" "}
+            {skippedCount > 0 && `${skippedCount} already in Paperclip. `}
+            {failedCount > 0 &&
+              `${failedCount} could not be linked and ${failedCount === 1 ? "is" : "are"} listed below.`}
           </span>
-        )}
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto" data-testid="review-list">
-        {drafts.map((draft) => {
-          const error = reviewErrors.get(draft.candidate.externalRef);
-          return (
-            <div
-              key={draft.candidate.externalRef}
+        </p>
+      )}
+
+      {drafts.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {retrying
+            ? "Nothing left to import."
+            : "Nothing left to import. Go back to choose secrets."}
+        </p>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 self-start text-sm text-muted-foreground hover:text-foreground"
+            aria-expanded={detailsOpen}
+            onClick={() => setDetailsOpen((current) => !current)}
+            data-testid="review-details-toggle"
+          >
+            <ChevronRight
               className={cn(
-                "border-b border-border/60 p-4",
-                error && "border-l-2 border-l-amber-500/60 bg-amber-500/5",
+                "size-4 transition-transform motion-reduce:transition-none",
+                detailsOpen && "rotate-90",
               )}
-              data-testid={`review-row-${draft.candidate.externalRef}`}
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1 space-y-2">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium">{draft.candidate.remoteName}</span>
-                    <span
-                      className="font-mono text-xs text-muted-foreground"
-                      title={draft.candidate.externalRef}
-                    >
-                      {middleTruncate(draft.candidate.externalRef, 60)}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <label className="flex flex-col gap-1 text-xs">
-                      <span className="text-muted-foreground">Paperclip name</span>
+              aria-hidden
+            />
+            Keys and descriptions
+          </button>
+          <ul
+            className="flex min-h-0 flex-col divide-y divide-border overflow-y-auto border-y border-border"
+            data-testid="review-list"
+          >
+            {drafts.map((draft) => {
+              const ref = draft.candidate.externalRef;
+              const remoteName = draft.candidate.remoteName;
+              // A validation message for this row, written by this dialog (not an API error).
+              const rowProblem = reviewErrors.get(ref);
+              const failure = failures.get(ref);
+              // A row whose problem is in a tucked-away field always shows that field.
+              const showDetails = detailsOpen || (rowProblem !== undefined && rowProblem.field !== "name");
+              return (
+                <li
+                  key={ref}
+                  className="flex flex-col gap-1.5 px-2 py-3"
+                  data-testid={`review-row-${ref}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+                        {remoteName}
+                      </span>
                       <Input
                         value={draft.name}
-                        onChange={(e) =>
-                          updateDraft(draft.candidate.externalRef, { name: e.target.value })
-                        }
-                        className="text-xs"
-                        aria-invalid={Boolean(error)}
+                        onChange={(e) => updateDraft(ref, { name: e.target.value })}
+                        className="sm:w-64"
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-label={`Name for ${remoteName}`}
+                        aria-invalid={rowProblem?.field === "name"}
                         disabled={importing}
-                        data-testid={`review-name-${draft.candidate.externalRef}`}
+                        data-testid={`review-name-${ref}`}
                       />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs">
-                      <span className="text-muted-foreground">Key</span>
-                      <Input
-                        value={draft.key}
-                        onChange={(e) =>
-                          updateDraft(draft.candidate.externalRef, { key: e.target.value })
-                        }
-                        onBlur={(e) =>
-                          updateDraft(draft.candidate.externalRef, {
-                            key: normalizeDraftKey(e.target.value),
-                          })
-                        }
-                        className="font-mono text-xs"
-                        aria-invalid={Boolean(error)}
-                        disabled={importing}
-                        data-testid={`review-key-${draft.candidate.externalRef}`}
-                      />
-                    </label>
-                    <label className="flex flex-col gap-1 text-xs">
-                      <span className="text-muted-foreground">Description (optional)</span>
-                      <Input
-                        value={draft.description}
-                        onChange={(e) =>
-                          updateDraft(draft.candidate.externalRef, {
-                            description: e.target.value,
-                          })
-                        }
-                        className="text-xs"
-                        disabled={importing}
-                        data-testid={`review-description-${draft.candidate.externalRef}`}
-                      />
-                    </label>
-                  </div>
-                  {error && (
-                    <div
-                      className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400"
-                      role="alert"
-                      data-testid={`review-error-${draft.candidate.externalRef}`}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="shrink-0 text-muted-foreground"
+                      onClick={() => removeDraft(ref)}
+                      aria-label={`Leave out ${remoteName}`}
+                      disabled={importing}
                     >
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      {error}
+                      <X aria-hidden />
+                    </Button>
+                  </div>
+                  {showDetails && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Key
+                        <Input
+                          value={draft.key}
+                          onChange={(e) => updateDraft(ref, { key: e.target.value })}
+                          onBlur={(e) =>
+                            updateDraft(ref, { key: normalizeDraftKey(e.target.value) })
+                          }
+                          className="font-mono text-foreground"
+                          spellCheck={false}
+                          autoComplete="off"
+                          aria-invalid={rowProblem?.field === "key"}
+                          disabled={importing}
+                          data-testid={`review-key-${ref}`}
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Description (optional)
+                        <Input
+                          value={draft.description}
+                          onChange={(e) => updateDraft(ref, { description: e.target.value })}
+                          className="text-foreground"
+                          autoComplete="off"
+                          aria-invalid={rowProblem?.field === "description"}
+                          disabled={importing}
+                          data-testid={`review-description-${ref}`}
+                        />
+                      </label>
                     </div>
                   )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeDraft(draft.candidate.externalRef)}
-                  aria-label={`Remove ${draft.candidate.remoteName}`}
-                  className="h-7 w-7"
-                  disabled={importing}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+                  {rowProblem && (
+                    <p
+                      role="alert"
+                      className="text-xs text-destructive"
+                      data-testid={`review-error-${ref}`}
+                    >
+                      {rowProblem.message}
+                    </p>
+                  )}
+                  {failure && (
+                    <p className="text-xs text-destructive" data-testid={`review-failure-${ref}`}>
+                      {failure}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      {retrying && completedRows.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 self-start text-sm text-muted-foreground hover:text-foreground"
+            aria-expanded={doneOpen}
+            onClick={() => setDoneOpen((current) => !current)}
+            data-testid="result-done-toggle"
+          >
+            <ChevronRight
+              className={cn(
+                "size-4 transition-transform motion-reduce:transition-none",
+                doneOpen && "rotate-90",
+              )}
+              aria-hidden
+            />
+            {completedRows.length === 1 ? "The 1 that is done" : `The ${completedRows.length} that are done`}
+          </button>
+          {doneOpen && <ResultList rows={completedRows} />}
+        </>
+      )}
+    </>
   );
 }
 
-interface ResultStepProps {
-  result: RemoteSecretImportResult;
-  draftList: DraftSelection[];
-}
-
-function ResultStep({ result, draftList }: ResultStepProps) {
-  const grouped = useMemo(() => {
-    const created: RemoteSecretImportRowResult[] = [];
-    const skipped: RemoteSecretImportRowResult[] = [];
-    const failed: RemoteSecretImportRowResult[] = [];
-    for (const row of result.results) {
-      if (row.status === "imported") created.push(row);
-      else if (row.status === "skipped") skipped.push(row);
-      else failed.push(row);
-    }
-    return { created, skipped, failed };
-  }, [result]);
-
-  const draftLookup = useMemo(() => {
-    const map = new Map<string, DraftSelection>();
-    for (const draft of draftList) map.set(draft.candidate.externalRef, draft);
-    return map;
-  }, [draftList]);
-
-  const heading =
-    result.errorCount === result.results.length && result.errorCount > 0
-      ? "Import failed"
-      : result.errorCount === 0 && result.skippedCount === 0
-        ? `All ${result.importedCount} secrets imported`
-        : "Import complete";
-
+/** Rows that need no more attention: imported, or skipped because Paperclip already had them. */
+function ResultList({ rows }: { rows: RemoteSecretImportRowResult[] }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-border/60 px-5 py-3" data-testid="result-summary">
-        <h3 className="text-sm font-semibold">{heading}</h3>
-        <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <span className="text-emerald-600 dark:text-emerald-400">✓ {result.importedCount} created</span>
-          <span>⊘ {result.skippedCount} skipped</span>
-          <span className="text-destructive">⨯ {result.errorCount} failed</span>
-        </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {grouped.created.length > 0 && (
-          <ResultGroup label="Created" rows={grouped.created} draftLookup={draftLookup} />
-        )}
-        {grouped.skipped.length > 0 && (
-          <ResultGroup label="Skipped" rows={grouped.skipped} draftLookup={draftLookup} />
-        )}
-        {grouped.failed.length > 0 && (
-          <ResultGroup label="Failed" rows={grouped.failed} draftLookup={draftLookup} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ResultGroup({
-  label,
-  rows,
-  draftLookup,
-}: {
-  label: string;
-  rows: RemoteSecretImportRowResult[];
-  draftLookup: Map<string, DraftSelection>;
-}) {
-  return (
-    <section>
-      <header className="bg-muted/30 px-5 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
-        {label} · {rows.length}
-      </header>
-      <ul className="divide-y divide-border/60">
-        {rows.map((row) => {
-          const draft = draftLookup.get(row.externalRef);
-          const remoteName = draft?.candidate.remoteName ?? row.name;
-          return (
-            <li
-              key={row.externalRef}
-              className="flex flex-wrap items-start gap-2 px-5 py-2.5 text-xs"
-              data-testid={`result-row-${row.externalRef}`}
-              data-row-status={row.status}
-            >
-              <RowResultBadge status={row.status} />
-              <span className="font-medium">{row.name}</span>
-              <span className="font-mono text-muted-foreground">{row.key}</span>
-              <span
-                className="font-mono text-muted-foreground"
-                title={row.externalRef}
-              >
-                {middleTruncate(row.externalRef, 40)}
-              </span>
-              <span className="ml-auto flex items-center gap-2">
-                {row.status === "imported" && row.secretId && (
-                  <span className="text-muted-foreground">{remoteName}</span>
-                )}
-                {row.reason && (
-                  <span
-                    className={cn(
-                      "max-w-(--sz-24rem) truncate",
-                      row.status === "error"
-                        ? "text-destructive"
-                        : "text-muted-foreground",
-                    )}
-                    title={row.reason}
-                  >
-                    {row.reason}
-                  </span>
-                )}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-interface FooterStatusProps {
-  step: Step;
-  totalSelected: number;
-  readyReviewCount: number;
-  blockedReviewCount: number;
-  result: RemoteSecretImportResult | null;
-}
-
-function FooterStatus({
-  step,
-  totalSelected,
-  readyReviewCount,
-  blockedReviewCount,
-  result,
-}: FooterStatusProps) {
-  if (step === "select") {
-    return (
-      <div className="text-xs text-muted-foreground">
-        {totalSelected === 0
-          ? "Select remote secrets to import"
-          : `${totalSelected} selected`}
-      </div>
-    );
-  }
-  if (step === "review") {
-    return (
-      <div className="text-xs text-muted-foreground">
-        {readyReviewCount} ready
-        {blockedReviewCount > 0 && (
-          <span className="ml-2 text-amber-600 dark:text-amber-400">
-            · {blockedReviewCount} blocked
+    <ul
+      className="flex min-h-0 flex-col divide-y divide-border overflow-y-auto border-y border-border"
+      data-testid="result-list"
+    >
+      {rows.map((row) => (
+        <li
+          key={row.externalRef}
+          className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-2 py-2.5"
+          data-testid={`result-row-${row.externalRef}`}
+          data-row-status={row.status}
+        >
+          <span className="text-sm">{row.name}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+            {row.key}
           </span>
-        )}
-      </div>
-    );
-  }
-  if (result) {
-    return (
-      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-        <span>{result.importedCount} created</span>
-        <span>{result.skippedCount} skipped</span>
-        <span>{result.errorCount} failed</span>
-      </div>
-    );
-  }
-  return null;
+          <span className="text-xs text-muted-foreground">
+            {row.status === "imported" ? "Imported" : (row.reason ?? "Already in Paperclip")}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }

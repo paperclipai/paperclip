@@ -79,7 +79,8 @@ const meta = {
       [
         {
           path: "/api/companies/company-storybook/secret-proposals",
-          read: () => rows,
+          // Only the pending list has rows here; the decided lists stay empty.
+          read: ({ url }) => ((url.searchParams.get("status") ?? "pending") === "pending" ? rows : []),
         },
         {
           path: /^\/api\/companies\/company-storybook\/secret-proposals\/proposal-gap\/(approve|reject)$/,
@@ -111,43 +112,37 @@ export const Failed: Story = { parameters: { fixtureState: "failure" } };
 export const PermissionBlocked: Story = {
   parameters: { blocked: true },
   play: async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByRole("button", { name: "Approve" }),
-    ).toBeDisabled();
+    const c = within(canvasElement);
+    await c.findByText("Only organization admins can approve or reject this.");
+    await expect(c.queryByRole("button", { name: /Approve/ })).not.toBeInTheDocument();
+    await expect(c.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
   },
 };
 export const RejectProposal: Story = {
   play: async ({ canvasElement }) => {
     const c = within(canvasElement);
     await userEvent.click(await c.findByRole("button", { name: "Reject" }));
-    const body = within(document.body);
     await userEvent.type(
-      await body.findByRole("textbox"),
+      await c.findByRole("textbox", { name: /reason/i }),
       "The task can use the existing managed connection.",
       { delay: 15 },
     );
-    await userEvent.click(
-      within(body.getByRole("dialog")).getByRole("button", { name: "Reject" }),
-    );
+    await userEvent.click(c.getByRole("button", { name: "Reject" }));
     await waitFor(() => expect(rows).toHaveLength(0));
-    await body.findByText("Proposal rejected");
+    await within(document.body).findByText("Proposal rejected");
   },
 };
 export const RejectFailed: Story = {
   parameters: { fixtureState: "mutation-failure" },
   play: async ({ canvasElement }) => {
-    await userEvent.click(
-      await within(canvasElement).findByRole("button", { name: "Reject" }),
-    );
-    const body = within(document.body);
+    const c = within(canvasElement);
+    await userEvent.click(await c.findByRole("button", { name: "Reject" }));
     await userEvent.type(
-      await body.findByRole("textbox"),
+      await c.findByRole("textbox", { name: /reason/i }),
       "Use the existing connection.",
       { delay: 15 },
     );
-    await userEvent.click(
-      within(body.getByRole("dialog")).getByRole("button", { name: "Reject" }),
-    );
-    await body.findByText("The request failed. Please try again.");
+    await userEvent.click(c.getByRole("button", { name: "Reject" }));
+    await c.findByText("The request failed. Please try again.");
   },
 };

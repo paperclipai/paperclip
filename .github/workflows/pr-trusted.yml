@@ -249,7 +249,17 @@ jobs:
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs
+
+      - name: Test merge-queue workflow wiring
+        # This workflow loads from master and tests the caller's checkout. A
+        # rerun of an older pull request has no copy of these tests.
+        run: |
+          tests=()
+          for test in ./scripts/merge-group-image.test.mjs ./scripts/__tests__/merge-queue-checks-workflow.test.mjs; do
+            if [[ -f "$test" ]]; then tests+=("$test"); fi
+          done
+          if (( ${#tests[@]} > 0 )); then node "$CI_NODE_TEST" "${tests[@]}"; fi
 
       - name: Test standalone package build concurrency
         run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -351,7 +361,7 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
-      # typecheck:build-gaps builds @paperclipai/server, whose build script
+      # The typecheck lane builds @paperclipai/server, whose build script
       # rebuilds the Runner release binary; without the shared Rust cache that
       # is a ~3m40s cold compile of all third-party crates (run 35036001734,
       # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
@@ -462,25 +472,21 @@ jobs:
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
-      - name: Typecheck workspaces whose build scripts skip TypeScript
-        run: pnpm run typecheck:build-gaps
+      - name: Typecheck, CLI guidance safety and release registry tests
+        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}
+        run: node scripts/ci-typecheck-lane.mjs
 
-      - name: Typecheck test files that no build reads
-        run: node scripts/typecheck-test-programs.mjs --low-memory
-
-      - name: Typecheck the server in low-memory layers
+      - name: Typecheck a checkout that predates the typecheck lane script
+        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') == '' }}
         env:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
-        run: pnpm --filter @paperclipai/server typecheck
-
-      - name: Typecheck test projects against the server declarations
-        run: node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
-
-      - name: Verify repository-wide CLI guidance safety
-        run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
-
-      - name: Verify release registry test coverage
-        run: pnpm run test:release-registry
+        run: |
+          pnpm run typecheck:build-gaps
+          node scripts/typecheck-test-programs.mjs --low-memory
+          pnpm --filter @paperclipai/server typecheck
+          node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+          pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
+          pnpm run test:release-registry
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -656,6 +662,9 @@ jobs:
       # image published for eight hours while PR CI stayed green.)
       - name: Run generated-file drift checks against the Docker build context
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
+
+      - name: Verify Tailscale runtime clients
+        run: docker buildx build --file Dockerfile --target tailscale-client .
 
       - name: Upload CI profile timings
         continue-on-error: true

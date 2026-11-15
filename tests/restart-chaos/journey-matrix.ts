@@ -87,7 +87,6 @@ export function applyJourneyOptions(options: WaveOptions, input: { matrix: boole
     options.tasks = matrixCells(options).length;
   }
   if (input.serverFrom !== undefined) {
-    if (options.env !== "local") throw new Error("--server-from runs only with --env local");
     if (options.faults.includes("K14")) throw new Error("--server-from runs every server from one checkout; use --upgrade-from for K14");
     options.serverFrom = path.resolve(input.serverFrom);
   }

@@ -14,6 +14,7 @@ import {
 
 import { assertManifestSource } from "../ci/pr-run-durations.mjs";
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+import { chatManifestData, entryDurations } from "../ci/refresh-chat-shard-durations.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -606,6 +607,47 @@ test("test-line shards cover nested and parameterized cases exactly once without
   assert.deepEqual(partitionTestLines([...cases].reverse(), 3, lineShardFile).map((shard) => shard.lines), shards.map((shard) => shard.lines));
 });
 
+test("recorded durations balance chat line shards by time without splitting a source line", () => {
+  const cases = [caseAt(10, "slow"), caseAt(20, "each %s"), caseAt(20, "each %s"), caseAt(30, "a"), caseAt(40, "b"),
+    caseAt(50, "c"), caseAt(60, "unrecorded")];
+  const durations = { slow: 9000, "each %s": 1000, a: 3000, b: 3000, c: 2000 };
+  const shards = partitionTestLines(cases, 2, lineShardFile, durations);
+  assert.deepEqual(shards.map((shard) => shard.weight), [11000, 11000]);
+  assert.deepEqual(shards.map((shard) => shard.lines), [[10, 20], [30, 40, 50, 60]]);
+  assert.deepEqual(shards.flatMap((shard) => shard.tests).sort((a, b) => a.location.line - b.location.line), cases);
+  assert.deepEqual(partitionTestLines([...cases].reverse(), 2, lineShardFile, durations).map((shard) => shard.lines),
+    shards.map((shard) => shard.lines));
+  assert.deepEqual(partitionTestLines(cases, 2, lineShardFile).map((shard) => shard.tests.length), [4, 3]);
+});
+
+test("chat durations attribute every executed case to the collected entry that registers it", () => {
+  const entries = ["sends %s", "suite > sends %s twice", "plain", "keyed $provider ($mode)"];
+  const { totals, unmatched } = entryDurations(entries, [
+    { name: "chat channel control-plane integration > sends a", duration: 5 },
+    { name: "chat channel control-plane integration > suite > sends b twice", duration: 7 },
+    { name: "chat channel control-plane integration > plain", duration: 11 },
+    { name: "chat channel control-plane integration > keyed slack (fast)", duration: 13 },
+    { name: "chat channel control-plane integration > keyed github (slow)", duration: 17 },
+    { name: "chat channel control-plane integration > unknown", duration: 19 },
+  ]);
+  assert.deepEqual(Object.fromEntries(totals), { "sends %s": 5, "suite > sends %s twice": 7, plain: 11, "keyed $provider ($mode)": 30 });
+  assert.deepEqual(unmatched, ["chat channel control-plane integration > unknown"]);
+  const data = chatManifestData(["plain", "other"], [[{ name: "x > plain", duration: 4 }], [{ name: "x > plain", duration: 9 }],
+    [{ name: "x > plain", duration: 6 }]], []);
+  assert.deepEqual(data.durations, { plain: 6 });
+  assert.deepEqual(data.coverage, { measured: 1, entries: 2 });
+  assert.throws(() => chatManifestData(["plain"], [[{ name: "x > missing", duration: 1 }]], []));
+});
+
+test("the checked-in chat duration manifest is well formed", () => {
+  const manifest = JSON.parse(readFileSync(path.join(repoRoot, "scripts", "chat-shard-durations.json"), "utf8"));
+  assert.equal(manifest.unit, "ms");
+  const entries = Object.entries(manifest.durations);
+  assert.ok(entries.length > 0);
+  assert.ok(entries.every(([name, ms]) => name.length > 0 && Number.isSafeInteger(ms) && ms > 0));
+  assert.deepEqual(loadShardDurations(path.join(repoRoot, "scripts", "chat-shard-durations.json")), manifest.durations);
+});
+
 test("line-shard collection rejects empty, foreign, or unlocated tests and invalid shard counts", () => {
   const good = caseAt(10, "valid");
   for (const input of [[], null, [{ ...good, file: "/another.test.ts" }], [{ ...good, projectName: "wrong" }],
@@ -632,10 +674,10 @@ test("parallel chat jobs form a complete disjoint partition", () => {
       dryRunJson(["--mode", "general", "--group", "general-chat", "--shard-index", String(index), "--shard-count", String(count)],
         { PAPERCLIP_TEST_DATABASE_URL: "" }).chatVitestShards,
     );
-    assert.ok(shards.every((workers) => workers.length === 2));
+    assert.ok(shards.every((workers) => workers.length === 3));
     assert.deepEqual(shards.flat().map(({ index }) => index).sort((a, b) => a - b),
-      Array.from({ length: count * 2 }, (_, index) => index));
-    assert.ok(shards.flat().every((shard) => shard.count === count * 2));
+      Array.from({ length: count * 3 }, (_, index) => index));
+    assert.ok(shards.flat().every((shard) => shard.count === count * 3));
   }
 });
 
@@ -784,8 +826,8 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   const directory = mkdtempSync(path.join(os.tmpdir(), "chat-launch-proof-"));
   const file = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
   const lines = readFileSync(file, "utf8").split("\n")
-    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []).slice(0, 6);
-  assert.equal(lines.length, 6);
+    .flatMap((line, index) => /^\s*it\(/.test(line) ? [index + 1] : []).slice(0, 9);
+  assert.equal(lines.length, 9);
   const tests = lines.map((line) => ({ file, projectName: "@paperclipai/server",
     name: `launcher fixture ${line}`, location: { line } }));
   const receipt = path.join(directory, "sibling-finished");

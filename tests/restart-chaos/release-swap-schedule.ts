@@ -1,4 +1,5 @@
 import type { StormFault, StormPlan } from "./types.js";
+import { MIX_MAX_MINUTES } from "./staging-mix.js";
 
 export interface ReleaseSwapOptions {
   swaps: number;
@@ -20,6 +21,8 @@ const FLAGS = {
   "release-swap-settle-minutes": { key: "settleMs", unit: 60_000, min: 1, max: 60 },
   "release-swap-drain-minutes": { key: "drainMs", unit: 60_000, min: 1, max: 240 },
 } as const;
+
+const MIX_PLANNED = ["mix-fault-spacing-minutes", "mix-minutes"];
 
 const REPLACED = ["storm-minutes", "faults", "k15-overlap-seconds", "k15-hold-seconds", "replay", "crash-point", "matrix", "upgrade-from"];
 
@@ -73,8 +76,20 @@ export function expandReleaseSwapArgs(input: readonly string[]): { args: string[
   }
   const envIndex = rest.findIndex(arg => arg === "--env" || arg.startsWith("--env="));
   const env = envIndex < 0 ? "local" : rest[envIndex]!.includes("=") ? rest[envIndex]!.split("=")[1] : rest[envIndex + 1];
-  const added = ["--storm-minutes", String(Math.min(240, Math.ceil((options.swaps * options.spacingMs) / 60_000))), "--faults", "K15",
-    "--k15-overlap-seconds", String(Math.round(options.overlapMs / 1000))];
+  const mix = given.has("workload");
+  if (mix) {
+    const planned = MIX_PLANNED.find(name => given.has(name));
+    if (planned) throw new Error(`--release-swap plans the staging-mix swap slots; do not combine it with --${planned}`);
+  }
+  const spacingMinutes = Math.ceil(options.spacingMs / 60_000);
+  if (mix && options.swaps * spacingMinutes + 1 > MIX_MAX_MINUTES) {
+    throw new Error(`--release-swap-count ${options.swaps} × --release-swap-spacing-minutes ${spacingMinutes} needs a ${options.swaps * spacingMinutes + 1}-minute `
+      + `staging-mix wave; the longest is ${MIX_MAX_MINUTES} minutes. Lower the swap count or the spacing.`);
+  }
+  const clock = mix
+    ? ["--mix-fault-spacing-minutes", String(spacingMinutes), "--mix-minutes", String(options.swaps * spacingMinutes + 1)]
+    : ["--storm-minutes", String(Math.min(240, Math.ceil((options.swaps * options.spacingMs) / 60_000)))];
+  const added = [...clock, "--faults", "K15", "--k15-overlap-seconds", String(Math.round(options.overlapMs / 1000))];
   if (env === "daytona") {
     if (!given.has("k15-fresh-home")) added.push("--k15-fresh-home");
     if (!given.has("ephemeral-server")) added.push("--ephemeral-server");

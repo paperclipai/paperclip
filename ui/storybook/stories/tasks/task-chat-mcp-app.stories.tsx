@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import type { McpAppCallToolResult } from "@paperclipai/shared";
 import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
 import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
-import { McpAppViewContent } from "@/components/mcp-app/McpAppView";
+import { McpAppViewContent, type McpAppMessageProposal } from "@/components/mcp-app/McpAppView";
+import type { McpAppDisplayMode } from "@/components/mcp-app/mcp-app-host";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   ISSUE_ID,
@@ -13,6 +14,9 @@ import {
   MEETINGS_VIEW_SUMMARY,
   RUN_ID,
 } from "../../support/mcp-app/fixtures";
+import { ProviderToolIconsStaticProvider } from "@/components/ProviderToolIcon";
+import { TaskChatToolCard } from "@/components/task-chat/TaskChatToolCard";
+import type { TaskChatToolItem } from "@/components/task-chat/task-chat-model";
 
 function Frame({ children }: { children: ReactNode }) {
   return <div className="mx-auto w-full max-w-(--tc-shell-max-w) p-6">{children}</div>;
@@ -91,3 +95,99 @@ export const Ready: Story = { name: "02 · View (Refresh calls a tool)", args: {
 export const Loading: Story = { name: "03 · Loading", args: { state: "loading" } };
 export const ErrorFallback: Story = { name: "04 · View unavailable", args: { state: "error" } };
 export const ToolCallNeedsApproval: Story = { name: "05 · Tool call needs approval", args: { state: "tool-call-denied" } };
+
+const PROPOSED_TEXT = "Summarize the action items from Paperclip <> Heavybit, Partner Meeting.";
+
+/**
+ * A view's `ui/message`. The card starts with a proposal; the view's "Ask the
+ * agent" button proposes another once it is handled. Send only appends to the
+ * story's sent list: nothing is sent without the click.
+ */
+function MessageConfirmationStory() {
+  const [proposal, setProposal] = useState<McpAppMessageProposal | null>({ text: PROPOSED_TEXT, status: "pending" });
+  const [sent, setSent] = useState<string[]>([]);
+  const pending = useRef<{ resolve: () => void; reject: (error: Error) => void } | null>(null);
+  const proposeMessage = useCallback((text: string) => new Promise<void>((resolve, reject) => {
+    if (pending.current) {
+      reject(new Error("A message from this view is already waiting for the user"));
+      return;
+    }
+    pending.current = { resolve, reject };
+    setProposal({ text, status: "pending" });
+  }), []);
+  const settle = (send: boolean) => {
+    if (send && proposal) setSent((list) => [...list, proposal.text]);
+    if (send) pending.current?.resolve();
+    else pending.current?.reject(new Error("Message sending denied"));
+    pending.current = null;
+    setProposal(null);
+  };
+  return (
+    <Frame>
+      <McpAppViewContent
+        detail={MEETINGS_VIEW_DETAIL}
+        status="ready"
+        callTool={async () => refreshedResult}
+        displayName="Display meetings"
+        proposeMessage={proposeMessage}
+        proposal={proposal}
+        onSendProposal={() => settle(true)}
+        onDismissProposal={() => settle(false)}
+      />
+      {sent.length > 0 ? (
+        <div className="mt-3 flex flex-col gap-1 text-sm text-foreground" data-testid="story-sent-messages">
+          {sent.map((text, index) => <p key={index}>You: {text}</p>)}
+        </div>
+      ) : null}
+    </Frame>
+  );
+}
+
+/** The view full screen. "Exit full screen", Escape or the view's own button return it to the chat. */
+function FullscreenStory() {
+  const [mode, setMode] = useState<McpAppDisplayMode>("fullscreen");
+  return (
+    <Frame>
+      <McpAppViewContent
+        detail={MEETINGS_VIEW_DETAIL}
+        status="ready"
+        callTool={async () => refreshedResult}
+        displayName="Display meetings"
+        displayMode={mode}
+        onDisplayModeChange={setMode}
+      />
+    </Frame>
+  );
+}
+
+export const MessageConfirmation: Story = { name: "06 · View asks to send a message", render: () => <MessageConfirmationStory />, args: { state: "ready" } };
+export const Fullscreen: Story = { name: "07 · Full screen", render: () => <FullscreenStory />, args: { state: "ready" } };
+
+/* Provider tool icons (SEP-973) on task chat tool rows. */
+const CIRCLEBACK_ICON = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#6d28d9"/><circle cx="8" cy="8" r="3" fill="#fff"/></svg>')}`;
+const ICON_ENTRIES = [
+  { gatewayToolName: "mcp.circleback-1a2b3c4d:displaymeetings", icons: [{ src: CIRCLEBACK_ICON, mimeType: "image/svg+xml" }] },
+  { gatewayToolName: "mcp.circleback-1a2b3c4d:searchmeetings", icons: [{ src: CIRCLEBACK_ICON, mimeType: "image/svg+xml" }] },
+  // An icon that fails to load falls back to the taxonomy icon.
+  { gatewayToolName: "mcp.linear-5e6f7a8b:list-issues", icons: [{ src: "https://icons.invalid/linear.png", mimeType: "image/png" }] },
+];
+const ICON_ROWS: TaskChatToolItem[] = [
+  { kind: "tool", id: "icon-1", name: "Search meetings", rawName: "mcp__paperclip__mcp.circleback-1a2b3c4d:searchmeetings", target: "Heavybit", status: "completed" },
+  { kind: "tool", id: "icon-2", name: "Display meetings", rawName: "mcp__paperclip__mcp.circleback-1a2b3c4d:displaymeetings", status: "completed" },
+  { kind: "tool", id: "icon-3", name: "List issues", rawName: "mcp__paperclip__mcp.linear-5e6f7a8b:list-issues", status: "completed" },
+  { kind: "tool", id: "icon-4", name: "Bash", rawName: "Bash", target: "pnpm test", status: "completed" },
+];
+
+export const ProviderToolIcons: Story = {
+  name: "08 · Tool rows with provider icons",
+  render: () => (
+    <ProviderToolIconsStaticProvider entries={ICON_ENTRIES}>
+      <Frame>
+        <div className="flex flex-col gap-1">
+          {ICON_ROWS.map((item) => <TaskChatToolCard key={item.id} item={item} />)}
+        </div>
+      </Frame>
+    </ProviderToolIconsStaticProvider>
+  ),
+  args: { state: "ready" },
+};

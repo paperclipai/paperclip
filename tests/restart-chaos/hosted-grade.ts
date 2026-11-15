@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { HostedApi } from "./hosted-api.js";
+import { requestBreakdown, type HostedApi, type RequestRecord } from "./hosted-api.js";
 import { trackBanner, type RetryBanner } from "./hosted-workload.js";
 import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
 import { releaseMarkdown, type ContinuityReport, type DetectedRelease } from "./hosted-release.js";
@@ -11,7 +11,7 @@ import {
   pendingPersonItems, startedIssues, UNAVAILABLE_OVER_API, type HostedRunRow,
 } from "./hosted-readers.js";
 import {
-  gradeReleaseSwapTask, overlappingRuns, releaseSwapMarkdown, summarizeGrades, swapMetrics, type RetryClick, type SwapRunFact, type SwapWindow, type TaskGrade,
+  drainState, failedOutsideSwaps, gradeReleaseSwapTask, overlappingRuns, QUIET_PERIOD_MS, releaseSwapMarkdown, summarizeGrades, swapForFailedRun, swapMetrics, type RetryClick, type SwapRunFact, type SwapWindow, type TaskGrade,
 } from "./release-swap-grade.js";
 
 type Json = Record<string, any>;
@@ -37,6 +37,8 @@ export interface HostedGradeInput {
   record: (kind: string, data: Record<string, unknown>) => void;
   pollMs?: number;
   now?: () => number;
+  quietMs?: number;
+  requests?: () => readonly RequestRecord[];
 }
 
 export function releaseWindows(releases: readonly DetectedRelease[]): SwapWindow[] {
@@ -44,7 +46,7 @@ export function releaseWindows(releases: readonly DetectedRelease[]): SwapWindow
     stopRequestedAt: release.lastOldAt, stoppedAt: release.lastOldAt, fromPid: null }));
 }
 
-export async function drainHosted(input: Pick<HostedGradeInput, "api" | "companyId" | "agentIds" | "lastReleaseAt" | "settleMs" | "drainMs" | "cancelled" | "record" | "pollMs" | "now">):
+export async function drainHosted(input: Pick<HostedGradeInput, "api" | "companyId" | "agentIds" | "lastReleaseAt" | "settleMs" | "drainMs" | "cancelled" | "record" | "pollMs" | "now" | "quietMs">):
   Promise<{ reason: "quiet" | "cap" | "cancelled"; progressing: number }> {
   const now = input.now ?? Date.now;
   const settledAt = input.lastReleaseAt + input.settleMs;
@@ -54,10 +56,10 @@ export async function drainHosted(input: Pick<HostedGradeInput, "api" | "company
   while (!input.cancelled() && now() < settledAt) await delay(Math.min(input.pollMs ?? 15_000, Math.max(1, settledAt - now())));
   for (;;) {
     const at = now();
-    const runs = await hostedCompanyRuns(input.api, input.companyId, input.agentIds);
-    const progressing = runs.filter(run => ["queued", "running", "scheduled_retry"].includes(run.status) && (run.lastActivityAt ?? 0) >= at - window).length;
+    const state = drainState(await hostedCompanyRuns(input.api, input.companyId, input.agentIds), at, window, input.quietMs ?? QUIET_PERIOD_MS);
+    const progressing = state.progressing;
     if (input.cancelled()) return { reason: "cancelled", progressing };
-    if (!progressing) return { reason: "quiet", progressing };
+    if (state.quiet) return { reason: "quiet", progressing };
     if (at >= capAt) return { reason: "cap", progressing };
     await delay(Math.min(input.pollMs ?? 30_000, Math.max(1, capAt - at)));
   }
@@ -111,7 +113,10 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     issues = startedIssues(all, runs);
     await readViews(issues.map(issue => issue.id));
   }
+  runs = await hostedCompanyRuns(api, companyId, agentIds);
   const allIssues = await hostedIssues(api, companyId, agentIds);
+  issues = startedIssues(allIssues, runs);
+  await readViews(issues.map(issue => issue.id));
   const person = await pendingPersonItems(api, issues.map(issue => issue.id));
   const runsByIssue = new Map<string, HostedRunRow[]>();
   for (const run of runs) if (run.issueId) runsByIssue.set(run.issueId, [...(runsByIssue.get(run.issueId) ?? []), run]);
@@ -136,32 +141,39 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const waveEnd = now();
   const metrics = swapMetrics(windows, facts, firstEvents, waveEnd);
   const duplicates = { overlappingRuns: overlappingRuns(facts, waveEnd), doubleExecutors: [] as string[],
-    duplicateComments: await duplicateAgentComments(api, issues.map(issue => issue.id)), duplicateChildren: duplicateChildren(allIssues) };
+    ...await duplicateAgentComments(api, issues.map(issue => issue.id)), duplicateChildren: duplicateChildren(allIssues) };
   const result = summarizeGrades(grades, unreadable.length, drained.reason);
   const handsOff = handsOffSummary(result, issues.map(issue => issue.id), banners);
   const invariant = await readAssignedWorkInvariant(api, companyId, { identifiers: new Set(issues.flatMap(issue => issue.identifier ? [issue.identifier] : [])),
     agentNames: new Set(input.agentNames ?? []) });
   const failed = runs.filter(run => ["failed", "timed_out", "interrupted"].includes(run.status));
   const failedRuns = [];
-  for (const run of failed) failedRuns.push({ ...run, release: [...windows].reverse().find(window => (run.finishedAt ?? 0) >= window.requestedAt)?.index ?? null,
+  for (const run of failed) failedRuns.push({ ...run, release: swapForFailedRun(windows, facts.find(fact => fact.runId === run.runId)!),
     chain: await failureChain(api, run.runId) });
   const health = input.health();
   const apiContinuity = input.apiContinuity();
+  const releaseSpans = input.releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
+  const records = input.requests?.() ?? [];
+  const breakdown = { api: requestBreakdown(records.filter(record => record.kind === "api"), releaseSpans),
+    health: requestBreakdown(records.filter(record => record.kind === "health"), releaseSpans) };
+  const breakdownLine = (name: string, value: typeof breakdown.api) => `${name} failures by status: ${Object.entries(value.byStatus).map(([status, count]) => `${status} ${count}`).join(", ") || "none"}; `
+    + `inside release windows ${value.insideReleases}, outside ${value.outsideReleases}${value.outside.length ? ` (first: ${value.outside.slice(0, 3).map(item => `${item.at} ${item.method} ${item.path} ${item.status ?? "no answer"}`).join("; ")})` : ""}.`;
   const markdown = [
     ...handsOff.lines,
     invariantLine(invariant),
     "",
-    releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades).trimEnd(),
+    releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades, failedOutsideSwaps(windows, facts)).trimEnd(),
     "",
     "Hosted mode: releases came from the instance's own deploys, detected by polling /api/health. Lost-while-old-alive and late/preparation probes are not measured (see Unavailable).",
     ...releaseMarkdown(input.releases, health, apiContinuity),
+    ...(records.length ? [breakdownLine("Health probe", breakdown.health), breakdownLine("API request", breakdown.api)] : []),
     "",
     "Unavailable over the API:",
     ...UNAVAILABLE_OVER_API.map(item => `- ${item}`),
     "",
   ].join("\n");
   await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, invariant,
-    releases: input.releases, health, api: apiContinuity, metrics, duplicates, failedRuns, grades, drained,
+    releases: input.releases, health, api: apiContinuity, requestBreakdown: breakdown, metrics, duplicates, failedRuns, grades, drained,
     unavailable: UNAVAILABLE_OVER_API }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.dir, "SUMMARY.md"), markdown, { mode: 0o600 });
   input.record("hosted_graded", { headline: result.headline, byVerdict: result.byVerdict, byLabel: result.byLabel, retry: result.retry,
