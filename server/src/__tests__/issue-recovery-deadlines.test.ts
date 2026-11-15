@@ -1,7 +1,7 @@
 import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
 import { agents, budgetPolicies, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -176,7 +176,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     const [run] = await state.db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date(),
       contextSnapshot: { issueId: task.id } }).returning({ id: heartbeatRuns.id });
     const backlog = async (count: number) => (await state.db.insert(issues).values(Array.from({ length: count }, (_, index) => ({
-      companyId, title: `Backlog ${index}`, status: "todo", assigneeAgentId: other.id,
+      companyId, title: `Backlog ${index}`, status: "todo", assigneeAgentId: other.id, createdAt: new Date(), updatedAt: new Date(),
     }))).returning({ id: issues.id })).map(row => row.id);
     return { runId: run.id, taskId: task.id, siblingId: sibling.id, backlog, affected: [parent.id, task.id, dependent.id].sort() };
   }
@@ -286,6 +286,68 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect(checkedAt.get(later)! - eventAt).toBeLessThanOrEqual(5_000);
     await quiet();
   });
+  async function advanceWithoutWaiting(ms: number) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { await vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now())); await immediate(); }
+  }
+  it("keeps a saved deadline of a task that a changed-tasks backstop pass does not load", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const [target] = await graph.backlog(20);
+    const checkedAt: number[] = [];
+    await recordedRecovery({ stranded: async scope => {
+      if (scope.issueId !== target) return;
+      checkedAt.push(Date.now());
+      scope.onDeferredDeadline(Date.now() + 16 * 60_000);
+    } });
+    await settleWork({ backstopPending: true });
+    for (let round = 0; round < 2; round++) {
+      await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+      await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+      await settleWork({ backstopPending: true });
+    }
+    const savedFor = checkedAt.at(-1)! + 16 * 60_000;
+    checkedAt.length = 0;
+    await vi.advanceTimersByTimeAsync(savedFor - Date.now() + 2_000);
+    await settleWork({ backstopPending: true });
+    expect(checkedAt.length).toBeGreaterThan(0);
+    expect(checkedAt[0]! - savedFor).toBeLessThanOrEqual(5_000);
+  });
+  it("starts the next changed-tasks window from the start of a slow backstop scan", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const backlog = (await graph.backlog(250)).sort();
+    const behind = backlog[0]!;
+    let slow = false, changedBehind = false;
+    const checkedAt = new Map<string, number[]>();
+    await recordedRecovery({ stranded: async scope => {
+      checkedAt.set(scope.issueId, [...checkedAt.get(scope.issueId) ?? [], Date.now()]);
+      if (!slow) return;
+      vi.setSystemTime(Date.now() + 20_000);
+      if (scope.issueId === behind && !changedBehind) {
+        changedBehind = true;
+        await state.db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, behind));
+      }
+    } }, { fullBackstopMs: 24 * 60 * 60_000 });
+    await settleWork({ backstopPending: true });
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    await state.db.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, backlog));
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    slow = true;
+    checkedAt.clear();
+    const scanStartedAt = Date.now();
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    slow = false;
+    expect(changedBehind).toBe(true);
+    expect(backlog.every(id => checkedAt.has(id))).toBe(true);
+    expect(Date.now() - scanStartedAt).toBeGreaterThan(2 * ISSUE_RECOVERY_BACKSTOP_MS);
+    checkedAt.clear();
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    expect(checkedAt.has(behind)).toBe(true);
+  }, 300_000);
   it("keeps the company pass for hold releases that can admit any task", async () => {
     const f = await fixture();
     const graph = await runGraph(f.companyId, f.agentId);

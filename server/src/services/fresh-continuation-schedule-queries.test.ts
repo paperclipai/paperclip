@@ -82,11 +82,12 @@ function random(seed: number) {
 type PlanNode = { "Relation Name"?: string; "Actual Loops"?: number; "Actual Rows"?: number;
   "Rows Removed by Filter"?: number; "Rows Removed by Index Recheck"?: number; Plans?: PlanNode[] };
 
-function heartbeatRunRowsRead(node: PlanNode): number {
-  const own = node["Relation Name"] === "heartbeat_runs" ? (node["Actual Loops"] ?? 0)
+function rowsRead(node: PlanNode, relation: string): number {
+  const own = node["Relation Name"] === relation ? (node["Actual Loops"] ?? 0)
     * ((node["Actual Rows"] ?? 0) + (node["Rows Removed by Filter"] ?? 0) + (node["Rows Removed by Index Recheck"] ?? 0)) : 0;
-  return own + (node.Plans ?? []).reduce((total, child) => total + heartbeatRunRowsRead(child), 0);
+  return own + (node.Plans ?? []).reduce((total, child) => total + rowsRead(child, relation), 0);
 }
+const heartbeatRunRowsRead = (node: PlanNode) => rowsRead(node, "heartbeat_runs");
 
 suite("fresh-continuation schedule queries", () => {
   let db!: ReturnType<typeof createDb>;
@@ -244,7 +245,7 @@ suite("fresh-continuation schedule queries", () => {
     expect(await heldExecutionsAwaitingFreshContinuation(db, now, 1_000)).toEqual(previousListing);
   }, 60_000);
 
-  it("finds the deadline by run-key and task-link lookups, not a scan of run history per record", async () => {
+  async function deadlinePlan() {
     let captured: { sql: string; params: unknown[] } | undefined;
     const capture = new Proxy(db, { get(target, key) {
       if (key !== "select") return Reflect.get(target, key);
@@ -260,10 +261,46 @@ suite("fresh-continuation schedule queries", () => {
     } });
     await nextFreshContinuationCheckAt(capture as typeof db, now);
     const [row] = await db.$client.unsafe(`explain (analyze, format json) ${captured!.sql}`, captured!.params as never[]);
-    const plan = (row!["QUERY PLAN"] as Array<{ Plan: PlanNode }>)[0]!.Plan;
+    return (row!["QUERY PLAN"] as Array<{ Plan: PlanNode }>)[0]!.Plan;
+  }
+
+  it("finds the deadline by run-key and task-link lookups, not a scan of run history per record", async () => {
+    const plan = await deadlinePlan();
     const [{ runs }] = await db.$client.unsafe(`select count(*)::int as runs from heartbeat_runs`) as unknown as Array<{ runs: number }>;
     // The previous query read the whole run history once per held record
     // (hundreds of times here); the lookups read a few rows per record.
     expect(heartbeatRunRowsRead(plan)).toBeLessThan(2 * runs);
   }, 60_000);
+
+  // Runs last: its candidates reach the saved-files-lost check, which the
+  // previous predicates above do not have.
+  it("checks for permanently lost saved files by the task's own records, not every recovery record per candidate", async () => {
+    const { companyId, agentIds } = tenants[0]!;
+    const fillerIssues = Array.from({ length: 100 }, (_, index) => ({ id: randomUUID(), companyId, title: `Filler ${index}`, status: "done" }));
+    await db.insert(issues).values(fillerIssues as never);
+    const filler = Array.from({ length: 3_000 }, (_, index) => ({ companyId, sourceIssueId: fillerIssues[index % 100]!.id, kind: "missing_disposition",
+      status: "resolved", ownerType: "board", cause: "unrelated_fixture", fingerprint: `filler:${index}`, nextAction: "Fixture",
+      evidence: { runId: randomUUID() } }));
+    for (let start = 0; start < filler.length; start += 500)
+      await db.insert(issueRecoveryActions).values(filler.slice(start, start + 500) as never);
+    for (let index = 0; index < 30; index += 1) {
+      const issueId = randomUUID(), runId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: `Lost files ${index}`, assigneeAgentId: agentIds[0]!, status: "in_progress" });
+      // A person's Retry that failed in setup: system-owned, but not an automatic continuation.
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: agentIds[0]!, scopeKind: "issue", issueId, status: "failed",
+        errorCode: "setup_failed", startedAt: new Date(now.getTime() - 40 * 60_000), finishedAt: new Date(now.getTime() - 30 * 60_000),
+        createdAt: new Date(now.getTime() - 41 * 60_000), contextSnapshot: { issueId, wakeReason: "task_retry" } });
+      await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "resolved",
+        ownerType: "board", cause: "legacy_execution_requires_reconciliation", fingerprint: `lost:${index}`, nextAction: "Fixture",
+        evidence: { runId, automaticRecovery: { replay: "blocked" },
+          systemRecovery: { state: "exhausted", failure: { code: "source_unavailable", retryClass: "use_alternative_strategy" } },
+          freshContinuationCheck: { kind: "backoff", nextCheckAt: now.getTime() - 60_000 } } });
+    }
+    await db.execute(sql`analyze`);
+    const plan = await deadlinePlan();
+    const [{ holds }] = await db.$client.unsafe(`select count(*)::int as holds from issue_recovery_actions`) as unknown as Array<{ holds: number }>;
+    // A cast on the indexed keys read every recovery record once per candidate (about 30 × 4,000 here).
+    expect(rowsRead(plan, "issue_recovery_actions")).toBeLessThan(2 * holds);
+    expect(await nextFreshContinuationCheckAt(db, now)).toBeLessThanOrEqual(now.getTime() - 60_000);
+  }, 120_000);
 });
