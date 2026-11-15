@@ -23,7 +23,7 @@ import {
   type WakeupOptions,
 } from "./run-preparation.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
-import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { preserveNativeFailedWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
@@ -416,8 +416,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       let deferral: string | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const preserved = await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
-          deferral = preserved && hasRequiredWorkspaceRecovery(preserved.resultJson) ? null : "workspace_retention_pending";
+          await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
+          deferral = null;
           break;
         } catch (error) {
           const busy = error instanceof NativeWorkspaceFinalizationBusyError;
