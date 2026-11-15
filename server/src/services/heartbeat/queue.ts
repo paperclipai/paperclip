@@ -2282,8 +2282,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
             const recorded = await recordDeferredChatWakeDecline(db, chatScope, decline);
             if (!recorded) return;
-            logger.warn({ requestId: wake.id, reason: recorded.reason, outcome: recorded.outcome, attempts: recorded.attempts },
-              "saved chat source could not resume after recovery");
+            logger.warn({ requestId: wake.id, reason: recorded.reason, outcome: recorded.outcome, attempts: recorded.attempts,
+              silent: "silent" in recorded ? recorded.silent : undefined }, "saved chat source could not resume after recovery");
             if (recorded.outcome === "retry") scope.onDeferredDeadline?.(recorded.nextAttemptAt);
           }).catch(err => {
             scope.onError?.(err);

@@ -5,7 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, authUsers, chatActions, chatConversations, chatDeliveries, chatEndpoints,
   chatExternalPrincipals, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues,
-  toolApplications, toolConnections, type Db } from "@paperclipai/db";
+  chatMessageLinks, chatPublications, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -14,6 +14,10 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { createDurableChatWakeupRequest, resumeDeferredChatWake } from "../services/durable-chat-wakeup.js";
 import { createInboundWakeups } from "../services/chat-channels/inbound/wakeups.js";
 import { chatWakeAuthorityDenied } from "../services/chat-channels/inbound/wakeup-authorization-error.js";
+import { createInboundWakeNotices } from "../services/chat-channels/inbound/wakeup-notices.js";
+import { inboundWakePublicationKey } from "../services/chat-inbound-wakeup-publications.js";
+import { projectSafeChatPublication } from "../services/chat-publication-projection.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 120_000 });
@@ -204,6 +208,71 @@ describe("deferred chat wake sweep", () => {
     expect(await receipt(orphan.requestId)).toMatchObject({ status: "skipped", error: "task_missing", runId: null });
     expect(await idle(30)).toEqual({ statements: 0, wakeUpdates: 0 });
     expect(errors).toEqual([]);
+  });
+
+  async function visibleQueuedNotice(c: Awaited<ReturnType<typeof company>>, saved: Awaited<ReturnType<typeof wake>>) {
+    const [action] = await db.select().from(chatActions).where(eq(chatActions.id, saved.requestId));
+    const providerMessageId = randomUUID();
+    const [publication] = await db.insert(chatPublications).values({ companyId: c.companyId, endpointId: c.endpoint.id,
+      conversationId: saved.conversation.id, issueId: saved.issue.id, commentId: saved.payloadCommentId,
+      idempotencyKey: inboundWakePublicationKey(saved.requestId, "queued", c.endpoint.id, saved.conversation.id),
+      payload: projectSafeChatPublication({ classification: "external", source: "safe_milestone",
+        text: "Your follow-up is queued.", progressState: "queued" }),
+      state: "published", providerMessageId }).returning();
+    await db.insert(chatMessageLinks).values({ companyId: c.companyId, endpointId: c.endpoint.id,
+      conversationId: saved.conversation.id, publicationId: publication.id, providerMessageId, direction: "outbound" });
+    return action;
+  }
+  function noticeWorker() {
+    return createInboundWakeNotices(db, {
+      authorizeInboundWakeup: (async (tx: Db, action: typeof chatActions.$inferSelect) => {
+        const [issue] = await tx.select().from(issues).where(eq(issues.id, String(action.payload.issueId)));
+        const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, action.endpointId));
+        const [conversation] = await tx.select().from(chatConversations).where(eq(chatConversations.id, action.conversationId!));
+        const [delivery] = await tx.select().from(chatDeliveries).where(eq(chatDeliveries.id, action.deliveryId!));
+        return { issue, endpoint, conversation, delivery, resource: null };
+      }) as never,
+      enqueueFailedChatRetryPublications: async () => 0,
+      authorizeRetainedChatSourcePublication: async () => false,
+      isExternalActionAuthorizationChange: () => false,
+      isShuttingDown: () => false,
+    });
+  }
+  async function notStartedNotices(companyId: string) {
+    return (await db.select().from(chatPublications).where(eq(chatPublications.companyId, companyId)))
+      .filter(row => row.idempotencyKey.includes(":not_started:"));
+  }
+
+  it("closes old saved messages silently and tells a recent watcher once, across passes and restarts", async () => {
+    const c = await company();
+    const old = await wake(c, { status: "done", ageMs: 3 * 24 * 60 * 60_000 });
+    const recent = await wake(c, { status: "done", ageMs: 3 * 60 * 60_000 });
+    await visibleQueuedNotice(c, old);
+    await visibleQueuedNotice(c, recent);
+    const noticeSignals: string[] = [];
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatInboundWakeNotices, () => { noticeSignals.push("signal"); });
+    try {
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+      await settle();
+    } finally { unsubscribe(); }
+    expect(await receipt(old.requestId)).toMatchObject({ status: "skipped", error: "task_closed", runId: null,
+      payload: { silentSettlement: true } });
+    expect(await receipt(recent.requestId)).toMatchObject({ status: "skipped", error: "task_closed", runId: null });
+    expect((await receipt(recent.requestId)).payload?.silentSettlement).toBeUndefined();
+    expect(noticeSignals).toHaveLength(1);
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.companyId, c.companyId));
+    const deliveryOf = async (requestId: string) => {
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, requestId));
+      return deliveries.find(row => row.id === action.deliveryId)!;
+    };
+    expect((await deliveryOf(old.requestId)).redactedError).toBeNull();
+    expect((await deliveryOf(recent.requestId)).redactedError).toContain("Input saved.");
+    const first = await noticeWorker().reconcileInboundWakeNotices({ scope: { companyId: c.companyId } });
+    expect(first.inserted).toBe(1);
+    expect((await notStartedNotices(c.companyId)).map(row => row.commentId)).toEqual([recent.payloadCommentId]);
+    expect((await noticeWorker().reconcileInboundWakeNotices({ scope: { companyId: c.companyId } })).inserted).toBe(0);
+    expect(await noticeWorker().loadInboundWakeNoticeScopes()).toEqual([]);
+    expect((await notStartedNotices(c.companyId)).map(row => row.commentId)).toEqual([recent.payloadCommentId]);
   });
 
   it("reopens a finished task for a recent saved chat message, as a message on a finished task does", async () => {
