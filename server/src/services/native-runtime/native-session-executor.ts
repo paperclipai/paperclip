@@ -31,7 +31,7 @@ import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
-import { nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
+import { nativeProviderStartedTurns, nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -41,6 +41,7 @@ import { notifyExternalAgentSettlement } from "../../modules/external-agents/ind
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
+import { isLeavingRunStartsToReplacement, subscribeRunStartHandoverChanges } from "../run-start-handover.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -300,7 +301,7 @@ import {
   remoteRecoveryProbeReason, runnerStateRequestsFreshBootstrap,
 } from "./remote-runner-recovery-diagnostics.js";
 import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -747,6 +748,7 @@ type WarmNativeSession = {
 };
 
 const WARM_CLOSE_FAILURE_DETAIL_MAX = 2_000;
+const WARM_NATIVE_SESSION_CLOSE_CONCURRENCY = 4;
 
 export function describeWarmCloseFailure(error: unknown): string {
   const describe = (value: unknown): string => {
@@ -928,6 +930,21 @@ export function readNativeSessionIdleWork(): IdleLocalWork {
     ? "present" : "none";
 }
 registerIdleLocalWorkProbe(readNativeSessionIdleWork);
+
+export const WARM_HANDOFF_CLOSE_DELAY_MS = 1_000;
+
+function warmIdleCloseDelay(idleTimeoutMs: number): number {
+  return isLeavingRunStartsToReplacement() ? Math.min(idleTimeoutMs, WARM_HANDOFF_CLOSE_DELAY_MS) : idleTimeoutMs;
+}
+
+subscribeRunStartHandoverChanges(() => {
+  if (!isLeavingRunStartsToReplacement()) return;
+  for (const [sessionId, entry] of warmNativeSessions) {
+    if (entry.busy || entry.idleTimer === null) continue;
+    clearTimeout(entry.idleTimer);
+    armWarmNativeSessionIdleTimer(sessionId, entry, WARM_HANDOFF_CLOSE_DELAY_MS);
+  }
+});
 
 /**
  * How long a new run's admission waits for the warm session to stop being busy.
@@ -1141,11 +1158,8 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   const failures: WarmNativeSessionCloseFailure[] = [];
-  for (const [sessionId, entry] of [...warmNativeSessions]) {
-    if (input.canRetire && !input.canRetire()) break;
-    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
-      continue;
-    }
+  let stopped = false;
+  const closeEntry = async (sessionId: string, entry: WarmNativeSession) => {
     if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(sessionId)
       || (input.canRetire && (entry.instructionPreparationRunId || closingWarmNativeSessions.has(sessionId)))) {
       // A busy turn can complete while another idle session is checkpointing.
@@ -1153,10 +1167,10 @@ async function closeIdleWarmNativeSessions(input: {
       // owner behind after the shutdown sweep has already passed it.
       if (input.closeBusyOnRelease) entry.closeOnReleaseReason = input.reason;
       busy += 1;
-      continue;
+      return;
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
-    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) return;
     const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
@@ -1179,7 +1193,7 @@ async function closeIdleWarmNativeSessions(input: {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       if (!detach && error instanceof AgentDirectoryOperationBusyError) {
         busy += 1;
-        continue;
+        return;
       }
       const destroyed = !detach && input.forceStopUnsettled && input.db
         ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
@@ -1193,7 +1207,7 @@ async function closeIdleWarmNativeSessions(input: {
         "warm native session's sandbox was already destroyed; released its owner");
         forgetWarmNativeSession(sessionId, entry);
         closed += 1;
-        continue;
+        return;
       }
       failed += 1;
       const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
@@ -1207,8 +1221,28 @@ async function closeIdleWarmNativeSessions(input: {
       }
       releaseIdleSessionToolAuthority(sessionId);
     }
-    if (input.canRetire && !input.canRetire()) break;
+  };
+  const agentQueues = new Map<string, [string, WarmNativeSession][]>();
+  for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) continue;
+    const agentKey = `${entry.companyId}:${entry.agentId}`;
+    const queue = agentQueues.get(agentKey);
+    if (queue) queue.push([sessionId, entry]); else agentQueues.set(agentKey, [[sessionId, entry]]);
   }
+  const pendingAgents = [...agentQueues.values()];
+  const closeAgentQueues = async () => {
+    for (let queue = pendingAgents.shift(); queue; queue = pendingAgents.shift()) {
+      for (const [sessionId, entry] of queue) {
+        if (stopped || (input.canRetire && !input.canRetire())) {
+          stopped = true;
+          return;
+        }
+        await closeEntry(sessionId, entry);
+      }
+    }
+  };
+  const concurrency = input.canRetire ? 1 : WARM_NATIVE_SESSION_CLOSE_CONCURRENCY;
+  await Promise.all(Array.from({ length: Math.min(concurrency, pendingAgents.length) }, closeAgentQueues));
   if (failures.length > 0) logger.warn({ reason: input.reason, failures }, "idle warm native sessions did not close");
   return { closed, busy, failed, failures };
 }
@@ -8239,6 +8273,15 @@ async function restoreDurableHarnessForExecution(db: Db, execution: NativeExecut
     downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
 }
 
+async function recordedSessionProviderArtifacts(db: Db, execution: NativeExecutionInput,
+  runId: string): Promise<NativeProviderArtifactReceipt | undefined> {
+  const [run] = await db.select({ runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, execution.binding.companyId),
+    eq(heartbeatRuns.agentId, execution.binding.agentId), eq(heartbeatRuns.nativeSessionId, nativeSessionKey(execution)))).limit(1);
+  const receipt = run?.runnerProfileJson?.nativeProviderArtifacts as NativeProviderArtifactReceipt | undefined;
+  return receipt?.schema === "paperclip.native-provider-artifacts.v1" ? receipt : undefined;
+}
+
 function harnessBackupCandidates(root: string): string[] {
   const backupRoot = harnessBackupRoot(root);
   return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
@@ -8757,7 +8800,7 @@ async function releaseWarmNativeSession(
     } finally { entry.busy = false; }
     return;
   }
-  armWarmNativeSessionIdleTimer(sessionId, entry, idleTimeoutMs);
+  armWarmNativeSessionIdleTimer(sessionId, entry, warmIdleCloseDelay(idleTimeoutMs));
 }
 
 function armWarmNativeSessionIdleTimer(
@@ -11007,6 +11050,11 @@ async function executePaperclipNativeSessionAttempt(
           .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, input.execution.binding.runId));
         throw new Error(describeOwnFailedAttachment(finalization?.recoveryHistory));
       }
+      await waitForLiveWarmSessionOwner({ db: input.db, execution: input.execution, priorRunId: identity.runId,
+        checkpointedAt: async () => {
+          const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: identity.runnerInstanceId });
+          return backup && runnerdAuthorityLifecycle(backup.root, identity) === "suspended" ? new Date(backup.manifest.completedAt) : null;
+        } });
       await logPostTerminalEvents(root, input.onLog);
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId &&
@@ -12378,7 +12426,7 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
-        const providerTurnWait = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"
+        const providerTurnWait = nativeProviderStartedTurns(input.execution.provider)
           ? await nativeProviderTurnWaitOptions(input.db, input.execution.binding) : undefined;
         const runExecution = () =>
           executeNativeSession({
@@ -13756,7 +13804,7 @@ async function executePaperclipNativeSessionAttempt(
             if (current()) {
               delete entry.finishRelease;
               entry.busy = false;
-              armWarmNativeSessionIdleTimer(scope, entry, lifecyclePolicy.idleTimeoutMs);
+              armWarmNativeSessionIdleTimer(scope, entry, warmIdleCloseDelay(lifecyclePolicy.idleTimeoutMs));
             }
           }
         };
@@ -16690,6 +16738,7 @@ async function createRunnerdBackendWithinSessionClaim(
           grokEffort: "grokEffort" in provider ? provider.grokEffort : undefined,
           grokDisableWebSearch: "grokDisableWebSearch" in provider ? provider.grokDisableWebSearch : undefined,
           acpxPermissionModePinned: true } : {}),
+        ...(nativeProviderStartedTurns(provider) ? { providerStartedTurns: true } : {}),
         ...(provider.kind === "opencode" ? { opencodePermissionMode: provider.permissionMode } : {}),
         runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS, runnerProcessReconnectGraceMs: null,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
@@ -16787,6 +16836,10 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerInstanceId: input.runnerInstanceId }) : null;
   let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
     ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
+  if (artifactStorage && !providerArtifacts && durableBinding !== null && !liveProviderRecovery
+      && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+    providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+  }
   let legacyProviderContinuity = durableBinding !== null && !providerArtifacts;
   if (providerArtifacts && artifactStorage && !liveProviderRecovery) await restoreNativeProviderArtifacts({ db: input.db, storage: artifactStorage,
     companyId: input.execution.binding.companyId, receipt: providerArtifacts,
@@ -18447,6 +18500,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   ),
             }
           : {}),
+        ...(nativeProviderStartedTurns(input.execution.provider) ? { providerStartedTurns: true } : {}),
         ...(input.execution.provider.kind === "cursor_cloud" ? { cursorCloud: input.execution.provider.cursorCloud } : {}),
         ...(input.execution.provider.kind === "opencode"
           ? {

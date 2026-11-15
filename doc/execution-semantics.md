@@ -3823,6 +3823,37 @@ in the sandbox, and only the killed server could have adopted it. A refusal
 because the new run itself is no longer admitted (stopped, reassigned, paused
 or no longer owned by this controller) stays an ordinary failure.
 
+The finished run's finalization lease ends at commit, but its warm session
+stays with the server process that ran it. Before live adoption, the new run
+proves that process gone with the shared owner proof: a dead PID in the same
+process space, or a stopped or fenced controller instance lease in another one.
+While that server is still alive, the run defers with
+`native_controller_recovery_waiting_for_owner` and checks again every few
+seconds. It never opens a second controller on the same Runner. The wait ends
+when that server exits, closes the session, or the finished run's warm window
+(its idle timeout plus two minutes) ends. A server that leaves new run starts
+to a replacement during a deploy overlap closes its idle warm sessions within
+a second, and closes each session that becomes idle after that, so the
+replacement usually waits only for that close.
+
+The same wait applies before a follow-up resumes a Runner that its saved state
+shows as suspended. A suspended state read during the outgoing server's close
+does not prove that the close finished. The follow-up starts only when that
+server is gone, or when a harness backup that holds the suspended state was
+completed after the finished turn. A resume that starts a new Runner uses the
+OpenCode launch files the session was admitted with. When no harness backup
+carries that admission, it reads the receipt recorded on the session's last
+run. A server that leaves new run starts to a replacement also leaves same-run
+retries to it, and re-checks every few seconds in case the replacement stops.
+A blocked parent whose run waits for its exact same-run resume on a remote
+Runner shows that scheduled resume and no Retry.
+
+A fresh sandbox is only requested, not guaranteed: the next acquisition
+replaces the marked sandbox only when the saved workspace and harness backup
+allow it. When the next attempt meets an unretired owner again on the same
+sandbox, that attempt stops the automatic retries. It fails without another
+fallback, and the task shows a Retry.
+
 A follow-up on a warm session starts with its predecessor's Runner process
 identity. That inherited identity alone does not count as a process of the
 follow-up when it proves that it left the workspace unchanged. The identity

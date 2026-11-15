@@ -229,7 +229,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
     const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
-      run({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+      run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     server.get("/api/health", (_req, res) => res.sendStatus(204));
     server.get("/api/instance/task-drain", async (_req, res) => {
       res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),

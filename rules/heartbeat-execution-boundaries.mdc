@@ -39,7 +39,7 @@ are relative to `server/src/services/heartbeat/`:
 | `run-output.ts`, `run-log.ts` | Per-run output handling; log formatting, redaction, and payload bounds. |
 
 This is a responsibility map, not an exhaustive API inventory. See the
-[developer module map](../doc/DEVELOPING.md#heartbeat-service-extractions) for
+[developer module map](../doc/heartbeat-internals.md#heartbeat-service-extractions) for
 additional modules and implementation context. Update these descriptions when
 ownership changes.
 

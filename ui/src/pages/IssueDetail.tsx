@@ -90,6 +90,7 @@ import {
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
 import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
+import { isRestoredSavedRead } from "../lib/persisted-query-cache";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -134,6 +135,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
+  isQueuedInterruptHandoff,
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
   startingQueuedCommentIds,
@@ -2491,7 +2493,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       });
       try {
         const updatedQueue = await onInterruptQueued(runId);
-        if (updatedQueue?.state === "deferred") {
+        if (updatedQueue?.state === "deferred" && !isQueuedInterruptHandoff(updatedQueue)) {
           const remaining = new Set(updatedQueue.entries.map(entry => entry.comment.id));
           setConsumedQueuedCommentIds(current => new Set([...current].filter(id => !remaining.has(id))));
           setLocalInterruptPlacements(current => new Map([...current].filter(([id]) => !remaining.has(id))));
@@ -3387,10 +3389,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   // A cold open sends one bootstrap request for everything the chat's first
   // frame needs; the reads below wait for its answer instead of fanning out.
-  // A task preloaded by the list is already cached, so this is a no-op.
+  // A task preloaded by the list is already cached, so this is a no-op. A task
+  // restored from the saved read cache shows its header at once but has no
+  // chat history saved, so it opens like a cold one.
   const bootstrapCompanyId = companies.find((company) => company.issuePrefix === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
-  if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
-    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
+  const coreIssueKey = issueId ? [...queryKeys.issues.detail(issueId), "core"] : null;
+  if (issueId && coreIssueKey && !conversation
+    && (queryClient.getQueryData(coreIssueKey) === undefined || isRestoredSavedRead(queryClient, coreIssueKey))) {
+    const restoredIssue = queryClient.getQueryData<Issue>(coreIssueKey);
+    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId, [restoredIssue?.id, restoredIssue?.identifier]);
   }
   // The core issue keeps its own small, fast read so the header never waits
   // for the larger chat bootstrap; a preloaded task already has it cached.
@@ -3644,7 +3651,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
-      queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
+      // Shares the chat's read: whichever observer mounts first must not send
+      // its own request while the page's bootstrap is loading.
+      queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId!), issueId!, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId!)),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: summarizeLiveRuns,
