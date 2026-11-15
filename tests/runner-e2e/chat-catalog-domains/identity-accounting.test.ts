@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, runListPosition, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
-import { redactRunnerApiPayloads } from "../../../server/src/services/native-runtime/runner-api-log-redaction.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
 /** The chat run's read of the unresolved prerequisite task's saved cost summary, by its identifier. */
@@ -55,10 +54,9 @@ describe("actual saved native accounting contexts", () => {
   it("spend breakdown accepts a cost report whose checked date range covers the unpriced run (cohort 16)", () => {
     const grade = accountingIdentityCases[0]!.grade;
     const byAgent = "GET /api/companies/{companyId}/costs/by-agent";
-    // The saved receipt keeps a cost report's from/to/period (costRange); receipts saved before that carry only the digest.
+    // The run-log receipt keeps only the input digest; the grader recomputes digests of covering ranges.
     const ranged = (query: { from?: string; to?: string; period?: string }, runId = "answer", status = 200, operationId = byAgent, pathParams: Record<string, string> = { companyId: "company" }) =>
-      ({ ...costRead(runId, operationId, status, callApiInputDigest({ operationId, pathParams, query })), costRange: query });
-    const legacy = (query: { from?: string; to?: string; period?: string }) => costRead("answer", byAgent, 200, callApiInputDigest({ operationId: byAgent, pathParams: { companyId: "company" }, query }));
+      costRead(runId, operationId, status, callApiInputDigest({ operationId, pathParams, query }));
     const list = (digest: string) => costRead("answer", "GET /api/companies/{companyId}/heartbeat-runs", 200, digest);
     // Cohort 16: costs/by-agent and costs/summary for the requested week (copied from the task), plus run-list pages.
     const cohort16 = (calls: LeadApiCall[]) => { const o = valid("budgets-costs.spend-breakdown");
@@ -69,14 +67,12 @@ describe("actual saved native accounting contexts", () => {
       o.links.push("/ACO/issues/ACO-5", "/ACO/agents/morgan/runs/original"); o.state.leadApiCalls = calls; return o; };
     const week = { from: "2026-11-09T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" };
     expect(grade(cohort16([ranged(week), list("page-one"), list("page-two")])).passed).toBe(true);
-    // Any range the costs route accepts that covers the unpriced run's cost event (11:43:40Z) counts, compared as times:
-    // date-only, an offset form, a from equal to the run's startedAt, and open-ended ranges.
-    for (const query of [{ from: "2026-11-09", to: "2026-11-15T23:59:59Z" }, { from: "2026-11-15T00:00:00Z" }, { to: "2026-11-16" },
-      { from: "2026-11-15T08:00:00-03:00", to: "2026-11-15T09:00:00-03:00" }, { from: "2026-11-15T11:41:02.000Z", to: "2026-11-15T11:43:40.000Z" },
-      { from: "2026-11-15T11:42:00Z" }, { period: "all" }])
+    // Covering ranges in the forms the grader recognizes: date-only, seconds-less, open-ended, a local-midnight offset
+    // form, a from equal to the run's startedAt, and an all-time read. The cost event is at 11:43:40Z.
+    for (const query of [{ from: "2026-11-09", to: "2026-11-15T23:59:59Z" }, { from: "2026-11-15T00:00Z" }, { to: "2026-11-16" },
+      { from: "2026-11-15T00:00:00-03:00", to: "2026-11-16T00:00:00-03:00" }, { from: "2026-11-15T11:41:02.000Z", to: "2026-11-15T11:43:40.000Z" },
+      { from: "2026-11-15T11:41:02Z" }, { period: "all" }])
       expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(true);
-    // A legacy digest-only receipt still binds by the enumerated day-boundary ranges.
-    expect(grade(cohort16([legacy(week)])).passed).toBe(true);
     expect(grade(cohort16([ranged(week, "answer", 200, "GET /api/companies/{companyId}/costs/summary", {})])).passed).toBe(true);
     // Negative controls: no read, run-list pages whose inputs prove nothing, a range that excludes the run, another
     // company, a denied read, and a read by another run. A link to the run (its id is in the task) proves no read.
@@ -84,13 +80,12 @@ describe("actual saved native accounting contexts", () => {
     expect(grade(cohort16([list("page-one"), list("page-two")])).passed).toBe(false);
     // Ranges that exclude the cost event: an earlier week, one ending before the event (also in an offset form), one
     // starting after it.
-    for (const query of [{ from: "2026-11-02", to: "2026-11-09" }, { to: "2026-11-15T11:43:00Z" }, { from: "2026-11-15T08:00:00-03:00", to: "2026-11-15T08:43:00-03:00" },
-      { from: "2026-11-15T11:44:00Z" }, { from: "2026-11-16" }])
+    // An explicit range wins over period=month: last week's bounds with period=month exclude the event too.
+    for (const query of [{ from: "2026-11-02", to: "2026-11-09" }, { to: "2026-11-15T11:43:00Z" }, { from: "2026-11-14T00:00:00-03:00", to: "2026-11-15T00:00:00-03:00" },
+      { from: "2026-11-15T11:44:00Z" }, { from: "2026-11-16" }, { period: "month", from: "2026-11-02", to: "2026-11-09" }])
       expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(false);
-    // The receipt redacts the company path parameter; an agent key reading another company's costs gets 403 from the
-    // server, and a legacy digest names this company only.
-    expect(grade(cohort16([ranged(week, "answer", 403, byAgent, { companyId: "other-company" })])).passed).toBe(false);
-    expect(grade(cohort16([costRead("answer", byAgent, 200, callApiInputDigest({ operationId: byAgent, pathParams: { companyId: "other-company" }, query: week }))])).passed).toBe(false);
+    // The digest names the company: another company's report does not count.
+    expect(grade(cohort16([ranged(week, "answer", 200, byAgent, { companyId: "other-company" })])).passed).toBe(false);
     expect(grade(cohort16([ranged(week, "answer", 403)])).passed).toBe(false);
     expect(grade(cohort16([ranged(week, "original")])).passed).toBe(false);
     // The target's cost event sets the range: a range covering the run but ending before its late cost event fails.
@@ -103,7 +98,6 @@ describe("actual saved native accounting contexts", () => {
       (o.state.unresolvedBefore as { events: unknown[] }).events = []; return o; };
     expect(grade(pendingTarget([ranged(week)])).passed).toBe(false);
     expect(grade(pendingTarget([ranged({ period: "all" })])).passed).toBe(false);
-    expect(grade(pendingTarget([legacy(week)])).passed).toBe(false);
     expect(grade(pendingTarget([preflightSummaryRead("answer")])).passed).toBe(false);
     for (const operationId of ["GET /api/companies/{companyId}/costs/summary", "GET /api/companies/{companyId}/costs/data-quality"])
       expect(grade(pendingTarget([ranged(week, "answer", 200, operationId)])).passed, operationId).toBe(true);
@@ -112,13 +106,6 @@ describe("actual saved native accounting contexts", () => {
     // The answering run reads a different run's record but links the target run's id: still no read of its accounting.
     const otherRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "answer" } }));
     expect(grade(cohort16([otherRecord, list("page-one")])).passed).toBe(false);
-  });
-  it("reads a cost report's saved date range from the real redacted run events", () => {
-    const input = { operationId: "GET /api/companies/{companyId}/costs/by-agent", pathParams: { companyId: "company" }, query: { from: "2026-11-15T08:00:00-03:00" } };
-    const events = redactRunnerApiPayloads([
-      { runId: "answer", payload: { prpEvent: { payload: { item: { id: "1", type: "tool_use", name: "call_api", input } } } } },
-      { runId: "answer", payload: { prpEvent: { payload: { item: { type: "tool_result", tool_use_id: "1", result: { ok: true, status: 200, apiOperationId: input.operationId, data: [{ agentId: "morgan" }] } } } } } }]);
-    expect(leadApiCalls(events)).toEqual([{ runId: "answer", operationId: input.operationId, digest: callApiInputDigest(input), ok: true, status: 200, costRange: { from: input.query.from } }]);
   });
   it("a HTTP200 retry alone does not establish repaired accounting", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.afterStillUnresolved = false; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(false); });
   it("a genuine confirmed priced repair is distinct from still-unresolved", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.confirmedPricedRepair = true; o.state.afterStillUnresolved = false; o.state.retryAccounted = true; o.state.retryQuality = { runs: [], events: [] }; o.state.retryLedger = [{ agentId: "morgan", eventCount: 1, estimatedEventCount: 0 }]; o.state.finalReply = "The saved usage cost is now recorded. The original work was not rerun."; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(true); });

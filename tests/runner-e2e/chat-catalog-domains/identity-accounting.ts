@@ -68,20 +68,16 @@ async function nativeUnresolvedContext(ctx: ChatCatalogContext, retryable: boole
 }
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /** One chat-agent product call: call_api saves its input as a digest, keeping only the operation, ok and status. */
-export interface LeadApiCall { runId: string; operationId: string; digest: string; ok: boolean; status: number;
-  /** A company cost report's `from`/`to`/`period` inputs, which the saved receipt keeps (`{}` for an unranged read). */
-  costRange?: { from?: string; to?: string; period?: string } }
+export interface LeadApiCall { runId: string; operationId: string; digest: string; ok: boolean; status: number }
 /** Pair each redacted call_api use with its result by run and item id. Payloads and wording are never read. */
 export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadApiCall[] {
-  const uses = new Map<string, { operationId: string; digest: string; costRange?: LeadApiCall["costRange"] }>(); const calls: LeadApiCall[] = [];
+  const uses = new Map<string, { operationId: string; digest: string }>(); const calls: LeadApiCall[] = [];
   for (const row of events) {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), item = objectRecord(objectRecord(envelope.payload).item);
     const runId = String(row.runId ?? envelope.runId ?? "");
     if (item.type === "tool_use" && item.name === "call_api") {
       const input = objectRecord(item.input);
-      const range = objectRecord(input.costRange), costRange = input.costRange && typeof input.costRange === "object" && !Array.isArray(input.costRange)
-        ? Object.fromEntries((["from", "to", "period"] as const).filter(key => typeof range[key] === "string").map(key => [key, range[key] as string])) : undefined;
-      if (typeof input.operationId === "string") uses.set(`${runId}:${String(item.id)}`, { operationId: input.operationId, digest: String(input.apiPayloadSha256 ?? ""), ...(costRange ? { costRange } : {}) });
+      if (typeof input.operationId === "string") uses.set(`${runId}:${String(item.id)}`, { operationId: input.operationId, digest: String(input.apiPayloadSha256 ?? "") });
       continue;
     }
     if (item.type !== "tool_result") continue;
@@ -140,42 +136,50 @@ export function runListPosition(runs: ReadonlyArray<{ id: string; agentId: strin
  * `asset.created` by the reading run. Its saved content names the record actually read. */
 export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
 const coveringCache = new Map<string, ReadonlySet<string>>();
-/** `from`/`to` values a cost report accepts (an ISO date-time with offset, or a date) for each UTC day boundary within two
- * weeks of the run, including the end of each day. Only ranges that cover the whole run are kept, so a read bound by one
- * of these digests returned the run's saved accounting; a range that could exclude the run never counts. */
-export function coveringCostReportDigests(companyId: string, window: { startedAt: string; finishedAt: string }, segments: readonly string[] = COMPANY_COST_SEGMENTS): ReadonlySet<string> {
-  const key = JSON.stringify([companyId, window, segments]);
+/** `from`/`to` values a cost report accepts (an ISO date-time with offset, or a date): each UTC day boundary within two
+ * weeks of the window (with and without milliseconds or seconds, date-only, and the end of the day), each local midnight
+ * at a whole-hour UTC offset paired with the same offset, and the window's own instants (a run's startedAt, its cost
+ * event time). Only ranges that cover the whole window are kept, so a read bound by one of these digests returned the
+ * run's saved accounting. Run-log receipts keep only the input digest, so a covering range in another form is not
+ * recognized: a false negative, never a false pass. */
+export function coveringCostReportDigests(companyId: string, window: { startedAt: string; finishedAt: string }, segments: readonly string[] = COMPANY_COST_SEGMENTS,
+  extraInstants: readonly string[] = []): ReadonlySet<string> {
+  const key = JSON.stringify([companyId, window, segments, extraInstants]);
   const cached = coveringCache.get(key); if (cached) return cached;
   const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt), digests = new Set<string>();
   if (!Number.isFinite(started) || !Number.isFinite(finished)) return digests;
-  const day = 86_400_000, first = Math.floor(started / day) * day - 14 * day;
-  const values: Array<{ text: string; at: number }> = [];
+  const day = 86_400_000, hour = 3_600_000, first = Math.floor(started / day) * day - 14 * day;
+  const utc: Array<{ text: string; at: number }> = [];
   for (let at = first; at <= first + 30 * day; at += day) {
     const iso = new Date(at).toISOString();
-    values.push({ text: iso, at }, { text: iso.replace(".000Z", "Z"), at }, { text: iso.slice(0, 10), at },
+    utc.push({ text: iso, at }, { text: iso.replace(".000Z", "Z"), at }, { text: iso.replace(":00.000Z", "Z"), at }, { text: iso.slice(0, 10), at },
       { text: new Date(at + day - 1).toISOString(), at: at + day - 1 }, { text: new Date(at + day - 1000).toISOString().replace(".000Z", "Z"), at: at + day - 1000 });
   }
+  for (const text of [window.startedAt, window.finishedAt, ...extraInstants]) {
+    const at = Date.parse(text); if (!Number.isFinite(at)) continue;
+    const iso = new Date(at).toISOString(); utc.push({ text: iso, at }, { text: iso.replace(/\.\d{3}Z$/, "Z"), at });
+  }
+  const families: Array<Array<{ text: string; at: number }>> = [utc];
+  for (let offset = -12; offset <= 14; offset++) {
+    if (offset === 0) continue;
+    const sign = offset < 0 ? "-" : "+", zone = `${sign}${String(Math.abs(offset)).padStart(2, "0")}:00`, local: Array<{ text: string; at: number }> = [];
+    for (let midnight = first; midnight <= first + 30 * day; midnight += day) {
+      const at = midnight - offset * hour, date = new Date(midnight).toISOString().slice(0, 10);
+      local.push({ text: `${date}T00:00:00${zone}`, at }, { text: `${date}T00:00${zone}`, at });
+    }
+    families.push(local);
+  }
   const queries: Array<Record<string, string>> = [];
-  for (const from of values) if (from.at <= started) queries.push({ from: from.text });
-  for (const to of values) if (to.at >= finished) queries.push({ to: to.text });
-  for (const from of values) if (from.at <= started) for (const to of values) if (to.at >= finished) queries.push({ from: from.text, to: to.text });
+  for (const family of families) {
+    const froms = family.filter(value => value.at <= started), tos = family.filter(value => value.at >= finished);
+    for (const from of froms) queries.push({ from: from.text });
+    for (const to of tos) queries.push({ to: to.text });
+    for (const from of froms) for (const to of tos) queries.push({ from: from.text, to: to.text });
+  }
   for (const segment of segments) for (const pathParams of [{ companyId }, {}, undefined]) for (const query of queries)
     digests.add(callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query }));
   coveringCache.set(key, digests);
   return digests;
-}
-/** A company cost report read whose saved `from`/`to` (parsed as the costs route parses them) covers the window. An
- * unranged or all-time read covers everything; a month read covers a window inside the current UTC month at the window's
- * end. Receipts saved before the range was kept carry no `costRange` and fall back to digest matching. */
-export function costRangeCovers(call: Pick<LeadApiCall, "operationId" | "costRange">, segments: readonly string[], window: { startedAt: string; finishedAt: string }) {
-  const segment = /^GET \/api\/companies\/\{companyId\}\/costs\/([a-z-]+)$/.exec(call.operationId)?.[1];
-  const range = call.costRange; if (!segment || !segments.includes(segment) || !range) return false;
-  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt);
-  if (range.period === "all") return range.from === undefined && range.to === undefined;
-  if (range.period === "month") { const a = new Date(started), b = new Date(finished); return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth(); }
-  if (range.period !== undefined) return false;
-  const from = range.from === undefined ? -Infinity : new Date(range.from).getTime(), to = range.to === undefined ? Infinity : new Date(range.to).getTime();
-  return !Number.isNaN(from) && !Number.isNaN(to) && from <= started && to >= finished;
 }
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
@@ -199,11 +203,11 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
   const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
     && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
-  const rangedDigests = companyId && window ? coveringCostReportDigests(companyId, window, segments) : new Set<string>();
+  // A from equal to the run's own startedAt (copied from its record) is a natural covering bound too.
+  const rangedDigests = companyId && window ? coveringCostReportDigests(companyId, window, segments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : []) : new Set<string>();
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
-      || !!window && costRangeCovers(call, segments, window)
       || rangedDigests.has(call.digest)
       || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
       || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
