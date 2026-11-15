@@ -599,3 +599,12 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Deferred watchdog handoffs
+
+Task watchdogs treat accepted queued runs and scheduled retries as live work.
+A deferred wake without a run only delays a stopped-work check for one minute
+from its original request time. Queue bookkeeping cannot extend this grace
+period. The existing deadline scheduler checks its expiry even without another
+task write. After it expires, the watchdog can inspect the stopped task; normal
+admission, pause and approval checks still control any new execution.

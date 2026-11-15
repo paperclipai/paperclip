@@ -238,6 +238,28 @@ describe("owned recovery deadline inspection", () => {
     expect(await service.readIdleSchedule(reader, now + 1000, owner)).toMatchObject({ blocked: false, deadlines: [now + 15_000] });
     expect((await service.readIdleSchedule(reader, now + 15_000, owner)).blocked).toBe(true);
   });
+  it("keeps a deferred handoff deadline in the idle schedule until it expires", async () => {
+    const watchdog = { id: "watchdog", companyId: "company", issueId: "issue", watchdogAgentId: "agent", status: "active",
+      lastReviewedFingerprint: null, lastReviewedStopSnapshot: null };
+    const subtree = [{ watchdogId: "watchdog", id: "issue", companyId: "company", status: "in_progress",
+      createdAt: new Date(now - 60_000), updatedAt: new Date(now), originKind: "manual", parentId: null,
+      assigneeAgentId: "agent", assigneeUserId: null, subtreeIncomplete: false }];
+    const reader = { select: () => {
+      let table = "";
+      const rows = () => table === "issue_watchdogs" ? [watchdog] : table === "agent_wakeup_requests"
+        ? [{ companyId: "company", agentId: "agent", status: "deferred_issue_execution",
+          requestedAt: new Date(now), payload: { issueId: "issue" } }] : [];
+      const query = { from: (source: Parameters<typeof getTableName>[0]) => { table = getTableName(source); return query; },
+        innerJoin: () => query, where: () => query, groupBy: () => query, orderBy: () => query,
+        limit: async () => rows(), then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(rows()).then(resolve) };
+      return query;
+    }, execute: async () => subtree } as unknown as Pick<Db, "select" | "execute">;
+    const service = taskWatchdogService(reader as Db);
+    expect(await service.readIdleSchedule(reader, now, owner)).toMatchObject({ blocked: false, deadlines: [now + 60_000] });
+    expect(await service.readIdleSchedule(reader, now + 1000, owner)).toMatchObject({ blocked: false, deadlines: [now + 60_000] });
+    expect((await service.readIdleSchedule(reader, now + 60_001, owner)).blocked).toBe(true);
+  });
+
   it("keeps first-run grace scoped to the run and issue company across batched watchdogs", async () => {
     const watchdogs = ["A", "B"].map(key => ({ id: `watchdog${key}`, companyId: `company${key}`,
       issueId: `issue${key}`, watchdogAgentId: `agent${key}`, status: "active",
