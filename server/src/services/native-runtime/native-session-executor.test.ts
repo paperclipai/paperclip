@@ -11616,10 +11616,12 @@ describe("native warm session supervision", () => {
   });
 
   it.each([
-    { lease: "pending_cleanup", forgotten: true },
-    { lease: "released", forgotten: true },
+    { lease: "stopped-receipt", forgotten: true },
+    { lease: "destroyed-receipt", forgotten: true },
+    { lease: "pending_cleanup", forgotten: false },
+    { lease: "released", forgotten: false },
     { lease: "retained", forgotten: false },
-  ])("forgets a warm owner whose idle close failed only once the host gave up its sandbox: $lease", async ({ lease, forgotten }) => {
+  ])("forgets a warm owner whose idle close failed only once its sandbox has a stop or destroy receipt: $lease", async ({ lease, forgotten }) => {
     const identity = `warm-idle-close-sandbox-${lease}`;
     const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
       session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 50 } },
@@ -11634,7 +11636,7 @@ describe("native warm session supervision", () => {
     });
     const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false,
       collectStopped: async () => undefined, retirementFailed: async () => undefined });
-    let leaseRows: Array<{ status: string }> = [];
+    let leaseRows: Array<Record<string, unknown>> = [];
     const base = leaseDb(warmExecution);
     const db = { ...base, select: (fields?: unknown) => ({ from: (table: unknown) => table === environmentLeases
       ? { where: async () => leaseRows } : base.select(fields as never).from(table as never) }) } as unknown as Db;
@@ -11643,7 +11645,14 @@ describe("native warm session supervision", () => {
         runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}`,
           sandboxLeaseAcquisition: { providerLeaseId: `${identity}-sandbox` } } as never,
         instructionWorkingCopy: copy(identity) });
-      leaseRows = [{ status: lease }];
+      const receipt = lease.endsWith("-receipt") ? lease.slice(0, -"-receipt".length) : null;
+      leaseRows = [{ id: `${identity}-lease`, companyId: warmExecution.binding.companyId, environmentId: identity,
+        heartbeatRunId: identity, provider: "daytona", providerLeaseId: `${identity}-sandbox`,
+        status: receipt ? "released" : lease, releasedAt: lease === "retained" ? null : new Date(),
+        cleanupStatus: receipt || lease === "released" ? "success" : "failed", leasePolicy: "reuse_by_environment",
+        metadata: receipt ? { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+          companyId: warmExecution.binding.companyId, runId: identity, leaseId: `${identity}-lease`, provider: "daytona",
+          providerLeaseId: `${identity}-sandbox`, state: receipt, confirmedAt: new Date().toISOString() } } : {} }];
       await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
       const followUpRunId = `${identity}-follow-up`;
       const adopt = vi.fn(async () => null);
