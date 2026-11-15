@@ -122,6 +122,35 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+export function launchWindowsProcessTreeKill(
+  liveRootPid: number | null | undefined,
+  onUnavailable?: () => void,
+): boolean {
+  if (process.platform !== "win32") return false;
+  if (
+    typeof liveRootPid !== "number" ||
+    !Number.isInteger(liveRootPid) ||
+    liveRootPid <= 0
+  ) {
+    return false;
+  }
+  let killer: ChildProcess;
+  try {
+    killer = spawn("taskkill", ["/PID", String(liveRootPid), "/T", "/F"], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } catch {
+    return false;
+  }
+  killer.on("error", () => {
+    onUnavailable?.();
+  });
+  killer.unref();
+  return true;
+}
+
 // Exported so the direct-child fallback branch can be unit-tested directly.
 export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
@@ -143,6 +172,17 @@ export function signalRunningProcess(
   // the process exited, so escalating on it would suppress a follow-up SIGKILL.
   // `exitCode`/`signalCode` are null until the child actually closes.
   if (running.child.exitCode === null && running.child.signalCode === null) {
+    if (
+      launchWindowsProcessTreeKill(running.child.pid, () => {
+        if (running.child.exitCode === null && running.child.signalCode === null) {
+          try {
+            running.child.kill(signal);
+          } catch {}
+        }
+      })
+    ) {
+      return;
+    }
     running.child.kill(signal);
   }
 }

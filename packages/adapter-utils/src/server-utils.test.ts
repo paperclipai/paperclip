@@ -1,4 +1,4 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -37,6 +37,7 @@ import {
   sanitizeSshRemoteEnv,
   sanitizeInheritedPaperclipEnv,
   isForbiddenConfigEnvKey,
+  launchWindowsProcessTreeKill,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -864,6 +865,87 @@ describe("runChildProcess", () => {
       expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
       expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "terminates the descendant tree on timeout so inherited stdio cannot hang close",
+    async () => {
+      let descendantPid: number | null = null;
+      const runPromise = runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "const { spawn } = require('node:child_process');",
+            "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+            "process.stdout.write(String(child.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 1,
+          graceSec: 1,
+          onLog: async (_stream, text) => {
+            const parsed = Number.parseInt(text.trim(), 10);
+            if (Number.isInteger(parsed) && parsed > 0) descendantPid = parsed;
+          },
+          onSpawn: async () => {},
+        },
+      );
+      const settled = await Promise.race([
+        runPromise.then((result) => ({ ok: true as const, result })),
+        new Promise<{ ok: false }>((resolve) =>
+          setTimeout(() => resolve({ ok: false }), 30_000),
+        ),
+      ]);
+      try {
+        expect(settled.ok).toBe(true);
+        if (settled.ok) {
+          expect(settled.result.timedOut).toBe(true);
+          expect(Number.isInteger(descendantPid) && descendantPid! > 0).toBe(true);
+          expect(await waitForPidExit(descendantPid!, 3_000)).toBe(true);
+        }
+      } finally {
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {}
+        }
+      }
+    },
+    45_000,
+  );
+
+  it.runIf(process.platform === "win32")(
+    "launchWindowsProcessTreeKill refuses an invalid pid so it never targets pid 0",
+    () => {
+      expect(launchWindowsProcessTreeKill(0)).toBe(false);
+      expect(launchWindowsProcessTreeKill(-1)).toBe(false);
+      expect(launchWindowsProcessTreeKill(Number.NaN)).toBe(false);
+      expect(launchWindowsProcessTreeKill(null)).toBe(false);
+      expect(launchWindowsProcessTreeKill(undefined)).toBe(false);
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "signalRunningProcess falls back to a direct-child kill when no tree pid is available",
+    () => {
+      let killed: NodeJS.Signals | null = null;
+      const child = {
+        pid: undefined,
+        exitCode: null,
+        signalCode: null,
+        kill: (signal: NodeJS.Signals) => {
+          killed = signal;
+          return true;
+        },
+      } as unknown as ChildProcess;
+      signalRunningProcess({ child, processGroupId: null }, "SIGKILL");
+      expect(killed).toBe("SIGKILL");
     },
   );
 

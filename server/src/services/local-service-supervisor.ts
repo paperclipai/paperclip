@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { launchWindowsProcessTreeKill } from "@paperclipai/adapter-utils/server-utils";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { processExists } from "./controller-process-identity.js";
 
@@ -566,6 +567,24 @@ export async function terminateLocalService(
     } while (Date.now() < deadline);
     return await targetIsGone();
   };
+
+  if (process.platform === "win32") {
+    const launched = launchWindowsProcessTreeKill(record.pid, () => {
+      try {
+        process.kill(record.pid, signal);
+      } catch {}
+    });
+    if (launched) {
+      const treeWaitMs = Math.max(opts?.forceAfterMs ?? 2_000, 25_000);
+      if (await waitUntilGone(treeWaitMs)) return;
+      try {
+        process.kill(record.pid, "SIGKILL");
+      } catch {}
+      if (await waitUntilGone(opts?.verifyAfterMs ?? 2_000)) return;
+      const listener = record.port ? ` and listener on port ${record.port}` : "";
+      throw new Error(`Failed to terminate local service process ${record.pid}${listener}`);
+    }
+  }
 
   try {
     if (targetProcessGroup) {
