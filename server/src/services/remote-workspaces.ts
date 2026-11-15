@@ -926,7 +926,8 @@ export async function saveRemoteWorkspace(input: {
         archiveSha256: captured.sha256, archiveBytes: captured.byteSize, timing: storageTiming }) : null;
     const saved = unchanged ?? await uploadWorkspaceSnapshot({ db: input.db, storage, snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming,
+      ...(captured ? { expectedArchive: { sha256: captured.sha256, byteSize: captured.byteSize } } : {}) });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();
