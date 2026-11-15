@@ -9,6 +9,11 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Google runtime setup offers a Gemini API key or a separate local Antigravity
+browser sign-in. The browser redirect requires no pasted code; setup displays
+the verified Google email before Connect. Connection setup does not qualify the
+pending Antigravity execution profile. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Feature ID: `connection-setup`.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).
@@ -30,7 +35,7 @@ policies use the ordinary Permissions screen. See [connector notes](../../doc/co
   an empty explicit selection and company-wide access must not be confused.
 - `credentials`: `connection-setup/credentials` — provider sign-in, key, or generic MCP URL follows its supported
   setup method; credentials are not retained in browser draft storage.
-- `handoff`: `connection-setup/handoff` — provider popup/full-page callback returns to the correct setup
+- `handoff`: `connection-setup/handoff` — provider sign-in opens in a separate tab/window; its callback returns to the correct setup
   host with the original task intent and identity choice intact.
 - `draft-recovery`: `connection-setup/draft-recovery` — cancel, Back, Save & exit, reload, Finish setup, and reconnect
   preserve the exact draft rather than creating duplicate connections.
@@ -58,7 +63,7 @@ catalog setup and a generic endpoint may use different flows.
 ### `task-request`
 
 Open the task's pending connection request and its setup action as the named
-user. Setup can open in a task dialog and may use an OAuth popup. Follow the
+user. Setup can open in a task dialog; provider sign-in always uses a separate window/tab. Follow the
 request's original link if setup falls back to a standalone page.
 
 ### `resume-connection`
@@ -247,18 +252,6 @@ the same resource, saved access choices, human ownership and acting-agent audit
 remain. Complete the step, verify the exact task continues, and confirm that
 revoked authority or cancelled work prevents continuation. An ordinary bot-token
 repair or an unchanged credential must not complete a signing-key request.
-
-For Google, request a specific service set, leave and reopen setup, and inspect
-the addressed user's pending choices. Another user's or organization grant must
-not supply those choices. A newer actual consent supersedes the saved request;
-a token refresh does not. A failed grant read must not broaden the selection.
-For Vercel personal setup, verify the selected credential belongs to the
-responsible person and new bindings record the configuring human as creator.
-Agent-initiated API changes retain the acting agent in audit; the human callback
-retains its actual human actor.
-Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
-field-specific credential entry and saved rotation recovery, and the
-[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
 
 ## Gotchas
 

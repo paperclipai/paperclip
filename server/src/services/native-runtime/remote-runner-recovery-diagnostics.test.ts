@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
-  RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError,
+  REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS,
+  REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, boundRemoteRunnerExitEvidence, describeExitedRemoteRunnerReason,
+  readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError,
 } from "./remote-runner-recovery-diagnostics.js";
 
 function shellExit(script: string, args: string[]) {
@@ -100,5 +101,59 @@ describe("remote recovery diagnostic shell receipts", () => {
       await writeFile(marker, `nonce\n${pid}\n2026-10-14T00:00:00.000Z\nrunner\n`);
       expect(shellExit(REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, [marker, "nonce", "runner", pid])).toBe(45);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("exited remote runner evidence", () => {
+  it("prints bounded tails of the exit diagnostic and redirected stderr, never through a symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "remote-exit-evidence-"));
+    const directory = join(root, "diagnostics");
+    try {
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", directory], { encoding: "utf8" })).toBe("");
+      await mkdir(directory);
+      await writeFile(join(directory, "runnerd.stderr.log"), "paperclip-runnerd: transport reconnect grace exceeded");
+      await writeFile(join(directory, "runnerd.process-stderr.log"), `${"x".repeat(10_000)}\nlast stderr line`);
+      const output = execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", directory], { encoding: "utf8" });
+      expect(output).toContain("== runnerd.stderr.log\npaperclip-runnerd: transport reconnect grace exceeded");
+      expect(output).toContain("== runnerd.process-stderr.log\n");
+      expect(output).toContain("last stderr line");
+      expect(output.length).toBeLessThan(4_200);
+      // Each file keeps its share: a long stderr tail cannot crowd out the exit diagnostic.
+      const bounded = boundRemoteRunnerExitEvidence(output, text => text)!;
+      expect(bounded.length).toBeLessThanOrEqual(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS);
+      expect(bounded).toContain("paperclip-runnerd: transport reconnect grace exceeded");
+      expect(bounded).toContain("last stderr line");
+      // The first candidate directory with evidence wins; a later shared directory is read only when it has none.
+      const shared = join(root, "shared");
+      await mkdir(shared);
+      await writeFile(join(shared, "runnerd.stderr.log"), "shared runner exit");
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", directory, shared], { encoding: "utf8" })).not.toContain("shared runner exit");
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", join(root, "missing"), shared], { encoding: "utf8" }))
+        .toBe("== runnerd.stderr.log\nshared runner exit\n");
+      await writeFile(join(root, "secret"), "private");
+      await rm(join(directory, "runnerd.stderr.log"));
+      await symlink(join(root, "secret"), join(directory, "runnerd.stderr.log"));
+      expect(execFileSync("sh", ["-c", REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, "t", directory], { encoding: "utf8" })).not.toContain("private");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("names the durable exit reason, redacted and bounded", () => {
+    const redact = (text: string) => text.replaceAll("sk-secret", "[redacted]");
+    expect(describeExitedRemoteRunnerReason({ lifecycle: "suspended", recoverableFailure: "transport_reconnect_grace_exceeded",
+      diagnostics: ["a", "b", "c", "d", "token sk-secret", 7] }, redact)).toEqual({
+      runnerRecoverableFailure: "transport_reconnect_grace_exceeded", runnerDiagnostics: ["b", "c", "d", "token [redacted]"] });
+    expect(describeExitedRemoteRunnerReason({ recoverableFailure: "free text with spaces" }, redact)).toEqual({});
+    expect(describeExitedRemoteRunnerReason(null, redact)).toEqual({});
+    expect(boundRemoteRunnerExitEvidence("  ", redact)).toBeNull();
+    expect(boundRemoteRunnerExitEvidence("y".repeat(9_000), redact)!.length).toBeLessThanOrEqual(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS);
+  });
+
+  it("keeps the exit reason through the recorded event payload", () => {
+    const diagnostic = { stage: "process_verification", reason: "process_not_running", runnerLifecycle: "ready", runnerSettled: false,
+      runnerRecoverableFailure: "lease_expired_requires_bootstrap", runnerDiagnostics: ["connection lease expired"],
+      runnerExitEvidence: "== runnerd.stderr.log\npaperclip-runnerd: connection lease expired" };
+    expect(readRemoteRunnerRecoveryDiagnostic(JSON.parse(JSON.stringify(diagnostic)))).toEqual(diagnostic);
+    expect(readRemoteRunnerRecoveryDiagnostic({ ...diagnostic, runnerRecoverableFailure: "bad value", runnerDiagnostics: [1],
+      runnerExitEvidence: 4 })).toEqual({ stage: "process_verification", reason: "process_not_running", runnerLifecycle: "ready", runnerSettled: false });
   });
 });

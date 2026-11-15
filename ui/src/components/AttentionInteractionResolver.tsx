@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { invalidateInteractionRecordViews } from "../lib/attention-record-views";
 import {
   interactionReadinessRefetchInterval,
   isIssueThreadInteraction,
@@ -16,6 +17,8 @@ import {
   type RequestItemVerdictValue,
   type SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
+import { useAttentionActionConfirmation } from "./AttentionCloseMenu";
+import { DecisionCardFooter } from "./DecisionCardFooter";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 
 interface AttentionInteractionResolverProps {
@@ -25,8 +28,18 @@ interface AttentionInteractionResolverProps {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
-  /** Called after a resolution so the parent can refresh the feed. */
-  onResolved?: () => void;
+  footerSlot?: ReactNode;
+  /** A ready-made panel row for the decision's artifact, first in the compact
+   * card's context panel (PAP-775). */
+  artifactRow?: ReactNode;
+  /** The same decision is shown in another view (card + Review side panel):
+   * share one Revise… draft between them (PAP-773). */
+  shareReviseDraft?: boolean;
+  presentation?: "default" | "coordinator-decision";
+  /** The card's audience line already names who may answer (PAP-767). */
+  audienceStated?: boolean;
+  /** Successful updates include partial item reviews; inspect status before settling the whole card. */
+  onResolved?: (interaction?: IssueThreadInteraction) => void;
 }
 
 export function replaceResolvedInteraction(
@@ -46,6 +59,10 @@ export function replaceResolvedInteraction(
  * row and renders the existing {@link IssueThreadInteractionCard} inline, so
  * confirmations and questions are answerable in-row without leaving the queue
  * (converged PAP-12628). Reviews never reach here — they deep-link.
+ *
+ * There is no Cancel here: closing a request is the card's Close… menu
+ * ("Withdraw request"), which works for every interaction kind (PAP-749 plan
+ * §2, Rule 6). The task page keeps its own controls.
  */
 export function AttentionInteractionResolver({
   companyId,
@@ -54,9 +71,15 @@ export function AttentionInteractionResolver({
   agentMap,
   currentUserId,
   userLabelMap,
+  presentation,
+  audienceStated,
+  footerSlot,
+  artifactRow,
+  shareReviseDraft,
   onResolved,
 }: AttentionInteractionResolverProps) {
   const queryClient = useQueryClient();
+  const confirmAction = useAttentionActionConfirmation();
 
   const { data: interactions, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId),
@@ -81,9 +104,9 @@ export function AttentionInteractionResolver({
         (current) => replaceResolvedInteraction(current, resolvedInteraction),
       );
     }
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-    onResolved?.();
+    // Task detail keys the same list by identifier, so refresh every view (UX2).
+    invalidateInteractionRecordViews(queryClient, companyId);
+    onResolved?.(resolvedInteraction);
   };
 
   const acceptMutation = useMutation({
@@ -113,12 +136,6 @@ export function AttentionInteractionResolver({
     onSuccess: invalidate,
   });
 
-  const cancelMutation = useMutation({
-    mutationFn: (input: { interactionId: string }) =>
-      issuesApi.cancelInteraction(issueId, input.interactionId),
-    onSuccess: invalidate,
-  });
-
   const verdictsMutation = useMutation({
     mutationFn: (input: {
       interactionId: string;
@@ -129,41 +146,54 @@ export function AttentionInteractionResolver({
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
+      <div className="space-y-3 py-3">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
+        </div>
+        <DecisionCardFooter leading={footerSlot} />
       </div>
     );
   }
 
   if (error || !interaction) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
-        This decision is no longer available — it may have been resolved elsewhere.
-      </p>
+      <div className="space-y-3 py-3">
+        <p className="text-xs text-muted-foreground">
+          This decision is no longer available — it may have been resolved elsewhere.
+        </p>
+        <DecisionCardFooter leading={footerSlot} />
+      </div>
     );
   }
 
   return (
     <IssueThreadInteractionCard
       interaction={interaction}
+      presentationVariant={presentation}
+      audienceStated={audienceStated}
+      footerSlot={footerSlot}
+      artifactRow={artifactRow}
+      primaryActionOnRight={presentation === "coordinator-decision"}
+      shareReviseDraft={shareReviseDraft}
       agentMap={agentMap}
       currentUserId={currentUserId}
       userLabelMap={userLabelMap}
-      onAcceptInteraction={(target, selectedClientKeys, selectedOptionIds, rememberAction) =>
-        acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction }).then(() => undefined)
-      }
-      onRejectInteraction={(target, reason) =>
-        rejectMutation.mutateAsync({ interactionId: target.id, reason }).then(() => undefined)
-      }
-      onSubmitInteractionAnswers={(target: AskUserQuestionsInteraction, answers) =>
-        respondMutation.mutateAsync({ interactionId: target.id, answers }).then(() => undefined)
-      }
-      onCancelInteraction={(target: AskUserQuestionsInteraction) =>
-        cancelMutation.mutateAsync({ interactionId: target.id }).then(() => undefined)
-      }
-      onSubmitInteractionVerdicts={(target: RequestItemVerdictsInteraction, verdicts) =>
-        verdictsMutation.mutateAsync({ interactionId: target.id, verdicts }).then(() => undefined)
-      }
+      onAcceptInteraction={async (target, selectedClientKeys, selectedOptionIds, rememberAction) => {
+        await confirmAction();
+        await acceptMutation.mutateAsync({ interaction: target, selectedClientKeys, selectedOptionIds, rememberAction });
+      }}
+      onRejectInteraction={async (target, reason) => {
+        await confirmAction();
+        await rejectMutation.mutateAsync({ interactionId: target.id, reason });
+      }}
+      onSubmitInteractionAnswers={async (target: AskUserQuestionsInteraction, answers) => {
+        await confirmAction();
+        await respondMutation.mutateAsync({ interactionId: target.id, answers });
+      }}
+      onSubmitInteractionVerdicts={async (target: RequestItemVerdictsInteraction, verdicts) => {
+        await confirmAction();
+        await verdictsMutation.mutateAsync({ interactionId: target.id, verdicts });
+      }}
     />
   );
 }

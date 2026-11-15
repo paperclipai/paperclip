@@ -78,10 +78,14 @@ const support = await getEmbeddedPostgresTestSupport();
       contextSnapshot: { prompt: payload, conversationMode: true } }).where(eq(heartbeatRuns.id, runId));
     const [row] = await loadAgentRunAuthentication(db, input);
     expect(contract(row)).toEqual(contract(await baseline()));
-    expect(row.resultJson).toEqual({ executionCancellation: { state: null } });
+    expect(row.resultJson).toEqual({ executionCancellation: { state: null }, freshContinuationSupersededAt: null });
     expect(row.contextSnapshot).toEqual({ conversationMode: true });
     expect(Buffer.byteLength(JSON.stringify(row))).toBeLessThan(512);
     await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, runId));
+    expect(agentRunWritesRevoked((await loadAgentRunAuthentication(db, input))[0])).toBe(true);
+    // A run that a fresh continuation replaced loses its writes too.
+    await db.update(heartbeatRuns).set({ status: "failed", resultJson: { freshContinuationSupersededAt: new Date().toISOString() } })
       .where(eq(heartbeatRuns.id, runId));
     expect(agentRunWritesRevoked((await loadAgentRunAuthentication(db, input))[0])).toBe(true);
   });

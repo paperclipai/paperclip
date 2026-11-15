@@ -7,6 +7,16 @@ import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 const ENVIRONMENT = { id: "env-1", name: "Sandbox", driver: "sandbox" } as unknown as Environment;
 
 describe("buildLoginLeaseAcquireArgs", () => {
+  it("keeps plugin probes as ordinary Runner allocations", () => {
+    const args = buildLoginLeaseAcquireArgs({ metadata: { companyId: "co", environment: { ...ENVIRONMENT, driver: "plugin" }, adapterType: "paperclip_runner" } });
+    expect(args.purpose).toBeUndefined();
+    expect(args.loginCommandKey).toBeUndefined();
+    expect(args.adapterType).toBe("paperclip_runner");
+  });
+  it("binds an explicit browser login to its command and Runner target", () => {
+    const args = buildLoginLeaseAcquireArgs({ browserLogin: true, metadata: { companyId: "co", environment: { ...ENVIRONMENT, driver: "plugin" }, adapterType: "codex_local" }, targetAgentId: "computer" });
+    expect(args).toMatchObject({ purpose: "login", loginCommandKey: "codex", adapterType: "paperclip_runner", agentId: "computer" });
+  });
   it("sets the fixed lease arguments that both login services share", () => {
     const args = buildLoginLeaseAcquireArgs({
       metadata: { companyId: "co-1", environment: ENVIRONMENT, adapterType: "codex" },

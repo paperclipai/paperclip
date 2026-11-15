@@ -82,6 +82,37 @@ valid, but when `PAPERCLIP_WORKSPACE_CWD` is present its canonical path must be
 equal to or below that assigned workspace so sibling and symlink escapes fail
 before provider startup.
 
+When the execution target is itself the sandbox (a remote sandbox such as
+Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), standard and ask runs use
+the default execution mode. The Runner starts their Codex threads and turns
+with the external sandbox policy and sends no collaboration mode. Ask mode
+restricts Paperclip mutation tools, not the Codex sandbox. Planning runs keep
+the `paperclip-runner-workspace-read-only` profile on `thread/start` and
+`turn/start` everywhere, because Codex's plan collaboration mode is a prompt
+and does not block writes or commands. Inside an external sandbox that profile
+reads the whole filesystem (`":root"="read"`), writes nowhere except a
+brokered GitHub CLI config directory, and keeps the controller's network
+decision (`PAPERCLIP_RUNNER_NETWORK_ACCESS`). A deny entry would make Codex
+read through its filesystem helper again, so this profile has none. Codex then
+reports a `readOnly` sandbox, loads `AGENTS.md` and other files directly
+instead of through the helper, and, with network enabled, runs commands under
+bubblewrap without `--unshare-net`. The helper always isolates the network,
+and a container without `CAP_NET_ADMIN` cannot bring up loopback in a new
+network namespace (`bwrap: loopback: Failed RTM_NEWADDR`), which made thread
+creation fail. Writes from commands and patches are still refused. When the
+controller disables network, the thread still starts, but bubblewrap must
+isolate the network, so planning commands fail closed in such a container.
+On the current Daytona image, bubblewrap also cannot map user IDs for
+planning commands (`bwrap: setting up uid map: Permission denied`), so shell
+commands fail closed there in every planning turn. The planning turn still
+reads files and writes its Plan through Codex and Paperclip tools.
+The broader read access matches what default-mode turns already have in the
+same sandbox, and the session context records `rootAccess: "read"` for these
+planning turns. Local and SSH planning keep the narrower profile that denies host
+`HOME` and `CODEX_HOME`. If a remote target still refuses provider startup,
+the run ends as a provider startup failure with Retry (see
+`durable-recovery.md`).
+
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,
 even with `features.memories=false` and an explicit Codex-home deny. That makes

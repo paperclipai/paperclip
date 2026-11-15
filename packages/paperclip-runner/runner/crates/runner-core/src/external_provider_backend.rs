@@ -1077,12 +1077,14 @@ mod tests {
             runner_digest: "sha256:test".into(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 1024 * 1024,
             p0_reserve_bytes: 65536,
             max_frame_bytes: 1024 * 1024,
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
+            turn_scoped: false,
         }
     }
     fn command(kind: &str, payload: Value) -> Command {

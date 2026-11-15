@@ -36,8 +36,13 @@ it("validates the complete planned chat catalog against its schema and feature m
     capabilities.forEach(id => mapped.add(id));
   }
   expect(ids.size).toBe(244);
-  expect([...covered].sort()).toEqual([...mapped].sort());
-  expect(mapped.size).toBe(191);
+  // Added by merged production after this 244-scenario catalog was frozen.
+  // This capability is explicitly uncovered, not implicitly qualified by this suite.
+  const outsideFrozenScope = ["runs-adapters/model-accounts"];
+  expect([...covered].filter(id => !mapped.has(id))).toEqual([]);
+  expect([...mapped].filter(id => !covered.has(id)).sort()).toEqual(outsideFrozenScope);
+  expect(covered.size).toBe(191);
+  expect(mapped.size).toBe(192);
   const defaults = parseDocument(readFileSync(new URL("defaults.yaml", catalog), "utf8"), { uniqueKeys: true });
   expect(defaults.errors).toEqual([]);
   expect(defaults.toJS()).toMatchObject({ schema_version: 1, status: "planned" });

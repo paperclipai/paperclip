@@ -3,7 +3,7 @@
 Browse the [published feature guide](https://d1p6rlowie26tp.cloudfront.net/storybook/branches/master/?path=/story/overview-storybook-guide--coverage-guide),
 or run `pnpm storybook` for the current checkout. The feature and capability IDs
 come from the [feature recipes](../feature-map/README.md). Product behavior and
-permissions remain governed by the implementation spec and access companions.
+permissions remain governed by the code, its tests, and access companions.
 
 ## Authored sources
 

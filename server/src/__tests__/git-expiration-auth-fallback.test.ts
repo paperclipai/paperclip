@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { GitAuthInvocation } from "../services/git-credentials.js";
 import { gitExpirationSkipReason, withAnonymousGitFallback } from "../services/git-workspace-expiration.js";
 import { GitCacheRestorationFailure } from "../services/git-workspace-restoration.js";
 
@@ -11,7 +12,7 @@ describe("Git expiration upstream access", () => {
   });
 
   it("passes resolved credentials through unchanged", async () => {
-    const credential = { env: { GIT_ASKPASS: "/bin/true" }, configArgs: ["-c", "credential.helper="] };
+    const credential: GitAuthInvocation = { env: { GIT_ASKPASS: "/bin/true" }, configArgs: ["-c", "credential.helper="], source: "managed_connection", secretName: null };
     const resolved = withAnonymousGitFallback(async () => credential);
     await expect(resolved("https://github.com/example/private")).resolves.toBe(credential);
   });

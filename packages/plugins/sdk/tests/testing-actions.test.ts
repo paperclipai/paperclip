@@ -12,7 +12,7 @@ const manifest = {
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
-  entrypoints: {},
+  entrypoints: { worker: "./worker.js" },
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
@@ -136,6 +136,7 @@ describe("createTestHarness issue interactions", () => {
           minSelected: 1,
           maxSelected: 2,
         },
+        // Omits the fields the schema defaults. The input type allows that.
       },
       "company-1",
       { authorAgentId: "agent-1" },

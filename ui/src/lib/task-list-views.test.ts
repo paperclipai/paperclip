@@ -46,4 +46,12 @@ describe("task list views", () => {
     expect(loadTaskListView("key", denied)).toBe("all");
     expect(() => saveTaskListView("key", "inbox", denied)).not.toThrow();
   });
+  it("honors an explicit fallback for missing, invalid or denied preferences, preserving saved choices", () => {
+    for (const value of [null, "invalid", "all", "unread", "blocked", "inbox"]) {
+      const storage = { getItem: () => value, setItem: () => {} };
+      expect(loadTaskListView("key", storage, "inbox")).toBe(value === null || value === "invalid" ? "inbox" : value);
+    }
+    expect(loadTaskListView("key", null, "inbox")).toBe("inbox");
+    expect(loadTaskListView("key", { getItem: () => { throw new Error("denied"); }, setItem: () => {} }, "inbox")).toBe("inbox");
+  });
 });

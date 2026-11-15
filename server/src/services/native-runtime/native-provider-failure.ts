@@ -1,7 +1,9 @@
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
+import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 
+// Shared by every provider whose selected model is rejected, so it names no specific connection.
 export const NATIVE_MODEL_REJECTION_MESSAGE =
-  "The selected model is not supported by the current ChatGPT connection. Choose a supported model or a compatible AI connection.";
+  "The selected model is not available through the current AI connection. Choose a supported model or a compatible AI connection.";
 
 export const NATIVE_PROVIDER_OVERLOADED_MESSAGE =
   "Selected model is at capacity. Please try a different model.";
@@ -25,13 +27,22 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** An API-key Codex turn whose configured model the Responses API answers with 404. */
+export const NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC = {
+  provider: "codex",
+  category: "model_not_found",
+  status: 404,
+  authMode: "api_key",
+} as const;
+
 /** Reconstruct only the closed diagnostic vocabulary, never provider text. */
 export function readNativeModelRejectionDiagnostic(value: unknown) {
   try {
     const entry = record(value);
-    return Object.entries(NATIVE_MODEL_REJECTION_DIAGNOSTIC).every(([key, expected]) => entry[key] === expected)
-      ? { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC }
-      : null;
+    for (const diagnostic of [NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC]) {
+      if (Object.entries(diagnostic).every(([key, expected]) => entry[key] === expected)) return { ...diagnostic };
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -78,6 +89,14 @@ export interface NativeCodexTurnFailureDiagnostic {
  */
 const OPENCODE_TURN_FAILURE_RUNNER_CODES: ReadonlySet<string> = new Set([
   "opencode_server_exited", "opencode_event_stream_lost", "provider_terminal_error_missing",
+  "opencode_empty_response", "opencode_output_limit_reached",
+]);
+const PROVIDER_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<ProviderFailure["category"]>([
+  "rate_limit", "quota_exhausted", "authentication", "permission", "model_unavailable", "invalid_request",
+  "overloaded", "timeout", "unknown",
+]);
+const PROVIDER_FAILURE_RETRYABILITY: ReadonlySet<string> = new Set<ProviderFailure["retryability"]>([
+  "transient", "requires_action", "unknown",
 ]);
 const OPENCODE_STREAM_FAILURE_KINDS: ReadonlySet<string> = new Set([
   "server_exited", "connection_failed", "http_error", "stream_closed", "stream_error",
@@ -106,7 +125,11 @@ export interface NativeOpenCodeTurnFailureDiagnostic {
   exitCode?: number;
   signal?: string;
   connectionError?: string;
+  /** The stream failure's HTTP status, or else the provider error's status. */
   httpStatus?: number;
+  /** The provider error's category and retryability, when the turn carried one. */
+  providerFailureCategory?: ProviderFailure["category"];
+  providerFailureRetryability?: ProviderFailure["retryability"];
 }
 
 export type NativeTurnFailureDiagnostic = NativeCodexTurnFailureDiagnostic | NativeOpenCodeTurnFailureDiagnostic;
@@ -135,11 +158,27 @@ function openCodeStreamFailureFields(value: unknown): Omit<NativeOpenCodeTurnFai
   };
 }
 
+/** Only the provider error's closed fields; its message and code stay out of diagnostics. */
+function openCodeProviderFailureFields(
+  category: unknown, retryability: unknown, httpStatus: unknown,
+): Pick<NativeOpenCodeTurnFailureDiagnostic, "providerFailureCategory" | "providerFailureRetryability" | "httpStatus"> {
+  if (typeof category !== "string" || !PROVIDER_FAILURE_CATEGORIES.has(category)) return {};
+  return {
+    providerFailureCategory: category as ProviderFailure["category"],
+    ...(typeof retryability === "string" && PROVIDER_FAILURE_RETRYABILITY.has(retryability)
+      ? { providerFailureRetryability: retryability as ProviderFailure["retryability"] } : {}),
+    ...httpStatusField(httpStatus),
+  };
+}
+
 function openCodeTurnFailure(failure: Record<string, unknown>): NativeOpenCodeTurnFailureDiagnostic {
+  const providerFailure = readProviderFailure(failure.providerFailure);
   return {
     provider: "opencode",
     category: "turn_failed",
     ...runnerFailureCodeField(failure.code, OPENCODE_TURN_FAILURE_RUNNER_CODES),
+    ...(providerFailure ? openCodeProviderFailureFields(
+      providerFailure.category, providerFailure.retryability, providerFailure.httpStatus) : {}),
     ...openCodeStreamFailureFields(failure.opencodeFailure),
   };
 }
@@ -163,6 +202,7 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
         provider: "opencode",
         category: "turn_failed",
         ...runnerFailureCodeField(entry.runnerFailureCode, OPENCODE_TURN_FAILURE_RUNNER_CODES),
+        ...openCodeProviderFailureFields(entry.providerFailureCategory, entry.providerFailureRetryability, entry.httpStatus),
         ...openCodeStreamFailureFields(entry),
       };
     }
@@ -182,10 +222,23 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
 /** Observe only events accepted by the bound control-plane persistence port. */
 export function createNativeProviderFailureObservation(provider: { kind: string; model?: string | null }) {
   let rejectedTurnId: string | null = null;
+  /** A Codex API-key turn whose configured model the Responses API does not serve (404). */
+  let missingModelTurnId: string | null = null;
   let overloadedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
+  const providerFailures = new Map<string, ProviderFailure>();
+  /** A driver-classified, action-required model rejection; `forTerminal` classifies it, so it is not "unclassified". */
+  const modelUnavailableTurn = (turnId: string) => {
+    const failure = providerFailures.get(turnId);
+    return failure?.category === "model_unavailable" && failure.retryability === "requires_action";
+  };
   return {
     observe(event: PrpEvent) {
+      if (event.sourceKind === "runner" && event.eventType === "turn.failed" && event.turnId
+        && event.payload.status === "failed") {
+        const failure = readProviderFailure(record(event.payload.error).providerFailure);
+        if (failure && !providerFailures.has(event.turnId)) providerFailures.set(event.turnId, failure);
+      }
       if ((provider.kind !== "codex" && provider.kind !== "opencode") ||
           event.sourceKind !== "runner" || event.eventType !== "turn.failed" || !event.turnId) return;
       const payload = record(event.payload);
@@ -209,6 +262,16 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       }
       if (!provider.model || payload.status !== "failed" || payload.recoverable === true || failure.recoverable === true ||
           typeof failure.message !== "string" || failure.message.length > 4_096) return;
+      // With an API key, Codex retries the Responses API 404 and then fails the turn with this
+      // terminal text (codex 0.160.0). Bind it to the configured model; store neither name nor text.
+      const info = record(failure.codexErrorInfo);
+      const infoKinds = Object.keys(info);
+      // Its retried 404s arrive as responseStreamDisconnected with willRetry; only the terminal kind counts.
+      if (infoKinds.length === 1 && infoKinds[0] === "httpConnectionFailed" && record(info.httpConnectionFailed).httpStatusCode === 404 &&
+          failure.message.startsWith(`unexpected status 404 Not Found: The model \`${provider.model}\` does not exist or you do not have access to it.`)) {
+        missingModelTurnId = event.turnId;
+        return;
+      }
       let response: Record<string, unknown>;
       try { response = record(JSON.parse(failure.message)); } catch { return; }
       const error = record(response.error);
@@ -219,6 +282,10 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
           error.message !== `The '${provider.model}' model is not supported when using Codex with a ChatGPT account.`) return;
       rejectedTurnId = event.turnId;
     },
+    providerFailureForTerminal(turnId: string | null | undefined, terminal: PrpTerminalState) {
+      if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
+      return providerFailures.get(turnId) ?? null;
+    },
     forTerminal(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
       if (turnId === overloadedTurnId) return {
@@ -226,17 +293,23 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
-      if (turnId !== rejectedTurnId) return null;
-      return {
-        errorCode: "native_provider_model_rejected" as const,
-        errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-        diagnostic: { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC },
-      };
+      // Every model rejection shares one result; only its closed diagnostic differs.
+      const modelRejection = <T>(diagnostic: T) => ({
+        errorCode: "native_provider_model_rejected" as const, errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic,
+      });
+      if (turnId === missingModelTurnId) return modelRejection({ ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+      if (turnId === rejectedTurnId) return modelRejection({ ...NATIVE_MODEL_REJECTION_DIAGNOSTIC });
+      // A driver's closed category marks a rejected model for any provider. Only an
+      // action-required rejection qualifies; a transient one may succeed on retry.
+      if (!modelUnavailableTurn(turnId)) return null;
+      const failure = providerFailures.get(turnId)!;
+      return modelRejection(failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category });
     },
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed" ||
-          turnId === overloadedTurnId || turnId === rejectedTurnId) return null;
+          turnId === overloadedTurnId || turnId === rejectedTurnId || turnId === missingModelTurnId ||
+          modelUnavailableTurn(turnId)) return null;
       const diagnostic = failedTurns.get(turnId);
       return diagnostic ? { ...diagnostic } : null;
     },

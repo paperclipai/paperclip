@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { eq, sql, type SQL } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDb, plugins, type Db } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import type { PaperclipPluginManifestV1, PluginEnvironmentDriverDeclaration } from "@paperclipai/shared";
 import { resolvePluginSandboxProviderConfigSchema, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import { resolveEnvironmentDriverConfigForRuntime, resolveSandboxProviderSecretRefPaths } from "../services/environment-config.js";
@@ -39,12 +39,12 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
   const lookup = (client: Db, driverKey = key) => resolvePluginSandboxProviderConfigSchema({ db: client, driverKey });
   async function measure<T>(client: Db, operation: () => Promise<T>) {
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event), () => now);
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event), () => now);
     installDatabaseResponseCapture(client, { plugins }, capture);
     try {
       const value = await operation();
       capture.flush();
-      const entries = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1");
+      const entries = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1");
       return { value, bytes: entries.reduce((sum, entry) => sum + Number(entry.responseValueBytes), 0),
         calls: entries.reduce((sum, entry) => sum + Number(entry.calls), 0) };
     } finally { capture.flush(); }

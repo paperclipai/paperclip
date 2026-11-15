@@ -43,7 +43,8 @@ function conversationRunPredicate() {
 }
 
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
-export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
+export async function historicalAdapterType(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runnerProfileJson">): Promise<string | null> {
   const selected = claimedAdapterType(run);
   if (selected) return selected;
   const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)

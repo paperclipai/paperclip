@@ -12,3 +12,12 @@ export function normalizeEscapedLineBreaks(value: string): string {
 }
 
 export const multilineTextSchema = z.string().transform(normalizeEscapedLineBreaks);
+
+/**
+ * Bound a string by JavaScript string length as well as Zod's max, which counts code
+ * points and so admits up to twice `max` in emoji. Use this where a consumer of the
+ * value enforces the same limit with `.length`.
+ */
+export function maxStringLength(schema: z.ZodString, max: number) {
+  return schema.max(max).refine((value) => value.length <= max, `Must be at most ${max} characters`);
+}

@@ -17,6 +17,15 @@ import {
 describe("task side-panel persistence", () => {
   beforeEach(() => window.localStorage.clear());
 
+  it("preserves a reviewed document owner separately from the task conversation", () => {
+    const remote = taskPanelDocumentTab("plan", "Reviewed plan", "v1", "task-b");
+    const local = taskPanelDocumentTab("plan", "Local plan", "v1");
+    expect(remote.id).not.toBe(local.id);
+    writeTaskSidePanelState("user-1", "company-1", "task-a", {
+      state: { tabs: [remote, local], activeTabId: remote.id }, launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+    });
+    expect(readTaskSidePanelState("user-1", "company-1", "task-a", true)?.state.tabs[0]?.payload).toEqual({ kind: "issue-document", documentKey: "plan", revisionId: "v1", documentIssueId: "task-b" });
+  });
   it("round-trips a plugin panel identity", () => {
     const entityId = "33333333-3333-4333-8333-333333333333";
     const panel = { entityId, slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } };

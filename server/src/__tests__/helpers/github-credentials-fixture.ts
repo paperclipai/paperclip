@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { agents, companies, companyMemberships, companySecrets, connectionGrants, heartbeatRuns, issueComments, issues, toolApplications, toolConnectionInstalls, toolConnections, userSecretDefinitions, type Db } from "@paperclipai/db";
-import { initializeRunIdentity, reserveSteeredIdentity, acceptSteeredIdentity } from "../../services/run-identity.js";
+import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../../services/run-identity.js";
 
 export function githubCredentialsFixture(getDb: () => Db) {
   async function seed() {
@@ -145,7 +145,7 @@ export function githubCredentialsFixture(getDb: () => Db) {
       ...input,
       messageId: id,
     });
-    await acceptSteeredIdentity(db, context!);
+    await reconcileSteeredIdentity(db, context!);
   }
   return { seed, grant, switchTo };
 }

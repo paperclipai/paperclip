@@ -56,6 +56,7 @@ describe("local service supervision", () => {
           worktreePath: null,
           warnings: [],
           created: false,
+          branchCreatedByRuntime: false,
         },
         config: {
           workspaceRuntime: {

@@ -29,8 +29,15 @@ available tools and records before asking the user for missing information:
   architecture, adapter, model/effort, execution workspace, trust mode, and credential
   source. Trace effective values back through task overrides, inherited settings,
   defaults, and saved session state. Redact credential values.
+- Whether a deploy or restart separated save from resume. Compare the served
+  revision and runner/provider pack versions that saved the session, checkpoint,
+  lease, or launch input with those that resumed it. Failures clustered after
+  a deploy usually mean the new release refuses state the old one saved.
 - Which endpoint is authorized: verified fix and green PR, or also rollout and
   recovery. Preserve the requested work and success criteria throughout.
+
+Use the [bounded run diagnostics reference](../../../skills/paperclip/references/run-diagnostics.md)
+for the repository's existing run, event, log, and recovery reads.
 
 Use authorized diagnostic access. If company scoping blocks a read, use an
 already-authorized diagnostic path or label the missing evidence; do not bypass
@@ -63,6 +70,10 @@ Separate these questions:
 2. Why did the responsible component make that decision or emit that value?
 3. Why did recovery or continuation fail to complete the already-authorized work?
 4. Which later errors are consequences, misleading summaries, or independent bugs?
+
+Answer early whether the failing step resumed state saved by a different release.
+If it did, compare what the old release persisted with what the new one requires
+before pursuing provider, model, or capacity explanations.
 
 Trace the causal value or transition to its producer and shared contract. Verify
 the hypothesis against a counterexample or a reproduction. Check logs before and
@@ -111,6 +122,10 @@ red-green proof from a test that was first run after the fix.
 
 ## 4. Repair the cause and prove the safety assumptions
 
+Before changing a failing guard, name the invariant it protects. If existing runtime
+checks already establish compatibility, remove redundant prerequisites instead of
+adding qualification machinery; retain authority and integrity checks.
+
 Fix the responsible producer or shared transition at the narrowest correct scope.
 Check sibling callers/adapters that share that contract; generalize only as far as
 the evidence requires. Avoid historical string allowlists, swallowed errors,
@@ -130,11 +145,24 @@ assumptions into observable regression cases, not just assurances in the PR:
 | Waiting or task disposition | Real approval/budget/credential gates still stop work; actionable work has a durable wake; recovery is bounded; no recursive recovery tree. |
 | Input, tool, or credential plumbing | Company and trust boundaries hold; intentional configuration reaches execution without ambient secret forwarding; distinct tools still dispatch correctly; sensitive logging remains redacted. |
 | Packaging, compatibility, or session identity | Relevant local/sandbox, platform, fresh/resumed, and old/new artifact combinations work; obsolete saved values are handled by a contract rather than a list of incident exceptions. |
+| Persisted run identity across releases | State saved by the previous release resumes on the new one, or stops with a permanent, named code that recovery does not retry. A deploy landing mid-run follows the same contract. |
 | Performance or lifecycle | Warm reuse remains warm where intended; queueing and finalization do not regress; configured deadlines retain their meaning. |
 
 Select cases that exercise the actual blast radius. Do not create an unrelated
 platform matrix. Test the sibling success path and the negative case that the old
 guard protected. Keep reproduction and safety tests through later revisions.
+
+Upgrade safety is part of every repair that touches persisted run identity:
+launch arguments, provider/runner pack digests, leases, listeners, session or
+checkpoint schema, and workspace authority. Each must either carry forward across
+releases or fail with a permanent, named code, never a generic retryable one such
+as `native_session_interrupted`. A retry cannot change saved identity; it repeats
+the refusal or replaces saved state. Add an old-saved/new-resumed regression using
+state shaped by the previous release, and a deploy-lands-mid-run case when the run
+can be in flight at the cutover. Prefer one class-level rule at the shared
+admission or recovery boundary over another per-error-code exception. For remote
+sandbox paths, test with the provider's confinement rules applied; a local test
+without them does not prove the remote path.
 
 With the red established and the safety assumptions identified, make the repair
 and run the same regression green. Run the relevant safety cases and existing

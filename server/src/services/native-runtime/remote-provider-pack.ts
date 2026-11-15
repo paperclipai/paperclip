@@ -10,7 +10,7 @@ export function shouldUseBundledAcpxImageAssets(input: {
 }): boolean {
   return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
     input.provider.kind === "acpx" &&
-    ["cursor", "copilot"].includes(input.provider.agent);
+    ["cursor", "copilot", "kimi"].includes(input.provider.agent);
 }
 
 type VerificationCommandResult = {

@@ -20,6 +20,13 @@ Agent access: [companion](../agent-access-map/app-permissions.md).
 - `test-action`: `app-permissions/test-action` — choose an actor and inputs and inspect a real action result.
 - `account-maintenance`: `app-permissions/account-maintenance` — inspect accounts, reconnect/revoke, and review connection activity.
 
+Declining an Ask first action declines that invocation. It does not change the
+connection's policy. A later, distinct request from the same responsible person
+can open a new review for the same action and arguments. The agent must obtain
+that new approval before execution. Retries of the declined intent and its
+rejection continuation remain declined. Missing or untrusted human provenance
+does not open another review.
+
 ## How to get to it (user POV)
 
 ### `permissions`

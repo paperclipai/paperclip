@@ -5,7 +5,7 @@ import {
   agents, companies, createDb, toolApplications, toolCatalogEntries,
   toolConnections, toolProfileBindings, toolProfileEntries, toolProfiles, type Db,
 } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -74,6 +74,20 @@ describeDatabase("effective tool assignments", () => {
     expect(full.allowedTools[0].inputSchema).toEqual(f.read.inputSchema);
     expect(full.allowedTools[0].outputSchema).toEqual(f.read.outputSchema);
     expect(full.allowedTools[0].annotations).toEqual(f.read.annotations);
+  });
+
+  it("keeps exclusions local to each profile when effective profiles grant the same tool", async () => {
+    const f = await fixture();
+    await db.update(toolProfiles).set({ defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
+    await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: f.profile.id,
+      selectorType: "catalog_entry", effect: "exclude", catalogEntryId: f.read.id });
+    const [second] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: "second", name: "Second", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: second.id, targetType: "agent", targetId: f.agent.id });
+    const [include] = await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: second.id,
+      selectorType: "catalog_entry", effect: "include", catalogEntryId: f.read.id }).returning();
+    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id, f.write.id]);
+    await db.delete(toolProfileEntries).where(eq(toolProfileEntries.id, include.id));
+    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.write.id]);
   });
 
   it("keeps unresolved exact names and observes changed catalog, profile and binding state", async () => {
@@ -149,14 +163,14 @@ describeDatabase("effective tool assignments", () => {
     const before = await service.getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id);
     expect(before.allowedTools).toHaveLength(102);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { toolCatalogEntries, toolProfileEntries }, capture);
     let scoped: Awaited<ReturnType<typeof service.getConnectionAssignmentsForAgent>>;
     try { scoped = await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id]); }
     finally { capture.flush(); }
     expect(Number(events.at(-1)?.completedQueries)).toBeGreaterThan(0);
     expect(Number(events.at(-1)?.responseValueBytes)).toBeLessThan(16 * 1024);
-    const catalogQueries = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+    const catalogQueries = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "tool_catalog_entries" && event.operation === "select");
     expect(catalogQueries).toHaveLength(1);
     expect(catalogQueries[0]).toMatchObject({ calls: 1, rows: 2 });
@@ -192,13 +206,13 @@ describeDatabase("effective tool assignments", () => {
     const service = toolAccessService(db), before = await compare(f);
     const savedRules = await db.select().from(toolProfileEntries);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { toolProfileEntries, toolProfileBindings }, capture);
     try {
       const scoped = await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id]);
       capture.flush();
-      const rules = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "tool_profile_entries");
-      const bindings = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "tool_profile_bindings");
+      const rules = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "tool_profile_entries");
+      const bindings = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1" && event.table === "tool_profile_bindings");
       expect(rules).toHaveLength(1);
       expect(Number(rules[0].responseValueBytes)).toBeLessThan(4096);
       expect(rules[0]).toMatchObject({ calls: 1, rows: 2 });

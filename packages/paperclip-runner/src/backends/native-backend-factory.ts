@@ -68,6 +68,7 @@ export function createNativeSessionBackend(
   }
   if (options.codexTransportFactory) {
     return createRunnerdNativeSessionBackend(input, {
+      retainedSystemInstructions: options.retainedSystemInstructions,
       completionFeedback: options.completionFeedback,
       runnerInstanceId: options.runnerInstanceId,
       onSpawn: options.onSpawn,

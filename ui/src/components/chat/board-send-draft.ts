@@ -71,8 +71,12 @@ export function boardSendDraftKey(
   issueId: string,
   endpointId: string,
   conversationId: string,
+  owner?: string,
 ) {
-  return `paperclip:board-send:v1:${JSON.stringify([companyId, issueId, endpointId, conversationId])}`;
+  const scope = [companyId, issueId, endpointId, conversationId];
+  return owner === undefined
+    ? `paperclip:board-send:v1:${JSON.stringify(scope)}`
+    : `paperclip:board-send:v2:${JSON.stringify([owner, ...scope])}`;
 }
 
 export function readBoardSendDraft(key: string): RetainedBoardSend | null {

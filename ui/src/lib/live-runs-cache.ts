@@ -48,12 +48,29 @@ export function patchRunStatusInList(
   return { next: changed ? next : runs, present };
 }
 
+/**
+ * Safety interval for a task's known runs while the company live connection is
+ * open. Run lifecycle events refresh these queries (`useTaskRunLiveUpdates`)
+ * and progress events patch them in place, so the interval only bounds drift
+ * in server-derived fields that have no event, such as output silence.
+ */
+export const CONNECTED_ACTIVE_RUN_REFETCH_MS = 15_000;
+
 export function liveRunRefetchInterval(
   connected: boolean,
   state: { status: "pending" | "error" | "success"; data: unknown },
   fallbackMs: number,
 ): number | false {
-  return connected && state.status === "success" && (state.data === null || (Array.isArray(state.data) && state.data.length === 0))
-    ? false
-    : fallbackMs;
+  if (!connected || state.status !== "success") return fallbackMs;
+  if (state.data === null || (Array.isArray(state.data) && state.data.length === 0)) return false;
+  // A known active result (a run list or a single run) waits for events.
+  if (Array.isArray(state.data) || isRunRecord(state.data)) {
+    return Math.max(fallbackMs, CONNECTED_ACTIVE_RUN_REFETCH_MS);
+  }
+  return fallbackMs;
+}
+
+function isRunRecord(value: unknown): boolean {
+  return typeof value === "object" && value !== null && typeof (value as { id?: unknown }).id === "string"
+    && typeof (value as { status?: unknown }).status === "string";
 }

@@ -60,6 +60,14 @@ run lacks direct-chat authority or the user lacks editing permission. The user
 can request the edit in their authorized chat or apply it directly. Creating
 another task does not authorize the instruction change.
 
+When a low-trust agent's task is in a project outside its boundary, setup fails
+the run with the typed `project_access_denied` code and the denied project ID
+before provider work starts. The task notice links Manage project access. That
+exact pre-dispatch shape is an owner action, so it stays on the task instead of
+the unexpected Sentry run-failure stream. The legacy `setup_failed` code and the
+denial message alone never suppress a report, and
+`PAPERCLIP_SENTRY_RUN_FAILURES=all` still reports it.
+
 ## Direct-chat instruction edits
 
 When an authorized user directly asks an agent in their own Agent Chat to edit

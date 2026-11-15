@@ -1,7 +1,7 @@
-import { and, desc, eq, inArray, not, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, not, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
-import { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent, type SidebarBadges } from "@paperclipai/shared";
+import type { SidebarBadges } from "@paperclipai/shared";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { getHeartbeatRunReadDecisions } from "./heartbeat-run-privacy.js";
 
@@ -51,11 +51,10 @@ export function sidebarBadgeService(db: Db) {
           rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
         );
 
-      const recentRuns = await db
+      const recentRuns = db
         .select({
           id: heartbeatRuns.id,
           agentId: heartbeatRuns.agentId,
-          companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
           status: heartbeatRuns.status,
@@ -72,14 +71,50 @@ export function sidebarBadgeService(db: Db) {
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(200);
+        .limit(200)
+        .as("recent_runs");
 
-      const failures = latestFailedRunsByAgent(recentRuns).filter((row) =>
-        (extra?.currentUserId === undefined || isHeartbeatRunVisibleInMine(row, extra.currentUserId))
-        && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
+      const observedRuns = db.select({
+        id: recentRuns.id,
+        agentId: recentRuns.agentId,
+        scopeKind: recentRuns.scopeKind,
+        issueId: recentRuns.issueId,
+        status: recentRuns.status,
+        responsibleUserId: recentRuns.responsibleUserId,
+        createdAt: recentRuns.createdAt,
+        observedOrder: sql<number>`row_number() over ()`.as("observed_order"),
+      }).from(recentRuns).as("observed_runs");
+      const rankedRuns = db.select({
+        id: observedRuns.id,
+        scopeKind: observedRuns.scopeKind,
+        issueId: observedRuns.issueId,
+        status: observedRuns.status,
+        responsibleUserId: observedRuns.responsibleUserId,
+        createdAt: observedRuns.createdAt,
+        agentRunRank: sql<number>`row_number() over (partition by ${observedRuns.agentId} order by ${observedRuns.createdAt} desc, ${observedRuns.observedOrder})`.as("agent_run_rank"),
+      }).from(observedRuns).as("ranked_runs");
+      const mineCondition = extra?.currentUserId === undefined
+        ? undefined
+        : !extra.currentUserId
+          ? sql<boolean>`false`
+          : extra.currentUserId === "local-board"
+            ? or(eq(rankedRuns.responsibleUserId, "local-board"), isNull(rankedRuns.responsibleUserId), eq(rankedRuns.responsibleUserId, ""))
+            : eq(rankedRuns.responsibleUserId, extra.currentUserId);
+      const candidates = await db.select({
+        id: rankedRuns.id,
+        scopeKind: rankedRuns.scopeKind,
+        issueId: rankedRuns.issueId,
+        createdAt: rankedRuns.createdAt,
+      }).from(rankedRuns).where(and(
+        eq(rankedRuns.agentRunRank, 1),
+        inArray(rankedRuns.status, ["failed", "timed_out"]),
+        mineCondition,
+      ));
+      const failures = candidates.filter((row) =>
+        !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
       );
       const failedRuns = extra?.actor
-        ? (await getHeartbeatRunReadDecisions(db, authorization, extra.actor, failures)).filter(Boolean).length
+        ? (await getHeartbeatRunReadDecisions(db, authorization, extra.actor, failures.map((row) => ({ ...row, companyId })))).filter(Boolean).length
         : failures.length;
 
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>

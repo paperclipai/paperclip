@@ -51,6 +51,7 @@ it.each([true, false])("catches up after canceled input and a reply burst (earli
     await act(async () => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
     for (let i = 0; i < 20 && !current!.recent.isSuccess; i++) await wait();
     expect(current!.recent.isSuccess).toBe(true);
+    await act(async () => current!.retainComment(comment(61)));
     api.recentComments.mockResolvedValue({ comments: [58, 59, 60, 61].map(comment), latestCommentId: "comment-61", hasMore: true });
     api.listComments.mockImplementation(async (_issue, options) => {
       if (options.after === "comment-1") return []; // Canceled queued input.
@@ -69,4 +70,43 @@ it.each([true, false])("catches up after canceled input and a reply burst (earli
     await act(async () => root.unmount());
     client.clear();
   }
+});
+
+it("keeps a continuous chat compact even after its task view expanded history", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["issues", "history-expanded", "chat"], true);
+  const root = createRoot(document.createElement("div"));
+  api.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, oldestCommentId: null, hasMore: false });
+  let current: ReturnType<typeof useIssueHistoryWindow>;
+  function Probe() { current = useIssueHistoryWindow("chat", false, undefined, true); return null; }
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+    await vi.waitFor(() => expect(current!.recent.isSuccess).toBe(true));
+    expect(current!.historyExpanded).toBe(false);
+  } finally { await act(async () => root.unmount()); client.clear(); }
+});
+
+it("retains an acknowledged reply without skipping unseen messages in catch-up", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRoot(document.createElement("div"));
+  const comment = (n: number) => ({ id: `comment-${n}`, issueId: "chat", createdAt: new Date(n * 1000), body: `Message ${n}` } as IssueComment);
+  api.recentComments.mockResolvedValue({ comments: [comment(0)], latestCommentId: "comment-0", oldestCommentId: "comment-0", hasMore: true });
+  api.listComments.mockReset().mockResolvedValueOnce(Array.from({ length: 50 }, (_, i) => comment(i + 1))).mockResolvedValueOnce(Array.from({ length: 10 }, (_, i) => comment(i + 51)));
+  let current: ReturnType<typeof useIssueHistoryWindow>;
+  function Probe() { current = useIssueHistoryWindow("chat", false, undefined, true); return null; }
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+    await vi.waitFor(() => expect(current!.recent.isSuccess).toBe(true));
+    await act(async () => current!.retainComment(comment(60)));
+    await vi.waitFor(() => expect(current!.acknowledgedComments.map(row => row.id)).toEqual(["comment-60"]));
+    expect(current!.recent.data?.comments.map(row => row.id)).toEqual(["comment-0"]);
+    expect(current!.recent.data?.latestCommentId).toBe("comment-0");
+    api.recentComments.mockResolvedValue({ comments: [comment(60)], latestCommentId: "comment-60", oldestCommentId: "comment-60", hasMore: true });
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.comments("chat") }); });
+    await vi.waitFor(() => expect(current!.recent.data?.comments).toHaveLength(61));
+    expect(current!.recent.data?.oldestCommentId).toBe("comment-0");
+    expect(current!.recent.data?.latestCommentId).toBe("comment-60");
+    expect(api.listComments).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(current!.acknowledgedComments).toHaveLength(0));
+  } finally { await act(async () => root.unmount()); client.clear(); }
 });

@@ -48,9 +48,10 @@
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 
+import { isDeepStrictEqual } from "node:util";
 import type { PluginCapability } from "@paperclipai/shared";
 import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
-import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
+import { PLUGIN_RPC_ERROR_CODES, validateProjectSnapshotRequest } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -432,8 +433,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
-  // Provider span sink — only a plugin that registers environment drivers may
-  // emit a provider span. The gate rejects a span from any other plugin.
+  // Timing sink for environment drivers or workspace providers. Parentage
+  // still derives solely from the current host-owned invocation.
   "span.record": "environment.drivers.register",
 
   // Companies
@@ -444,6 +445,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "projects.list": "projects.read",
   "projects.get": "projects.read",
   "projects.getInstanceSecrets": "projects.instance-secrets",
+  "projects.readSnapshots": "projects.instance-secrets",
   "projects.resolveGitCredential": "projects.git-credentials",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
@@ -690,6 +692,7 @@ export function createHostClientHandlers(
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
+    if (method === "span.record" && capabilitySet.has("workspaces.manage")) return;
     throw new CapabilityDeniedError(pluginId, method, required);
   }
 
@@ -847,6 +850,32 @@ export function createHostClientHandlers(
     "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
       const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
       return services.projects.getInstanceSecrets({ ...params, companyId });
+    }),
+    "projects.readSnapshots": gated("projects.readSnapshots", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.readSnapshots", params, context);
+      requireCapability("projects.get");
+      requireCapability("projects.listWorkspaces");
+      const { projectIds, entityType } = params;
+      validateProjectSnapshotRequest(projectIds, entityType);
+      const snapshots: WorkerToHostMethods["projects.readSnapshots"][1] = [];
+      for (const projectId of projectIds) {
+        const scope = { companyId, projectId };
+        const project = await services.projects.get(scope);
+        if (project?.id !== projectId || project.companyId !== companyId || project.archivedAt) {
+          throw new Error("Project snapshot unavailable");
+        }
+        const query = { entityType, scopeKind: "company" as const, scopeId: companyId, externalId: projectId, limit: 1 };
+        const [entity] = await services.entities.list(query);
+        const instanceSecrets = await services.projects.getInstanceSecrets(scope);
+        const workspaces = await services.projects.listWorkspaces(scope);
+        const current = await services.projects.get(scope);
+        const [latest] = await services.entities.list(query);
+        if (!isDeepStrictEqual(current, project) || !isDeepStrictEqual(latest, entity)) {
+          throw new Error("Project snapshot changed during read");
+        }
+        snapshots.push({ projectId, workspaces, entity: entity ?? null, instanceSecrets });
+      }
+      return snapshots;
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);

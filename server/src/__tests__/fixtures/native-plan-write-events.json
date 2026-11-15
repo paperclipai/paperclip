@@ -1,0 +1,356 @@
+{
+  "description": "Retained native Codex and Claude event shapes. All identifiers, document contents and non-structural strings are synthetic. Canonical item receipts coexist with provider tool.execution activity.",
+  "captures": [
+    {
+      "provider": "Codex",
+      "events": [
+        {
+          "seq": 73,
+          "eventType": "item.started",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "codex-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "item": {
+                  "id": "codex-write-plan",
+                  "name": "write_document",
+                  "type": "tool_use",
+                  "input": {
+                    "key": "plan",
+                    "body": "private fixture body",
+                    "title": "fixture",
+                    "changeSummary": "fixture",
+                    "baseRevisionId": null,
+                    "idempotencyKey": "fixture"
+                  }
+                },
+                "kind": "dynamicToolCall"
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 43,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 74,
+          "eventType": "tool.execution.started",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "codex-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "name": "write_document",
+                "output": "fixture",
+                "schema": "paperclip.tool.execution.v1",
+                "status": "running",
+                "target": null,
+                "exitCode": null,
+                "progress": null,
+                "readOnly": null,
+                "namespace": null,
+                "operation": "unknown",
+                "transport": "dynamic",
+                "durationMs": null,
+                "executionId": "codex-write-plan",
+                "outputBytes": 0,
+                "outputDigest": "fixture",
+                "outputTruncated": false
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 44,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 76,
+          "eventType": "item.completed",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "codex-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "item": {
+                  "id": "codex-write-plan",
+                  "type": "tool_result",
+                  "result": {
+                    "created": true,
+                    "document": {
+                      "id": "codex-write-plan",
+                      "key": "plan",
+                      "body": "private fixture body",
+                      "title": "fixture",
+                      "format": "markdown",
+                      "issueId": "fixture",
+                      "lockedAt": null,
+                      "companyId": "fixture",
+                      "createdAt": "2026-01-01T00:00:00.000Z",
+                      "updatedAt": "2026-01-01T00:00:00.000Z",
+                      "sourceTrust": null,
+                      "lockedByUserId": null,
+                      "createdByUserId": null,
+                      "lockedByAgentId": null,
+                      "updatedByUserId": null,
+                      "createdByAgentId": "fixture",
+                      "latestRevisionId": "fixture",
+                      "updatedByAgentId": "fixture",
+                      "latestRevisionNumber": 1
+                    },
+                    "disposition": "applied",
+                    "documentHref": "fixture"
+                  },
+                  "tool_use_id": "codex-write-plan"
+                },
+                "kind": "dynamicToolCall"
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 45,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 77,
+          "eventType": "tool.execution.completed",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "codex-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "name": "write_document",
+                "output": "fixture",
+                "schema": "paperclip.tool.execution.v1",
+                "status": "completed",
+                "target": null,
+                "exitCode": null,
+                "progress": null,
+                "readOnly": null,
+                "namespace": null,
+                "operation": "unknown",
+                "transport": "dynamic",
+                "durationMs": 276,
+                "executionId": "codex-write-plan",
+                "outputBytes": 0,
+                "outputDigest": "fixture",
+                "outputTruncated": false
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 46,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "provider": "Claude",
+      "events": [
+        {
+          "seq": 45,
+          "eventType": "tool.execution.started",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "claude-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "name": "write_document",
+                "output": "fixture",
+                "schema": "paperclip.tool.execution.v1",
+                "status": "running",
+                "target": null,
+                "exitCode": null,
+                "progress": "fixture",
+                "readOnly": false,
+                "namespace": "fixture",
+                "operation": "execute",
+                "transport": "mcp",
+                "durationMs": null,
+                "executionId": "claude-write-plan",
+                "outputBytes": 4,
+                "inputUpdated": true,
+                "outputDigest": "fixture",
+                "outputTruncated": false
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 16,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 54,
+          "eventType": "item.started",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "claude-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "item": {
+                  "id": "claude-write-plan",
+                  "name": "write_document",
+                  "type": "tool_use",
+                  "input": {
+                    "key": "plan",
+                    "body": "private fixture body",
+                    "title": "fixture",
+                    "baseRevisionId": null,
+                    "idempotencyKey": "fixture"
+                  }
+                },
+                "kind": "dynamicToolCall"
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 24,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 58,
+          "eventType": "item.completed",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "claude-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "item": {
+                  "id": "claude-write-plan",
+                  "type": "tool_result",
+                  "result": {
+                    "created": true,
+                    "document": {
+                      "id": "claude-write-plan",
+                      "key": "plan",
+                      "body": "private fixture body",
+                      "title": "fixture",
+                      "format": "markdown",
+                      "issueId": "fixture",
+                      "lockedAt": null,
+                      "companyId": "fixture",
+                      "createdAt": "2026-01-01T00:00:00.000Z",
+                      "updatedAt": "2026-01-01T00:00:00.000Z",
+                      "sourceTrust": null,
+                      "lockedByUserId": null,
+                      "createdByUserId": null,
+                      "lockedByAgentId": null,
+                      "updatedByUserId": null,
+                      "createdByAgentId": "fixture",
+                      "latestRevisionId": "fixture",
+                      "updatedByAgentId": "fixture",
+                      "latestRevisionNumber": 1
+                    },
+                    "disposition": "applied",
+                    "documentHref": "fixture"
+                  },
+                  "tool_use_id": "claude-write-plan"
+                },
+                "kind": "dynamicToolCall"
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 27,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        },
+        {
+          "seq": 60,
+          "eventType": "tool.execution.completed",
+          "payload": {
+            "prpEvent": {
+              "runId": "fixture",
+              "itemId": "claude-write-plan",
+              "schema": "paperclip.prp.event.v1",
+              "turnId": "fixture",
+              "payload": {
+                "name": "write_document",
+                "output": "fixture",
+                "schema": "paperclip.tool.execution.v1",
+                "status": "completed",
+                "target": null,
+                "exitCode": null,
+                "progress": null,
+                "readOnly": false,
+                "namespace": "fixture",
+                "operation": "execute",
+                "transport": "mcp",
+                "durationMs": null,
+                "executionId": "claude-write-plan",
+                "outputBytes": 1064,
+                "inputUpdated": false,
+                "outputDigest": "fixture",
+                "outputTruncated": false
+              },
+              "priority": 1,
+              "emittedAt": "2026-01-01T00:00:00.000Z",
+              "eventType": "fixture",
+              "sourceSeq": 29,
+              "sourceKind": "runner",
+              "schemaVersion": 1,
+              "sourceEventId": "fixture",
+              "sourceInstanceId": "fixture",
+              "normalizedSessionId": "fixture"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

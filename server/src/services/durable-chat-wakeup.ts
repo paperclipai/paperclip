@@ -1,6 +1,7 @@
+import { slackDeliveryMeetsMentionRequirement } from "./chat-channels/slack/wake-authority.js";
 import { createHash } from "node:crypto";
-import { agentWakeupRequests, chatActions, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
-import { and, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
+import { and, eq, exists, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
 import { HttpError } from "../errors.js";
 
 export interface CommittedChatResponseAuthorizationInput {
@@ -20,6 +21,21 @@ const committedChatResponseAuthorities = new WeakMap<
   Db,
   CommittedChatResponseAuthority
 >();
+
+const committedChatResponseAuthorityListeners = new WeakMap<Db, Set<() => void>>();
+
+export function onCommittedChatResponseAuthorityRegistered(db: Db, listener: () => void): () => void {
+  let listeners = committedChatResponseAuthorityListeners.get(db);
+  if (!listeners) {
+    listeners = new Set();
+    committedChatResponseAuthorityListeners.set(db, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && committedChatResponseAuthorityListeners.get(db) === listeners) committedChatResponseAuthorityListeners.delete(db);
+  };
+}
 
 export class CommittedChatResponseAuthorizationError extends HttpError {
   constructor() {
@@ -41,6 +57,7 @@ export function registerCommittedChatResponseAuthority(
   authority: CommittedChatResponseAuthority,
 ): () => void {
   committedChatResponseAuthorities.set(db, authority);
+  for (const listener of committedChatResponseAuthorityListeners.get(db) ?? []) listener();
   return () => {
     if (committedChatResponseAuthorities.get(db) === authority) {
       committedChatResponseAuthorities.delete(db);
@@ -217,6 +234,22 @@ export interface DeferredChatWakeScope {
   issueId: string;
   requestId: string;
 }
+
+/** Identify saved input by its canonical receipt, never by a caller's source
+ * label. This is selection only; the inbound owner rechecks live authority. */
+export function deferredChatInputPredicate(db: Db) {
+  return exists(db.select({ id: chatActions.id }).from(chatActions)
+    .innerJoin(chatConversations, and(eq(chatConversations.companyId, chatActions.companyId),
+      eq(chatConversations.id, chatActions.conversationId)))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.companyId, chatActions.companyId),
+      eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.id, chatConversations.endpointId)))
+    .where(and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id),
+      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      eq(chatEndpoints.assignedAgentId, agentWakeupRequests.agentId), eq(chatEndpoints.externalExecutionPolicy, "restricted"),
+      sql`${chatConversations.issueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`)));
+}
 const deferredChatWakeOwners = new WeakMap<Db, (input: DeferredChatWakeScope) => Promise<void>>();
 
 /** The live inbound owner reauthorizes the original source. Cleanup owns no chat authority. */
@@ -378,7 +411,5 @@ export async function slackMentionAllowsRunStart(
       ),
     ));
   return inputs.every(({ event }) =>
-    (event.conversation as { isDirectMessage?: boolean } | undefined)?.isDirectMessage === true ||
-    event.trigger === "mention" ||
-    (event.message as { mentionedBot?: boolean } | undefined)?.mentionedBot === true);
+    slackDeliveryMeetsMentionRequirement({ requireAtMention: true }, event));
 }

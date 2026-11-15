@@ -59,11 +59,10 @@ their execution, and uncertain prior executions must be reconciled before waking
 ### Plugin task panels
 
 An installed plugin can offer an agent detail tab in the task side panel through
-its optional `taskSidePanel` declaration. The host supplies the task's running
-agent. The plugin's authorized availability route decides whether the panel is
-shown, and the plugin owns its label and viewer. No contribution appears for a
-missing plugin, inactive run, unavailable view or access failure. A closed panel
-can be reopened from the launcher while available.
+its optional `taskSidePanel` declaration. Open the view from the task side-panel
+launcher for the running agent, or the assigned agent when idle. The plugin owns
+its label, viewer, and access checks. Missing or disabled plugins add no view.
+A closed panel can be reopened from the launcher.
 
 Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
 [task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).

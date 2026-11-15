@@ -1,13 +1,26 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { notifyChatRunMilestones, notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
+import { notifyChatConnectionConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export async function notifyChatDeliveryWork(tx: object): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatInbound);
 }
 
-export async function notifyChatPublicationWork(tx: object): Promise<void> {
+export async function notifyChatPublicationWork(
+  tx: object,
+  milestoneScope?: { companyId: string; issueId: string | null },
+): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatPublications);
   // Receipt recovery waits for the publication owner to release its claim.
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceipts);
+  // Published prompts and terminal delivery outcomes can change run lineage or
+  // release its provider response slot. Callers supply the affected issue only
+  // for those changes; transport claim/lease bookkeeping has no projection debt.
+  if (milestoneScope?.issueId) {
+    await notifyChatResponseAvailability(tx, { companyId: milestoneScope.companyId, issueId: milestoneScope.issueId });
+    await notifyChatRunMilestones(tx, { companyId: milestoneScope.companyId, issueId: milestoneScope.issueId });
+  }
 }
 
 export const CHAT_ACTION_QUEUES = {
@@ -31,10 +44,14 @@ export async function notifyChatVerificationWork(tx: object): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatVerification);
 }
 
-export async function notifyChatEndpointWork(tx: object, connectionId: string): Promise<void> {
+export async function notifyChatEndpointWork(tx: object, connectionId: string, companyId: string): Promise<void> {
+  // Configuration/status transitions can restore post-control publication
+  // authority. Ordinary health checks use the narrower configuration signals.
+  await notifyChatCompanyAuthorityChange(tx, { companyId });
   await notifyChatDeliveryWork(tx);
   await notifyChatPublicationWork(tx);
   for (const queue of Object.values(CHAT_ACTION_QUEUES)) await notifyDeliveryWork(tx, queue);
   await notifyChatVerificationWork(tx);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatTelegramSubscriptions, connectionId);
+  await notifyChatConnectionConfiguration(tx, connectionId);
 }

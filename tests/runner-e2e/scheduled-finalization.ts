@@ -1,5 +1,5 @@
 import { usdToUnits } from "../../packages/shared/src/money.js";
-import { evalAccountingStatus } from "./operations-report.js";
+import { evalAccountingStatus, evalReadinessStatus } from "./operations-report.js";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,7 +49,7 @@ export function scheduledCampaignFindings(campaign: RunnerE2ECampaign): string[]
   const operations = campaign.operations;
   if (!operations || operations.status === "unavailable") findings.push("accounting_unavailable");
   else {
-    if (evalAccountingStatus(operations) === "blocked") findings.push("accounting_incomplete");
+    if (evalReadinessStatus(operations) === "blocked") findings.push("accounting_incomplete");
     if (usdToUnits(operations.committedUsd) > usdToUnits(operations.limitUsd)) findings.push("accounting_over_budget");
   }
   const feedback = summarizeCampaignFeedback(campaign.accounting?.attempts ?? campaign.results);
@@ -131,6 +131,7 @@ export async function finalizeScheduledCampaign(env: NodeJS.ProcessEnv) {
   await writeFile(path.join(directory, "findings.json"), `${JSON.stringify({ version: 1, findings,
     nativeIndexVerification: indexing, gatewayIndexVerification: gatewayIndexing, invoiceReconciliation: "pending",
     accountingStatus: campaign.operations ? evalAccountingStatus(campaign.operations) : "unavailable",
+    readinessStatus: campaign.operations ? evalReadinessStatus(campaign.operations) : "unavailable",
     feedbackReviewMethod: "Only exact synthetic fixture bodies with all corroborating graders are automatically dismissed; all other feedback requires review" }, null, 2)}\n`, { mode: 0o600 });
   for (const finding of findings) console.error(`::error title=Eval operations::${finding}`);
   return findings;

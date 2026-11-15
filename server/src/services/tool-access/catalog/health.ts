@@ -1,3 +1,5 @@
+import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -19,7 +21,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -33,12 +35,13 @@ type HealthDependencies = {
   discovery: ToolCatalogDiscovery;
   setupPolicy: ConnectionSetupPolicy;
   resolveCredentialHeaders: ConnectionCredentialAccess["resolveCredentialHeaders"];
+  vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
   refreshManagedGitHubGrantAccess: ReturnType<typeof createGitHubGrantContinuity>["refreshManagedGitHubGrantAccess"];
   ensureRuntimeSlot: ReturnType<typeof createToolRuntimeSlots>["ensureRuntimeSlot"];
   stdioTemplateId(companyId: string, config: Record<string, unknown>): Promise<string>;
 };
 
-export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
+export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
   const { discoverTools, remoteTools, validateAgentMailConnection, validateCogneeConnection } = discovery;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
   async function updateConnectionHealth(
@@ -47,8 +50,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     message: string | null,
   ) {
     const now = new Date();
-    const [updated] = await db
-      .update(toolConnections)
+    const [updated] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      await notifyChatConnectionObservation(tx, connection.id, connection.transport);
+      return tx.update(toolConnections)
       .set({
         healthStatus: status,
         healthMessage: message,
@@ -59,6 +63,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       })
       .where(eq(toolConnections.id, connection.id))
       .returning();
+    });
     if (connection.transport === "local_stdio") {
       await db
         .update(toolRuntimeSlots)
@@ -90,7 +95,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         config.sourceTemplateKey === "github" &&
         oauth.connectorProfile === "github.code"
       ) {
-        const activeGrants = await db
+        const activeGrants = connection.credentialPolicy === "per_agent"
+          ? [await vaultGrantForConnection(connection, actor)].filter(grant => grant !== null)
+          : await db
           .select()
           .from(connectionGrants)
           .where(
@@ -143,7 +150,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
             : canProbeWithoutAuthorization
               ? {}
               : undefined;
-        await remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
+        // A health check must reach the server, never a cached tool list.
+        await remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, { live: true });
       } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
@@ -182,6 +190,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       });
       return { connection: toConnection(updated), runtimeSlot };
     } catch (error) {
+      if (isCallerAuthorizationFailure(error, actor)) throw error;
       if (
         error instanceof HttpError &&
         asRecord(error.details).code === "github_access_changed"
@@ -222,6 +231,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
         ...githubRecovery,
+        ...unreachableServerRemediation(error, actor),
       }));
     }
   }

@@ -46,16 +46,24 @@ export function assertOAuthRedirectConstraints(
  * authorization request was bound to. A mismatch means the code came back from a
  * different server than the one we sent the user to — the mix-up attack RFC 9207
  * exists to stop — so the code is refused rather than exchanged. An absent `iss`
- * is tolerated: it is optional, and many deployed servers omit it.
+ * is tolerated unless the server advertised that it sends one (RFC 9207 §2.4).
  */
 export function assertOAuthCallbackIssuer(
   connection: typeof toolConnections.$inferSelect,
-  endpoints: OAuthProviderEndpoints,
+  endpoints: Pick<OAuthProviderEndpoints, "issuer">,
   iss: string | null | undefined,
 ) {
   const returnedIssuer = typeof iss === "string" ? iss.trim() : "";
-  if (!returnedIssuer) return;
   const oauth = oauthConfig(connection);
+  if (!returnedIssuer) {
+    // A server that advertises `iss` (authorization_response_iss_parameter_supported)
+    // must send it; a response without it cannot be told apart from a mix-up.
+    if (oauth.expectIssParameter !== true) return;
+    throw badRequest(
+      "Sign-in came back without confirming which server sent it. Start the connection again.",
+      { code: "oauth_issuer_missing" },
+    );
+  }
   const expectedIssuer =
     typeof oauth.expectedIssuer === "string" && oauth.expectedIssuer.trim()
       ? oauth.expectedIssuer.trim()

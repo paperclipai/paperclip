@@ -28,6 +28,8 @@ export type OAuthProviderEndpoints = {
   resource?: string | null;
   /** The authorization server advertised support for Client ID Metadata Documents. */
   clientIdMetadataDocumentSupported?: boolean;
+  /** RFC 9207: the authorization server says every authorization response carries `iss`. */
+  issParameterSupported?: boolean;
 };
 
 /**

@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_PROTOCOL_ACTIONS } from "../protocol-actions/index.js";
@@ -50,8 +50,9 @@ describe("canonical Paperclip protocol action contracts", () => {
         ).toEqual([]);
         if (action.scenario.descriptor.idempotency === "required") {
           expect(action.examples).toHaveProperty("scenarioCall");
-          expect(scenarioCall.idempotencyKey).toEqual(expect.any(String));
-          expect(scenarioCall.idempotencyKey).not.toHaveLength(0);
+          const { idempotencyKey } = scenarioCall as { idempotencyKey?: string };
+          expect(idempotencyKey).toEqual(expect.any(String));
+          expect(idempotencyKey).not.toHaveLength(0);
         } else {
           expect(scenarioCall).not.toHaveProperty("idempotencyKey");
         }

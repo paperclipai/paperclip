@@ -1,7 +1,8 @@
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash } from "node:crypto";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import type { ToolApprovalClaim } from "./tool-approval-execution.js";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -48,12 +49,26 @@ import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import {
   effectiveToolProfileBindings,
+  isConnectionAccessProfile,
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
+import {
+  compilePolicySelector,
+  indexPoliciesBySelector,
+  listValues,
+  type CompiledPolicySelector,
+  type PolicySelectorIndex,
+} from "./tool-access/policy-selector-index.js";
 
-type ToolAccessContext = {
+class RejectedInvocationAdmission extends Error {
+  constructor(readonly decision: ToolAccessDecision) {
+    super(decision.explanation);
+  }
+}
+
+export type ToolAccessContext = {
   companyId: string;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
@@ -391,12 +406,6 @@ function decision(
   };
 }
 
-function listValues(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-}
-
 function asToolRiskLevel(value: unknown): ToolRiskLevel | null {
   if (
     value === "low"
@@ -412,7 +421,7 @@ function asToolRiskLevel(value: unknown): ToolRiskLevel | null {
   return null;
 }
 
-function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
+export function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
   if (!selector || Object.keys(selector).length === 0) return true;
   const s = selector as Record<string, unknown>;
   // Tool/action names are exact selectors. Glob-looking values are treated as literal names.
@@ -499,7 +508,7 @@ function timeWindowMatches(condition: Record<string, unknown>, now: Date): boole
   return true;
 }
 
-function policyConditions(policy: typeof toolPolicies.$inferSelect): ToolPolicyConditions | null {
+export function policyConditions(policy: typeof toolPolicies.$inferSelect): ToolPolicyConditions | null {
   return isRecord(policy.conditions) && Object.keys(policy.conditions).length > 0
     ? policy.conditions as ToolPolicyConditions
     : null;
@@ -509,7 +518,7 @@ function conditionGroupFail(group: string, reason: string): PolicyConditionEvalu
   return { matched: false, matchedGroups: [], failedGroup: group, reason };
 }
 
-function evaluatePolicyConditions(
+export function evaluatePolicyConditions(
   conditions: ToolPolicyConditions | null | undefined,
   ctx: ToolAccessContext,
   now = new Date(),
@@ -615,6 +624,61 @@ function evaluatePolicyConditions(
   return { matched: true, matchedGroups };
 }
 
+type EnabledToolPolicy = {
+  policy: typeof toolPolicies.$inferSelect;
+  selector: CompiledPolicySelector;
+  conditions: ToolPolicyConditions | null;
+  conditionsCheck?: ReturnType<typeof toolPolicyConditionsSchema.safeParse>;
+};
+
+/**
+ * Compiles a company's enabled policies, already in priority and createdAt
+ * order, once per decision batch: selectors are parsed once and policies are
+ * indexed so that each decision checks only the policies that can match it.
+ */
+export function indexEnabledToolPolicies(
+  policies: ReadonlyArray<typeof toolPolicies.$inferSelect>,
+): PolicySelectorIndex<EnabledToolPolicy> {
+  return indexPoliciesBySelector(
+    policies.map((policy) => ({ policy, selector: compilePolicySelector(policy.selectors), conditions: policyConditions(policy) })),
+    (entry) => entry.selector,
+  );
+}
+
+export type EnabledToolPolicyMatch =
+  | { unsupportedConditions: { policy: typeof toolPolicies.$inferSelect; issues: Array<{ path: string; message: string }> } }
+  | { matching: Array<{ policy: typeof toolPolicies.$inferSelect; conditionEvaluation: PolicyConditionEvaluation }> };
+
+/**
+ * The enabled policies that apply to one call, in evaluation order. The first
+ * selected policy with conditions the runtime cannot evaluate wins over every
+ * match, so the caller denies the call.
+ */
+export function matchEnabledToolPolicies(
+  index: PolicySelectorIndex<EnabledToolPolicy>,
+  ctx: ToolAccessContext,
+): EnabledToolPolicyMatch {
+  const selected = index.candidates(ctx).filter((entry) => entry.selector.matches(ctx));
+  for (const entry of selected) {
+    if (!entry.conditions) continue;
+    entry.conditionsCheck ??= toolPolicyConditionsSchema.safeParse(entry.conditions);
+    if (!entry.conditionsCheck.success) {
+      return {
+        unsupportedConditions: {
+          policy: entry.policy,
+          issues: entry.conditionsCheck.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+        },
+      };
+    }
+  }
+  const matching = [];
+  for (const { policy, conditions } of selected) {
+    const conditionEvaluation = evaluatePolicyConditions(conditions, ctx);
+    if (conditionEvaluation.matched) matching.push({ policy, conditionEvaluation });
+  }
+  return { matching };
+}
+
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
   const selected = entry.selectorType === "application" ? entry.applicationId === ctx.applicationId
     : entry.selectorType === "connection" ? entry.connectionId === ctx.connectionId
@@ -717,7 +781,7 @@ function assertSupportedGenericPolicyShape(
   }
 }
 
-async function getGenericPolicyRow(db: Db, companyId: string, policyId: string) {
+async function getGenericPolicyRow(db: Pick<Db, "select">, companyId: string, policyId: string) {
   const [policy] = await db
     .select()
     .from(toolPolicies)
@@ -753,6 +817,23 @@ function rateBucket(rule: ToolRateLimitRule, ctx: ToolAccessContext): string {
   }).join("|");
 }
 
+// Grant scope keys that name which tools the grant covers: an action, a
+// connection or an application. Context keys such as agentId or projectId only
+// narrow when the grant applies, so a grant with only those still covers every
+// tool and does not count as a choice about one connection's actions.
+const TOOL_GRANT_TARGET_SCOPE_KEYS = new Set([
+  "allow",
+  "toolName", "toolNames",
+  "catalogEntryId", "catalogEntryIds",
+  "connectionId", "connectionIds",
+  "applicationId", "applicationIds",
+  "applicationKey", "applicationKeys",
+]);
+
+function isToolTargetedGrant(scope: unknown) {
+  return isRecord(scope) && Object.keys(scope).some((key) => TOOL_GRANT_TARGET_SCOPE_KEYS.has(key));
+}
+
 function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessContext) {
   if (scope === null || scope === undefined) return true;
   if (!isRecord(scope)) return false;
@@ -785,7 +866,7 @@ function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessC
   return selectorMatches(selectors, ctx);
 }
 
-export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecret?: string } = {}) {
+export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "update" | "delete" | "transaction">, options: { toolActionSigningSecret?: string } = {}) {
   // Policy administration includes authorized self-targeted changes. It cannot
   // resolve governed action requests or modify principal permission grants.
   async function listPolicies(companyId: string) {
@@ -1239,7 +1320,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
     return { profiles: activeProfiles, entries };
   }
 
-  async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache): Promise<boolean> {
+  async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache, options: { toolTargetedOnly?: boolean } = {}): Promise<boolean> {
     const principalType = ctx.actorType === "agent" ? "agent" : ctx.actorType === "user" ? "user" : null;
     const principalId = ctx.actorType === "agent" ? ctx.agentId : ctx.actorId;
     if (!principalType || !principalId) return false;
@@ -1253,7 +1334,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
           eq(principalPermissionGrants.principalId, principalId),
           eq(principalPermissionGrants.permissionKey, "tools:use"),
         )));
-    return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
+    return grants.some((grant) => (!options.toolTargetedOnly || isToolTargetedGrant(grant.scope)) && scopeAllowsTool(grant.scope, ctx));
   }
 
   async function enforceRateLimit(policy: typeof toolPolicies.$inferSelect, ctx: ToolAccessContext, consume: boolean) {
@@ -1301,11 +1382,12 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
         ],
         set: {
           limit: rule.limit,
-          remaining: sql`greatest(0, least(${toolRateLimitCounters.remaining}, ${rule.limit}) - 1)`,
+          // Preserve the number already spent when an operator changes the limit.
+          remaining: sql`greatest(0, ${rule.limit} - (${toolRateLimitCounters.limit} - ${toolRateLimitCounters.remaining}) - 1)`,
           resetAt,
           updatedAt: now,
         },
-        setWhere: gt(toolRateLimitCounters.remaining, 0),
+        setWhere: sql`${toolRateLimitCounters.limit} - ${toolRateLimitCounters.remaining} < ${rule.limit}`,
       })
       .returning({ remaining: toolRateLimitCounters.remaining });
     if (!counter) {
@@ -1376,7 +1458,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
     });
   }
 
-  async function admittedRateLimitAdmissions(ctx: ToolAccessContext, invocationId: string): Promise<ConsumedRateAdmission[]> {
+  async function admittedRateLimitAdmissions(ctx: ToolAccessContext, invocationId: string, previewHash?: string): Promise<ConsumedRateAdmission[] | null> {
     const [invocation] = await db.select({
       actorType: toolInvocations.actorType, actorId: toolInvocations.actorId, agentId: toolInvocations.agentId,
       runId: toolInvocations.runId, issueId: toolInvocations.issueId, gatewayId: toolInvocations.gatewayId,
@@ -1387,6 +1469,9 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
       status: toolInvocations.status, policyDecision: toolInvocations.policyDecision, approvalState: toolInvocations.approvalState,
       policyExplanation: toolInvocations.policyExplanation,
     }).from(toolInvocations).where(and(eq(toolInvocations.companyId, ctx.companyId), eq(toolInvocations.id, invocationId)));
+    // A parked request already spent its slot before asking for review. Reusing
+    // that admission only skips the same rate rule; current policy and the
+    // gateway's approval/claim owners still decide whether it may execute.
     const delegated = invocation?.policyExplanation?.delegatedConnectionTest as { agentId?: string } | undefined;
     const gatewayIssuer = invocation?.gatewayId ? invocation.policyExplanation?.delegatedGatewayIssuer : undefined;
     const isDelegatedCaller = invocation?.actorType === "agent" && invocation.actorId === ctx.agentId
@@ -1401,11 +1486,79 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
       && invocation.catalogEntryId === ctx.catalogEntryId && invocation.toolName === ctx.toolName
       && invocation.providerType === ctx.providerType && invocation.applicationKey === ctx.applicationKey
       && invocation.upstreamToolName === ctx.upstreamToolName
-      && invocation.argumentsHash === ctx.argumentsHash;
-    const stored = authorized ? invocation.policyExplanation?.[isDelegatedCaller ? "delegatedCallerConsumedRateAdmissions" : "consumedRateAdmissions"] : null;
+      && (invocation.argumentsHash === ctx.argumentsHash || invocation.argumentsHash === previewHash);
+    if (!authorized) return null;
+    const stored = invocation.policyExplanation?.[isDelegatedCaller ? "delegatedCallerConsumedRateAdmissions" : "consumedRateAdmissions"];
     return Array.isArray(stored) ? stored.filter((item): item is ConsumedRateAdmission => isRecord(item)
       && typeof item.policyId === "string" && CANONICAL_UUID_RE.test(item.policyId)
       && typeof item.versionHash === "string" && /^[a-f0-9]{64}$/.test(item.versionHash)) : [];
+  }
+
+  /** Revalidate claimed work and persist new rate charges before provider dispatch. */
+  async function admitInvocation(
+    input: ToolAccessDecisionInput,
+    invocationId: string,
+    claim?: ToolApprovalClaim,
+    evaluate?: (
+      policy: Pick<ReturnType<typeof toolAccessPolicyService>, "decide" | "writeAudit">,
+      input: ToolAccessDecisionInput,
+      transaction: Db,
+    ) => Promise<ToolAccessDecision>,
+  ): Promise<ToolAccessDecision> {
+    try {
+      return await db.transaction(async tx => {
+        const [invocation] = await tx.select().from(toolInvocations)
+          .where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)))
+          .for("update");
+        // Historical reviewed requests can still have a pending invocation.
+        // Accept that state only with the exact executing claim owned by the
+        // gateway, locked in the same invocation-then-request order as dispatch.
+        let ownsClaim = false;
+        if (claim && claim.invocationId === invocationId) {
+          const [request] = await tx.select().from(toolActionRequests).where(and(
+            eq(toolActionRequests.id, claim.actionRequestId),
+            eq(toolActionRequests.invocationId, invocationId),
+            eq(toolActionRequests.companyId, input.companyId),
+          )).for("update");
+          ownsClaim = request?.status === "executing" && request.updatedAt.getTime() === claim.claimedAt.getTime();
+        }
+        if (!invocation || (claim && !ownsClaim)
+          || !(invocation.status === "executing" && invocation.policyDecision === "allow"
+            || ["awaiting_approval", "executing"].includes(invocation.status)
+              && invocation.policyDecision === "require_approval" && invocation.approvalState === "approved"
+            || invocation.status === "awaiting_approval" && invocation.policyDecision === "require_approval"
+              && invocation.approvalState === "pending" && ownsClaim)) {
+          return decision("deny", "deny_policy_block", "Tool invocation admission is unavailable.", [], []);
+        }
+        const admissionPolicy = toolAccessPolicyService(tx, options);
+        const admissionInput = { ...input, consumeRateLimit: true };
+        // Composed caller/target policy must share this claim transaction so
+        // either all new charges and receipts commit or all roll back.
+        const result = evaluate
+          ? await evaluate(admissionPolicy, admissionInput, tx as unknown as Db)
+          : await admissionPolicy.decide(admissionInput, { admittedInvocationId: invocationId });
+        if (!result.allowed && result.decision !== "require_approval") {
+          // A later policy can reject after an earlier rate rule spent a slot.
+          // Roll back both the new charges and their receipt on any rejection.
+          throw new RejectedInvocationAdmission(result);
+        }
+        const admissions = result.policyExplanation?.consumedRateAdmissions;
+        const delegatedAdmissions = result.policyExplanation?.delegatedCallerConsumedRateAdmissions;
+        if (Array.isArray(admissions) || Array.isArray(delegatedAdmissions)) {
+          await tx.update(toolInvocations).set({
+            policyExplanation: {
+              ...invocation.policyExplanation,
+              ...(Array.isArray(admissions) ? { consumedRateAdmissions: admissions } : {}),
+              ...(Array.isArray(delegatedAdmissions) ? { delegatedCallerConsumedRateAdmissions: delegatedAdmissions } : {}),
+            },
+          }).where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)));
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof RejectedInvocationAdmission) return error.decision;
+      throw error;
+    }
   }
 
   /**
@@ -1415,7 +1568,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
    */
   async function decide(
     input: ToolAccessDecisionInput,
-    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; sharedRateDecision?: ToolAccessDecision } = {},
+    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; admittedPreviewHash?: string; sharedRateDecision?: ToolAccessDecision } = {},
   ): Promise<ToolAccessDecision> {
     const consumedRateAdmissions: ConsumedRateAdmission[] = [];
     const result = await decideInternal(input, options, consumedRateAdmissions);
@@ -1426,7 +1579,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
 
   async function decideInternal(
     input: ToolAccessDecisionInput,
-    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; sharedRateDecision?: ToolAccessDecision },
+    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; admittedPreviewHash?: string; sharedRateDecision?: ToolAccessDecision },
     consumedRateAdmissions: ConsumedRateAdmission[],
   ): Promise<ToolAccessDecision> {
     // A decision that consumes a rate limit can also record a trust-rule hit
@@ -1438,9 +1591,14 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
     // A final handoff rechecks current permissions for work already admitted by
     // the gateway. Its own last consumed slot cannot reject that same work.
     // Only durable consumption of an unchanged rule retains that slot; new or
-    // edited rules still apply. This option never approves or consumes a call.
-    const admittedRates = input.consumeRateLimit === false && options.admittedInvocationId
-      ? await admittedRateLimitAdmissions(ctx, options.admittedInvocationId) : [];
+    // edited rules still apply. admitInvocation owns atomic consuming rechecks;
+    // ordinary preflight and browser handoff callers remain read-only.
+    const admittedRates = options.admittedInvocationId
+      ? await admittedRateLimitAdmissions(ctx, options.admittedInvocationId, input.consumeRateLimit === true ? undefined : options.admittedPreviewHash) : [];
+    if (options.admittedInvocationId && input.consumeRateLimit === true && admittedRates === null) {
+      return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
+    }
+    if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
     const profileState = await effectiveProfiles(ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const permittedByProfile = profileState.profiles.some((profile) => {
@@ -1448,38 +1606,29 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
       return !matchingEntries.some((entry) => entry.effect === "exclude")
         && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
     });
-    const policies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () =>
-      db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
-    for (const policy of policies) {
-      const conditions = policyConditions(policy);
-      if (conditions && selectorMatches(policy.selectors, ctx)) {
-        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
-        if (!parsed.success) {
-          return decision(
-            "deny",
-            "deny_policy_block",
-            "Tool access denied because a matching policy uses unsupported runtime conditions.",
-            effectiveProfileIds,
-            [policy.id],
-            {
-              redactionPlan: redaction.redactionPlan,
-              policyExplanation: {
-                policyId: policy.id,
-                policyType: policy.policyType,
-                selectorMatched: true,
-                conditionsError: parsed.error.issues.map((issue) => ({
-                  path: issue.path.join("."),
-                  message: issue.message,
-                })),
-              },
-            },
-          );
-        }
-      }
+    const enabledPolicies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () => indexEnabledToolPolicies(
+      await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt))));
+    const policyMatch = matchEnabledToolPolicies(enabledPolicies, ctx);
+    if ("unsupportedConditions" in policyMatch) {
+      const { policy, issues } = policyMatch.unsupportedConditions;
+      return decision(
+        "deny",
+        "deny_policy_block",
+        "Tool access denied because a matching policy uses unsupported runtime conditions.",
+        effectiveProfileIds,
+        [policy.id],
+        {
+          redactionPlan: redaction.redactionPlan,
+          policyExplanation: {
+            policyId: policy.id,
+            policyType: policy.policyType,
+            selectorMatched: true,
+            conditionsError: issues,
+          },
+        },
+      );
     }
-    const matchingPolicies = policies
-      .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
-      .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    const matchingPolicies = policyMatch.matching;
     const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {
@@ -1513,7 +1662,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
           );
         }
         const versionHash = ratePolicyVersionHash(policy);
-        if (admittedRates.some(admission => admission.policyId === policy.id && admission.versionHash === versionHash)) continue;
+        if (admittedRates?.some(admission => admission.policyId === policy.id && admission.versionHash === versionHash)) continue;
         // Paired caller/target checks for one delegated test share a slot only
         // when the exact policy version and counter bucket are identical.
         const shared = options.sharedRateDecision?.policyExplanation?.consumedRateAdmissions;
@@ -1548,7 +1697,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
             { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
-        if (input.consumeRateLimit === true) {
+        if (input.consumeRateLimit === true && !options.admittedInvocationId) {
           await recordTrustRuleHit(policy, ctx, redaction);
         }
         return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
@@ -1566,7 +1715,19 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
         return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
     }
-    if (await explicitGrant(ctx, cache)) {
+    // A connection's profile decides which of its actions agents may call. An
+    // unscoped tools:use grant, which every new standard agent receives, is
+    // permission to use tools at all; it must not turn on an action that a
+    // profile governing this connection leaves off. The connection's own
+    // access profile governs it even with no entries (every action turned
+    // off), and so does any entry that selects this action, connection or
+    // application. A grant that names the action, connection or application
+    // still applies. Board users keep their operator grants.
+    const governedByConnectionProfile = ctx.actorType === "agent" && !!ctx.connectionId && (
+      profileState.profiles.some((profile) => isConnectionAccessProfile(profile, ctx.connectionId))
+      || profileState.entries.some((entry) => entry.connectionId === ctx.connectionId || profileEntryMatches(entry, ctx))
+    );
+    if (await explicitGrant(ctx, cache, { toolTargetedOnly: governedByConnectionProfile })) {
       return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
     }
 
@@ -2178,6 +2339,7 @@ export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecr
 
   return {
     decide,
+    admitInvocation,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,

@@ -7,7 +7,7 @@ import {
   agents,
   approvals,
   companies,
-  createDb,
+  createDb, applyPendingMigrations,
   documents,
   heartbeatRuns,
   issueComments,
@@ -28,7 +28,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WATCHDOG_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -42,8 +45,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-task-watchdogs-scheduler-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-task-watchdogs-scheduler-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -64,6 +68,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -96,16 +101,18 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     return id;
   }
 
+  let nextFixtureIssueNumber = 10_000;
   async function seedIssue(companyId: string, overrides: Partial<typeof issues.$inferInsert> = {}) {
     const id = overrides.id ?? randomUUID();
+    const issueNumber = overrides.issueNumber ?? ++nextFixtureIssueNumber;
     await db.insert(issues).values({
       id,
       companyId,
       title: overrides.title ?? "Watched issue",
       status: overrides.status ?? "done",
       priority: overrides.priority ?? "medium",
-      identifier: overrides.identifier ?? `WDOG-${Math.floor(Math.random() * 10_000)}`,
-      issueNumber: overrides.issueNumber ?? Math.floor(Math.random() * 10_000),
+      identifier: overrides.identifier ?? `WDOG-${issueNumber}`,
+      issueNumber,
       parentId: overrides.parentId,
       assigneeAgentId: overrides.assigneeAgentId,
       originKind: overrides.originKind,
