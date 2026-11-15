@@ -88,23 +88,20 @@ export function installPreparedQueries(client: unknown, state: PreparedQueryStat
           return Reflect.apply(unsafe, this, args);
         }
         if (index === 2 && args.length < 2) args[1] = [];
-        const position = ++scope.statements;
         const text = args[0];
-        if (typeof text !== "string" || (options !== undefined && "prepare" in options)) {
-          args[index] = { prepare: true, ...options };
-          return Reflect.apply(unsafe, this, args);
-        }
-        args[index] = { ...options };
+        args[index] = { prepare: true, ...options };
+        if (typeof text !== "string") return Reflect.apply(unsafe, this, args);
         const query = Reflect.apply(unsafe, this, args) as PendingQuery;
-        if (query.options.simple) {
-          query.options.prepare = true;
-          return query;
-        }
-        let explicit: unknown;
+        let explicit: unknown = (options !== undefined && "prepare" in options) || query.options.simple
+          ? query.options.prepare : undefined;
+        let position: number | undefined;
         Object.defineProperty(query.options, "prepare", {
           enumerable: true,
           configurable: true,
-          get: () => explicit ?? shouldPrepare(state, text),
+          get: () => {
+            position ??= ++scope.statements;
+            return explicit ?? shouldPrepare(state, text);
+          },
           set: (value: unknown) => { explicit = value; },
         });
         const reject = query.reject;

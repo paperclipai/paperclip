@@ -225,17 +225,43 @@ describe.skipIf(!support.supported)("explicit ORM prepared statements on Postgre
     }
   });
 
+  async function occupyNextStatementName(db: Db) {
+    const names = (await statements(db, "%")).map(row => String(row.name));
+    const prefix = names.find(name => /\d$/.test(name) && !name.includes(" "))!.replace(/\d+$/, "");
+    const counters = names.filter(name => name.startsWith(prefix)).map(name => Number(name.slice(prefix.length)));
+    await db.$client.unsafe(`prepare "${prefix}${Math.max(...counters) + 1}" as select 1`, [], { prepare: false });
+  }
+
   it("retries a pooled statement unprepared when its prepared statement cannot be created", async () => {
     const db = fixture({ prepare: true });
     await statements(db, "%");
-    const names = (await statements(db, "%")).map(row => String(row.name));
-    const prefix = names[0].replace(/\d+$/, "");
-    const next = `${prefix}${Math.max(...names.map(name => Number(name.slice(prefix.length)))) + 1}`;
-    await db.$client.unsafe(`prepare "${next}" as select 1`, [], { prepare: false });
+    await occupyNextStatementName(db);
     expect(await db.select({ value: records.value }).from(records).where(eq(records.id, "b"))).toEqual([{ value: 2 }]);
+    await occupyNextStatementName(db);
     expect(await db.$client.unsafe("select $1::integer as raw_retry_marker", [3]).values()).toEqual([[3]]);
     expect(await statements(db)).toHaveLength(0);
-    expect(preparedStatementStats(db)).toMatchObject({ retried: 1, demoted: 1 });
+    expect(await statements(db, "%raw_retry_marker%")).toHaveLength(0);
+    expect(preparedStatementStats(db)).toMatchObject({ retried: 2, demoted: 2 });
+  });
+
+  it("does not replay a transaction when a query created first executes after another statement", async () => {
+    const db = fixture({ prepare: true });
+    const read = "select id, value from prepared_stale_fixture where id = $1";
+    expect(await db.$client.unsafe(read, ["stale"])).toEqual([{ id: "stale", value: 5 }]);
+    await changeStaleValueType("bigint");
+    let calls = 0;
+    try {
+      await expect(db.$client.begin(async tx => {
+        calls++;
+        const saved = tx.unsafe(read, ["stale"]);
+        await tx.unsafe("select $1::integer as ordering_marker", [1]);
+        return await saved;
+      })).rejects.toMatchObject({ code: "0A000" });
+      expect(calls).toBe(1);
+      expect(preparedStatementStats(db)).toMatchObject({ retriedTransactions: 0, demoted: 1 });
+    } finally {
+      await changeStaleValueType("integer");
+    }
   });
 
   it("prepares at most the configured number of distinct texts and skips long texts", async () => {
