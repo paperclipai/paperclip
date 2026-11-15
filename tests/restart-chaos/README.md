@@ -1584,6 +1584,11 @@ tried again on the next poll with the same `clientRequestId`. The overlap window
 `staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
 server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
 
+When no run is active once the hold or the 85% point has passed (the agent finished early), the harness posts the
+follow-up after the run ended instead. The task then waits for that post before it counts as finished, and the post is
+graded like an after-end follow-up: `after_end_follow_ups_served` needs an agent comment after it and the
+`FOLLOWUP-<nonce>` ledger line. The `follow_up_posted` detail says "after the run ended".
+
 To aim a follow-up at the warm session's idle close instead, set `RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS=<min>-<max>`
 (for example `298000-306000` for the 300 s idle timeout). The harness then posts the follow-up that long after the
 task's last run ended, `RESTART_CHAOS_MIX_FOLLOW_UP_COUNT` times (default 2), and waits for every post before the task
@@ -1643,7 +1648,11 @@ started from a wake that carries a person's comment posted after the task's firs
 wake payload's `commentId`) is a required run. This includes the retry of a failed attempt for the same comment. OpenCode,
 for example, takes no input mid-turn, so a comment posted during its turn is answered by the next run. Such runs are
 listed under "Follow-ups the running turn did not receive, answered in a later run" (`followUpsAnsweredLater`,
-`followUpWaits`). An extra turn is a run that started after completion from a wake that carries no comment. The
+`followUpWaits`). An extra turn is a run that started after completion from a wake that carries no comment. A run
+counts as having received its comments only when it started a provider turn (a `turn.submitted`, `turn.accepted` or
+`turn.started` run event, `providerTurnStarted` in the wake evidence). When a run fails before any provider turn, its
+comments carry to the next run that starts one: that run is the required run and may re-complete the task, and the
+failed run is not an extra turn. Wake evidence without `providerTurnStarted` counts every started run as a delivery. The
 server's delivery rule (`task_history.read`, cited evidence, child-result reads) is covered by the server's own tests.
 
 `completion_once` stays the independent side-effect check. The first run that reported completion is always the
