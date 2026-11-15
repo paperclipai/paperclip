@@ -146,7 +146,7 @@ export function createPluginRunnerTaskOwner(input: {
     }
     const identityDigest = input.launchDigestVersion === 1 ? runnerLaunchIdentityDigest(requirements) : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
-      ...(identityDigest ? { identityDigest, runDigest: runnerLaunchRunDigest(identityDigest, requirements.identity) } : {}),
+      ...(identityDigest ? { identityDigest, runDigest: runnerLaunchRunDigest(identityDigest, requirements) } : {}),
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)

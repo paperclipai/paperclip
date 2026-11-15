@@ -853,8 +853,8 @@ it.each([
     const [first, next] = prepares as Array<{identityDigest?:string;runDigest?:string}>;
     expect(first.identityDigest).toBe(runnerLaunchIdentityDigest(launchRequirements("codex")));
     expect(next.identityDigest).toBe(first.identityDigest);
-    expect(first.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, requirements.identity));
-    expect(next.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, nextIdentity));
+    expect(first.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, launchRequirements("codex")));
+    expect(next.runDigest).toBe(runnerLaunchRunDigest(first.identityDigest!, {...launchRequirements("codex"),identity:nextIdentity}));
     expect(next.runDigest).not.toBe(first.runDigest);
   } else {
     for (const op of prepares) expect(op).not.toHaveProperty("identityDigest");

@@ -64,7 +64,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   const operation = environmentTaskOperationSchema.parse(input.operation);
   if (operation.kind === "prepare" && (operation.identityDigest !== undefined || operation.runDigest !== undefined)) {
     const identityDigest = runnerLaunchIdentityDigest(operation.requirements as Parameters<typeof runnerLaunchIdentityDigest>[0]);
-    if (operation.identityDigest !== identityDigest || operation.runDigest !== runnerLaunchRunDigest(identityDigest, operation.requirements.identity)) {
+    if (operation.identityDigest !== identityDigest || operation.runDigest !== runnerLaunchRunDigest(identityDigest, operation.requirements as Parameters<typeof runnerLaunchRunDigest>[1])) {
       throw new Error("Plugin Runner launch digest mismatch");
     }
   }

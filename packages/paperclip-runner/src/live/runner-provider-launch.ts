@@ -104,14 +104,30 @@ export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunc
   return canonicalDigest(requirements);
 }
 
+/**
+ * The launch requirements without what names one run: the run, turn and item ids, and the runtime context's MCP
+ * binding. Core issues a new MCP binding for every run (`native-mcp:<runId>`) and the Runner rebinds it on each run
+ * attachment, so it is run-scoped, as `canonicalNativeRuntimeContextDigest` already treats it. Leaving it in would
+ * change the identity digest on every warm turn of any agent with an assigned connection.
+ */
 export function runnerLaunchIdentityDigest(requirements: RunnerProviderLaunchRequirements): string {
   const { runId: _runId, turnId: _turnId, itemId: _itemId, ...identity } = requirements.identity;
-  return canonicalDigest({ schema: "paperclip.runner.launch-identity-digest.v1", requirements: { ...requirements, identity } });
+  let runtimeContext = requirements.runtimeContext;
+  if (runtimeContext) {
+    const { bindingId: _bindingId, ...mcp } = runtimeContext.mcp;
+    runtimeContext = { ...runtimeContext, mcp: mcp as NativeRuntimeContextSnapshot["mcp"] };
+  }
+  return canonicalDigest({ schema: "paperclip.runner.launch-identity-digest.v1", requirements: { ...requirements, identity, runtimeContext } });
 }
 
-export function runnerLaunchRunDigest(identityDigest: string, identity: Pick<DurableRecoveryIdentity, "runId" | "turnId" | "itemId">): string {
+/** The identity digest plus everything that names one run, so it is unique to one run's launch. */
+export function runnerLaunchRunDigest(identityDigest: string, requirements: {
+  identity: Pick<DurableRecoveryIdentity, "runId" | "turnId" | "itemId">;
+  runtimeContext: Pick<NativeRuntimeContextSnapshot, "mcp"> | null;
+}): string {
+  const { identity } = requirements;
   return canonicalDigest({ schema: "paperclip.runner.launch-run-digest.v1", identityDigest,
-    runId: identity.runId, turnId: identity.turnId, itemId: identity.itemId });
+    runId: identity.runId, turnId: identity.turnId, itemId: identity.itemId, mcpBindingId: requirements.runtimeContext?.mcp.bindingId ?? null });
 }
 
 function runnerLaunchPolicy(requirements: RunnerProviderLaunchRequirements): Record<string, unknown> {

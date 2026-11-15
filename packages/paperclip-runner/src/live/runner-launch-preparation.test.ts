@@ -106,11 +106,44 @@ describe("launch identity and run digests", () => {
     expect(runnerLaunchIdentityDigest(withIdentity(nextRun))).toBe(first);
     expect(first).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(first).not.toBe(runnerLaunchRequirementsDigest(requirements()));
-    const run = runnerLaunchRunDigest(first, identity);
+    const run = runnerLaunchRunDigest(first, withIdentity(identity));
     expect(run).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(runnerLaunchRunDigest(first, nextRun)).not.toBe(run);
-    expect(runnerLaunchRunDigest(first, { ...identity, itemId: "other-item" })).not.toBe(run);
-    expect(runnerLaunchRunDigest(first, identity)).toBe(run);
+    expect(runnerLaunchRunDigest(first, withIdentity(nextRun))).not.toBe(run);
+    expect(runnerLaunchRunDigest(first, withIdentity({ ...identity, itemId: "other-item" }))).not.toBe(run);
+    expect(runnerLaunchRunDigest(first, withIdentity(identity))).toBe(run);
+  });
+
+  // Core names an MCP binding per run (`native-mcp:<runId>`) for any agent with an assigned connection; the Runner
+  // rebinds it on every run attachment, so it belongs to the run, not to the launch.
+  const zero = "0".repeat(64);
+  const contextWith = (bindingId: string | null, assignmentSetId = "assigned") => {
+    const value = {
+      prompt: { revision: "fixture", text: "Core policy", digest: createHash("sha256").update("Core policy").digest("hex") },
+      instructions: { entryPath: "AGENTS.md", bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA,
+        rootPath: "/controller/instructions", digest: zero, manifestDigest: zero, fileCount: 1, totalBytes: 1 } },
+      skills: [],
+      mcp: { assignmentSetId, digest: zero, bindingId },
+    };
+    return { ...value, aggregateDigest: canonicalNativeRuntimeContextDigest(value) };
+  };
+  const withContext = (value: typeof identity, bindingId: string | null, assignmentSetId?: string): RunnerProviderLaunchRequirements =>
+    ({ ...requirements(), identity: value, runtimeContext: contextWith(bindingId, assignmentSetId) });
+
+  it("keeps the identity digest across warm runs whose runtime context differs only by the run's MCP binding", () => {
+    const first = withContext(identity, "native-mcp:run");
+    const next = withContext(nextRun, "native-mcp:next-run");
+    const digest = runnerLaunchIdentityDigest(first);
+    expect(runnerLaunchIdentityDigest(next)).toBe(digest);
+    expect(runnerLaunchRunDigest(digest, next)).not.toBe(runnerLaunchRunDigest(digest, first));
+    // The binding alone names a run, so the run digest covers it too.
+    expect(runnerLaunchRunDigest(digest, withContext(identity, "native-mcp:other"))).not.toBe(runnerLaunchRunDigest(digest, first));
+    // An agent with no assigned connection has no binding, and its digest is stable the same way.
+    expect(runnerLaunchIdentityDigest(withContext(nextRun, null))).toBe(runnerLaunchIdentityDigest(withContext(identity, null)));
+  });
+
+  it("changes the identity digest when the assigned MCP access set changes", () => {
+    expect(runnerLaunchIdentityDigest(withContext(identity, "native-mcp:run", "other-set")))
+      .not.toBe(runnerLaunchIdentityDigest(withContext(identity, "native-mcp:run")));
   });
 
   it.each([
@@ -125,6 +158,6 @@ describe("launch identity and run digests", () => {
     const before = runnerLaunchIdentityDigest(requirements());
     const after = runnerLaunchIdentityDigest(changed as RunnerProviderLaunchRequirements);
     expect(after).not.toBe(before);
-    expect(runnerLaunchRunDigest(after, identity)).not.toBe(runnerLaunchRunDigest(before, identity));
+    expect(runnerLaunchRunDigest(after, withIdentity(identity))).not.toBe(runnerLaunchRunDigest(before, withIdentity(identity)));
   });
 });

@@ -355,7 +355,7 @@ describe("plugin-provided Runner execution", () => {
       preparedConversation: false, includeCollaborationModeInstructions: true,
     } };
     const identityDigest = runnerLaunchIdentityDigest(operation.requirements);
-    const runDigest = runnerLaunchRunDigest(identityDigest, operation.requirements.identity);
+    const runDigest = runnerLaunchRunDigest(identityDigest, operation.requirements);
     const result = { kind: "prepared", taskId: "attempt-1", launch: { configurationId: "configuration-1",
       requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
     const accepted = worker(result);
