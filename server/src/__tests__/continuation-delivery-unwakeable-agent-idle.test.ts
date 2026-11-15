@@ -7,6 +7,7 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { executionControlSchedule, registerExecutionControlWork } from "../services/execution-control-work.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import { deferForUnwakeableAssignee, readmitAgentContinuations } from "../services/recovery/continuation-delivery-attempt.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
 
 const MINUTE = 60_000;
@@ -113,4 +114,26 @@ describeIssueRecovery("continuation delivery to an agent that cannot be woken", 
     expect(wake).toHaveBeenCalledTimes(1);
     expect(await evidence(f.actionId)).toMatchObject({ continuationDelivery: "delivered", continuationRunId: expect.any(String) });
   }, 600_000);
+
+  it("does not store a wait when the assignee is resumed while delivery is checking it", async () => {
+    const f = await seed("terminated");
+    const [action] = await state.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+    const resume = state.db.transaction(async tx => {
+      await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+      await readmitAgentContinuations(tx as never, { companyId: f.companyId, agentId: f.agentId });
+      locked();
+      await held;
+    });
+    await lockTaken;
+    const deferred = deferForUnwakeableAssignee(state.db, action!);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    release();
+    await resume;
+    expect(await deferred).toBe(false);
+    expect(await evidence(f.actionId)).not.toHaveProperty("continuationDeliveryRetryAt");
+  }, 60_000);
 });

@@ -40,9 +40,7 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { isReattachPhaseActive } from "./heartbeat/run-admission.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
 import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
-import { continuationDeliveryDue, recordContinuationAgentWait, recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
-import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
-import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
+import { continuationDeliveryDue, deferForUnwakeableAssignee, recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
@@ -548,12 +546,7 @@ export async function deliverReconciledExecutions(
             continue;
           }
         }
-        const [owner] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, action.returnOwnerAgentId)));
-        if (owner && !(await evaluateAgentInvokabilityFromDb(db, isAgentAwaitingSetup(owner) ? { ...owner, status: "idle" } : owner)).invokable) {
-          seenAgents.add(action.returnOwnerAgentId);
-          await recordContinuationAgentWait(db, action);
-          continue;
-        }
+        if (await deferForUnwakeableAssignee(db, action)) { seenAgents.add(action.returnOwnerAgentId); continue; }
         if (!await agentHasRoom(action, action.returnOwnerAgentId, kind)) {
           seenAgents.add(action.returnOwnerAgentId);
           continue;
