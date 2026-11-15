@@ -7,6 +7,10 @@ import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifi
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
+import { LEASE_RELEASE_DEFERRAL_KEY, nativeRunNeverLaunchedRunner, readLeaseReleaseDeferral,
+  settleUnchangedNativeWorkspace, wakeStoppingAgentLifecycle, nextLeaseReleaseTriggers, nextLeaseReleaseBootIds, nextLeaseReleaseRetryAt,
+  type LeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
+import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -20,8 +24,9 @@ import {
   type WakeupOptions,
 } from "./run-preparation.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
-import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { preserveNativeFailedWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
+import { NativeWorkspaceFinalizationBusyError } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import {
@@ -182,7 +187,7 @@ async function withBudgetStopDelivery<T>(db: Db, work: () => Promise<T>): Promis
 
 /** `preservePauseDeferred`: the stop comes from a pause, which keeps the
  * messages it deferred for delivery once the pause lifts. */
-export type StopInvocationOptions = { preservePauseDeferred?: boolean };
+export type StopInvocationOptions = { preservePauseDeferred?: boolean; trigger?: string };
 
 /** Cancellation shares executor ownership and delegates lifecycle and admission effects. */
 
@@ -382,6 +387,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
     respectCleanupDeadlines?: boolean;
+    trigger?: string;
     nativeLifecycleTelemetry?: {
       provider: string;
       harness: string;
@@ -402,21 +408,34 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       input.providerResourceDisposition,
       status,
     );
+    let neverLaunched: boolean | undefined;
+    const runnerNeverLaunched = async () => neverLaunched ??= leaseOwnerRun?.runtimeMode === "native"
+      && isHeartbeatRunTerminalStatus(status) && await nativeRunNeverLaunchedRunner(db, input.runId, input.companyId);
+    const defer = (reason: string) => deferEnvironmentLeaseRelease(input, reason, providerResourceDisposition);
     if (cancelledRun?.runtimeMode === "native" && status === "cancelled"
       && readNativeWorkspaceSyncReference(cancelledRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
-      && !nativeRunHasNoWorkspaceAccess(cancelledRun)) {
-      try {
-        const preserved = await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
-        if (!preserved || !hasRequiredWorkspaceRecovery(preserved.resultJson)) return;
-      } catch {
+      && !nativeRunHasNoWorkspaceAccess(cancelledRun) && !await runnerNeverLaunched()) {
+      let deferral: string | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
+          deferral = null;
+          break;
+        } catch (error) {
+          const busy = error instanceof NativeWorkspaceFinalizationBusyError;
+          deferral = busy ? "workspace_owner_active" : "workspace_retention_busy";
+          if (!busy || attempt > 0 || !await clearExpiredNativeFinalizationOwner(input.runId, input.companyId)) break;
+        }
+      }
+      if (deferral) {
         // Keep the active source eligible for the bounded retention sweep.
         // Teardown must not release it after retention lost a lock or DB write.
         logger.warn({ runId: input.runId }, "Deferred cancelled workspace teardown until file retention is recorded");
-        return;
+        return await defer(deferral);
       }
       providerResourceDisposition = "stop_and_retain";
     }
-    if (providerResourceDisposition === "destroy") {
+    if (providerResourceDisposition === "destroy" && !await runnerNeverLaunched()) {
       const closeResult = await (
         options.closeWarmNativeSessionsForRun ??
         (async ({ runId, reason }) => {
@@ -476,7 +495,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           { runId: input.runId, warmNativeSessions: closeResult },
           "deferred environment lease destruction until warm native sessions close",
         );
-        return;
+        return await defer(closeResult.busy > 0 ? "warm_session_busy" : "warm_session_close_failed");
       }
     }
     const releaseResult = await envOrchestrator
@@ -507,7 +526,69 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         "failed to release environment lease for heartbeat run",
       );
     }
+    if (isHeartbeatRunTerminalStatus(status) && (!releaseResult || releaseResult.errors.length > 0)) await defer("release_failed");
+    else if (isHeartbeatRunTerminalStatus(status) && leaseOwnerRun?.runtimeMode === "native") await defer("release_skipped");
+    if (cancelledRun && neverLaunched
+      && readNativeWorkspaceSyncReference(cancelledRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared") {
+      await settleUnchangedNativeWorkspace(db, input.runId, input.companyId).catch(() => {
+        logger.warn({ runId: input.runId }, "could not record that a stopped run left no files to recover");
+      });
+    }
+    if (isHeartbeatRunTerminalStatus(status) && releaseResult?.released.length) await wakeAgentAfterRunLeasesSettled(input).catch(() => {
+      logger.warn({ runId: input.runId }, "could not wake the agent's stop after its run leases settled");
+    });
     await acknowledgeRemoteStop(input.runId, input.companyId);
+  }
+
+  async function wakeAgentAfterRunLeasesSettled(input: { runId: string; companyId: string; agentId: string }) {
+    const [unsettled] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
+      inArray(environmentLeases.status, ["active", "pending_cleanup"]))).limit(1);
+    if (!unsettled) await db.transaction(tx => wakeStoppingAgentLifecycle(tx as unknown as Db, input.agentId));
+  }
+
+  async function clearExpiredNativeFinalizationOwner(runId: string, companyId: string) {
+    const cleared = await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+      .where(and(eq(nativeRunFinalizations.runId, runId), eq(nativeRunFinalizations.companyId, companyId),
+        isNotNull(nativeRunFinalizations.leaseOwner), lte(nativeRunFinalizations.leaseExpiresAt, new Date()),
+        isNull(nativeRunFinalizations.resultId),
+        sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runId}
+          and ${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.status} = 'cancelled')`))
+      .returning({ runId: nativeRunFinalizations.runId });
+    return cleared.length > 0;
+  }
+
+  async function deferEnvironmentLeaseRelease(input: { runId: string; companyId: string; trigger?: string }, reason: string,
+    providerResourceDisposition: ProviderResourceDisposition | undefined) {
+    const leases = await Promise.resolve().then(() => db.select({ id: environmentLeases.id, metadata: environmentLeases.metadata })
+      .from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.heartbeatRunId, input.runId), eq(environmentLeases.status, "active"))))
+      .catch(() => {
+        logger.warn({ runId: input.runId, reason }, "could not record a deferred environment lease release");
+        return [];
+      });
+    for (const lease of leases) {
+      const previous = readLeaseReleaseDeferral(lease.metadata);
+      const attempts = (previous?.attempts ?? 0) + 1;
+      const deferral: LeaseReleaseDeferral = { reason, attempts,
+        retryAt: nextLeaseReleaseRetryAt(previous, attempts),
+        failingSince: previous?.failingSince ?? new Date().toISOString(),
+        triggers: nextLeaseReleaseTriggers(previous, input.trigger), attemptedByBootIds: nextLeaseReleaseBootIds(previous),
+        providerResourceDisposition: providerResourceDisposition ?? null };
+      const recorded = await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.orphanActiveLeases,
+          JSON.stringify({ companyId: input.companyId, runId: input.runId, leaseId: lease.id }));
+        await tx.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb)
+          || ${JSON.stringify({ [LEASE_RELEASE_DEFERRAL_KEY]: deferral })}::jsonb` })
+          .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active")));
+      }).then(() => true, () => false);
+      if (!recorded) {
+        logger.warn({ runId: input.runId, leaseId: lease.id, reason }, "could not record a deferred environment lease release");
+        continue;
+      }
+      logger.warn({ runId: input.runId, leaseId: lease.id, reason, attempts, retryAt: deferral.retryAt,
+        failingSince: deferral.failingSince }, "deferred environment lease release; a background pass retries it");
+    }
   }
 
   async function acknowledgeRemoteStop(runId: string, companyId: string) {
@@ -1728,12 +1809,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     errorCode = "cancelled",
   ) {
     const runs = await db
-      .select()
+      .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          or(inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+            pendingFailedNativeRetryCancellationCondition()),
         ),
       );
 
