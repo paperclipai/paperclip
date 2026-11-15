@@ -1,11 +1,14 @@
 import { eq, sql } from "drizzle-orm";
+import postgres from "postgres";
 import { integer, jsonb, pgTable, text } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { closeLivenessDb, createDb, databaseClientOptionsFromEnv, livenessDb, withDedicatedDbConnection, type DatabaseClientOptions, type Db } from "./client.js";
+import { closeLivenessDb, createDb, databaseClientOptionsFromEnv, livenessDb, preparedStatementStats, withDedicatedDbConnection, type DatabaseClientOptions, type Db } from "./client.js";
+import { createPreparedQueryState, installPreparedQueries, preparedQueryStats } from "./prepared-queries.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 import { runEventPayload } from "./run-event-payload.js";
 
 const records = pgTable("prepared_query_fixture", { id: text("id").primaryKey(), companyId: text("company_id").notNull(), value: integer("value").notNull(), payload: jsonb("payload") });
+const stale = pgTable("prepared_stale_fixture", { id: text("id").primaryKey(), value: integer("value").notNull() });
 const encoded = pgTable("prepared_encoded_fixture", { id: text("id").primaryKey(), payload: runEventPayload("payload") });
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -19,6 +22,8 @@ describe.skipIf(!support.supported)("explicit ORM prepared statements on Postgre
     await setup.execute(sql`create table prepared_query_fixture(id text primary key, company_id text not null, value integer not null, payload jsonb)`);
     await setup.execute(sql`create table prepared_encoded_fixture(id text primary key, payload jsonb)`);
     await setup.execute(sql`create table prepared_schema_change_fixture(id text primary key)`);
+    await setup.execute(sql`create table prepared_stale_fixture(id text primary key, value integer not null)`);
+    await setup.execute(sql`insert into prepared_stale_fixture(id, value) values ('stale', 5)`);
     await setup.execute(sql`insert into prepared_schema_change_fixture(id) values ('retained')`);
   }, 90_000);
   beforeEach(async () => {
@@ -170,6 +175,83 @@ describe.skipIf(!support.supported)("explicit ORM prepared statements on Postgre
       expect(await db.$client.unsafe(query, ["retained"])).toEqual([{ id: "retained", extra: null }]);
     } finally {
       await setup.execute(sql`alter table prepared_schema_change_fixture drop column if exists extra`);
+    }
+  });
+
+  async function changeStaleValueType(type: "bigint" | "integer") {
+    await setup.execute(sql.raw(`alter table prepared_stale_fixture alter column value type ${type}`));
+  }
+
+  it("retries a transaction whose first statement meets a plan invalidated by a schema change", async () => {
+    const db = fixture({ prepare: true });
+    const read = () => db.transaction(tx => tx.select().from(stale).where(eq(stale.id, "stale")));
+    expect(await read()).toEqual([{ id: "stale", value: 5 }]);
+    await changeStaleValueType("bigint");
+    try {
+      expect(await read()).toEqual([{ id: "stale", value: 5 }]);
+      expect(preparedStatementStats(db)).toMatchObject({ retriedTransactions: 1, demoted: 1 });
+    } finally {
+      await changeStaleValueType("integer");
+    }
+  });
+
+  it("retries a transaction whose first statement lost its prepared statement", async () => {
+    const db = fixture({ prepare: true });
+    const read = () => db.transaction(tx => tx.select({ value: records.value }).from(records).where(eq(records.id, "a")));
+    expect(await read()).toEqual([{ value: 1 }]);
+    await db.$client.unsafe("deallocate all");
+    expect(await read()).toEqual([{ value: 1 }]);
+    expect(preparedStatementStats(db)).toMatchObject({ retriedTransactions: 1, demoted: 1 });
+  });
+
+  it("does not replay a transaction after its first statement and runs the invalidated text unprepared", async () => {
+    const db = fixture({ prepare: true });
+    let calls = 0;
+    const update = () => db.transaction(async tx => {
+      calls++;
+      await tx.update(records).set({ value: 7 }).where(eq(records.id, "b"));
+      return tx.select().from(stale).where(eq(stale.id, "stale"));
+    });
+    expect(await update()).toEqual([{ id: "stale", value: 5 }]);
+    await changeStaleValueType("bigint");
+    try {
+      await expect(update()).rejects.toMatchObject({ cause: { code: "0A000" } });
+      expect(calls).toBe(2);
+      expect(await update()).toEqual([{ id: "stale", value: 5 }]);
+      expect(await statements(db, '%"prepared_stale_fixture"%')).toHaveLength(1);
+      expect(preparedStatementStats(db)).toMatchObject({ retriedTransactions: 0, demoted: 1 });
+    } finally {
+      await changeStaleValueType("integer");
+    }
+  });
+
+  it("retries a pooled statement unprepared when its prepared statement cannot be created", async () => {
+    const db = fixture({ prepare: true });
+    await statements(db, "%");
+    const names = (await statements(db, "%")).map(row => String(row.name));
+    const prefix = names[0].replace(/\d+$/, "");
+    const next = `${prefix}${Math.max(...names.map(name => Number(name.slice(prefix.length)))) + 1}`;
+    await db.$client.unsafe(`prepare "${next}" as select 1`, [], { prepare: false });
+    expect(await db.select({ value: records.value }).from(records).where(eq(records.id, "b"))).toEqual([{ value: 2 }]);
+    expect(await db.$client.unsafe("select $1::integer as raw_retry_marker", [3]).values()).toEqual([[3]]);
+    expect(await statements(db)).toHaveLength(0);
+    expect(preparedStatementStats(db)).toMatchObject({ retried: 1, demoted: 1 });
+  });
+
+  it("prepares at most the configured number of distinct texts and skips long texts", async () => {
+    const raw = postgres(temporary.connectionString, { max: 1, prepare: true, onnotice: () => {} });
+    const state = createPreparedQueryState({ limit: 2, maxLength: 80 });
+    installPreparedQueries(raw, state);
+    try {
+      for (const marker of ["cap_a", "cap_b", "cap_c", "cap_d"]) {
+        expect(await raw.unsafe(`select $1::integer as ${marker}`, [1])).toEqual([{ [marker]: 1 }]);
+      }
+      const long = `select $1::integer as cap_long /* ${"x".repeat(80)} */`;
+      expect(await raw.unsafe(long, [2])).toEqual([{ cap_long: 2 }]);
+      expect((await raw.unsafe("select name from pg_prepared_statements where statement like 'select $1::integer as cap_%'", [], { prepare: false })).length).toBe(2);
+      expect(preparedQueryStats(state)).toMatchObject({ texts: 2, unprepared: 3 });
+    } finally {
+      await raw.end();
     }
   });
 });

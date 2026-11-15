@@ -184,6 +184,21 @@ still apply, including `prepare: false` and simple-protocol execution. With the
 setting unset, ORM queries keep their existing unprepared behavior and tagged
 SQL uses the driver default. With `false`, preparation stays disabled.
 
+With `true`, a database client and its private pools prepare at most 1,000
+distinct SQL texts, and never a text longer than 8 KB; other texts run
+unprepared. A transaction-mode pooler
+(PgBouncer 1.22 or later, Neon `-pooler` hosts) shares prepared statements by
+SQL text across clients, so after a migration changes a column type, the
+pooler's statement for an affected text keeps failing with `cached plan must
+not change result type` for every client and every process. When a statement
+fails with that error, `prepared statement does not exist` (26000), or a
+duplicate statement name (42P05), the client stops preparing that text for the
+rest of the process and retries once without preparation. The retry applies to
+pooled statements and to a transaction whose first statement failed. A later
+statement in a transaction cannot be retried, so that transaction fails once
+for each affected text in each process. `preparedStatementStats(db)` reports
+the prepared texts and the unprepared, demoted, and retried counts.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
