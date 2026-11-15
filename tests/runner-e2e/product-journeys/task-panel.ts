@@ -25,8 +25,6 @@ export async function openTaskPanelTab(page: Page, tabName: "Properties" | "Arti
     else {
       if (await toggle.isVisible()) await toggle.click();
       else await opener.click();
-      // Wait for the panel transition before choosing another action. The old
-      // opener can remain visible while React mounts the panel's controls.
       await expect.poll(() => anyVisible(ready, tab, option, newTab)).toBe(true);
     }
   }

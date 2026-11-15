@@ -57,11 +57,6 @@ export function recoverableSandboxCreationCondition() {
   ));
 }
 
-/** A recovered orphan, expired warm sandbox, or recovered workspace's stopped
- * sandbox before its first cleanup attempt. Its holder is proven gone, so the
- * first stop or teardown is due now regardless of how recently the lease was
- * used; a failed attempt counts and the normal retry backoff applies from then on.
- * This changes scheduling only; teardown still verifies ownership and files. */
 export function recoveredCleanupFirstAttemptSql() {
   return sql`(${environmentLeases.failureReason} in ('orphaned_active_lease_recovered', 'retained_orphan_sandbox_released')
     or ${environmentLeases.metadata}->'sandboxStopAndRetain'->>'recoveredOrphanedRunLease' = 'true'
