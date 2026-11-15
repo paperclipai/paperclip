@@ -13,6 +13,15 @@ export function shouldUseBundledAcpxImageAssets(input: {
     ["cursor", "copilot", "kimi"].includes(input.provider.agent);
 }
 
+/** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */
+export function providerPackProvenanceReuseAllowed(input: {
+  retainProviderPack: boolean;
+  explicitProviderPackSelection: boolean;
+  authoritySelectable: boolean;
+}): boolean {
+  return !input.retainProviderPack && !input.explicitProviderPackSelection && input.authoritySelectable;
+}
+
 type VerificationCommandResult = {
   exitCode: number | null;
   timedOut: boolean;
