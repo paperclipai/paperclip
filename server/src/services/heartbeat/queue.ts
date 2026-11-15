@@ -2207,6 +2207,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
         sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`EXISTS (SELECT 1 FROM chat_actions chat_wake_source WHERE chat_wake_source.company_id = ${agentWakeupRequests.companyId}
+          AND chat_wake_source.id = ${agentWakeupRequests.id} AND chat_wake_source.kind = 'inbound_wakeup')`,
         sql`NOT EXISTS (SELECT 1 FROM issues chat_wake_issue WHERE chat_wake_issue.company_id = ${agentWakeupRequests.companyId}
           AND chat_wake_issue.id::text = ${agentWakeupRequests.payload}->>'issueId')`))
       .limit(50);

@@ -9,7 +9,7 @@ import { agents, agentWakeupRequests, authUsers, chatActions, chatConversations,
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../services/deferred-execution-notifications.js";
+import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../services/deferred-execution-notifications.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createDurableChatWakeupRequest } from "../services/durable-chat-wakeup.js";
 import { createInboundWakeups } from "../services/chat-channels/inbound/wakeups.js";
@@ -94,13 +94,14 @@ describe("deferred chat wake sweep", () => {
     return { companyId, userId, agent, endpoint, principal };
   }
 
-  async function wake(c: Awaited<ReturnType<typeof company>>, input: { status: string; ageMs: number; runStatus?: string }) {
+  async function wake(c: Awaited<ReturnType<typeof company>>, input: { status: string; ageMs: number; runStatus?: string;
+    on?: { issue: typeof issues.$inferSelect; conversation: typeof chatConversations.$inferSelect } }) {
     const createdAt = new Date(Date.now() - input.ageMs);
-    const [issue] = await db.insert(issues).values({ companyId: c.companyId, title: "Chat task", status: input.status,
-      assigneeAgentId: c.agent.id }).returning();
-    const [conversation] = await db.insert(chatConversations).values({ companyId: c.companyId, endpointId: c.endpoint.id,
-      issueId: issue.id, externalConversationId: "CCHANNEL", externalThreadId: `slack:CCHANNEL:${randomUUID()}`,
-      externalLabel: "Thread", state: "active", isDirectMessage: false }).returning();
+    const issue = input.on?.issue ?? (await db.insert(issues).values({ companyId: c.companyId, title: "Chat task", status: input.status,
+      assigneeAgentId: c.agent.id }).returning())[0];
+    const conversation = input.on?.conversation ?? (await db.insert(chatConversations).values({ companyId: c.companyId,
+      endpointId: c.endpoint.id, issueId: issue.id, externalConversationId: "CCHANNEL",
+      externalThreadId: `slack:CCHANNEL:${randomUUID()}`, externalLabel: "Thread", state: "active", isDirectMessage: false }).returning())[0];
     const [comment] = await db.insert(issueComments).values({ companyId: c.companyId, issueId: issue.id,
       authorUserId: c.userId, body: "A follow-up sent while the task was running" }).returning();
     const providerEventId = randomUUID();
@@ -126,7 +127,7 @@ describe("deferred chat wake sweep", () => {
       status: input.runStatus ?? "succeeded", startedAt: createdAt,
       finishedAt: input.runStatus === "running" ? null : new Date(createdAt.getTime() + 1000),
       contextSnapshot: { issueId: issue.id } }).returning();
-    return { issue, requestId: actionId, run, conversation };
+    return { issue, requestId: actionId, run, conversation, payloadCommentId: comment.id };
   }
 
   async function settle() {
@@ -135,7 +136,7 @@ describe("deferred chat wake sweep", () => {
       await Promise.allSettled([...passes]); await immediate();
     }
   }
-  function resumeFailures(spy: ReturnType<typeof vi.spyOn>) {
+  function resumeFailures(spy: { mock: { calls: unknown[][] } }): unknown[][] {
     return spy.mock.calls.filter(call => call[1] === RESUME_FAILED);
   }
   async function idle(minutes: number) {
@@ -211,6 +212,49 @@ describe("deferred chat wake sweep", () => {
     });
     expect((await db.select().from(issues).where(eq(issues.id, recent.issue.id)))[0].status).not.toBe("done");
     expect((await receipt(recent.requestId)).status).not.toBe("skipped");
+  });
+
+  it("starts one follow-up run for two recent saved messages on the same finished task", async () => {
+    const c = await company();
+    const first = await wake(c, { status: "done", ageMs: 10 * 60_000 });
+    const second = await wake(c, { status: "done", ageMs: 5 * 60_000, on: first });
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+    await waitForReal(async () => {
+      const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, c.companyId),
+        sql`${heartbeatRuns.wakeupRequestId} is not null`));
+      expect(runs).toHaveLength(1);
+      const receipts = await Promise.all([receipt(first.requestId), receipt(second.requestId)]);
+      expect(receipts.map(row => row.runId)).toEqual([runs[0].id, runs[0].id]);
+      expect(receipts[0]).toMatchObject({ status: "coalesced", payload: { coalescedIntoWakeupRequestId: second.requestId } });
+      expect(runs[0].contextSnapshot?.wakeCommentIds).toEqual([
+        first.payloadCommentId, second.payloadCommentId]);
+    });
+    await settle();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, c.companyId),
+      sql`${heartbeatRuns.wakeupRequestId} is not null`))).toHaveLength(1);
+  });
+
+  it("keeps a refused follow-up in the saved pause wait without retrying, then starts it when the pause lifts", async () => {
+    const c = await company();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, c.agent.id));
+    const refused = await wake(c, { status: "done", ageMs: 5 * 60_000 });
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+    await settle();
+    const waiting = await receipt(refused.requestId);
+    expect(waiting).toMatchObject({ status: "deferred_issue_execution", runId: null,
+      payload: { executionWait: { reason: "agent.not_invokable" } } });
+    expect(waiting.payload?.chatResume).toBeUndefined();
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.wakeupRequestId} is not null`)).toHaveLength(0);
+    await idle(1);
+    expect(await idle(30)).toEqual({ statements: 0, wakeUpdates: 0 });
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.wakeupRequestId} is not null`)).toHaveLength(0);
+    await db.transaction(async tx => {
+      await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, c.agent.id));
+      await notifyDeferredExecutionEligibility(tx, { companyId: c.companyId });
+    });
+    await waitForReal(async () => {
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, refused.requestId))).toHaveLength(1);
+    }, 10_000);
   });
 
   it("spaces bounded attempts on a stored time and still resumes promptly on a real event", async () => {

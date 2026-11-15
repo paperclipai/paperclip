@@ -5,7 +5,7 @@ import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
 import { notifyChatRunMilestones } from "../../chat-run-milestone-notifications.js";
 import { notifyChatDeliveryWork } from "../../chat-work-notifications.js";
 import { enqueueFastResponse } from "../../fast-responses.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { retryChatControlAdmission } from "../../chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
 import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner, CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS, type DeferredChatWakeDecline } from "../../durable-chat-wakeup.js";
@@ -449,21 +449,52 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       actorUserId: action.payload.requestedByActorType === "user" ? String(action.payload.requestedByActorId) : endpoint?.sponsorUserId ?? null,
     }, tx);
   }
+  async function recentClosedTaskChatWakes(scope: { companyId: string; agentId: string; issueId: string },
+    action: typeof chatActions.$inferSelect) {
+    const rows = await db.select({ receipt: agentWakeupRequests, action: chatActions }).from(agentWakeupRequests)
+      .innerJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id)))
+      .where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.agentId, scope.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
+        gte(agentWakeupRequests.createdAt, new Date(Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS)),
+        eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+        action.conversationId ? eq(chatActions.conversationId, action.conversationId) : isNull(chatActions.conversationId),
+        sql`${chatActions.payload}->>'issueId' = ${scope.issueId}`, sql`${chatActions.payload}->>'agentId' = ${scope.agentId}`))
+      .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id));
+    return rows;
+  }
+  async function settleRiders(companyId: string, primaryId: string, riderIds: string[]) {
+    await db.transaction(async tx => {
+      const [primary] = await tx.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, primaryId))).for("update");
+      const folded = and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, riderIds),
+        eq(agentWakeupRequests.status, "coalesced"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${primaryId}`);
+      if (primary?.runId) {
+        await tx.update(agentWakeupRequests).set({ runId: primary.runId, finishedAt: new Date(), updatedAt: new Date() }).where(folded);
+        return;
+      }
+      await tx.update(agentWakeupRequests).set({ status: "deferred_issue_execution", updatedAt: new Date(),
+        payload: sql`${agentWakeupRequests.payload} - 'coalescedIntoWakeupRequestId'` }).where(folded);
+    });
+  }
   const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope): Promise<DeferredChatWakeDecline | void> => {
-    const source = await db.select().from(chatActions).where(and(
+    const saved = await db.select().from(chatActions).where(and(
       eq(chatActions.id, scope.requestId), eq(chatActions.companyId, scope.companyId),
-      eq(chatActions.kind, "inbound_wakeup"),
     )).then(rows => rows[0] ?? null);
+    if (!saved || saved.kind !== "inbound_wakeup") return;
+    const source = saved;
     const [receipt] = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.id, scope.requestId), eq(agentWakeupRequests.companyId, scope.companyId),
       eq(agentWakeupRequests.agentId, scope.agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     ));
     if (!receipt || receipt.runId) return;
     const sweep = scope.recoverySweep === true;
-    if (source && ["preparing", "issued", "processing"].includes(source.status)) return sweep ? { retry: "source_pending" } : undefined;
-    if (!source || source.status !== "processed" || source.payload.agentId !== scope.agentId ||
+    if (["preparing", "issued", "processing"].includes(source.status)) return sweep ? { retry: "source_pending" } : undefined;
+    if (source.status !== "processed" || source.payload.agentId !== scope.agentId ||
         source.payload.issueId !== scope.issueId) return sweep ? { settle: "source_missing" } : undefined;
-    const action = source;
+    let action = source;
     let closed = false;
     if (sweep) {
       const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
@@ -474,22 +505,42 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       closed = task.status === "done" || task.status === "cancelled";
       if (closed && receipt.createdAt.getTime() < Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS) return { settle: "task_closed" };
     }
-    const authorize = async (tx: Db) => {
+    const group = closed ? await recentClosedTaskChatWakes(scope, action) : [];
+    let primaryReceipt = receipt;
+    if (group.length > 1) {
+      const newest = group.at(-1)!;
+      action = newest.action;
+      primaryReceipt = newest.receipt;
+    }
+    const authorizeAction = async (tx: Db, saved: typeof chatActions.$inferSelect) => {
       const [source] = await tx.select().from(chatActions).where(and(
-        eq(chatActions.id, action.id), eq(chatActions.companyId, scope.companyId),
+        eq(chatActions.id, saved.id), eq(chatActions.companyId, scope.companyId),
         eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
       ));
-      if (!source || inboundWakeScope(source) !== inboundWakeScope(action))
+      if (!source || inboundWakeScope(source) !== inboundWakeScope(saved))
         throw forbidden("The saved chat source changed", { code: "chat_action_authorization_changed" });
       const current = await authorizeInboundWorkStart(tx, source);
       if (current.delivery.state !== "processed") throw new Error("chat_inbound_wakeup_acceptance_not_committed");
       return current;
     };
+    const authorize = (tx: Db) => authorizeAction(tx, action);
+    const riders: Array<{ id: string; commentId: string }> = [];
     // The same authority used at ingress checks the live endpoint, principal,
     // immutable action source, conversation generation and original comment.
     const context = await db.transaction(async tx => {
       if (closed) await reopenClosedChatTask(tx as unknown as Db, action);
-      return authorize(tx as unknown as Db);
+      const current = await authorize(tx as unknown as Db);
+      for (const rider of group.slice(0, -1)) {
+        const allowed = await tx.transaction(inner => authorizeAction(inner as unknown as Db, rider.action)).then(() => true, () => false);
+        if (!allowed) continue;
+        const [folded] = await tx.update(agentWakeupRequests).set({ status: "coalesced", updatedAt: new Date(),
+          payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoWakeupRequestId: action.id })}::jsonb`,
+        }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, rider.receipt.id),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)))
+          .returning({ id: agentWakeupRequests.id });
+        if (folded) riders.push({ id: folded.id, commentId: String(rider.action.payload.commentId) });
+      }
+      return current;
     });
     const request = createDurableChatWakeupRequest({
       id: action.id, companyId: scope.companyId, agentId: scope.agentId, issueId: scope.issueId,
@@ -498,14 +549,19 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       requestedByActorId: String(action.payload.requestedByActorId), requestedAt: action.createdAt,
       resumeDeferred: true, authorize: async tx => { await authorize(tx); },
     });
-    assertDurableChatWakeupReceipt(request, receipt);
-    await queueIssueAssignmentWakeup({ heartbeat: options.heartbeat, issue: context.issue,
-      reason: EXTERNAL_CHAT_MESSAGE_WAKE_REASON, mutation: EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION,
-      contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
-      requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
-      wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
-      attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
-      durableChatRequest: request, rethrowOnError: true });
+    assertDurableChatWakeupReceipt(request, primaryReceipt);
+    try {
+      await queueIssueAssignmentWakeup({ heartbeat: options.heartbeat, issue: context.issue,
+        reason: EXTERNAL_CHAT_MESSAGE_WAKE_REASON, mutation: EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION,
+        contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
+        requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+        wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
+        ...(riders.length ? { wakeCommentIds: [...riders.map(rider => rider.commentId), request.commentId] } : {}),
+        attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
+        durableChatRequest: request, rethrowOnError: true });
+    } finally {
+      if (riders.length) await settleRiders(scope.companyId, action.id, riders.map(rider => rider.id));
+    }
   });
   return { stageInboundWakeup, acceptInboundWakeup, settleRejectedInboundWakeups, processInboundWakeup, unregisterDeferredWakeOwner };
 }
