@@ -17,6 +17,8 @@ import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
+import { RecentTaskGroup } from "./RecentTaskGroup";
+import { recentTaskHierarchy } from "@/lib/recent-task-hierarchy";
 import { SidebarSection } from "./SidebarSection";
 import { TruncatedTextMarqueeProvider } from "./TruncatedText";
 import { useScrollbarWhileScrolling } from "./side-panel/use-scrollbar-while-scrolling";
@@ -118,6 +120,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     ? [...moreDestinations, { label: "Cases", to: "/cases", icon: Boxes }]
     : moreDestinations, [experimental?.enableCases]);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
   const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
@@ -127,6 +130,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   useRecentTaskOpenWarmup({ companyId, userId, tasks: !rail && session.isSuccess ? recentTasks : NO_RECENT_TASKS });
   const { openNewIssue } = useDialogActions();
   const location = useLocation();
+  const hierarchy = useMemo(() => recentTaskHierarchy(recentTasks, location.pathname), [recentTasks, location.pathname]);
   const attentionCount = useCoordinatorAttentionCount(companyId);
   const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });
   // Only project IDs and visit times are kept in memory. Labels and task lists
@@ -141,7 +145,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   }, [location.pathname, projects, scope]);
   const recents = useMemo(() => {
     const roster = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
-    const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
+    const taskRows = recentTasks.filter(task => !hierarchy.nestedIds.has(task.id)).map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
     const chatRows = (chats.data ?? []).flatMap(chat => {
       const agent = chat.conversationAgentId ? roster.get(chat.conversationAgentId) : null;
       return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent }] : [];
@@ -149,7 +153,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
     return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time);
-  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope]);
+  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope, hierarchy]);
   const newTaskButton = <Button type="button" variant="ghost" className="design-sidebar-new-task rounded-lg" aria-label="New task" onClick={() => openNewIssue()}>
     <SquarePen aria-hidden />
     <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New task</span>
@@ -194,10 +198,13 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </Flyout>
       </div>
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
-      {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
+      {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"
-          ? <RecentTaskNavItem className="design-sidebar-item" key={item.id} task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
+          ? <RecentTaskGroup key={`${scope}:${item.id}`} task={item.task} userId={userId} className="design-sidebar-item" flattened={hierarchy.flattenedIds.has(item.id)}
+              selectedChild={hierarchy.selectedChild?.parentId === item.id ? hierarchy.selectedChild : undefined}>
+              <RecentTaskNavItem className="design-sidebar-item" task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
+            </RecentTaskGroup>
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
             : <ProjectRecent key={item.id} project={item.project} />)}

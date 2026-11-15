@@ -132,9 +132,8 @@ export const HTTP2_BRIDGE_SERVER_OPTIONS: http2.ServerOptions = {
  * total, so no combination of concurrent streams, across every route, can
  * retain more than this many bytes at once. This value keeps the accepted
  * process ceiling at 1,073,741,824 bytes (1 GiB) — the same ceiling
- * `doc/observability.md` already accepted before the per-body limit rose to
- * 10 MiB — now enforced by this reservation instead of left as an unenforced
- * document note. See the per-route budget comment above for the full
+ * the project already accepted before the per-body limit rose to 10 MiB —
+ * now enforced by this reservation instead of left as an unenforced note. See the per-route budget comment above for the full
  * accounting.
  */
 export const HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES = 1024 * 1024 * 1024;

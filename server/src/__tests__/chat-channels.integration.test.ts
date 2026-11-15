@@ -81,7 +81,8 @@ import { GITHUB_INLINE_RETRY_WINDOW_MS } from "../services/chat-channels/github/
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
-import { githubReviewCheckService } from "../services/chat-github-checks.js";
+import { GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS, githubReviewCheckService } from "../services/chat-github-checks.js";
+import { GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS } from "../services/chat-channels/github/review-check-work.js";
 import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession, syncGitHubBotTools } from "../services/chat-github-tools.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat/run-preparation.js";
@@ -96,6 +97,7 @@ import { companyObservability } from "@paperclipai/db";
 import * as runIdentityModule from "../services/run-identity.js";
 import * as heartbeatModule from "../services/heartbeat.js";
 import { chatGitHubRegistrations, chatGitHubReviews, chatGitHubConfigurations, toolCatalogEntries } from "@paperclipai/db";
+import { secretAccessEvents } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
@@ -2747,10 +2749,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
         const successors = (await readHeartbeatRunsByCompanyId(f.companyId)).filter(row => row.wakeupRequestId === receipt.id);
         const admitted = ["callback", "restart", "race"].includes(safetyScenario);
+        const sourceGone = { deleted_comment: "authority_source_comment", changed_generation: "authority_conversation_binding",
+          changed_source: "authority_source_shape" }[safetyScenario as "deleted_comment" | "changed_generation" | "changed_source"];
         expect(successors).toHaveLength(admitted ? 1 : 0);
         expect(settled).toMatchObject({ id: receipt.id, idempotencyKey: receipt.idempotencyKey,
           requestedByActorId: receipt.requestedByActorId, requestedAt: receipt.requestedAt,
-          status: admitted ? "queued" : "deferred_issue_execution" });
+          status: admitted ? "queued" : sourceGone ? "skipped" : "deferred_issue_execution",
+          ...(sourceGone ? { error: sourceGone, runId: null } : {}) });
         if (admitted) {
           expect(extractWakeCommentIds(successors[0].contextSnapshot)).toEqual([comment.id]);
           expect(successors[0].contextSnapshot?.chatConversationId).toBe(f.conversation.id);
@@ -4505,9 +4510,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
         await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
         expect(f.responseWrites).toHaveLength(baseline + 1);
+        // The retained requests only record that they wait for a newer run.
         expect(await db.select().from(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId))))
           .toEqual(expect.arrayContaining(history.map(row => expect.objectContaining({ id: row.actionId,
-            status: "processed", result: { code: "fast_response_superseded" } }))));
+            status: "processed", result: { code: "fast_response_superseded", terminalWaitKey: expect.any(String) } }))));
         expect(errors).toEqual([]);
       } finally {
         await coordinator.stop();
@@ -6542,6 +6548,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       }
     });
+    it.each(["current", "invalid_signature"] as const)("resolves only the secrets a %s signed GitHub webhook delivery uses", async (kind) => {
+      const f = await reviewBotFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const accessesBefore = new Set((await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)
+        .where(eq(secretAccessEvents.consumerId, endpoint.connectionId))).map(row => row.id));
+      const delivery = randomUUID();
+      const response = await f.service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "issue_comment", delivery, webhookSecret: kind === "invalid_signature" ? "wrong-secret" : f.webhookSecret,
+        payload: { action: "created", installation: { id: 2468 },
+          repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+          issue: { number: 418 }, comment: { id: 41801, body: "Ordinary comment", user: { id: 42, login: "octocat" } }, sender: { id: 42, login: "octocat" } },
+      }));
+      if (kind === "invalid_signature") expect(response.status).toBe(401);
+      else {
+        expect(response.status).toBeLessThan(300);
+        await expect.poll(async () => (await db.select({ status: chatActions.status }).from(chatActions).where(and(
+          eq(chatActions.endpointId, endpoint.id), eq(chatActions.providerActionId, `github_webhook_ingress:${delivery}`))))[0]?.status,
+        { timeout: 10_000 }).toBe("processed");
+      }
+      const accesses = (await db.select({ id: secretAccessEvents.id, configPath: secretAccessEvents.configPath }).from(secretAccessEvents)
+        .where(eq(secretAccessEvents.consumerId, endpoint.connectionId))).filter(row => !accessesBefore.has(row.id));
+      const reads: Record<string, number> = {};
+      for (const access of accesses) reads[access.configPath ?? "unknown"] = (reads[access.configPath ?? "unknown"] ?? 0) + 1;
+      // A delivery must never decrypt the App private key, OAuth client
+      // secret or other unused keys. Each step reads only what it uses:
+      // - durable staging verifies the provider signature (webhookSecret);
+      //   once it holds, it rejects foreign installations (installationId)
+      //   and scopes recovery-receipt denial to this App (appId);
+      // - the durable worker signs the retained body for internal replay
+      //   (webhookSecret);
+      // - the replayed request re-authenticates under the credential lease
+      //   against the current secret and installation (webhookSecret,
+      //   installationId).
+      // A bad signature stops after the one webhookSecret read.
+      expect(reads).toEqual(kind === "invalid_signature"
+        ? { "credentials.webhookSecret": 1 }
+        : { "credentials.webhookSecret": 3, "credentials.installationId": 2, "credentials.appId": 1 });
+    });
     it("stack rejects forged raw gateway deliveries without changing verification or waking an agent", async () => {
       const f = await reviewBotFixture();
       await db
@@ -7739,6 +7783,127 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
       } finally { release(); await coordinator.stop(); }
     });
+
+    async function unresolvedReviewCheckPasses() {
+      const f = await reviewCheckWorkerFixture("running");
+      await db.update(chatGitHubReviews).set({ runId: null }).where(eq(chatGitHubReviews.id, f.review.id));
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      await db.update(chatDeliveries).set({ normalizedEvent: { ...delivery.normalizedEvent,
+        githubAutomatic: { context: { deliveryId: f.event.deliveryId } } } }).where(eq(chatDeliveries.id, delivery.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { wakeCommentId: randomUUID() } }).where(eq(heartbeatRuns.id, f.run.id));
+      await f.enqueue();
+      let clock = Date.now();
+      const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      onTestFinished(() => now.mockRestore());
+      const queries: string[] = [];
+      const unsafe = db.$client.unsafe;
+      db.$client.unsafe = ((query: string, ...rest: unknown[]) => {
+        queries.push(query);
+        return (unsafe as (...args: unknown[]) => unknown).call(db.$client, query, ...rest);
+      }) as typeof unsafe;
+      onTestFinished(() => { db.$client.unsafe = unsafe; });
+      const register = () => {
+        const tasks: Array<{ run(signal: AbortSignal): Promise<unknown>; onSettled?(hints?: ReadonlySet<string>): void }> = [];
+        f.checks.registerCheckWork({ register: (_queue: unknown, task: typeof tasks[number]) => {
+          tasks.push(task); return { wake() {}, stop: async () => {} };
+        } } as never, () => true);
+        return tasks[0];
+      };
+      let task = register();
+      const pulls = () => f.requests.filter(url => url.endsWith("/pulls/418")).length;
+      const pass = async (hint?: string) => {
+        clock += 1000;
+        if (hint) task.onSettled?.(new Set([hint]));
+        await task.run(new AbortController().signal);
+      };
+      const window = async (seconds: number) => {
+        const before = { statements: queries.length, pulls: pulls(),
+          states: queries.filter(query => query.includes('from "chat_github_reviews" where')).length };
+        for (let second = 0; second < seconds; second++) await pass();
+        return { statements: queries.length - before.statements, pulls: pulls() - before.pulls,
+          states: queries.filter(query => query.includes('from "chat_github_reviews" where')).length - before.states };
+      };
+      const states = () => queries.filter(query => query.includes('from "chat_github_reviews" where')).length;
+      return { ...f, pass, window, pulls, states, restart: () => { task = register(); }, now: () => clock };
+    }
+
+    it("backs off remote head polls while an unresolved GitHub review check cannot change", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.pass();
+      expect(f.writes).toEqual([expect.objectContaining({ status: "queued" })]);
+      const idle = await f.window(600);
+      expect(idle.pulls).toBeLessThanOrEqual(7);
+      expect(idle.states).toBeLessThanOrEqual(21);
+      expect(f.writes).toHaveLength(1);
+      const saved = await f.action();
+      expect(saved).toMatchObject({ status: "received", result: { state: "queued", unchangedPolls: 6 } });
+      expect(Date.parse(String(saved.result?.retryAt)) - f.now()).toBeLessThanOrEqual(GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS);
+    }, 120_000);
+
+    it("publishes a local change at once and still recovers a missed head after backing off", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.window(400);
+      const backedOff = await f.action();
+      expect(backedOff.result?.unchangedPolls).toBeGreaterThanOrEqual(5);
+      const pulls = f.pulls();
+      f.restart();
+      await f.pass("*");
+      expect(f.pulls()).toBe(pulls);
+      await db.update(chatGitHubReviews).set({ runId: f.run.id }).where(eq(chatGitHubReviews.id, f.review.id));
+      // A run change notifies its task, as run milestones do.
+      await f.pass(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }));
+      expect(f.writes.at(-1)).toMatchObject({ status: "in_progress" });
+      expect(await f.action()).toMatchObject({ status: "received", result: { state: "running", unchangedPolls: 0 } });
+      await f.window(400);
+      f.setRemoteHead("c".repeat(40));
+      await f.window(GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS / 1000 + 1);
+      expect((await f.action()).status).toBe("cancelled");
+      expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
+    }, 120_000);
+
+    it("reads no GitHub review check status for company-wide hints and still reads it for the check's task", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.window(400);
+      const reads = async (hint: string) => {
+        const before = f.states();
+        await f.pass(hint);
+        return f.states() - before;
+      };
+      // A company-wide rebuild keeps the saved poll deadline; dispatch reads
+      // the status when it comes.
+      const company = JSON.stringify({ companyId: f.companyId });
+      const repeated = [];
+      for (let index = 0; index < 10; index++) repeated.push(await reads(company));
+      expect(repeated).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      for (let index = 0; index < GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS / 1000 - 10; index++) await f.pass();
+      expect(await reads(company)).toBe(0);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
+      expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: randomUUID() }))).toBe(0);
+      expect(await reads(JSON.stringify({ companyId: randomUUID() }))).toBe(0);
+    }, 120_000);
+
+    it("publishes a run change for a GitHub review check at once from its issue milestone", async () => {
+      const f = await unresolvedReviewCheckPasses();
+      await f.window(400);
+      await f.pass(JSON.stringify({ companyId: f.companyId }));
+      const hints: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatGitHubReviewChecks, (event, settled) => {
+        if (event === "settled") hints.push(...(settled ?? []));
+      });
+      onTestFinished(unsubscribe);
+      await db.transaction(async tx => {
+        await tx.update(chatGitHubReviews).set({ runId: f.run.id }).where(eq(chatGitHubReviews.id, f.review.id));
+        await notifyChatRunMilestones(tx, { companyId: f.companyId, issueId: f.review.issueId, runId: f.run.id });
+      });
+      await expect.poll(() => hints.length, { timeout: 5000 }).toBeGreaterThan(0);
+      expect(hints.map(hint => JSON.parse(hint))).toContainEqual({ companyId: f.companyId, issueId: f.review.issueId });
+      const writes = f.writes.length;
+      for (const hint of hints) await f.pass(hint);
+      expect(f.writes).toHaveLength(writes + 1);
+      expect(f.writes.at(-1)).toMatchObject({ status: "in_progress" });
+      expect(await f.action()).toMatchObject({ status: "received", result: { state: "running", unchangedPolls: 0 } });
+    }, 120_000);
 
     async function reviewProjectionFixture(cancelFirst = true) {
       const f = await reviewBotFixture();

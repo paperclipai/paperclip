@@ -79,6 +79,8 @@ import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, R
 import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RUNNER_API_CAPTURE_EVICTION_PASSES, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { AGENT_TOOL_CALL_LOOP, TOOL_CALL_LOOP_HINT, toolCallLoopContinuationKey, type ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { enqueueWake } from "./status-decision-committer.js";
 import type { Db } from "@paperclipai/db";
 import {
   authUsers,
@@ -350,6 +352,25 @@ export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
   #skillLibraryCache = new SkillLibraryReadCache();
   close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); this.binding.assignedMcpTools?.close?.(); }
+
+  async scheduleToolCallLoopContinuation(loop: ToolCallLoopError): Promise<boolean> {
+    const review = this.binding.nativeReview;
+    const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
+      tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
+    await this.db.transaction(tx => enqueueWake({
+      tx: tx as unknown as Db,
+      originRunId: this.binding.runId,
+      companyId: this.binding.companyId,
+      issueId: this.binding.issueId,
+      agentId: this.binding.agentId,
+      reason: review ? "native_completion_review" : "issue_continuation_needed",
+      idempotencyKey: toolCallLoopContinuationKey(this.binding.runId),
+      payload: { ...(review ?? {}), ...loopContext },
+      contextSnapshot: { ...(review ?? {}), forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
+        livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
+    }));
+    return true;
+  }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {

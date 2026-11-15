@@ -77,7 +77,8 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   if (input.body !== undefined && !input.files?.length) {
     const requestSchema = operation.requestBody?.content?.[contentType]?.schema as { type?: string } | undefined;
     if (contentType.includes("json") && requestSchema?.type === "object" && (!input.body || typeof input.body !== "object" || Array.isArray(input.body))) {
-      throw badRequest("This operation requires body to be a JSON object. Pass the object directly, not a JSON-encoded string.");
+      throw badRequest("This operation requires body to be a JSON object. Pass the object directly, not a JSON-encoded string. "
+        + `For example: ${runnerApiCallExample(operation, input.pathParams)}`);
     }
     if (contentType.includes("json") && requestSchema?.type === "array" && !Array.isArray(input.body)) {
       throw badRequest("This operation requires body to be a JSON array. Pass the array directly, not a JSON-encoded string.");
@@ -114,8 +115,68 @@ function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, 
   const received = [...receivedKeys].sort();
   const misplaced = received.filter(key => ["query", "responseText", "saveResponse"].includes(key));
   throw badRequest(`This request was not sent: ${operation.operationId} requires body, a JSON object with the request fields${requestFieldHint(operation)}. `
-    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument: {"operationId": ${JSON.stringify(operation.operationId)}, "pathParams": {...}, "body": {...}}.`
+    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument holding the fields you mean to change, for example: ${runnerApiCallExample(operation, input.pathParams)}`
     + (misplaced.length ? ` ${misplaced.join(", ")} never carr${misplaced.length === 1 ? "ies" : "y"} request fields.` : ""));
+}
+
+/**
+ * A call a model can copy: the path parameters it already sent and a body that
+ * satisfies the operation's request schema. Free-text values and ids it must
+ * look up appear as <field> placeholders.
+ */
+export function runnerApiCallExample(operation: RunnerApiOperation, pathParams?: Readonly<Record<string, string>>): string {
+  const params = Object.fromEntries([...operation.path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => name)
+    .filter(name => name !== "companyId" || pathParams?.companyId).map(name => [name, pathParams?.[name] || `<${name}>`]));
+  const schema = operation.requestBody?.content?.["application/json"]?.schema as JsonSchema | undefined;
+  return JSON.stringify({ operationId: operation.operationId, ...(Object.keys(params).length ? { pathParams: params } : {}), body: exampleBody(schema) });
+}
+
+type JsonSchema = { type?: string; enum?: unknown[]; format?: string; pattern?: string; minLength?: number; maxLength?: number;
+  minimum?: number; exclusiveMinimum?: number | boolean; minItems?: number; items?: JsonSchema; properties?: Record<string, JsonSchema>; required?: string[];
+  oneOf?: JsonSchema[]; anyOf?: JsonSchema[]; allOf?: JsonSchema[] };
+
+function exampleBody(schema: JsonSchema | undefined): unknown {
+  if (!schema) return {};
+  const variant = schema.oneOf?.[0] ?? schema.anyOf?.[0];
+  if (variant && !schema.type && !schema.properties) return exampleBody(variant);
+  if (schema.type && schema.type !== "object") return exampleValue("body", schema, 0);
+  const properties = schema.properties ?? {};
+  const required = (schema.required ?? []).filter(name => properties[name]);
+  // With no required field, show one field that takes free text: any value of
+  // its type is valid, and the model replaces it with what it meant to send.
+  const names = required.length ? required
+    : [Object.keys(properties).find(name => isFreeText(properties[name]!)) ?? Object.keys(properties)[0]].filter(Boolean) as string[];
+  return Object.fromEntries(names.map(name => [name, exampleValue(name, properties[name]!, 0)]));
+}
+
+function isFreeText(schema: JsonSchema): boolean {
+  return schema.type === "string" && !schema.enum && !schema.format && !schema.pattern && (schema.maxLength ?? Infinity) >= 3;
+}
+
+function exampleValue(name: string, schema: JsonSchema, depth: number): unknown {
+  const variant = schema.oneOf?.[0] ?? schema.anyOf?.[0] ?? schema.allOf?.[0];
+  if (variant && !schema.type) return exampleValue(name, variant, depth);
+  if (schema.enum?.length) return schema.enum[0];
+  switch (schema.type) {
+    case "string": {
+      if (schema.format === "date-time") return "2026-01-01T00:00:00.000Z";
+      if (schema.format === "date") return "2026-01-01";
+      const text = `<${name}>`;
+      return schema.maxLength !== undefined && text.length > schema.maxLength ? "x".repeat(Math.max(schema.minLength ?? 1, 1)) : text;
+    }
+    case "integer": case "number": {
+      if (typeof schema.exclusiveMinimum === "number") return schema.exclusiveMinimum + 1;
+      return schema.exclusiveMinimum === true ? (schema.minimum ?? 0) + 1 : schema.minimum ?? 0;
+    }
+    case "boolean": return true;
+    case "array": return schema.minItems && schema.items && depth < 4 ? [exampleValue(name, schema.items, depth + 1)] : [];
+    case "object": {
+      if (depth >= 4) return {};
+      const properties = schema.properties ?? {};
+      return Object.fromEntries((schema.required ?? []).filter(key => properties[key]).map(key => [key, exampleValue(key, properties[key]!, depth + 1)]));
+    }
+    default: return `<${name}>`;
+  }
 }
 
 function requestFieldHint(operation: RunnerApiOperation): string {

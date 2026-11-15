@@ -10,7 +10,7 @@ import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
-import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
@@ -83,6 +83,10 @@ import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
   slackMentionAllowsRunStart,
   resumeDeferredChatWake,
+  recordDeferredChatWakeDecline,
+  clearDeferredChatWakeRetry,
+  deferredChatWakeDeclineForError,
+  DEFERRED_CHAT_WAKE_RETRY_KEY,
   assertDurableChatWakeupReceipt,
   assertDurableChatWakeupRequest,
   withDurableChatAdmission,
@@ -583,7 +587,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const receipts = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(owned).for("update");
       if (!receipts.length) return;
       // Register the recovery signal before the write it announces.
-      await notifyIssueRecovery(tx, { companyId: run.companyId });
+      await notifyIssueGraphRecovery(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(agentWakeupRequests).set({
         idempotencyKey: null,
         payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
@@ -2197,6 +2201,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A server restart or a message/cleanup race can leave a deferred wake
     // after its owner has released the issue lock. Revisit it through the same
     // release admission, so recovery holds and operator Stops still apply.
+    const orphanedChatWakes = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+      payload: agentWakeupRequests.payload }).from(agentWakeupRequests)
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`EXISTS (SELECT 1 FROM chat_actions chat_wake_source WHERE chat_wake_source.company_id = ${agentWakeupRequests.companyId}
+          AND chat_wake_source.id = ${agentWakeupRequests.id} AND chat_wake_source.kind = 'inbound_wakeup')`,
+        sql`NOT EXISTS (SELECT 1 FROM issues chat_wake_issue WHERE chat_wake_issue.company_id = ${agentWakeupRequests.companyId}
+          AND chat_wake_issue.id::text = ${agentWakeupRequests.payload}->>'issueId')`))
+      .limit(50);
+    for (const wake of orphanedChatWakes) {
+      await recordDeferredChatWakeDecline(db, { companyId: wake.companyId, issueId: String(wake.payload?.issueId),
+        requestId: wake.id }, { settle: "task_missing" }).then(recorded => {
+        if (recorded) logger.warn({ requestId: wake.id, reason: recorded.reason, outcome: recorded.outcome, attempts: recorded.attempts },
+          "saved chat source could not resume after recovery");
+      }).catch(err => {
+        scope.onError?.(err);
+        logger.warn({ err, requestId: wake.id }, "saved chat source could not record its resume outcome");
+      });
+    }
     const strandedQueues = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
@@ -2214,6 +2239,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
         dependencyResolvedWakePayloadSql, assignmentWakePayloadSql),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        scope.requestId ? undefined : sql`coalesce((${agentWakeupRequests.payload} #>> ${`{${DEFERRED_CHAT_WAKE_RETRY_KEY},nextAttemptAt}`})::timestamptz <= now(), true)`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
           WHERE live_issue_run.company_id = ${issues.companyId}
             AND (live_issue_run.context_snapshot->>'issueId' = ${issues.id}::text
@@ -2240,17 +2266,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${String(wake.payload?.issueId)}`,
         or(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.nativeIssueId}::text = ${String(wake.payload?.issueId)}`),
       )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
-      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+      if (!wake.idempotencyKey?.startsWith("chat-inbound:")) await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution"),
       ));
       if (!latest || !latest.finishedAt || !isHeartbeatRunTerminalStatus(latest.status)) continue;
       if (latest.runtimeMode !== "legacy" && latest.runtimeMode !== "native") continue;
       if (wake.idempotencyKey?.startsWith("chat-inbound:")) {
-        await resumeDeferredChatWake(db, { companyId: wake.companyId, agentId: wake.agentId,
-          issueId: String(wake.payload?.issueId), requestId: wake.id }).catch(err => {
-          scope.onError?.(err);
-          logger.warn({ requestId: wake.id }, "saved chat source could not resume after recovery");
-        });
+        const chatScope = { companyId: wake.companyId, issueId: String(wake.payload?.issueId), requestId: wake.id };
+        await resumeDeferredChatWake(db, { ...chatScope, agentId: wake.agentId, recoverySweep: true })
+          .then(decline => decline ?? null, err => err instanceof PersistedExecutionWaitRefusal ? null : deferredChatWakeDeclineForError(err))
+          .then(async decline => {
+            if (!decline) {
+              if (wake.payload?.[DEFERRED_CHAT_WAKE_RETRY_KEY]) await clearDeferredChatWakeRetry(db, chatScope);
+              return;
+            }
+            const recorded = await recordDeferredChatWakeDecline(db, chatScope, decline);
+            if (!recorded) return;
+            logger.warn({ requestId: wake.id, reason: recorded.reason, outcome: recorded.outcome, attempts: recorded.attempts,
+              silent: "silent" in recorded ? recorded.silent : undefined }, "saved chat source could not resume after recovery");
+            if (recorded.outcome === "retry") scope.onDeferredDeadline?.(recorded.nextAttemptAt);
+          }).catch(err => {
+            scope.onError?.(err);
+            logger.warn({ err, requestId: wake.id }, "saved chat source could not record its resume outcome");
+          });
         continue;
       }
       const releaseSource = `${latest.companyId}:${String(wake.payload?.issueId)}:${latest.id}:${latest.sourceVersion}`;
@@ -5354,8 +5392,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return mergedRun;
     }
 
+    const queuedRunId = randomUUID();
     const queueOutcome = await db.transaction(async (tx) => {
-      await notifyRunDispatch(tx, { companyId: agent.companyId, issueId: readNonEmptyString(enrichedContextSnapshot.issueId) });
+      await notifyRunDispatch(tx, { companyId: agent.companyId, issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
+        runId: readNonEmptyString(enrichedContextSnapshot.issueId) ? undefined : queuedRunId });
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
@@ -5425,6 +5465,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
+          id: queuedRunId,
           companyId: agent.companyId,
           agentId,
           scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",

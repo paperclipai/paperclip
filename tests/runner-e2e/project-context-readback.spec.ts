@@ -7,7 +7,7 @@ const projectPath = "/QA/projects/owned-project-f962db91/issues", taskPath = "/Q
 const projectInput = { origin, issuePrefix: "QA", projectName, projectRef: "owned-project-f962db91" };
 const taskInput = { origin, issuePrefix: "QA", projectName, taskTitle, prompt, taskRef: "QA-201" };
 
-async function fixture(page: Page, changes: { missingProject?: boolean; wrongProject?: boolean; missingTask?: boolean; wrongTask?: boolean; wrongProperty?: boolean } = {}) {
+async function fixture(page: Page, changes: { missingProject?: boolean; wrongProject?: boolean; missingTask?: boolean; wrongTask?: boolean; wrongProperty?: boolean; sidePanel?: boolean } = {}) {
   const requests: string[] = [];
   await page.route(`${origin}/**`, async route => {
     const path = new URL(route.request().url()).pathname;
@@ -15,9 +15,13 @@ async function fixture(page: Page, changes: { missingProject?: boolean; wrongPro
     // Layout can retain a hidden sidebar label. ProjectDetail renders its
     // production InlineEditor as h2; IssueRow has an overlay link with sr-only text.
     const sidebar = `<aside hidden><a href="/wrong-sidebar">${projectName}</a><a href="/wrong-task">${taskTitle}</a><p>${prompt}</p></aside>`;
+    const propertyValue = changes.wrongProperty ? "Other project" : projectName;
+    const panel = changes.sidePanel
+      ? `<button aria-label="Toggle side panel" aria-pressed="false" onclick="const p=document.querySelector('#properties');p.removeAttribute('inert');p.removeAttribute('aria-hidden');p.style.width='300px';this.setAttribute('aria-pressed','true')">Open</button><aside id="properties" inert aria-hidden="true" style="width:0;overflow:hidden"><div style="width:300px"><div data-property-row><span data-property-label="Project">Project</span><div data-property-value>${propertyValue}</div></div></div></aside>`
+      : `<button onclick="document.querySelector('#properties').hidden=false;this.hidden=true">Show properties</button><section id="properties" hidden><div data-property-row><span data-property-label="Project">Project</span><div data-property-value>${propertyValue}</div></div></section>`;
     const body = path === "/QA/projects" ? `${sidebar}<main id="main-content">${changes.missingProject ? "" : `<a href="${changes.wrongProject ? "/QA/projects/foreign/issues" : projectPath}"><span>${projectName}</span></a>`}</main>`
       : path.includes("/projects/") ? `${sidebar}<main id="main-content"><h2>${projectName}</h2>${changes.missingTask ? "" : `<div data-issue-row-id="owned-task" style="position:relative;min-height:44px"><a style="position:absolute;inset:0" href="${changes.wrongTask ? "/QA/issues/QA-999" : taskPath}"><span class="sr-only">Open QA-201: ${taskTitle}</span></a><span>${taskTitle}</span></div>`}</main>`
-        : `${sidebar}<main id="main-content"><h1>${taskTitle}</h1><p>${prompt}</p><button onclick="document.querySelector('#properties').hidden=false;this.hidden=true">Show properties</button><section id="properties" hidden><div data-property-row><span data-property-label="Project">Project</span><div data-property-value>${changes.wrongProperty ? "Other project" : projectName}</div></div></section></main>`;
+        : `${sidebar}<main id="main-content"><h1>${taskTitle}</h1><p>${prompt}</p>${panel}</main>`;
     await route.fulfill({ contentType: "text/html", body: `<style>.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}</style>${body}` });
   });
   return requests;
@@ -30,6 +34,13 @@ test("reopens and reloads the owned project and task despite hidden duplicate si
   expect(requests.filter(path => path === projectPath)).toHaveLength(2);
   expect(requests.filter(path => path === taskPath)).toHaveLength(2);
   await expect(page.locator("main#main-content [data-property-value]")).toContainText(projectName);
+});
+
+test("opens the current collapsed inert side panel before reading the saved project", async ({ page }) => {
+  await fixture(page, { sidePanel: true });
+  await page.goto(`${origin}${projectPath}`);
+  await openProjectTaskThroughList({ ...taskInput, page });
+  await expect(page.getByRole("button", { name: "Toggle side panel" })).toHaveAttribute("aria-pressed", "true");
 });
 
 for (const [name, changes, code] of [
