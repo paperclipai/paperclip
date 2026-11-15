@@ -66,4 +66,42 @@ describe("codex_local testEnvironment managed home", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+  it("does not seed the host OPENAI_API_KEY when adapter config sets OPENAI_API_KEY to empty", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-envtest-emptykey-"));
+    const serverHome = path.join(root, "server-paperclip");
+    const sharedCodexHome = path.join(root, ".codex");
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+
+    try {
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(fakeCodex, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+      vi.stubEnv("OPENAI_API_KEY", "host-key-must-not-be-seeded");
+      vi.stubEnv("CODEX_HOME", sharedCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", serverHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+
+      await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: fakeCodex,
+          cwd,
+          engine: "cli",
+          env: { OPENAI_API_KEY: "" },
+        },
+      });
+
+      const seeded = await findFiles(serverHome, "auth.json");
+      for (const file of seeded) {
+        const raw = await fs.readFile(file, "utf8").catch(() => "");
+        expect(raw).not.toContain("host-key-must-not-be-seeded");
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

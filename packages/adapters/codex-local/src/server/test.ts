@@ -329,12 +329,16 @@ export async function testEnvironment(
     // Resolve the managed home from the server env only. Adapter-config env
     // must not pick the seed target (PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID).
     // A config-supplied OPENAI_API_KEY still seeds API-key auth explicitly.
-    const configApiKey = isNonEmpty(env.OPENAI_API_KEY) ? env.OPENAI_API_KEY : undefined;
+    // An explicitly empty config key means "no API key": pass null so the
+    // host OPENAI_API_KEY fallback in prepareManagedCodexHome does not apply.
+    // Only an omitted key keeps the host fallback.
+    const configSetsApiKey = Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY");
+    const configApiKey = isNonEmpty(env.OPENAI_API_KEY) ? env.OPENAI_API_KEY : null;
     env.CODEX_HOME = await prepareManagedCodexHome(
       process.env,
       async () => {},
       ctx.companyId,
-      configApiKey ? { apiKey: configApiKey } : {},
+      configSetsApiKey ? { apiKey: configApiKey } : {},
     );
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
