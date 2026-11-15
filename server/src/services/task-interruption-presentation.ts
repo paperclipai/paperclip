@@ -50,7 +50,7 @@ function awaitsExactRemoteResume(issue: Pick<typeof issues.$inferSelect, "status
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid" | "processGroupId">,
   coordinator: Pick<typeof nativeRunFinalizations.$inferSelect, "failureDetail">): boolean {
   const detail = coordinator.failureDetail as Record<string, unknown> | null;
-  return issue.status === "blocked" && (!issue.executionRunId || issue.executionRunId === run.id)
+  return issue.status === "blocked" && issue.executionRunId === run.id
     && (run.processPid !== null || run.processGroupId !== null) && detail?.recoveryMode === "exact_checkpoint_resume";
 }
 

@@ -655,7 +655,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     try {
       const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.scope.runId));
       const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
-        priorRunId: fixture.scope.runId, checkpointedAt: () => checkpointedAt });
+        priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
       await expect(wait(null)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
       await expect(wait(new Date(prior!.finishedAt!.getTime() - 60_000))).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
       await expect(wait(new Date(prior!.finishedAt!.getTime() + 1_000))).resolves.toBeUndefined();

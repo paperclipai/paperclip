@@ -116,6 +116,10 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       await taskInterruptionPresentation(db, issue)]) {
       expect(presentation).toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
     }
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issue.id));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "failed", canRetry: true });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issue.id));
     await db.update(nativeRunFinalizations).set({ failureDetail: { recoverable: true, recoveryMode: "fresh_session" } })
       .where(eq(nativeRunFinalizations.runId, runId));
     expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))

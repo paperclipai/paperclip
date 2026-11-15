@@ -11051,8 +11051,8 @@ async function executePaperclipNativeSessionAttempt(
         throw new Error(describeOwnFailedAttachment(finalization?.recoveryHistory));
       }
       await waitForLiveWarmSessionOwner({ db: input.db, execution: input.execution, priorRunId: identity.runId,
-        checkpointedAt: () => {
-          const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: identity.runnerInstanceId });
+        checkpointedAt: async () => {
+          const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: identity.runnerInstanceId });
           return backup && runnerdAuthorityLifecycle(backup.root, identity) === "suspended" ? new Date(backup.manifest.completedAt) : null;
         } });
       await logPostTerminalEvents(root, input.onLog);

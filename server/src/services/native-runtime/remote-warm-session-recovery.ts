@@ -41,7 +41,7 @@ export async function waitForLiveWarmSessionOwner(input: {
   db: Db;
   execution: NativeExecutionInput;
   priorRunId: string;
-  checkpointedAt: () => Date | null;
+  checkpointedAt: () => Promise<Date | null>;
 }): Promise<void> {
   const { binding } = input.execution;
   const [owner] = await input.db.select().from(nativeRunFinalizations).where(and(
@@ -54,7 +54,7 @@ export async function waitForLiveWarmSessionOwner(input: {
   const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
     idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
   if (!retryAt) return;
-  const checkpointedAt = input.checkpointedAt();
+  const checkpointedAt = await input.checkpointedAt();
   if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
   throw new NativeControllerRecoveryWaitingError(retryAt);
 }
