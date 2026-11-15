@@ -235,7 +235,7 @@
       "chat-catalog-domains/internal-routine-audit.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v6",
+    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v7",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,
@@ -1259,7 +1259,7 @@
       "chat-catalog-domains/api-read-receipts.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v5",
+    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v6",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 600000,
@@ -3668,7 +3668,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/navigation-preferences.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity-profile.v3",
+    "oracleVersion": "paperclip.chat-catalog.identity-profile.v4",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
