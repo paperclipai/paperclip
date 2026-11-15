@@ -50,7 +50,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -14706,7 +14706,8 @@ export async function prepareRemoteProviderPackOnTarget(input: {
       "provider_pack.verify",
       () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
     ),
-    usePreinstalled: async () => useVerifiedPreinstalledRemoteProviderPack({
+    usePreinstalled: async (onRejected) => useVerifiedPreinstalledRemoteProviderPack({
+      onRejected,
       candidates: preinstalledProviderPackRoots = await measureNativeRunnerSpan(input.trace, "provider_pack.discover", discoverPreinstalledProviderPack),
       verifyAndLink: async (preinstalledProviderPack) => {
         await measureNativeRunnerSpan(
@@ -14736,9 +14737,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           timeoutMs: 10_000,
         }));
         if (linked.exitCode !== 0 || linked.timedOut) {
-          throw new Error(
-            "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
-          );
+          throw providerPackIncompatible("link_failed", "preinstalled provider pack could not be linked");
         }
         activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
         await input.onLog?.(
@@ -17151,7 +17150,7 @@ async function createRunnerdBackendWithinSessionClaim(
           requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
           requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
-        }));
+        }), { attributes: { target: installation.root === stagedRemoteProviderPackRoot ? "workspace" : "image" } });
         if (!retainProviderPack) providerPackAuthority!.select(manifest);
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
