@@ -709,6 +709,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    // Unresolved shortnames (e.g. "paperclip-app") can reach here from route params;
+    // projects.id is a uuid column, so treat non-UUID ids as "not found".
+    if (!isUuidLike(id)) return null;
     const row = await db
       .select()
       .from(projects)
