@@ -15,7 +15,7 @@ import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNative
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { assertNativeRunnerCheckpointOwner, loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { assertNativeHarnessBackupOwner, nativeHarnessBackupOwner } from "./native-harness-backup-storage.js";
 import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, deferNativeRunForBusyAgentDirectory, NATIVE_AGENT_DIRECTORY_BUSY_WAIT, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
@@ -751,6 +751,28 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       const waitedMs = Math.max(waiting.retryAt.getTime(), checkpointedAt.getTime()) - parkedAt;
       expect(waitedMs).toBeLessThanOrEqual(5_000);
       expect(ownerExitDeadline - parkedAt).toBeGreaterThan(600_000);
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("holds a resumption claim of the parked follow-up until the outgoing server's save commits", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      let claim!: Promise<Awaited<ReturnType<typeof claimNativeSessionResumptions>>>;
+      let claimSettled = false;
+      await db.transaction(async tx => {
+        await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
+        claim = claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt });
+        void claim.finally(() => { claimSettled = true; });
+        await new Promise(resolve => setTimeout(resolve, 500));
+        expect(claimSettled).toBe(false);
+      });
+      expect(await claim).toHaveLength(1);
+      await expect(parked.saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
     } finally {
       await parked.outgoing.stop();
       resetControllerInstanceLeaseForTests();
