@@ -21,6 +21,8 @@ export interface Thresholds {
   queueWaitP95Ms: number;
   firstActivityP95Ms: number;
   minConcurrencyRatio: number;
+  maxFailedRunRatio: number;
+  recoveryGraceMs: number;
   maxEventLoopUtilization: number;
   runEventLatenessP99Ms: number;
   agentApiPreHandlerP99Ms: number;
@@ -159,6 +161,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
       "max-queue-wait-p95-seconds": { type: "string" },
       "max-first-activity-p95-seconds": { type: "string" },
       "min-concurrency-ratio": { type: "string" },
+      "max-failed-run-percent": { type: "string" },
+      "recovery-grace-minutes": { type: "string" },
     },
   });
   if (values["dry-run"] && values["cleanup-only"]) throw new Error("--dry-run and --cleanup-only exclude each other");
@@ -198,6 +202,8 @@ export function parseOptions(argv: readonly string[], env: NodeJS.ProcessEnv, no
       queueWaitP95Ms: number(values["max-queue-wait-p95-seconds"], "--max-queue-wait-p95-seconds", 60, 1, 3_600) * 1_000,
       firstActivityP95Ms: number(values["max-first-activity-p95-seconds"], "--max-first-activity-p95-seconds", 60, 1, 3_600) * 1_000,
       minConcurrencyRatio: number(values["min-concurrency-ratio"], "--min-concurrency-ratio", 0.9, 0.1, 1),
+      maxFailedRunRatio: number(values["max-failed-run-percent"], "--max-failed-run-percent", 2, 0, 100) / 100,
+      recoveryGraceMs: number(values["recovery-grace-minutes"], "--recovery-grace-minutes", 15, 1, 120) * 60_000,
       maxEventLoopUtilization: 0.6,
       runEventLatenessP99Ms: 1_000,
       agentApiPreHandlerP99Ms: 100,
