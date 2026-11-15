@@ -285,7 +285,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(prompt).toContain("WDOG-INSTR-LEAF");
   });
 
-  it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {
+  it("settles a completed subtree without duplicate review comments", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-DUPE", status: "done" });
     const agentId = await seedAgent(companyId);
@@ -305,7 +305,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     const second = await service.reconcileTaskWatchdogs({ companyId });
 
-    expect(second).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, skipped: 1 });
     expect(wakes).toHaveLength(1);
     const comments = await db
       .select()

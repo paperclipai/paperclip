@@ -1,3 +1,4 @@
+import { settleObsoleteWatchdogReview, watchdogSettlementReceipt } from "./task-watchdog-settlement.js";
 import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -1345,6 +1346,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
       : false;
     if (!isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return watchdog;
+    if (watchdogIssue.status === "done" && await watchdogSettlementReceipt(db, watchdog.companyId, watchdogIssue.id, watchdogIssue.statusVersion)) return watchdog;
     const reviewedFingerprint = reviewedFingerprintForWatchdogIssue(watchdogIssue);
     if (!reviewedFingerprint) return watchdog;
     const observedSnapshot = parseStopSnapshot(watchdog.lastObservedStopSnapshot);
@@ -1363,8 +1365,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         lastCompletedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(issueWatchdogs.id, watchdog.id))
+      .where(and(eq(issueWatchdogs.id, watchdog.id), sql`exists(select 1 from issues current_review where current_review.id=${watchdogIssue.id} and current_review.company_id=${watchdog.companyId} and current_review.status_version=${watchdogIssue.statusVersion})`))
       .returning();
+    if (!updated) return watchdog;
     await logActivity(db, {
       companyId: watchdog.companyId,
       actorType: "system",
@@ -1529,6 +1532,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         if (createdAt !== null) opts.onDeferredDeadline?.(createdAt + TASK_WATCHDOG_FIRST_RUN_GRACE_MS);
       }
     }
+    const settlement = await settleObsoleteWatchdogReview(db, { watchdog, classification,
+      reclassify: async (current, reader) => classifyTaskWatchdogSubtree(await collectClassifierInput(current.companyId, current, reader)),
+    });
+    if (settlement.settled) return { state: "not_applicable" as const, classification };
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
     }
@@ -1627,6 +1634,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       sourceIssue,
       classification,
     });
+    const settledGeneration = await watchdogSettlementReceipt(db, watchdog.companyId, watchdogIssue.id);
     const wake = deps.enqueueWakeup
       ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
         source: "automation",
@@ -1634,7 +1642,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         reason: "task_watchdog_stopped_subtree",
         payload: context,
         contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint) + (settledGeneration ? `:after-settlement:${settledGeneration.id}` : ""),
         requestedByActorType: "system",
         requestedByActorId: null,
       })

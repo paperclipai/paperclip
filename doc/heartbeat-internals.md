@@ -599,3 +599,7 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+### Obsolete task-watchdog controls
+
+A task-watchdog evaluation can close its obsolete control issue after the business subtree has a claimed, started provider or is terminal. It keeps pending questions, approvals, paused assignees and active control executions. The transaction records automatic settlement separately from a reviewed fingerprint; it does not accept business work. A later stop can reopen the control with a new wake generation. Automatic settlement covers at most 100 business issues per control. Existing change notifications and watchdog reconstruction own delivery; this adds no timer or worker.
