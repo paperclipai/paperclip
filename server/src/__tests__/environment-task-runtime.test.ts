@@ -372,7 +372,7 @@ describe("plugin-provided Runner execution", () => {
       expect(refused.call).not.toHaveBeenCalled();
     }
   });
-  it.each([false, true])("prepares scoped configuration with submit-time auth %s", async atSubmit => {
+  it.each([[false, false], [true, false], [false, true], [true, true]])("prepares scoped configuration with submit-time auth %s and in-prepare auth %s", async (atSubmit, checked) => {
     const operation = { kind: "prepare" as const, projectIds: [projectId], requirements: {
       schema: "paperclip.runner.launch-requirements.v1" as const,
       identity: { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
@@ -381,7 +381,8 @@ describe("plugin-provided Runner execution", () => {
       settings: {}, approvalPolicy: "on-request" as const, readOnly: false,
       preparedConversation: false, includeCollaborationModeInstructions: true,
     } };
-    const result = { kind: "prepared", taskId: "attempt-1", ...(atSubmit ? {projectAuthCheckAtSubmit: true} : {}), launch: { configurationId: "configuration-1",
+    const result = { kind: "prepared", taskId: "attempt-1", ...(atSubmit ? {projectAuthCheckAtSubmit: true} : {}),
+      ...(checked ? {projectAuthChecked: true} : {}), launch: { configurationId: "configuration-1",
       requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
     const workers = worker(result), store = database();
     await expect(executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation }))
@@ -389,9 +390,10 @@ describe("plugin-provided Runner execution", () => {
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
       companyId: "company", runId: "run", agentId: "agent", projectIds: [projectId], operation,
     }), 15_000);
-    expect(store.sets).toHaveLength(atSubmit ? 2 : 1);
-    if (atSubmit) expect(new PgDialect().sqlToQuery(store.sets[1].metadata as never).params).toContain(JSON.stringify({
-      runnerTaskProjectAuthValidation: { configurationId: "configuration-1", provider: "openai", projectIds: [projectId], atSubmit: true },
+    expect(store.sets).toHaveLength(atSubmit || checked ? 2 : 1);
+    if (atSubmit || checked) expect(new PgDialect().sqlToQuery(store.sets[1].metadata as never).params).toContain(JSON.stringify({
+      runnerTaskProjectAuthValidation: { configurationId: "configuration-1", provider: "openai", projectIds: [projectId],
+        ...(checked ? {} : { atSubmit: true }) },
     }));
     const denied = worker(result);
     const inactive = row(); inactive.lease.status = "released";

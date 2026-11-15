@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { PaperclipClient, Redactor } from "./client.ts";
-import { parseOptions, QUALIFIED_OPENCODE_MODEL } from "./config.ts";
+import { metricsCredential, parseOptions, QUALIFIED_OPENCODE_MODEL, readSecrets } from "./config.ts";
 import { evaluate, type StepMetrics } from "./criteria.ts";
 import { checkSpend, estimateSpend } from "./estimate.ts";
 import { FakePaperclip, VirtualClock, type FakeConfig } from "./fake-paperclip.ts";
 import { classifyHost, resolveTarget, TargetRefused } from "./guard.ts";
 import { EXIT, main, type MainDeps } from "./main.ts";
-import { Ramp } from "./ramp.ts";
+import { Ramp, serverMetrics } from "./ramp.ts";
 import { verdictOf, type RampResult } from "./report.ts";
 import { ensureAgents, prepareCompany } from "./setup.ts";
 import { distribution } from "./stats.ts";
@@ -243,6 +244,75 @@ describe("criteria", () => {
     assert.deepEqual(spans, { ttftMs: 6_000, firstActivityMs: null });
     const fallback = runTiming([{ eventType: "tool.execution.started", createdAt: "2026-11-14T10:00:03Z" }, { eventType: "item.delta", createdAt: "2026-11-14T10:00:07Z" }], created);
     assert.deepEqual(fallback, { ttftMs: 7_000, firstActivityMs: 3_000 });
+  });
+});
+
+describe("server metrics endpoint contract", () => {
+  const fixture = JSON.parse(readFileSync(new URL("./server-metrics.fixture.json", import.meta.url), "utf8")) as Record<string, unknown>;
+  const SERVER_METRICS_URL = `${ORIGIN}/api/instance/server-metrics`;
+
+  it("parses every finish-line field of the server's own serialized response except pool wait, which the server does not measure", () => {
+    const parsed = serverMetrics([fixture, { ...fixture, leaseRenewalsMissed: 3 }]);
+    assert.deepEqual(parsed, {
+      mainThreadCpuMax: fixture.mainThreadCpu, eventLoopUtilizationMax: fixture.eventLoopUtilization, eventLoopDelayP99MsMax: fixture.eventLoopDelayP99Ms,
+      statementsPerSecondMax: fixture.statementsPerSecond, poolWaitP99MsMax: null, runEventLatenessP99MsMax: fixture.runEventLatenessP99Ms,
+      agentApiPreHandlerP99MsMax: fixture.agentApiPreHandlerP99Ms, leaseRenewalsMissed: 2, samples: 2,
+    });
+    assert.equal("poolWaitP99Ms" in fixture, false);
+  });
+
+  it("counts missed lease renewals per server process, so samples from several processes never cancel out", () => {
+    const parsed = serverMetrics([
+      { processId: "a", leaseRenewalsMissed: 5 }, { processId: "b", leaseRenewalsMissed: 0 },
+      { processId: "a", leaseRenewalsMissed: 6 }, { processId: "b", leaseRenewalsMissed: 2 }, { processId: "a", leaseRenewalsMissed: 6 },
+    ]);
+    assert.equal(parsed.leaseRenewalsMissed, 3);
+  });
+
+  it("counts the full counter of a process that started during the run, so a restart cannot hide a missed renewal", () => {
+    const runStartedAt = 1_000_000;
+    const earlier = [{ processId: "a", uptimeSec: 3_600, sampledAt: runStartedAt + 10_000, leaseRenewalsMissed: 4 }];
+    const parsed = serverMetrics([
+      { processId: "a", uptimeSec: 3_630, sampledAt: runStartedAt + 40_000, leaseRenewalsMissed: 4 },
+      { processId: "b", uptimeSec: 20, sampledAt: runStartedAt + 70_000, leaseRenewalsMissed: 1 },
+      { processId: "b", uptimeSec: 35, sampledAt: runStartedAt + 85_000, leaseRenewalsMissed: 1 },
+    ], { earlier, runStartedAt });
+    assert.equal(parsed.leaseRenewalsMissed, 1);
+  });
+
+  it("keeps a process's counter baseline from earlier steps", () => {
+    const runStartedAt = 1_000_000;
+    const earlier = [
+      { processId: "a", uptimeSec: 3_600, sampledAt: runStartedAt + 10_000, leaseRenewalsMissed: 4 },
+      { processId: "a", uptimeSec: 3_650, sampledAt: runStartedAt + 60_000, leaseRenewalsMissed: 6 },
+    ];
+    const parsed = serverMetrics([{ processId: "a", uptimeSec: 3_700, sampledAt: runStartedAt + 110_000, leaseRenewalsMissed: 7 }],
+      { earlier, runStartedAt });
+    assert.equal(parsed.leaseRenewalsMissed, 1);
+    assert.equal(serverMetrics([{ processId: "a", uptimeSec: 3_700, sampledAt: runStartedAt + 110_000, leaseRenewalsMissed: 7 }], { runStartedAt })
+      .leaseRenewalsMissed, 0, "a process that predates the run and is first seen now starts from its first sample");
+  });
+
+  it("sends the board token to a metrics URL on the target origin, and no token to another origin", () => {
+    const options = parseOptions(["--base-url", ORIGIN, "--target-kind", "test-stack"], { PAPERCLIP_SCALE_METRICS_URL: SERVER_METRICS_URL }, 0);
+    assert.equal(metricsCredential(options, readSecrets({ PAPERCLIP_SCALE_TOKEN: TOKEN }, null)), TOKEN);
+    assert.equal(metricsCredential(options, readSecrets({ PAPERCLIP_SCALE_TOKEN: TOKEN, PAPERCLIP_SCALE_METRICS_TOKEN: METRICS_TOKEN }, null)), METRICS_TOKEN);
+    const elsewhere = parseOptions(["--base-url", ORIGIN, "--target-kind", "test-stack"], { PAPERCLIP_SCALE_METRICS_URL: METRICS_URL }, 0);
+    assert.equal(metricsCredential(elsewhere, readSecrets({ PAPERCLIP_SCALE_TOKEN: TOKEN }, null)), null);
+  });
+
+  it("measures the server criteria from the server metrics endpoint with the board token in the authorization header", async () => {
+    const out = await tempDir();
+    const h = harness({ metricsUrl: SERVER_METRICS_URL, metrics: () => fixture }, { PAPERCLIP_SCALE_METRICS_URL: SERVER_METRICS_URL });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    const metricsRequests = h.fake.requests.filter(request => request.url === SERVER_METRICS_URL);
+    assert.ok(metricsRequests.length > 0);
+    assert.ok(metricsRequests.every(request => request.authorization === `Bearer ${TOKEN}`));
+    assert.equal(result.sources.serverMetrics, "PAPERCLIP_SCALE_METRICS_URL");
+    const statuses = Object.fromEntries(result.steps[0]!.criteriaFinal.map(criterion => [criterion.id, criterion.status]));
+    for (const id of ["main_thread_cpu", "run_event_lateness_p99", "agent_api_pre_handler_p99"]) assert.equal(statuses[id], "pass", id);
+    assert.equal(statuses.lease_renewals_missed_zero, "pass");
   });
 });
 

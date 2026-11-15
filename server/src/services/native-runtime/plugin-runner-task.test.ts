@@ -864,6 +864,33 @@ it.each([
   await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
 });
 
+it.each([
+  ["checked inside prepare", true, ["prepare"]],
+  ["left to Core", false, ["prepare", "check_project_auth"]],
+] as const)("a warm attach whose project authentication is %s makes only the round trips it needs", async (_label, checked, kinds) => {
+  const {task} = provider();
+  ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
+  const input = {taskId:"task",task,projectIds:[],harness:"codex",projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1};
+  const owner = createPluginRunnerTaskOwner(input);
+  await prepare(owner, launchRequirements("codex"));
+  const registration = await owner.registration({} as never,"run");
+  const spec = launchSpec(); spec.nativeRunner!.lifecyclePolicy = {mode:"warm",idleTimeoutMs:300000};
+  const handle = owner.launcher(spec); registration.activate(); await registration.ready();
+  const originalTask=task.getMockImplementation()!;
+  const nextTask=vi.fn(async op=>{
+    const result=await originalTask(op) as Record<string,unknown>;
+    return op.kind === "prepare" && checked ? {...result,projectAuthChecked:true} : result;
+  });
+  owner.rebind({...input,task:nextTask});
+  const nextRegistration=await owner.registration({} as never,"next-run");
+  const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
+  await owner.driver.prepareLaunch!({...launchRequirements("codex"),identity:nextIdentity});
+  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(kinds);
+  await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
+  await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
+});
+
 it.each(["codex", "claude"])("adopts a verified retained %s task without submitting a replacement", async harness => {
   const {task}=provider();
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
