@@ -27,7 +27,7 @@ describe.skipIf(!support.supported)("governed legacy handoff persistence", () =>
     const stageId = randomUUID();
     const policy = normalizeIssueExecutionPolicy({ stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewer.id }] }] });
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Review implementation", status: "in_progress",
-      assigneeAgentId: worker.id, executionPolicy: policy }).returning();
+      assigneeAgentId: worker.id, executionPolicy: policy ? { ...policy } : null }).returning();
     const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: worker.id, status: "running",
       runtimeMode: "legacy", startedAt: new Date(), contextSnapshot: { issueId: issue.id } }).returning();
     await db.update(issues).set({ executionRunId: source.id, checkoutRunId: source.id, executionAgentNameKey: worker.name,

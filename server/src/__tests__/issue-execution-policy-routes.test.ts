@@ -171,6 +171,7 @@ type TestActor =
     }
   | {
       type: "agent";
+      source?: "agent_jwt";
       agentId: string;
       companyId: string;
       runId: string | null;
