@@ -102,7 +102,7 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
     await tempDb?.cleanup();
   });
 
-  async function insertAgent() {
+  async function insertAgent(maxConcurrentRuns = 1) {
     const companyId = randomUUID();
     const agentId = randomUUID();
 
@@ -127,7 +127,7 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
           enabled: true,
           intervalSec: 60,
           wakeOnDemand: true,
-          maxConcurrentRuns: 1,
+          maxConcurrentRuns,
         },
       },
       permissions: {},
@@ -265,6 +265,16 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
       return await Promise.race([p, timeout]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  // Polls `predicate` until it holds or `ms` elapses. Used to synchronize on the
+  // detector reaching its gated point without sleeping a fixed interval.
+  async function waitUntil(predicate: () => boolean, ms: number, label: string) {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > ms) throw new Error(`timed out waiting for ${label}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
 
@@ -469,6 +479,58 @@ describeEmbeddedPostgres("heartbeat run-loop detection dispatch", () => {
 
       expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
       expect(mockAdapterExecute).toHaveBeenCalledOnce();
+      expect(events).toHaveLength(1);
+      expect(events[0].payload).toMatchObject({ agentId, issueId: issueA });
+    } finally {
+      releaseDetector();
+      unsubscribe();
+    }
+  });
+
+  it("does not start a second detector read for an agent while one is still in flight", async () => {
+    // Concurrency-guard regression: dispatch runs the detector per agent on every
+    // eligible pass. Without an in-flight guard, a slow history read would spawn
+    // another read on the next pass while the first was still outstanding, piling
+    // shared-pool reads up for no extra signal. Two passes while the first read is
+    // gated must result in exactly one detector read.
+    //
+    // maxConcurrentRuns 2 so the second pass still has a free slot and reaches the
+    // detector call site (where the guard decides) rather than returning early at
+    // the slot check.
+    const { companyId, agentId } = await insertAgent(2);
+    const issueA = await insertIssue(companyId);
+    await insertGroupHistory(companyId, agentId, issueA, "issue_commented", LOOP_DETECTOR_THRESHOLD);
+
+    let releaseDetector!: () => void;
+    detectorControl.blockOn = new Promise<void>((resolve) => {
+      releaseDetector = resolve;
+    });
+    const callsBefore = detectorControl.calls;
+    const { events, unsubscribe } = collectLoopEvents(companyId);
+
+    try {
+      // Pass 1 starts a detector read that blocks mid-flight (fire-and-forget, so
+      // resumeQueuedRunsForAgent returns while the read is still gated).
+      await insertClaimableRun(companyId, agentId);
+      await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+      await waitUntil(
+        () => detectorControl.calls === callsBefore + 1,
+        3_000,
+        "the first detector read to reach the gated detector",
+      );
+
+      // Pass 2 dispatches the same agent while pass 1's read is still gated. The
+      // in-flight guard must skip starting another read.
+      await insertClaimableRun(companyId, agentId);
+      await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+
+      // Still exactly one detector read: pass 2 was skipped, not queued behind it.
+      expect(detectorControl.calls).toBe(callsBefore + 1);
+
+      // Releasing lets the single in-flight read finish; its signal is published
+      // once, and drain waits for the tracked background promise.
+      releaseDetector();
+      await heartbeat.drainActiveRunExecutions();
       expect(events).toHaveLength(1);
       expect(events[0].payload).toMatchObject({ agentId, issueId: issueA });
     } finally {

@@ -143,6 +143,7 @@ import { publishLiveEvent } from "../live-events.js";
 import {
   detectRunLoops,
   LOOP_DETECTOR_MAX_WINDOW_RUNS,
+  LOOP_DETECTOR_STATEMENT_TIMEOUT_MS,
   LOOP_DETECTOR_WINDOW_SEC,
 } from "../run-loop-detector.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
@@ -2459,6 +2460,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // issue-scoped group that both carry a null issueId never share a cooldown.
   const lastRunLoopSignalEmittedAtMs = new Map<string, number>();
 
+  // Agents with a detector read currently in flight. Dispatch runs the detector
+  // per agent on every eligible pass, so without this guard a single slow
+  // history read would spawn another read on the next tick, and another after
+  // that — each borrowing a shared-pool connection — while the first is still
+  // running. Gating on this set keeps at most one outstanding detector read per
+  // agent; combined with the per-read statement_timeout it bounds how much pool
+  // pressure the (best-effort, off-path) detector can ever apply.
+  const runLoopSignalInFlightAgentIds = new Set<string>();
+
   function runLoopSignalKey(
     agentId: string,
     scopeKind: "company" | "issue",
@@ -2487,24 +2497,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // WINDOW_RUNS is only a pathological-volume ceiling and never realistically
       // binds. scopeKind/issueId are the SAVED read boundary the detector groups by
       // — read them here instead of contextSnapshot.issueId, which coalescing mutates.
-      const recentRuns = await db
-        .select({
-          id: heartbeatRuns.id,
-          scopeKind: heartbeatRuns.scopeKind,
-          issueId: heartbeatRuns.issueId,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
-          createdAt: heartbeatRuns.createdAt,
-        })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, agent.companyId),
-            eq(heartbeatRuns.agentId, agent.id),
-            gt(heartbeatRuns.createdAt, windowStart),
-          ),
-        )
-        .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(LOOP_DETECTOR_MAX_WINDOW_RUNS);
+      //
+      // Project wakeReason out of the snapshot in SQL rather than selecting the
+      // whole context_snapshot JSONB: the detector only ever reads wakeReason, and
+      // LOOP_DETECTOR_MAX_WINDOW_RUNS allows thousands of rows, so pulling the full
+      // snapshot for each would move far more bytes than this read needs.
+      //
+      // Run inside a transaction with a local statement_timeout so a pathological
+      // plan cannot pin a shared-pool connection indefinitely. On timeout the read
+      // throws and the catch below treats it as "no detection this pass" — the read
+      // is best-effort and never worth starving real dispatch for.
+      const recentRuns = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT set_config('statement_timeout', ${`${LOOP_DETECTOR_STATEMENT_TIMEOUT_MS}`}, true)`,
+        );
+        return tx
+          .select({
+            id: heartbeatRuns.id,
+            scopeKind: heartbeatRuns.scopeKind,
+            issueId: heartbeatRuns.issueId,
+            wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+            createdAt: heartbeatRuns.createdAt,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, agent.companyId),
+              eq(heartbeatRuns.agentId, agent.id),
+              gt(heartbeatRuns.createdAt, windowStart),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(LOOP_DETECTOR_MAX_WINDOW_RUNS);
+      });
 
       // detectRunLoops is a synchronous pure function; awaiting its result is a
       // no-op in production but lets tests swap in an async seam to prove this
@@ -2749,11 +2774,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // catches its own errors, so this promise never rejects. Track it so
       // drainActiveRunExecutions (graceful shutdown, tests tearing down a shared
       // database) still waits for the read/publish to finish instead of racing it.
-      const runLoopSignal = maybeEmitRunLoopSignal(agent);
-      activeRunLoopSignalPromises.add(runLoopSignal);
-      void runLoopSignal.finally(() => {
-        activeRunLoopSignalPromises.delete(runLoopSignal);
-      });
+      //
+      // Skip when this agent already has a detector read in flight: dispatch can
+      // fire many passes for one agent in quick succession, and detection is only
+      // useful once per read — launching another while the first is still running
+      // just piles shared-pool reads on top of each other for no extra signal.
+      if (!runLoopSignalInFlightAgentIds.has(agent.id)) {
+        runLoopSignalInFlightAgentIds.add(agent.id);
+        const runLoopSignal = maybeEmitRunLoopSignal(agent).finally(() => {
+          runLoopSignalInFlightAgentIds.delete(agent.id);
+        });
+        activeRunLoopSignalPromises.add(runLoopSignal);
+        void runLoopSignal.finally(() => {
+          activeRunLoopSignalPromises.delete(runLoopSignal);
+        });
+      }
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       const slots = { full: false };

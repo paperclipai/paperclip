@@ -62,13 +62,36 @@ export const LOOP_DETECTOR_MAX_WINDOW_RUNS = Math.max(5000, LOOP_DETECTOR_THRESH
  */
 export const LOOP_DETECTOR_MAX_RECENT_RUN_IDS = Math.max(50, LOOP_DETECTOR_THRESHOLD);
 
+/**
+ * Statement-timeout (milliseconds) applied to the detector's history read.
+ *
+ * The read is best-effort and runs off the shared dispatch path, but it still
+ * borrows a connection from the shared pool. A pathological plan (a cold cache,
+ * a bloated window) must not be able to pin that connection indefinitely and
+ * starve real dispatch work, so the query is run inside a transaction that sets
+ * a local statement_timeout. On timeout the read throws, maybeEmitRunLoopSignal
+ * swallows it (detection is optional), and the connection is returned. Kept well
+ * above the expected sub-millisecond index scan so it only ever trips on a
+ * genuinely stuck query, never on normal load.
+ */
+export const LOOP_DETECTOR_STATEMENT_TIMEOUT_MS = clampPositiveInt(
+  process.env.PAPERCLIP_LOOP_DETECTOR_STATEMENT_TIMEOUT_MS,
+  2000,
+);
+
 export interface DetectRunLoopRecentRun {
   id: string;
   /** Saved read boundary of the run; never derived from contextSnapshot. */
   scopeKind: "company" | "issue";
   /** Saved issue binding (null for company-scoped runs); never the snapshot. */
   issueId: string | null;
-  contextSnapshot: Record<string, unknown> | null;
+  /**
+   * The run's wake reason — the one non-private loop dimension. The caller
+   * projects it out of contextSnapshot in SQL (`context_snapshot ->> 'wakeReason'`)
+   * so the detector never has to pull the whole snapshot JSON for every run in
+   * the window. Null when the snapshot had no (string) wakeReason.
+   */
+  wakeReason: string | null;
   createdAt: Date;
 }
 
@@ -100,8 +123,8 @@ export interface RunLoopSignal {
  *
  * Grouping uses the run's SAVED read boundary (scopeKind, issueId), so a group
  * — and the signal built from it — only ever contains runs that share one read
- * scope. `wakeReason` (a non-private loop dimension) is still read from the
- * context snapshot.
+ * scope. `wakeReason` (a non-private loop dimension) is projected out of the
+ * context snapshot by the caller's SQL and arrives on the run directly.
  *
  * "Worst" = highest run count; ties broken by earliest firstAt (longest-running
  * loop wins). A run with no issueId AND no wakeReason is ignored — those are
@@ -126,8 +149,7 @@ export function detectRunLoops(input: DetectRunLoopInput): RunLoopSignal[] {
 
   for (const run of input.recentRuns) {
     if (run.createdAt.getTime() < windowStartMs) continue;
-    const ctx = run.contextSnapshot ?? {};
-    const wakeReason = readString(ctx["wakeReason"]);
+    const wakeReason = readString(run.wakeReason);
     // Read boundary comes only from the saved columns. Company-scoped runs have
     // no issue binding; force issueId null so a stale snapshot issueId can never
     // widen their scope.

@@ -24,11 +24,13 @@ function run(
   const snapshotIssueId = typeof ctx?.issueId === "string" ? ctx.issueId : null;
   const issueId = saved?.issueId !== undefined ? saved.issueId : snapshotIssueId;
   const scopeKind = saved?.scopeKind ?? (issueId !== null ? "issue" : "company");
+  // The caller projects wakeReason out of context_snapshot in SQL, so model the
+  // run with the projected value, not the whole snapshot.
   return {
     id,
     scopeKind,
     issueId,
-    contextSnapshot: ctx,
+    wakeReason: typeof ctx?.wakeReason === "string" ? ctx.wakeReason : null,
     createdAt: new Date(now.getTime() - minutesAgo * 60 * 1000),
   };
 }
