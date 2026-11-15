@@ -105,8 +105,9 @@ export function parseProcessCreatedAtMs(
 
 export async function readWindowsProcessCreatedAtMs(
   pid: number,
+  options?: { timeoutMs?: number },
 ): Promise<number | null> {
-  const batch = await readWindowsCreatedAtMsBatch([pid]);
+  const batch = await readWindowsCreatedAtMsBatch([pid], options);
   return batch.get(pid) ?? null;
 }
 
@@ -130,6 +131,7 @@ export function parseWindowsCreatedAtBatch(
 
 export async function readWindowsCreatedAtMsBatch(
   pids: number[],
+  options?: { timeoutMs?: number },
 ): Promise<Map<number, number | null>> {
   const ids = [
     ...new Set(pids.filter((pid) => Number.isInteger(pid) && pid > 0)),
@@ -151,7 +153,7 @@ export async function readWindowsCreatedAtMsBatch(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       {
-        timeout: WINDOWS_CREATED_AT_TIMEOUT_MS,
+        timeout: options?.timeoutMs ?? WINDOWS_CREATED_AT_TIMEOUT_MS,
         maxBuffer: WINDOWS_CREATED_AT_MAX_BUFFER,
         windowsHide: true,
       },

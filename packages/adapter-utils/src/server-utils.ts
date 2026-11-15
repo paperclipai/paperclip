@@ -12,6 +12,10 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import {
+  readWindowsProcessCreatedAtMs,
+  terminateWindowsOwnedTree,
+} from "./windows-process-ownership.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -122,48 +126,53 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-export interface WindowsProcessTreeKillOutcome {
-  succeeded: boolean;
-  exitCode: number | null;
+const windowsTreeStops = new WeakMap<ChildProcess, Promise<void>>();
+const windowsProcessCreatedAt = new WeakMap<ChildProcess, Promise<number | null>>();
+
+function captureWindowsProcessCreatedAtMs(child: ChildProcess): void {
+  if (process.platform !== "win32") return;
+  if (typeof child.pid !== "number" || child.pid <= 0) return;
+  windowsProcessCreatedAt.set(
+    child,
+    readWindowsProcessCreatedAtMs(child.pid, { timeoutMs: 5_000 })
+      .catch(() => null)
+      .then((createdAtMs) => {
+        if (createdAtMs === null) return null;
+        if (child.exitCode !== null || child.signalCode !== null) return null;
+        return createdAtMs;
+      }),
+  );
 }
 
-export function launchWindowsProcessTreeKill(
-  liveRootPid: number | null | undefined,
-  onSettled?: (outcome: WindowsProcessTreeKillOutcome) => void,
-): boolean {
-  if (process.platform !== "win32") return false;
-  if (
-    typeof liveRootPid !== "number" ||
-    !Number.isInteger(liveRootPid) ||
-    liveRootPid <= 0
-  ) {
-    return false;
-  }
-  let killer: ChildProcess;
+async function stopWindowsOwnedTree(
+  running: Pick<RunningProcess, "child">,
+  signal: NodeJS.Signals,
+) {
   try {
-    killer = spawn("taskkill", ["/PID", String(liveRootPid), "/T", "/F"], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-  } catch {
-    return false;
-  }
-  let settled = false;
-  const settle = (succeeded: boolean, exitCode: number | null) => {
-    if (settled) return;
-    settled = true;
-    killer.unref();
-    onSettled?.({ succeeded, exitCode });
-  };
-  killer.on("error", () => {
-    settle(false, null);
+    running.child.kill(signal);
+  } catch {}
+  const capture = windowsProcessCreatedAt.get(running.child);
+  const rootCreatedAtMs = capture ? await capture : null;
+  if (rootCreatedAtMs === null) return;
+  if (typeof running.child.pid !== "number" || running.child.pid <= 0) return;
+  await terminateWindowsOwnedTree({
+    rootPid: running.child.pid,
+    rootCreatedAtMs,
+    killRoot: false,
   });
-  killer.on("exit", (code) => {
-    settle(code === 0, code);
+}
+
+export function stopWindowsOwnedProcessTree(
+  running: Pick<RunningProcess, "child">,
+  signal: NodeJS.Signals,
+): Promise<void> {
+  const inFlight = windowsTreeStops.get(running.child);
+  if (inFlight) return inFlight;
+  const stop = stopWindowsOwnedTree(running, signal).finally(() => {
+    windowsTreeStops.delete(running.child);
   });
-  if (!onSettled) killer.unref();
-  return true;
+  windowsTreeStops.set(running.child, stop);
+  return stop;
 }
 
 // Exported so the direct-child fallback branch can be unit-tested directly.
@@ -187,16 +196,8 @@ export function signalRunningProcess(
   // the process exited, so escalating on it would suppress a follow-up SIGKILL.
   // `exitCode`/`signalCode` are null until the child actually closes.
   if (running.child.exitCode === null && running.child.signalCode === null) {
-    if (
-      launchWindowsProcessTreeKill(running.child.pid, (outcome) => {
-        if (outcome.succeeded) return;
-        if (running.child.exitCode === null && running.child.signalCode === null) {
-          try {
-            running.child.kill(signal);
-          } catch {}
-        }
-      })
-    ) {
+    if (process.platform === "win32") {
+      void stopWindowsOwnedProcessTree(running, signal);
       return;
     }
     running.child.kill(signal);
@@ -4941,6 +4942,7 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
+        captureWindowsProcessCreatedAtMs(child);
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
