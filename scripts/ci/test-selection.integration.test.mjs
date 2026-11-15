@@ -89,7 +89,11 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
   mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
   for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {
-    write(file, readFileSync(path.join(root, file), "utf8"));
+    // Exercise the exact reviewed setup contract, independently of later product setup edits.
+    const source = file === "server/src/__tests__/setup-supertest.ts"
+      ? new URL("./fixtures/setup-supertest.reviewed.txt", import.meta.url)
+      : new URL("./fixtures/isolated-test-home.reviewed.txt", import.meta.url);
+    write(file, readFileSync(source, "utf8"));
   }
   write("ui/setup.ts", 'import "../server/src/__tests__/setup-supertest.ts";');
   const reviewed = await select(["ui/src/leaf.ts"]);
