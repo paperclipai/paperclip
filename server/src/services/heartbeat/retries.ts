@@ -58,6 +58,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
@@ -541,7 +542,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       const [child] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId),
         eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, LEASE_RESUME_REASON),
         inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]))).limit(1);
-      return child ? {outcome: "scheduled" as const, run: child, attempt: child.scheduledRetryAttempt ?? 1, maxAttempts: 3, reusedExisting: true}
+      return child ? {outcome: "scheduled" as const, run: child, attempt: child.scheduledRetryAttempt ?? 1, maxAttempts: 3, reusedExisting: true, dueAt: child.scheduledRetryAt ?? opts?.now ?? new Date()}
         : {outcome: "not_scheduled" as const, errorCode: "controller_lease_resume_not_admissible", reason: "Retained session, authority or cleanup needs verification.", issueId: run.issueId};
     }
     const attempts = executionRetryAttemptCount(prepared, LEASE_RESUME_REASON);
@@ -900,8 +901,12 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       if (retryReason === LEASE_RESUME_REASON) retryContextSnapshot.controllerLeaseResumptions = schedule.attempt;
       retryContextSnapshot.requireExistingSession = true;
       retryContextSnapshot.forceFreshSession = false;
+      const [checkpoint] = await db.select({lastRunId: agentTaskSessions.lastRunId}).from(agentTaskSessions).where(and(
+        eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.agentId, run.agentId),
+        eq(agentTaskSessions.adapterType, agent.adapterType), eq(agentTaskSessions.taskKey, issueId ?? ""))).limit(1);
       retryContextSnapshot.controllerLeaseResume = {...parseObject(contextSnapshot.controllerLeaseResume),
-        ...(retryReason === LEASE_RESUME_REASON ? parseObject(run.resultJson?.controllerLeaseRecovery) : {}), sourceRunId: run.id};
+        ...(retryReason === LEASE_RESUME_REASON ? parseObject(run.resultJson?.controllerLeaseRecovery) : {}),
+        sourceRunId: checkpoint?.lastRunId ?? null};
     }
     delete retryContextSnapshot.retryWorkspaceRefusal;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(

@@ -18,6 +18,8 @@ describe("required existing CLI conversation", () => {
     ["cursor", "unknown"],
     ["codex", "changed"],
     ["cursor", "changed"],
+    ["codex", "signalled"],
+    ["cursor", "signalled"],
     ["codex", "ordinary"],
     ["cursor", "ordinary"],
   ] as const)(
@@ -37,10 +39,11 @@ const countPath = ${JSON.stringify(count)};
 fs.writeFileSync(countPath, String(Number(fs.existsSync(countPath) ? fs.readFileSync(countPath, 'utf8') : 0) + 1));
 fs.readFileSync(0, 'utf8');
 fs.writeFileSync(${JSON.stringify(path.join(root, "args"))}, JSON.stringify(process.argv.slice(2)));
-if (${JSON.stringify(mode)} === 'changed') {
+if (${JSON.stringify(mode)} === 'changed' || ${JSON.stringify(mode)} === 'signalled') {
   if (${JSON.stringify(adapter)} === 'codex') {console.log(JSON.stringify({type:'thread.started',thread_id:'fedcba98-4321-4567-8123-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));}
   else {console.log(JSON.stringify({type:'system',subtype:'init',session_id:'fedcba98-4321-4567-8123-123456789abc'})); console.log(JSON.stringify({type:'result',subtype:'success',session_id:'fedcba98-4321-4567-8123-123456789abc',result:'new session'}));}
-  process.exit(0);
+  if (${JSON.stringify(mode)} === 'signalled') process.kill(process.pid, 'SIGTERM');
+  else process.exit(0);
 }
 if (${JSON.stringify(adapter)} === 'codex') console.error('Error: no rollout found for thread id 01234567-1234-4567-8123-123456789abc');
 else console.log(JSON.stringify({type:'error',message:'Unknown session'}));

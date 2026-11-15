@@ -1,3 +1,4 @@
+import { buildExecutionStageWakeContext } from "./execution-stage-wake-context.js";
 import { prepareControllerLeaseRecovery } from "./legacy-controller-lease-continuation.js";
 import { registerControllerLeaseWork } from "./heartbeat/controller-lease-work.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -998,6 +999,20 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
   });
 
+  it("keeps the legacy lease checkpoint across a pre-dispatch directory wait", async () => {
+    const f = await seedLeaseCancelledTurn();
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.scheduleBoundedRetry(f.source.id);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+    await db.update(heartbeatRuns).set({status: "failed", errorCode: "agent_directory_busy", finishedAt: new Date()})
+      .where(eq(heartbeatRuns.id, first.run.id));
+    const next = await heartbeat.scheduleBoundedRetry(first.run.id, {retryReason: "agent_directory_busy", maxAttempts: 5, delayMs: 1000});
+    expect(next.outcome).toBe("scheduled");
+    if (next.outcome !== "scheduled") return;
+    expect(next.run.contextSnapshot?.controllerLeaseResume).toMatchObject({sourceRunId: f.source.id, sessionId: f.sessionId});
+    expect(next.run.contextSnapshot?.skillVersions).toEqual(f.context.skillVersions);
+  });
   it.each(["stop", "pause", "question", "workspace", "stage", "newer_run", "missing_checkpoint", "edited_comment", "missing_authority", "missing_stop_identity", "terminal", "hidden"])(
     "preserves the legacy lease %s boundary", async mode => {
       const f = await seedLeaseCancelledTurn();
@@ -1023,7 +1038,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   it.each(["reviewer", "executor", "stale_decision", "stale_round"])("matches legacy lease %s review state", async mode => {
     const f = await seedLeaseCancelledTurn(), stageId = randomUUID(), decisionId = randomUUID();
     const role = mode === "reviewer" ? "reviewer" : "executor";
-    const stage = {stageId, stageType: "review", wakeRole: role, lastDecisionId: decisionId, changesRequestedCount: 1};
+    const stage = buildExecutionStageWakeContext({state: {status: role === "reviewer" ? "pending" : "changes_requested",
+      currentStageId: stageId, currentStageType: "review", currentParticipant: {type: "agent", agentId: f.agentId},
+      returnAssignee: {type: "agent", agentId: f.agentId}, lastDecisionId: decisionId, lastDecisionOutcome: "changes_requested",
+      changesRequestedCount: 1, completedStageIds: []}, wakeRole: role, allowedActions: []});
     await db.update(heartbeatRuns).set({contextSnapshot: {...f.source.contextSnapshot, executionStage: stage}}).where(eq(heartbeatRuns.id, f.source.id));
     await db.update(issues).set({status: role === "reviewer" ? "in_review" : "in_progress", executionState: {
       status: role === "reviewer" ? "pending" : "changes_requested", currentStageId: stageId, currentStageType: "review",

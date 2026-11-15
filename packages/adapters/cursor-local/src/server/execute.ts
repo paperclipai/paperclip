@@ -796,7 +796,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode: "resume_session_unavailable", errorMessage: "The required existing session cannot be resumed in this execution context."};
     const initial = await runAttempt(sessionId);
       if (context.requireExistingSession === true && initial.parsed.sessionId &&
-          initial.parsed.sessionId !== sessionId && !initial.proc.signal && !initial.proc.timedOut) {
+          initial.parsed.sessionId !== sessionId) {
         return {...toResult(initial), exitCode: 1, errorCode: "resume_session_unavailable",
           errorMessage: "The CLI returned a different conversation; the retained session was not replaced.",
           sessionId: runtimeSessionId, sessionParams: runtimeSessionParams, sessionDisplayId: runtimeSessionId, clearSession: false};
