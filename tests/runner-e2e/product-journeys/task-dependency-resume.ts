@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { showPropertyRow } from "./task-panel.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
@@ -8,7 +9,6 @@ import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
-import { taskPropertyRow } from "./task-side-panel.js";
 
 type Row = Record<string, any>;
 const id = "task-dependency-resume" as const;
@@ -30,7 +30,7 @@ const documentSnapshot = (row: Row) => Object.fromEntries(["id", "companyId", "i
   "documentId", "createdByAgentId", "createdByUserId", "createdByRunId"].map(key => [key, row[key]]));
 
 async function properties(context: JourneyContext, label: string) {
-  return taskPropertyRow(context.page, label);
+  return await showPropertyRow(context.page, label);
 }
 async function setStatus(context: JourneyContext, label: string) {
   const { page } = context;

@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
+import { showPropertyRow } from "./task-panel.js";
 import { JourneyError } from "./types.js";
-import { taskPropertyRow } from "./task-side-panel.js";
 
 type BrowserStage = "project_list" | "project_open" | "project_task_open" | "project_property";
 async function browserStep<T>(stage: BrowserStage, action: () => Promise<T>): Promise<T> {
@@ -40,7 +40,8 @@ export async function openProjectTaskThroughList(input: { page: Page; origin: st
     await expect(main.getByText(prompt, { exact: true }).filter({ visible: true }).first()).toBeVisible();
   });
   await browserStep("project_property", async () => {
-    const projectProperty = await taskPropertyRow(page, "Project");
+    const projectProperty = await showPropertyRow(page, "Project");
+    await expect(projectProperty).toHaveCount(1);
     await expect(projectProperty.locator("[data-property-value]")).toContainText(projectName);
   });
 }

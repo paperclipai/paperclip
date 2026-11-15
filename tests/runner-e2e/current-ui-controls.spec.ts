@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { newProjectButton } from "./product-journeys/project-context-flow.js";
 import { storyArtifactDownloadLink } from "./story-artifact.js";
 import { taskProperties } from "./product-journeys/task-properties.js";
-import { taskPropertyRow } from "./product-journeys/task-side-panel.js";
+import { showPropertyRow } from "./product-journeys/task-panel.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./product-journeys/types.js";
 
 const id = "11111111-2222-4333-8444-555555555555";
@@ -11,13 +11,13 @@ test("property reads select Properties from an open panel and exclude inactive d
   const row = (value: string) => `<div data-property-row><span data-property-label="Project">Project</span><span data-property-value>${value}</span></div>`;
   await page.setContent(`<aside inert aria-hidden="true">${row("Stale project")}</aside>
     <aside><button role="tab" onclick="document.querySelector('#properties').hidden=false">Properties</button><section id="properties" hidden>${row("Saved project")}</section></aside>`);
-  const property = await taskPropertyRow(page, "Project");
+  const property = await showPropertyRow(page, "Project");
   await expect(property.locator("[data-property-value]")).toHaveText("Saved project");
 });
 
 test("property reads cannot use an inert row when the panel has no open control", async ({ page }) => {
   await page.setContent('<aside inert aria-hidden="true"><div data-property-row><span data-property-label="Project">Project</span><span data-property-value>Saved project</span></div></aside>');
-  await expect(taskPropertyRow(page, "Project")).rejects.toThrow();
+  await expect(showPropertyRow(page, "Project")).rejects.toThrow();
 });
 
 test("assignment opens the current side panel again after reload and verifies the saved user", async ({ page }) => {

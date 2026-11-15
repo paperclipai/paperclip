@@ -28,7 +28,8 @@ mock control plane. Authoritative details are in
 
 Choose **Product E2E Evals** for real browser/server/database/runner/provider
 workflows, including local and Daytona environments. Read
-`tests/runner-e2e/README.md`, then `FIXTURES.md`, `SECURITY.md`, or
+`tests/runner-e2e/README.md`, then the suite's section in `SUITES.md`,
+`FIXTURES.md`, `SECURITY.md`, or
 `EVERYDAY-WORKFLOWS.md` as relevant. Everyday Workflows remain Product E2E
 even when imported into Evalbook. “Headless” is a browser mode, not a family.
 

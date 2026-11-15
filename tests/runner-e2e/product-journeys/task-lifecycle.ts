@@ -3,9 +3,9 @@ import path from "node:path";
 import { expect } from "@playwright/test";
 import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { createObservedReader } from "./observation-read.js";
+import { showPropertyRow } from "./task-panel.js";
 import { taskLifecycleEvidence, taskLifecycleLabelName, type LifecycleExpectation, type LifecycleLabel, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
-import { taskPropertyRow } from "./task-side-panel.js";
 
 type Stage = "create" | "initial_read" | "rename" | "label" | "in_progress" | "reload" | "complete" | "reopen";
 function taskSnapshot(task: LifecycleTask): LifecycleTask {
@@ -18,7 +18,7 @@ const emptyObservation = (): LifecycleObservation => ({ task: null, runCount: nu
   titleVisible: false, descriptionVisible: false, statusVisible: false, labelVisible: false });
 
 async function properties(context: JourneyContext) {
-  return taskPropertyRow(context.page, "Labels");
+  return await showPropertyRow(context.page, "Labels");
 }
 
 async function setStatus(context: JourneyContext, label: string) {

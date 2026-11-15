@@ -1262,6 +1262,38 @@ require('node:module').syncBuiltinESMExports();`);
     expect(operations.at(-1)).toMatchObject({ status: "succeeded" });
   }, 60_000);
 
+  it("rejects a transfer that changed the archive's bytes without storing it, and saves on retry", async () => {
+    const reserved = await reserve({ kind: "empty" }), remote = await target("corrupted-transfer");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote });
+    await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "work that must be saved intact\n");
+    const syncOut = remote.runner!.syncOut!;
+    remote.runner!.syncOut = async (operations, options) => {
+      const result = await syncOut(operations, options);
+      for (const operation of operations) for (const file of operation.files) {
+        const bytes = await fs.readFile(file.targetPath); bytes[bytes.length - 1] ^= 0xff;
+        await fs.writeFile(file.targetPath, bytes);
+      }
+      return result;
+    };
+    const put = vi.spyOn(storage, "putFile");
+    await expect(saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: remote, boundary: "final", assertOwned: async () => undefined })).rejects.toThrow("remote_workspace_capture_transfer_mismatch");
+    expect(put).not.toHaveBeenCalled();
+    const pending = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.status, "pending")));
+    expect(pending.map(row => row.metadata?.uploads ?? [])).toEqual([[]]);
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({ dirty: true, writerRunId: ids.run,
+      snapshotId: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId });
+    remote.runner!.syncOut = syncOut;
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run, lease: prepared.lease,
+      target: remote, boundary: "final", assertOwned: async () => undefined });
+    expect(put).toHaveBeenCalledTimes(1);
+    await fs.rm(remote.remoteCwd, { recursive: true, force: true });
+    const restored = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+    try { expect(await fs.readFile(path.join(restored.root, "saved.txt"), "utf8")).toBe("work that must be saved intact\n"); }
+    finally { await restored.cleanup(); }
+  }, 60_000);
+
   it("retains the writer and previous snapshot when object storage fails", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("outage-sandbox");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -1279,7 +1311,7 @@ require('node:module').syncBuiltinESMExports();`);
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      captureMs: duration, transferMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
       at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
@@ -1291,7 +1323,7 @@ require('node:module').syncBuiltinESMExports();`);
       lease: prepared.lease, target: first, assertOwned: async () => undefined })).resolves.toMatchObject({ snapshotId: saved.snapshotId });
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      captureMs: duration, transferMs: duration, uploadMs: duration, publishMs: duration, ...archive,
       storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
         bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
