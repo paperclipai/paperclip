@@ -107,7 +107,7 @@ describe("demand-driven link preview cache", () => {
     vi.useFakeTimers();
     let finishWrite!: () => void;
     const write = vi.fn(async () => {}).mockImplementationOnce(() => new Promise<void>(done => { finishWrite = done; }));
-    const resolve = vi.fn(async (_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: typeof scope, signal: AbortSignal) => unavailable)
+    const resolve = vi.fn(async (_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: import("../services/link-previews.js").LinkPreviewScope, signal: AbortSignal) => unavailable)
       .mockImplementationOnce((_target, _scope, signal) => new Promise((_done, reject) => signal.addEventListener("abort", () => reject(new Error("timeout")))));
     const service = createLinkPreviewService([{ key: "github", resolve }], { store: { read: async () => new Map(), write }, timeoutMs: 20, maxConcurrent: 1 });
     const first = service.get(scope, url);
