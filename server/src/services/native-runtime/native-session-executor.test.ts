@@ -437,6 +437,7 @@ import {
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
+  scopedRunnerdStateRoot,
   noteRemoteBootstrapRestartProven,
   recordRemoteBootstrapRestartProof,
   hasRemoteBootstrapRestartProof,
@@ -1182,6 +1183,58 @@ describe("remote controller restart adoption", () => {
       tools: { pending: {} }, operations: { stable: { outcome: { status: "completed" } } } };
     return { expected, saved };
   };
+  it("checks the external checkpoint owner during actual same-run state-migration preflight", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-external-preflight-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const { expected, saved } = admittedExternal();
+    const currentIdentity = { ...identity, turnId: `turn-${identity.runId}`, itemId: `item-${identity.runId}` };
+    const current = parseNativeExecutionInput({ ...execution, schema: "paperclip.native-execution-input.v6",
+      executionMode: "default", planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+      binding: { ...execution.binding, runId: identity.runId },
+      workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
+      session: { ...execution.session, normalizedSessionId: identity.normalizedSessionId, driverKind: "openai_dot_mcp" },
+      provider: { kind: "openai_dot", model: null, binding: { bindingId: expected.bindingId,
+        bindingGeneration: expected.bindingGeneration, companyId: expected.companyId, agentId: expected.agentId,
+        acceptByUnixMs: Date.now() - 1000, expiresAtUnixMs: expected.expiresAtUnixMs } } });
+    const requestId = "75920c98-56cb-45d3-a299-3e5c6503307d";
+    const operation = { requestId, bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration,
+      runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, turnId: currentIdentity.turnId,
+      assignmentRevision: 1, action: "accept", input: {}, digest: externalOperationDigest("accept", {}) };
+    const checkpoint = { ...saved, turnId: currentIdentity.turnId, assignmentRevision: 1,
+      operations: { [requestId]: { operation, outcome: { status: "accepted" } } } };
+    const { target, execute } = fixture(externalReady);
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => {
+      if (request.args[2] === "paperclip-dot-checkpoint") return { stdout: Buffer.from(JSON.stringify(checkpoint)).toString("base64"),
+        stderr: "", exitCode: 0, timedOut: false };
+      if (request.args[2] === "paperclip-runner-recovery-check") return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+      if (request.args[1]?.includes("base64")) return { stdout: Buffer.from(JSON.stringify({ ...currentIdentity, ...externalReady })).toString("base64"),
+        stderr: "", exitCode: 0, timedOut: false };
+      return original(request);
+    });
+    try {
+      const root = scopedRunnerdStateRoot(current);
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify(durableControlPlaneState(currentIdentity)));
+      const durableBefore = await readFile(join(root, "control-plane/control-plane-state.json"), "utf8");
+      state.createBackend.mockClear();
+      await expect(createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
+        runnerExecutionTarget: target as never, restartRecovery: { ...claim, providerAttempt: 2 }, runnerIngressAuthorized: true,
+        controllerPersistence: { bootId: "replacement-controller", runnerArtifact: { version: "0.0.0", digest: `sha256:${"a".repeat(64)}` } },
+      })).resolves.toMatchObject({ kind: "test" });
+      expect(execute.mock.calls.filter(([request]) => request.args[2] === "paperclip-dot-checkpoint")).toHaveLength(2);
+      expect(state.createBackend).toHaveBeenCalledWith(current, expect.objectContaining({ dotRunnerOptions: expect.objectContaining({
+        adoptExistingRunner: undefined, identity: currentIdentity,
+      }) }));
+      expect(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).toBe(durableBefore);
+      expect(execute.mock.calls.every(([request]) => !request.args.join(" ").match(/nohup|kill -[TK]|mv -|rm -/))).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  }, 30_000);
   it("the external checkpoint owner accepts only its current settled replay tuple", () => {
     const { expected, saved } = admittedExternal();
     expect(canRestartExternalRunnerCheckpoint(saved, expected)).toBe(true);
