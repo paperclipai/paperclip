@@ -14,7 +14,8 @@ import { grokRoutineService } from "../services/grok-bot/routine.js";
 import { McpOAuthError } from "../services/public-mcp/oauth.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 
-export function grokBotRoutes(db: Db, resourceUrl: string) {
+export function grokBotRoutes(db: Db, resource: string | (() => string)) {
+  const currentResourceUrl = () => typeof resource === "function" ? resource() : resource;
   const router = Router(), broker = dotRunnerBroker(db), routines = grokRoutineService(db);
   const invitations = dotInvitationService(db, "grok_bot");
   const path = "/companies/:companyId/agents/:agentId/grok-binding";
@@ -50,13 +51,13 @@ export function grokBotRoutes(db: Db, resourceUrl: string) {
     const [currentTask] = binding?.assignment ? await db.select({ id: issues.id, identifier: issues.identifier, title: issues.title }).from(heartbeatRuns)
       .innerJoin(issues, and(eq(issues.id, heartbeatRuns.nativeIssueId), eq(issues.companyId, companyId)))
       .where(and(eq(heartbeatRuns.id, binding.assignment.runId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.companyId, companyId), readable)) : [];
-    res.set("Cache-Control", "no-store").json({ queuedTaskCount: queued?.count ?? 0, currentTask: currentTask ?? null, enabled: resourceUrl.startsWith("https://") && await broker.enabled("grok_bot"), resourceUrl,
+    res.set("Cache-Control", "no-store").json({ queuedTaskCount: queued?.count ?? 0, currentTask: currentTask ?? null, enabled: currentResourceUrl().startsWith("https://") && await broker.enabled("grok_bot"), resourceUrl: currentResourceUrl(),
       agentStatus: agent.status, agentLifecycleState: agent.lifecycleState, recoveryNeeded: await routines.recoveryNeeded(companyId, agentId), canConfigureConnection: canConfigureAgentConnection(agent),
       binding });
   });
   router.post(path, async (req, res) => {
     const { companyId, agentId, operatorId } = await scope(req, true);
-    if (!resourceUrl.startsWith("https://")) throw forbidden("Grok Bot requires an authenticated public HTTPS instance.");
+    if (!currentResourceUrl().startsWith("https://")) throw forbidden("Grok Bot requires an authenticated public HTTPS instance.");
     const body = pairGrokBindingSchema.parse(req.body ?? {});
     res.set("Cache-Control", "no-store").status(201).json(await broker.createPairing({ companyId, agentId, operatorId, provider: "grok_bot", ...body }));
   });

@@ -11,7 +11,7 @@ import { accessService } from "../services/access.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 
-export function dotRunnerRoutes(db: Db, resourceUrl?: string) {
+export function dotRunnerRoutes(db: Db, resourceUrl?: string | (() => string)) {
   const router = Router();
   const broker = dotRunnerBroker(db);
   const path = "/companies/:companyId/agents/:agentId/dot-binding";
@@ -54,7 +54,7 @@ export function dotRunnerRoutes(db: Db, resourceUrl?: string) {
       agentLifecycleState: agent.lifecycleState,
       canConfigureConnection: canConfigureAgentConnection(agent),
       enabled: await broker.enabled(),
-      resourceUrl: resourceUrl ?? (config ? config.origin + "/mcp/runner" : null),
+      resourceUrl: (typeof resourceUrl === "function" ? resourceUrl() : resourceUrl) ?? (config ? config.origin + "/mcp/runner" : null),
       binding: await broker.bindingForAgent(input.companyId, input.agentId),
     });
   });
