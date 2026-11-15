@@ -33214,7 +33214,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
-    // The state an older release left behind: todo, no assignee.
     await db
       .update(issues)
       .set({
