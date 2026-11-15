@@ -95,6 +95,16 @@ describe("page link enrichment", () => {
     finish({ results: { [target.canonicalUrl]: result } }); await settle();
     expect(f.client.getQueryData(linkPreviewQueryOptions(f.context, target).queryKey)).toBeUndefined();
   });
+  it("shares a pending database read when the same URL remounts", async () => {
+    const f = fixture();
+    let finish!: (value: { results: Record<string, LinkPreviewResult> }) => void;
+    f.context.readCached.mockImplementation(() => new Promise(done => { finish = done; }));
+    const unregister = f.loader.register(target); await settle();
+    unregister(); f.loader.register(target); await settle();
+    finish({ results: { [target.canonicalUrl]: result } }); await settle();
+    expect(f.context.readCached).toHaveBeenCalledTimes(1);
+    expect(f.client.getQueryData(linkPreviewQueryOptions(f.context, target).queryKey)).toEqual(result);
+  });
   it("keeps failures quiet and lets hover work when cached hydration fails", async () => {
     const f = fixture();
     f.context.readCached.mockRejectedValue(new Error("cache unavailable"));

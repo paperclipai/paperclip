@@ -66,15 +66,26 @@ export function createLinkPreviewPageLoader(client: QueryClient, context: LinkPr
     if (disposed || hydrating || hydrationTimer !== undefined) return;
     hydrationTimer = setTimeout(() => {
       hydrationTimer = undefined;
+      for (const link of links.values()) {
+        if (!link.hydrated && client.getQueryData(linkPreviewQueryOptions(context, link.target).queryKey) !== undefined) link.hydrated = true;
+      }
       const batch = [...links.values()].filter(link => !link.hydrated).slice(0, LINK_PREVIEW_BATCH_LIMIT);
       if (!batch.length) { scheduleIdle(); return; }
       hydrating = true;
       const startedAt = Date.now();
       for (const link of batch) link.hydrated = true;
-      void context.readCached(batch.map(link => link.target)).then(({ results }) => {
+      const targets = batch.map(link => link.target);
+      // A renderer can remount while a batch is pending. Keep the read on the
+      // shared client so both lifetimes reuse the same HTTP request.
+      void client.fetchQuery({
+        queryKey: ["link-preview", context.companyId, context.userId, "cached-batch", targets.map(target => target.canonicalUrl).sort()],
+        queryFn: () => context.readCached(targets), staleTime: 0, gcTime: 0, retry: false,
+      }).then(({ results }) => {
         if (disposed) return;
         for (const link of batch) {
-          if (links.get(link.target.canonicalUrl) !== link) continue;
+          const mounted = links.get(link.target.canonicalUrl);
+          if (!mounted) continue;
+          mounted.hydrated = true;
           const options = linkPreviewQueryOptions(context, link.target);
           const state = client.getQueryState<LinkPreviewResult>(options.queryKey);
           const saved = results[link.target.canonicalUrl];

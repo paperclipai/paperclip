@@ -25,7 +25,7 @@ export function LinkPreviewProvider({ companyId, userId, children, autoLoad = tr
       `/companies/${companyId}/link-preview?${new URLSearchParams({ url: target.canonicalUrl })}`,
       { timeoutMs: 6_000, cache: "no-store" },
     ),
-  }) : null, [companyId, userId]);
+  }) : null, [companyId, userId, autoLoad]);
   // Link registration uses passive effects, after this layout effect initializes the registry.
   useLayoutEffect(() => {
     if (!value || !autoLoad) return;
