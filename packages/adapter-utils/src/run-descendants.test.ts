@@ -491,6 +491,34 @@ linuxOnly("run descendant teardown", () => {
       });
     });
 
+    it("does not own a restored dead leader's session when the PID was reused while the server was down", async () => {
+      await withFixture(async (procRoot) => {
+        const runId = newRunId();
+        // Saved while the leader was alive, together with the child it had then.
+        const child = { pid: 4_000_060, ppid: 1, pgid: 4_000_060, sid: leader.sid, startTime: 1_100 };
+        const saved = new RunProcessLineage(runId, [
+          { pid: leader.pid, startTime: String(leader.startTime), leader: true },
+          { pid: child.pid, startTime: String(child.startTime) },
+        ]);
+        await writeFixtureProcess(procRoot, child);
+
+        // While the server was down, the run's leader exited and another
+        // session reused its PID, started members, and exited too.
+        const unrelated = [
+          { pid: 4_000_061, ppid: 1, pgid: 4_000_061, sid: leader.sid, startTime: 7_000 },
+          { pid: 4_000_062, ppid: 1, pgid: leader.pgid, sid: leader.sid, startTime: 7_100 },
+        ];
+        for (const entry of unrelated) await writeFixtureProcess(procRoot, entry);
+
+        const restored = new RunProcessLineage(runId);
+        restored.absorb(saved);
+        expect(restored.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([child.pid]);
+        expect(restored.toSnapshot().entries.map((entry) => entry.pid)).toEqual([child.pid]);
+        const loaded = new RunProcessLineage(runId, saved.toSnapshot().entries);
+        expect(loaded.sample(readRunProcessTable({ procRoot })).map((entry) => entry.pid)).toEqual([child.pid]);
+      });
+    });
+
     it("never owns through the session or group of this process or its ancestors", async () => {
       await withFixture(async (procRoot) => {
         const runId = newRunId();
