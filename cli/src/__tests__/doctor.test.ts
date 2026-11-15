@@ -2,10 +2,12 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as p from "@clack/prompts";
 import { doctor } from "../commands/doctor.js";
 import { writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import type { DiskSpaceCheckDeps } from "../checks/disk-space-check.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -86,6 +88,21 @@ function createTempConfig(serverPort: number): string {
   return configPath;
 }
 
+function diskSpaceProbe(free: bigint, total: bigint = 100n * 1024n ** 3n): DiskSpaceCheckDeps {
+  const bsize = 4096n;
+  return {
+    stat: async () => ({ dev: 1 }),
+    statfs: async () => ({
+      bavail: free / bsize,
+      blocks: total / bsize,
+      bsize,
+    }),
+  };
+}
+
+const HEALTHY_DISK = diskSpaceProbe(61n * 1024n ** 3n);
+const LOW_DISK = diskSpaceProbe(256n * 1024n ** 2n);
+
 describe("doctor", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
@@ -96,6 +113,7 @@ describe("doctor", () => {
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
   });
 
   it("re-runs repairable checks so repaired failures do not remain blocking", async () => {
@@ -105,10 +123,53 @@ describe("doctor", () => {
       config: configPath,
       repair: true,
       yes: true,
+      diskSpace: HEALTHY_DISK,
     });
 
     expect(summary.failed).toBe(0);
     expect(summary.warned).toBe(0);
     expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeTruthy();
   });
+
+  it("runs the disk space check after the log directory check and counts it in the summary", async () => {
+    const messages: string[] = [];
+    vi.spyOn(p.log, "message").mockImplementation((line) => {
+      messages.push(String(line));
+    });
+    const configPath = createTempConfig(await availablePort());
+    const summary = await doctor({
+      config: configPath,
+      repair: true,
+      yes: true,
+      diskSpace: HEALTHY_DISK,
+    });
+    const logIndex = messages.findIndex((line) => line.includes("Log directory"));
+    const diskIndex = messages.findIndex((line) => line.includes("Disk space"));
+    const portIndex = messages.findIndex((line) => line.includes("Server port"));
+    expect(logIndex).toBeGreaterThanOrEqual(0);
+    expect(diskIndex).toBeGreaterThan(logIndex);
+    expect(portIndex).toBeGreaterThan(diskIndex);
+    expect(messages.filter((line) => line.includes("Disk space"))).toHaveLength(1);
+    expect(summary.failed).toBe(0);
+    expect(summary.warned).toBe(0);
+    expect(summary.passed).toBeGreaterThan(0);
+  });
+
+  it("counts a disk space warning in the summary", async () => {
+    const messages: string[] = [];
+    vi.spyOn(p.log, "message").mockImplementation((line) => {
+      messages.push(String(line));
+    });
+    const configPath = createTempConfig(await availablePort());
+    const summary = await doctor({
+      config: configPath,
+      repair: true,
+      yes: true,
+      diskSpace: LOW_DISK,
+    });
+    expect(summary.failed).toBe(0);
+    expect(summary.warned).toBeGreaterThan(0);
+    expect(messages.some((line) => line.includes("Disk space") && line.includes("embedded Postgres"))).toBe(true);
+  });
 });
+

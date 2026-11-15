@@ -328,6 +328,18 @@ environments receive foreground `paperclipai run` guidance.
 `paperclipai doctor` includes managed-install and service-health diagnostics in
 addition to configuration, storage, database, logging, and port checks.
 
+The doctor also checks free disk space on each volume that holds this
+instance's embedded Postgres data, local file storage, logs, database backups,
+and instance home. Backup and local storage paths follow the same environment
+overrides the server uses: `PAPERCLIP_DB_BACKUP_DIR` for backups, and
+`PAPERCLIP_STORAGE_PROVIDER` plus `PAPERCLIP_STORAGE_LOCAL_DIR` for local
+uploads. When the effective storage provider is `s3`, doctor does not measure a
+local storage directory. It warns when any of those volumes has less than 5 GiB
+free or less than 10% of the volume free, whichever amount is smaller. When
+free space drops below 512 MiB, the warning says that embedded Postgres may
+stop accepting writes. The disk space check never fails, so `paperclipai run`
+still starts after a warning.
+
 ## Deployment Modes
 
 Mode taxonomy and design intent are documented in `doc/DEPLOYMENT-MODES.md`.

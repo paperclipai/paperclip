@@ -81,6 +81,15 @@ Validates:
   config when selected
 - Storage configuration
 - Missing key files
+- Disk space on volumes that hold Paperclip data
+
+The disk space check follows the same backup and local-storage path overrides
+the server uses (`PAPERCLIP_DB_BACKUP_DIR`, `PAPERCLIP_STORAGE_PROVIDER`, and
+`PAPERCLIP_STORAGE_LOCAL_DIR`). It skips a local storage directory when the
+effective provider is `s3`. It warns when a volume has less than 5 GiB free or
+less than 10% of the volume free, whichever amount is smaller. Below 512 MiB
+free, the warning notes that embedded Postgres may stop accepting writes. A
+disk space warning does not fail doctor, and `paperclipai run` still starts.
 
 ## `paperclipai configure`
 
