@@ -203,8 +203,9 @@ export async function withAgentFilesRestoredBeforeLock<T>(work: () => Promise<T>
         try {
           await downloadAgentFiles(storage(), error.owner, error.head.entries, directory);
           scope.staged.set(stageKey, { generation: error.head.generation, directory });
-        } catch {
+        } catch (failure) {
           await fs.rm(directory, { recursive: true, force: true });
+          throw failure;
         }
       }
     }

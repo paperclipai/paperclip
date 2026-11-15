@@ -166,6 +166,18 @@ describe("agent file restore locking", () => {
     expect(await stagingLeftovers()).toEqual([]);
   });
 
+  it("fails once, without the row lock and without retrying, when the staged download fails", async () => {
+    await loseLocalProjection();
+    const attempts: boolean[] = [];
+    objects.probe = async () => {
+      attempts.push(await agentRowLocked());
+      throw new Error("object storage unavailable");
+    };
+    await expect(agentInstructionRevisionService(db).readCommittedForRuntime(target())).rejects.toThrow("object storage unavailable");
+    expect(attempts).toEqual([false]);
+    expect(await stagingLeftovers()).toEqual([]);
+  });
+
   it("restores under the lock as before when the head keeps changing during every download", async () => {
     await loseLocalProjection();
     const store = agentFileStore(db);
