@@ -137,62 +137,80 @@ export function runListPosition(runs: ReadonlyArray<{ id: string; agentId: strin
 /** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
  * `asset.created` by the reading run. Its saved content names the record actually read. */
 export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
-const coveringCache = new Map<string, ReadonlySet<string>>();
-/** `from`/`to` values a cost report accepts (an ISO date-time with offset, or a date): each UTC day boundary within two
- * weeks of the window (with and without milliseconds or seconds, date-only, and the end of the day), each local midnight
- * at a whole-hour UTC offset paired with the same offset, and the window's own instants (a run's startedAt, its cost
- * event time). Only ranges that cover the whole window are kept, so a read bound by one of these digests returned the
- * run's saved accounting. Run-log receipts keep only the input digest, so a covering range in another form is not
- * recognized: a false negative, never a false pass. */
-export function coveringCostReportDigests(companyId: string, window: { startedAt: string; finishedAt: string }, segments: readonly string[] = COMPANY_COST_SEGMENTS,
-  extraInstants: readonly string[] = []): ReadonlySet<string> {
-  const key = JSON.stringify([companyId, window, segments, extraInstants]);
-  const cached = coveringCache.get(key); if (cached) return cached;
-  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt), digests = new Set<string>();
-  if (!Number.isFinite(started) || !Number.isFinite(finished)) return digests;
-  // The span covers the whole calendar month(s) of the window plus 14 days on each side, so a month-start `from` or a
-  // month-end `to` is generated for a late- or early-month event.
-  const day = 86_400_000, hour = 3_600_000, startDate = new Date(started), endDate = new Date(finished);
-  const first = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1) - 14 * day;
-  const last = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 1) + 14 * day;
-  const utc: Array<{ text: string; at: number }> = [];
-  for (let at = first; at <= last; at += day) {
-    const iso = new Date(at).toISOString();
-    utc.push({ text: iso, at }, { text: iso.replace(".000Z", "Z"), at }, { text: iso.replace(":00.000Z", "Z"), at }, { text: iso.slice(0, 10), at },
-      { text: new Date(at + day - 1).toISOString(), at: at + day - 1 }, { text: new Date(at + day - 1000).toISOString().replace(".000Z", "Z"), at: at + day - 1000 });
+const coveringCache = new Map<string, { digests: Set<string>; pending: Generator<string> }>();
+/** Calendar spans (in days) of the ranges people ask for: a day or a few, a week, two weeks and a month. */
+const RANGE_DAYS = [1, 2, 3, 7, 8, 14, 15, 28, 29, 30, 31, 32];
+/** Local-midnight ranges at an offset: a day, a week, two weeks or a calendar month. */
+const LOCAL_RANGE_DAYS = [1, 7, 14, 28, 29, 30, 31];
+/**
+ * Whether one of the run's company cost-report reads (by input digest) has a `from`/`to` covering the window. Run-log receipts keep only the input
+ * digest, so the grader regenerates the inputs people write and re-parses each bound as the costs route does (both
+ * bounds inclusive, as in resolveCostDateRange). Bounds are UTC day boundaries (with or without milliseconds or seconds,
+ * date-only, end of day) or local midnights at a whole-hour offset (UTC also as +00:00 and -00:00), paired within one
+ * form, open-ended or spanning one of RANGE_DAYS, plus the window's own instants. Every range is also generated with
+ * period=month, since explicit bounds take precedence. A covering range outside these forms is not recognized: a false
+ * negative, never a false pass.
+ */
+export function coveringCostReportRead(companyId: string, window: { startedAt: string; finishedAt: string }, segments: readonly string[],
+  extraInstants: readonly string[], readDigests: ReadonlySet<string>): boolean {
+  if (!readDigests.size) return false;
+  // One lazily filled digest set per company, window and report; hashing stops at the first matching read and resumes
+  // from there for the next check, so each covering input is hashed at most once.
+  return segments.some(segment => {
+    const key = JSON.stringify([companyId, window, segment, extraInstants]);
+    let state = coveringCache.get(key);
+    if (!state) coveringCache.set(key, state = { digests: new Set(), pending: coveringDigests(companyId, window, segment, extraInstants) });
+    for (const digest of readDigests) if (state.digests.has(digest)) return true;
+    for (let next = state.pending.next(); !next.done; next = state.pending.next()) { state.digests.add(next.value); if (readDigests.has(next.value)) return true; }
+    return false;
+  });
+}
+function* coveringDigests(companyId: string, window: { startedAt: string; finishedAt: string }, segment: string, extraInstants: readonly string[]): Generator<string> {
+  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return;
+  const day = 86_400_000, parse = (text: string) => new Date(text).getTime();
+  const iso = (at: number) => new Date(at).toISOString();
+  // Bound forms: each maps a UTC date to the string a person writes for that day's midnight in the form's zone.
+  const ms = (at: number) => iso(at), seconds = (at: number) => iso(at).replace(".000Z", "Z"), minutes = (at: number) => iso(at).replace(":00.000Z", "Z");
+  const date = (at: number) => iso(at).slice(0, 10), endMs = (at: number) => iso(at - 1), endSeconds = (at: number) => iso(at - 1000).replace(".000Z", "Z");
+  const starts = [ms, seconds, minutes, date], ends = [ms, seconds, minutes, date, endMs, endSeconds];
+  // Pairs are written in one style: a precise start with a precise or end-of-day end, a date with a date or end of day.
+  const forms: Array<{ from: Array<(midnight: number) => string>; to: Array<(midnight: number) => string>; month?: boolean; spans?: readonly number[] }> = [
+    { from: [ms, seconds], to: [ms, seconds, endMs, endSeconds], month: true }, { from: [minutes], to: [minutes], month: true }, { from: [date], to: [date, endMs, endSeconds], month: true }];
+  for (const offset of Array.from({ length: 27 }, (_, index) => index - 12)) for (const zone of offset === 0 ? ["+00:00", "-00:00"] : [`${offset < 0 ? "-" : "+"}${String(Math.abs(offset)).padStart(2, "0")}:00`]) {
+    const write = (midnight: number) => `${iso(midnight).slice(0, 10)}T00:00:00${zone}`;
+    forms.push({ from: [write], to: [write], spans: LOCAL_RANGE_DAYS });
   }
-  for (const text of [window.startedAt, window.finishedAt, ...extraInstants]) {
-    const at = Date.parse(text); if (!Number.isFinite(at)) continue;
-    const iso = new Date(at).toISOString(); utc.push({ text: iso, at }, { text: iso.replace(/\.\d{3}Z$/, "Z"), at });
+  // UTC-form ranges are also generated with period=month (explicit bounds take precedence); offset forms are not.
+  const queries: Array<Record<string, string>> = [], monthQueries: Array<Record<string, string>> = [];
+  const firstDay = Math.floor(started / day) * day, lastDay = Math.floor(finished / day) * day;
+  for (const { from, to, month, spans = RANGE_DAYS } of forms) {
+    const before = queries.length;
+    // Start days reach back as far as the longest span (32 days, so a month-start `from` is included for any event).
+    for (let midnight = firstDay - 32 * day; midnight <= firstDay + day; midnight += day) for (const writeFrom of from) {
+      const fromText = writeFrom(midnight); if (parse(fromText) > started) continue;
+      queries.push({ from: fromText });
+      for (const span of spans) for (const writeTo of to) {
+        const toText = writeTo(midnight + span * day); if (parse(toText) >= finished) queries.push({ from: fromText, to: toText });
+      }
+    }
+    for (let midnight = lastDay; midnight <= lastDay + 32 * day; midnight += day) for (const writeTo of to) { const toText = writeTo(midnight); if (parse(toText) >= finished) queries.push({ to: toText }); }
+    if (month) monthQueries.push(...queries.slice(before));
   }
-  // Local midnights at each whole-hour offset, one family per offset and format (bounds are paired within a family);
-  // UTC is also written +00:00 and -00:00.
-  const families: Array<Array<{ text: string; at: number }>> = [utc];
-  const zones = [...Array.from({ length: 27 }, (_, index) => index - 12).filter(offset => offset !== 0)
-    .map(offset => ({ offset, zone: `${offset < 0 ? "-" : "+"}${String(Math.abs(offset)).padStart(2, "0")}:00` })), { offset: 0, zone: "+00:00" }, { offset: 0, zone: "-00:00" }];
-  for (const { offset, zone } of zones) for (const format of ["T00:00:00", "T00:00"]) {
-    const local: Array<{ text: string; at: number }> = [];
-    for (let midnight = first; midnight <= last; midnight += day) local.push({ text: `${new Date(midnight).toISOString().slice(0, 10)}${format}${zone}`, at: midnight - offset * hour });
-    families.push(local);
+  const instantStart = queries.length;
+  const instants = [window.startedAt, window.finishedAt, ...extraInstants].map(parse).filter(Number.isFinite).flatMap(at => [iso(at), iso(at).replace(/\.\d{3}Z$/, "Z")]);
+  for (const fromText of instants) if (parse(fromText) <= started) { queries.push({ from: fromText }); for (const toText of instants) if (parse(toText) >= finished) queries.push({ from: fromText, to: toText }); }
+  for (const toText of instants) if (parse(toText) >= finished) queries.push({ to: toText });
+  // A UTC day-boundary bound paired with one of the window's own instants (e.g. from today's midnight to the event).
+  const dayStarts = Array.from({ length: 33 }, (_, index) => firstDay - (32 - index) * day + day).flatMap(at => starts.map(write => write(at))).filter(text => parse(text) <= started);
+  const dayEnds = Array.from({ length: 33 }, (_, index) => lastDay + index * day).flatMap(at => ends.map(write => write(at))).filter(text => parse(text) >= finished);
+  for (const instant of instants) {
+    if (parse(instant) >= finished) for (const fromText of dayStarts) queries.push({ from: fromText, to: instant });
+    if (parse(instant) <= started) for (const toText of dayEnds) queries.push({ from: instant, to: toText });
   }
-  // Bounds are compared as the costs route reads them: each string re-parsed (new Date), both bounds inclusive
-  // (resolveCostDateRange keeps explicit bounds; costs filter occurredAt >= from and <= to). A string that drops
-  // milliseconds therefore names an earlier instant than the one it was generated from.
-  const parsed = (value: { text: string }) => new Date(value.text).getTime();
-  const queries: Array<Record<string, string>> = [];
-  for (const family of families) {
-    const froms = family.filter(value => parsed(value) <= started), tos = family.filter(value => parsed(value) >= finished);
-    for (const from of froms) queries.push({ from: from.text });
-    for (const to of tos) queries.push({ to: to.text });
-    for (const from of froms) for (const to of tos) queries.push({ from: from.text, to: to.text });
-  }
-  // Explicit bounds take precedence over period=month (only period=all rejects bounds), so the same ranges with
-  // period=month read the same rows.
-  for (const query of [...queries]) queries.push({ ...query, period: "month" });
-  for (const segment of segments) for (const pathParams of [{ companyId }, {}, undefined]) for (const query of queries)
-    digests.add(callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query }));
-  coveringCache.set(key, digests);
-  return digests;
+  for (const query of [...monthQueries, ...queries.slice(instantStart)]) queries.push({ ...query, period: "month" });
+  for (const query of queries) for (const pathParams of [{ companyId }, {}, undefined])
+    yield callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query });
 }
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
@@ -230,14 +248,15 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // A from equal to the run's own startedAt (copied from its record) is a natural covering bound too.
   // Generated per report actually read by this run, since the covering set is large.
   const readSegments = segments.filter(segment => calls.some(call => call.runId === runId && call.operationId === `GET /api/companies/{companyId}/costs/${segment}`));
-  const rangedDigests = companyId && window && readSegments.length
-    ? coveringCostReportDigests(companyId, window, readSegments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : []) : new Set<string>();
+  const ok = (call: LeadApiCall) => call.runId === runId && call.ok && call.status >= 200 && call.status < 300;
+  const rangedReads = new Set(calls.filter(call => ok(call) && readSegments.some(segment => call.operationId === `GET /api/companies/{companyId}/costs/${segment}`)
+    && !companyDigests.has(call.digest)).map(call => call.digest));
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
-      || rangedDigests.has(call.digest)
       || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
-      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
+      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)))
+    || !!companyId && !!window && coveringCostReportRead(companyId, window, readSegments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : [], rangedReads);
 }
 /** Run records the given run saved through `call_api` `saveResponse`, from the product's own activity and asset. */
 export async function savedRunRecordReads(ctx: ChatCatalogContext, runId: string, agentId: string): Promise<SavedRunRecord[]> {
