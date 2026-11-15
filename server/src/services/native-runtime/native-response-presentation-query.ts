@@ -4,6 +4,7 @@ import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinali
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
 const laterDecisions = alias(statusDecisions, "later_status_decisions");
+const laterTurns = alias(heartbeatRuns, "later_conversation_turns");
 
 export function nativeResponsePresentationCandidates(scope?: NativeResponsePresentationScope, after?: string, runId?: string) {
   const db = new QueryBuilder();
@@ -53,6 +54,13 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
               sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
               sql`${heartbeatRuns.contextSnapshot}->>'conversationSessionGeneration' = ${issues.conversationSessionGeneration}::text`,
+              // A later turn that started replaced this one, even after it
+              // released the execution run (for example, it failed at setup).
+              notExists(db.select({ id: laterTurns.id }).from(laterTurns).where(and(
+                eq(laterTurns.companyId, heartbeatRuns.companyId),
+                sql`${laterTurns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
+                gt(laterTurns.createdAt, heartbeatRuns.createdAt),
+                eq(laterTurns.agentId, heartbeatRuns.agentId), ne(laterTurns.status, "queued")))),
               exists(db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
                 eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.runId, heartbeatRuns.id),
                 eq(heartbeatRunEvents.agentId, heartbeatRuns.agentId), eq(heartbeatRunEvents.eventType, "item.completed"),

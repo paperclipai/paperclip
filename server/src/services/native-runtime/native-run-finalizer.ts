@@ -42,7 +42,8 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -986,6 +987,24 @@ async function hasLaterAppliedStatusDecision(db: Db, input: {
   return Boolean(later);
 }
 
+// A later turn of the conversation that started replaced this turn, even after
+// it released the execution run (for example, it failed at setup).
+async function laterConversationTurnStarted(db: Db, run: {
+  id: string; companyId: string; agentId: string; issueId: string;
+}) {
+  // Compare stored timestamps; a JavaScript Date drops their microseconds.
+  const later = alias(heartbeatRuns, "later_conversation_turn");
+  const [turn] = await db.select({ id: later.id }).from(later)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, run.id)).where(and(
+      eq(later.companyId, run.companyId),
+      sql`${later.contextSnapshot}->>'issueId' = ${run.issueId}`,
+      gt(later.createdAt, heartbeatRuns.createdAt),
+      eq(later.agentId, run.agentId),
+      ne(later.status, "queued"),
+    )).limit(1);
+  return Boolean(turn);
+}
+
 /** Recover only the already accepted answer. Neither issue disposition nor
  * provider state is repaired here; an unsafe native session stays quarantined. */
 export async function repairCommittedNativeChatResponse(
@@ -1197,7 +1216,8 @@ async function recoverCommittedNativeChatResponseInScope(
         && (!issue.executionRunId || issue.executionRunId === run.id)
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
-        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration
+        && !(await laterConversationTurnStarted(tx, { ...run, issueId: issue.id }));
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
       const ordinaryTaskReply = (!conversation || currentConversation) &&
