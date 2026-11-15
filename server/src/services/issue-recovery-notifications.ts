@@ -10,6 +10,7 @@ export type IssueRecoveryScope = { companyId: string; issueId?: string; graphRun
 
 export const ISSUE_RECOVERY_MAX_ISSUE_IDS = 100;
 export const ISSUE_RECOVERY_BACKSTOP_MS = 5 * 60_000;
+export const ISSUE_RECOVERY_FULL_BACKSTOP_MS = 60 * 60_000;
 const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 const COMPANY_QUEUES: DeliveryQueue[] = [DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.taskWatchdogs];
@@ -19,11 +20,8 @@ const TASK_QUEUES: DeliveryQueue[] = [DELIVERY_QUEUES.strandedAssignments, DELIV
 export async function notifyIssueRecovery(transaction: object, scope?: IssueRecoveryScope) {
   const companyHint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   const issueHint = scope ? JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }) : "*";
-  for (const queue of [DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.assignedWorkInvariant, DELIVERY_QUEUES.resolvedDependencies,
-    DELIVERY_QUEUES.taskWatchdogs, DELIVERY_QUEUES.staleIssueLocks]) {
-    await notifyDeliveryWork(transaction, queue,
-      queue === DELIVERY_QUEUES.strandedAssignments || queue === DELIVERY_QUEUES.staleIssueLocks ? issueHint : companyHint);
-  }
+  for (const queue of COMPANY_QUEUES) await notifyDeliveryWork(transaction, queue, companyHint);
+  for (const queue of TASK_QUEUES) await notifyDeliveryWork(transaction, queue, issueHint);
 }
 
 export function issueRecoveryBackstopHint(companyId: string) {
@@ -70,5 +68,6 @@ export async function resolveIssueGraph(db: Db, scope: { companyId: string; runI
         and issue_id in (select id from seed) limit ${ISSUE_RECOVERY_MAX_ISSUE_IDS + 1})
     ) select id::text as id from affected limit ${ISSUE_RECOVERY_MAX_ISSUE_IDS + 1}`);
   const issueIds = rows.map(row => row.id).sort();
-  return issueIds.length && issueIds.length <= ISSUE_RECOVERY_MAX_ISSUE_IDS ? issueIds : null;
+  if (issueIds.length === 0) return scope.issueId ? null : [];
+  return issueIds.length <= ISSUE_RECOVERY_MAX_ISSUE_IDS ? issueIds : null;
 }

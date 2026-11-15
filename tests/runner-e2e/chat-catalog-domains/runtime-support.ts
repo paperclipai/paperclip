@@ -69,8 +69,12 @@ export async function openRuntimeAgentProfile(ctx: ChatCatalogContext, agent: Ru
  * redraws the page and closes any open menu. Wait for that canonical route before using its controls.
  */
 export async function settleAgentProfileRoute(page: Page, ref: string, options: { timeout?: number } = {}) {
+  await settleRouteKey(page, "agents", ref, options);
+}
+/** Wait until the URL's `/<segment>/<key>` part names the canonical key the app rewrites id routes to. */
+export async function settleRouteKey(page: Page, segment: string, ref: string, options: { timeout?: number } = {}) {
   await page.waitForURL(url => {
-    const parts = url.pathname.split("/").map(decodeURIComponent); const at = parts.indexOf("agents");
+    const parts = url.pathname.split("/").map(decodeURIComponent); const at = parts.indexOf(segment);
     return at >= 0 && parts[at + 1] === ref;
   }, options);
 }

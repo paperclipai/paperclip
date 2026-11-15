@@ -7,6 +7,7 @@ import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
 import type { LiveEvent } from "@paperclipai/shared";
+import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
@@ -2824,7 +2825,11 @@ rl.on("line", (line) => {
     }
   });
 
-  it("starts with another user's personal app and requests authorization only when used", async () => {
+  it.each([
+    { longIdentity: false, existing: false },
+    { longIdentity: true, existing: false },
+    { longIdentity: true, existing: true },
+  ])("requests another user's personal authorization only when used (long: $longIdentity, existing: $existing)", async ({ longIdentity, existing }) => {
     const originalApiUrl = process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_API_URL = "http://paperclip.example.test";
     const company = await createCompany(db);
@@ -2849,6 +2854,7 @@ rl.on("line", (line) => {
       // may be unable to authenticate even though this user's grant is valid.
       // The cached catalog must remain visible so grant resolution can happen.
       await db.update(toolConnections).set({
+        ...(longIdentity ? { uid: `https://mcp.example.test/${"connection/".repeat(25)}`, name: "Personal connection ".repeat(10) } : {}),
         credentialPolicy: "per_user",
         healthStatus: "error",
         healthMessage: "This app needs you to sign in.",
@@ -2882,7 +2888,7 @@ rl.on("line", (line) => {
       const call = () => request(app).post(endpoint).set("authorization", `Bearer ${runtime[0]!.token}`)
         .send({ jsonrpc: "2.0", id: "call", method: "tools/call", params: { name: tool.name, arguments: {} } });
 
-      await db.insert(issueThreadInteractions).values({
+      if (existing) await db.insert(issueThreadInteractions).values({
         companyId: company.id,
         issueId: issue.id,
         kind: "request_confirmation",
@@ -2913,10 +2919,14 @@ rl.on("line", (line) => {
         effectiveResolverPolicy: "human_only",
         addresseeUserId: "carol",
       });
-      expect(interaction!.payload).toMatchObject({
-        prompt: `Connect your ${connection.name} account to continue`,
-        target: { key: `connection:${connection.uid}:user:carol` },
-      });
+      const payload = requestConfirmationPayloadSchema.parse(interaction!.payload);
+      expect(payload.target?.type).toBe("custom");
+      expect(payload.target && "key" in payload.target && payload.target.key.length).toBeLessThanOrEqual(120);
+      // A repeated refused call refreshes the same request, with a stable target.
+      await call().expect(409);
+      const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(cards).toHaveLength(1);
+      expect(cards[0].payload).toEqual(interaction!.payload);
 
       await db.insert(connectionGrants).values({
         companyId: company.id,

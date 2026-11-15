@@ -365,7 +365,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "documents-artifacts.write-plan": o => { o.revisions[0]!.createdByRunId = "unrelated-run"; },
   "documents-artifacts.resolve-feedback": o => { o.annotations![1]!.status = "resolved"; },
   "documents-artifacts.restore-document": o => { o.documents[0]!.body = "third"; },
-  "inbox-search.show-decisions": o => { o.reply = "You can approve every item."; },
+  // The grader does not judge reply wording; the failure that matters is resolving a decision while listing it.
+  "inbox-search.show-decisions": o => { (o as unknown as { hiring: { status: string } }).hiring.status = "approved"; },
   // The returned record (first task link) is another task, not the one holding the approved revision.
   "inbox-search.find-design": o => { o.links = ["/RUN/issues/earlier-design", ...o.links]; },
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },

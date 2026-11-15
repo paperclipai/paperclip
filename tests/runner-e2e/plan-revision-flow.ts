@@ -23,8 +23,12 @@ export function planPreviewLabel(revision: number): RegExp {
   return new RegExp(`^Open Plan revision ${revision}(?: in task sidebar)?$`);
 }
 
+export function planStageRootSelector(native: boolean): string {
+  return native ? '[data-testid="task-chat-turn"][data-settled="true"], [data-testid="task-chat-thread"]' : "body";
+}
+
 export async function expectPlanStageVisible(page: Page, options: { native: boolean; revision: number | null }) {
-  const root = options.native ? page.locator('[data-testid="task-chat-turn"][data-settled="true"]') : page.locator("body");
+  const root = page.locator(planStageRootSelector(options.native));
   const preview = root.getByTestId("task-chat-plan-preview").last();
   await expect(preview).toBeVisible({ timeout: 30_000 });
   if (options.revision !== null) await expect(preview).toHaveAttribute("aria-label", planPreviewLabel(options.revision));
