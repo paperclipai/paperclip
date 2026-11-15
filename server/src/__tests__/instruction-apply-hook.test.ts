@@ -26,9 +26,10 @@ vi.mock("../middleware/logger.js", () => ({
 
 const mockReadFile = vi.hoisted(() => vi.fn());
 const mockReadCommittedForRuntime = vi.hoisted(() => vi.fn());
+const mockBundleMode = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agent-instructions.js", () => ({
-  agentInstructionsBundleMode: vi.fn(() => "managed"),
+  agentInstructionsBundleMode: mockBundleMode,
   agentInstructionsService: vi.fn(() => ({ readFile: mockReadFile })),
   deriveBundleState: vi.fn(() => ({ entryFile: "AGENTS.md" })),
 }));
@@ -45,7 +46,8 @@ const agentRow = { id: "agent-1", companyId: "company-1", name: "Kai" };
 function createDbStub(selectResults: unknown[][]) {
   const pendingSelectResults = [...selectResults];
   const where = vi.fn(async () => pendingSelectResults.shift() ?? []);
-  const from = vi.fn(() => ({ where }));
+  const leftJoin = vi.fn(() => ({ where }));
+  const from = vi.fn(() => ({ where, leftJoin }));
   const select = vi.fn(() => ({ from }));
   const execute = vi.fn(async () => undefined);
   const tx = { select, execute };
@@ -67,6 +69,7 @@ describe("createInstructionApplyTask", () => {
     mockIssueService.create.mockResolvedValue({ id: "issue-1" });
     mockReadCommittedForRuntime.mockResolvedValue({ revision: { contentHash: ENTRY_BASE } });
     mockReadFile.mockRejectedValue(new HttpError(404, "Instructions file not found"));
+    mockBundleMode.mockReturnValue("managed");
   });
 
   it("creates a board-auth apply task carrying the approved bundle", async () => {
@@ -271,8 +274,117 @@ describe("createInstructionApplyTask", () => {
     expect(data.description).toContain("````\n`````");
   });
 
+  it("skips bundles whose writes the file route would not base-check", async () => {
+    const cases: Array<{ mode: string; path: string }> = [
+      { mode: "external", path: "AGENTS.md" },
+      { mode: "external", path: "SOUL.md" },
+      { mode: "managed", path: "promptTemplate.legacy.md" },
+    ];
+    for (const { mode, path } of cases) {
+      mockBundleMode.mockReturnValue(mode);
+      const { db } = createDbStub([[agentRow]]);
+      const result = await createInstructionApplyTask(db, {
+        companyId: "company-1",
+        approvalId: "approval-unguarded",
+        decidedByUserId: "board",
+        payload: { agentId: "agent-1", bundle: { files: [{ path, content: "x", baseHash: null }] } },
+      });
+      expect(result).toBeNull();
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({
+          action: "instruction_apply_hook.unsupported_bundle",
+          details: { agentId: "agent-1", bundleMode: mode, unguardedPaths: [path] },
+        }),
+      );
+    }
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the apply task under a private linked task so it inherits that privacy", async () => {
+    const { db } = createDbStub([
+      [agentRow],
+      [
+        { id: "open-task", visibility: "open", privacyRootIssueId: null, projectVisibility: null },
+        { id: "private-task", visibility: "private", privacyRootIssueId: "private-root", projectVisibility: null },
+      ],
+      [],
+    ]);
+
+    const result = await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-private",
+      decidedByUserId: "board",
+      payload: bundlePayload,
+    });
+
+    expect(result).toEqual({ issueId: "issue-1", created: true });
+    const [, data] = mockIssueService.create.mock.calls[0];
+    expect(data.parentId).toBe("private-task");
+  });
+
+  it("treats a task in a private project as restricting the approval", async () => {
+    const { db } = createDbStub([
+      [agentRow],
+      [{ id: "project-task", visibility: "open", privacyRootIssueId: null, projectVisibility: "private" }],
+      [],
+    ]);
+
+    await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-private-project",
+      decidedByUserId: "board",
+      payload: { ...bundlePayload, issueId: "project-task" },
+    });
+
+    const [, data] = mockIssueService.create.mock.calls[0];
+    expect(data.parentId).toBe("project-task");
+  });
+
+  it("keeps the apply task top-level when every linked task is open", async () => {
+    const { db } = createDbStub([
+      [agentRow],
+      [{ id: "open-task", visibility: "open", privacyRootIssueId: null, projectVisibility: null }],
+      [],
+    ]);
+
+    await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-open",
+      decidedByUserId: "board",
+      payload: bundlePayload,
+    });
+
+    const [, data] = mockIssueService.create.mock.calls[0];
+    expect(data).not.toHaveProperty("parentId");
+  });
+
+  it("skips when private linked tasks sit under different privacy roots", async () => {
+    const { db } = createDbStub([
+      [agentRow],
+      [
+        { id: "task-a", visibility: "private", privacyRootIssueId: "root-a", projectVisibility: null },
+        { id: "task-b", visibility: "private", privacyRootIssueId: "root-b", projectVisibility: null },
+      ],
+    ]);
+
+    const result = await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-split",
+      decidedByUserId: "board",
+      payload: bundlePayload,
+    });
+
+    expect(result).toBeNull();
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ action: "instruction_apply_hook.private_scope_unsupported" }),
+    );
+  });
+
   it("reuses an existing open apply task for the same agent and bundle fingerprint", async () => {
-    const { db } = createDbStub([[agentRow], [{ id: "existing-1" }]]);
+    const { db } = createDbStub([[agentRow], [], [{ id: "existing-1" }]]);
 
     const result = await createInstructionApplyTask(db, {
       companyId: "company-1",

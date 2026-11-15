@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db";
+import { agents, issueApprovals, issues, projects } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -104,6 +104,60 @@ async function currentContentHash(
     if (err instanceof HttpError && err.status === 404) return null;
     throw err;
   }
+}
+
+/**
+ * Whether `PUT /agents/:id/instructions-bundle/file` enforces `baseHash` for this path.
+ * The entry file commits against a base revision outside external mode; other managed
+ * files go through the hashed file store. External bundles, the legacy prompt file and
+ * non-entry files outside a managed bundle are written without a base check.
+ */
+function hasGuardedWritePath(agent: typeof agents.$inferSelect, path: string): boolean {
+  const mode = agentInstructionsBundleMode(agent);
+  if (mode === "external") return false;
+  if (instructionPath(path) === deriveBundleState(agent).entryFile) return true;
+  return mode === "managed" && path !== "promptTemplate.legacy.md";
+}
+
+type ApplyTaskScope = { parentId: string | null } | { unsupported: true };
+
+/**
+ * The approval is readable only by callers who can read every task it claims or links
+ * to. A task in a private subtree or project restricts it, so the apply task is created
+ * under that task and inherits its privacy. Restricting tasks with different privacy
+ * roots cannot be covered by one parent, so no apply task is created for them.
+ */
+async function resolveApplyTaskScope(
+  db: Db,
+  input: { companyId: string; approvalId: string; payload: Record<string, unknown> },
+): Promise<ApplyTaskScope> {
+  const { companyId, approvalId, payload } = input;
+  const claimedIssueIds = [payload.issueId, payload.sourceIssueId].filter(
+    (id): id is string => typeof id === "string" && id.length > 0,
+  );
+  const linked = sql<boolean>`${issues.id} in (select ${issueApprovals.issueId} from ${issueApprovals}
+    where ${issueApprovals.approvalId} = ${approvalId} and ${issueApprovals.companyId} = ${companyId})`;
+  const scopeIssues = await db
+    .select({
+      id: issues.id,
+      visibility: issues.visibility,
+      privacyRootIssueId: issues.privacyRootIssueId,
+      projectVisibility: projects.visibility,
+    })
+    .from(issues)
+    .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        claimedIssueIds.length > 0 ? or(inArray(issues.id, claimedIssueIds), linked) : linked,
+      ),
+    );
+  const restricted = scopeIssues
+    .filter((issue) => issue.visibility === "private" || issue.privacyRootIssueId || issue.projectVisibility === "private")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  if (restricted.length === 0) return { parentId: null };
+  const roots = new Set(restricted.map((issue) => issue.privacyRootIssueId ?? issue.id));
+  return roots.size === 1 ? { parentId: restricted[0]!.id } : { unsupported: true };
 }
 
 /**
@@ -257,6 +311,43 @@ export async function createInstructionApplyTask(
       return null;
     }
 
+    // The task promises a 409 on drift, so only generate it when every write is base-checked.
+    const unguardedPaths = files.map((file) => file.path).filter((path) => !hasGuardedWritePath(agent, path));
+    if (unguardedPaths.length > 0) {
+      logger.warn(
+        { companyId, approvalId, agentId, unguardedPaths },
+        "instruction apply hook: bundle has files without a base-checked write path, skipping",
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "instruction_apply_hook",
+        action: "instruction_apply_hook.unsupported_bundle",
+        entityType: "approval",
+        entityId: approvalId,
+        details: { agentId, bundleMode: agentInstructionsBundleMode(agent), unguardedPaths },
+      });
+      return null;
+    }
+
+    const scope = await resolveApplyTaskScope(db, { companyId, approvalId, payload });
+    if ("unsupported" in scope) {
+      logger.warn(
+        { companyId, approvalId, agentId },
+        "instruction apply hook: approval links tasks under different privacy roots, skipping",
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "instruction_apply_hook",
+        action: "instruction_apply_hook.private_scope_unsupported",
+        entityType: "approval",
+        entityId: approvalId,
+        details: { agentId },
+      });
+      return null;
+    }
+
     // Files without a recorded review base are pinned to their state at approval time,
     // so a later edit makes the apply write 409 instead of being overwritten.
     const reviewedFiles: ReviewedInstructionFile[] = await Promise.all(
@@ -307,6 +398,8 @@ export async function createInstructionApplyTask(
           originId: agentId,
           originFingerprint: fingerprint,
           createdByUserId: decidedByUserId,
+          // Inherit the privacy of the task that restricts the approval
+          ...(scope.parentId ? { parentId: scope.parentId } : {}),
         },
         tx,
       );
