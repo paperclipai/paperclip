@@ -277,13 +277,21 @@ describe("local service supervision", () => {
     }
   }, 120_000);
 
-  it("terminates an orphaned descendant on Windows with a record that has no creation time", async () => {
+  it("stops the tree of a service record without a creation time on Windows", async () => {
     if (process.platform !== "win32") return;
-    const startedAt = new Date().toISOString();
+    const port = await new Promise<number>((resolvePort, rejectPort) => {
+      const probe = net.createServer();
+      probe.on("error", rejectPort);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        const resolved = typeof address === "object" && address ? address.port : 0;
+        probe.close(() => resolvePort(resolved));
+      });
+    });
     const wrapper = spawn(process.execPath, ["-e", [
       "const { spawn } = require('node:child_process');",
       "const c = spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], { detached:true, stdio:['ignore','inherit','inherit'] });",
-      "process.stdout.write(String(c.pid));",
+      `require('node:http').createServer(()=>{}).listen(${port}, '127.0.0.1', () => { process.stdout.write(String(c.pid)); });`,
       "setInterval(()=>{},1000);",
     ].join(" ")], { stdio: ["ignore", "pipe", "pipe"] });
     let grandchildPid: number | null = null;
@@ -297,18 +305,10 @@ describe("local service supervision", () => {
       });
       expect(isPidAlive(grandchildPid)).toBe(true);
 
-      wrapper.kill("SIGKILL");
-      const rootDeadline = Date.now() + 15_000;
-      while (Date.now() < rootDeadline && isPidAlive(wrapper.pid!)) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(isPidAlive(wrapper.pid!)).toBe(false);
-      expect(isPidAlive(grandchildPid)).toBe(true);
-
       await terminateLocalService({
         pid: wrapper.pid!,
         processGroupId: wrapper.pid!,
-        startedAt,
+        port,
       });
 
       const deadline = Date.now() + 60_000;
