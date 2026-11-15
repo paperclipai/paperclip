@@ -935,7 +935,11 @@ max lifetime as the main pool. At most `DATABASE_DEDICATED_CONNECTION_MAX`
 finds the limit reached waits in a first-in, first-out queue. A caller that
 already holds a dedicated client, or runs inside an open transaction of the
 same process, is admitted at once, because its wait could deadlock with the
-holder that it blocks. Such callers can take the in-use count above the limit.
+holder that it blocks. A caller that holds another bounded resource that a
+holder can need passes `{ admitWithoutWaiting: true }` for the same reason; the
+skill package store does this while it holds one of its package I/O permits
+(at most 2 storage and 2 response permits). Such callers can take the in-use
+count above the limit.
 A caller that waits longer than `DATABASE_DEDICATED_CONNECTION_WAIT_MS`
 (default 30000) is admitted over the limit, so a lock cycle that the database
 cannot see ends in a delay, not a hang. A connection whose action throws is

@@ -198,6 +198,28 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection admission", () =>
     expect(dedicatedDbConnectionStats(db)).toMatchObject({ inUse: 0, overLimit: 0, nestedOverLimit: 1 });
   });
 
+  it("admits a caller that holds a resource the slot holder needs without waiting", async () => {
+    const db = owner({ dedicatedConnectionMax: 1, dedicatedConnectionWaitMs: 60_000 });
+    let releasePermit!: () => void;
+    const permit = new Promise<void>(resolve => { releasePermit = resolve; });
+    let holding!: () => void;
+    const slotTaken = new Promise<void>(resolve => { holding = resolve; });
+    const holder = withDedicatedDbConnection(db, async dedicated => {
+      holding();
+      await permit;
+      return dedicated.execute(sql`select 'holder' as owner`);
+    });
+    await slotTaken;
+    const reader = (async () => {
+      try {
+        return await withDedicatedDbConnection(db, dedicated => dedicated.execute(sql`select 'reader' as owner`), { admitWithoutWaiting: true });
+      } finally { releasePermit(); }
+    })();
+    await expect(Promise.race([Promise.all([reader, holder]), sleep(5_000).then(() => "deadlocked")]))
+      .resolves.toEqual([[{ owner: "reader" }], [{ owner: "holder" }]]);
+    expect(dedicatedDbConnectionStats(db)).toMatchObject({ inUse: 0, waiting: 0, overLimit: 0 });
+  });
+
   it("admits a queued caller over the limit after the wait bound instead of waiting forever", async () => {
     const db = owner({ dedicatedConnectionMax: 1, dedicatedConnectionWaitMs: 100 });
     let release!: () => void;

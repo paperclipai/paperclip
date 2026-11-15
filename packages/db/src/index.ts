@@ -7,6 +7,7 @@ export {
   DEFAULT_DEDICATED_CONNECTION_WAIT_MS,
   dedicatedDbConnectionStats,
   type DedicatedDbConnectionStats,
+  type DedicatedDbConnectionOptions,
   databaseConnectionBudget,
   PRIVATE_POOL_MAX_CONNECTIONS,
   createOwnedDatabaseListener,

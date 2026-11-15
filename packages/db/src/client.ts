@@ -416,10 +416,13 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
-export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
+export type DedicatedDbConnectionOptions = { admitWithoutWaiting?: boolean };
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>,
+  options: DedicatedDbConnectionOptions = {}): Promise<T> {
   const set = dedicatedConnectionSets.get(db);
   if (!set) throw new Error("dedicated_connection_requires_create_db");
-  await admitDedicatedConnection(set, holdsLiveDedicatedOrTransaction(set));
+  await admitDedicatedConnection(set, options.admitWithoutWaiting === true || holdsLiveDedicatedOrTransaction(set));
   const hold: DedicatedConnectionHold = { set, active: true };
   let dedicated: Db | undefined;
   let completed = false;

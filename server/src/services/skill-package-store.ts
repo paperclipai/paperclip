@@ -392,7 +392,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         }
         return result;
       } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archive, { force: true }); }
-    }), signal);
+    }, { admitWithoutWaiting: true }), signal);
     if (published) await withDedicatedDbConnection(cacheOwner, async database => {
       // Verify possible eviction candidates outside both the preparation lock
       // and the storage slot used for this fill; take the lock only to remove.
@@ -403,7 +403,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           try { await withSkillVersionCacheLock(cacheOwner, companyId, remove, true); }
           catch (error) { if (!(error instanceof SkillCacheBusy)) throw error; }
         }, signal);
-    });
+    }, { admitWithoutWaiting: cacheRead });
     signal.throwIfAborted();
     return result;
   }
