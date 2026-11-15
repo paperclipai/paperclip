@@ -551,3 +551,8 @@ manual resources, and missing completion receipts remain sleep blockers.
 Node executable as a live old process and compiles a minimal replacement with
 `cc`. The compiler must target the current host architecture. These owned
 fixtures do not depend on standalone coreutils binaries or applet names.
+
+Workspace denial tests accept shell redirection failure codes 1 and 2. Bash and
+Dash use different codes for this failure. The tests also require normal process
+exit, no tool cancellation, a failure message for the target path, and unchanged
+contents of the protected file.
