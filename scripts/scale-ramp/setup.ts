@@ -181,12 +181,14 @@ export async function waitForAgentsReady(input: {
   let logged = false;
   let readFailures = 0;
   for (;;) {
+    if (input.shouldStop()) return false;
     let listed: Json[];
     try {
       listed = await api.get<Json[]>(`/api/companies/${input.companyId}/agents`);
       readFailures = 0;
     } catch (error) {
       readFailures += 1;
+      if (input.shouldStop()) return false;
       const message = error instanceof Error ? error.message : String(error);
       if (readFailures >= AGENT_LIST_FAILURE_LIMIT) {
         throw new AgentsNotReady(`the agent list could not be read ${readFailures} times in a row while waiting for agent setup: ${message.slice(0, 300)}`);

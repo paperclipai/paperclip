@@ -495,6 +495,30 @@ describe("ramp against the fake API", () => {
     assertCleanedUp(h.fake);
   });
 
+  it("starts cleanup at once when interrupted while agent list reads fail", async () => {
+    const out = await tempDir();
+    let cleaning = false;
+    let failed = 0;
+    const h = harness({ failRequest: (method, route) => {
+      if (cleaning || method !== "GET" || !route.endsWith("/agents")) return null;
+      failed += 1;
+      if (failed === 2) h.interrupt();
+      return { status: 500, body: "{\"error\":\"database busy\"}" };
+    } });
+    const out0 = h.deps.out;
+    h.deps.out = line => {
+      if (line.startsWith("Cleaning up")) cleaning = true;
+      out0(line);
+    };
+    const started = h.clock.now();
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(failed, 2, "no agent list read is retried after the interrupt");
+    assert.match(result.stop!.reason, /interrupted/);
+    assert.ok(h.clock.now() - started < 15_000, "cleanup starts within one poll interval");
+    assertCleanedUp(h.fake);
+  });
+
   it("reports missing optional sources as not measured", async () => {
     const out = await tempDir();
     const h = harness();
