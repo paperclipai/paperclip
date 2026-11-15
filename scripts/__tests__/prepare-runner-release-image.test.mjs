@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { validateReleaseRun, selectReleaseArtifacts, validateReleaseImageBase, validateImageBindings, decodeReleaseJson } from '../prepare-runner-release-image.mjs';
+import { validateReleaseRun, selectReleaseArtifacts, validateReleaseImageBase, validateImageBindings, decodeReleaseJson, decodeReleaseKimiClosures } from '../prepare-runner-release-image.mjs';
 
 const source = 'a'.repeat(40);
 const run = { head_sha: source, conclusion: 'success', path: '.github/workflows/release-smoke.yml', repository: { full_name: 'paperclipai/paperclip' } };
@@ -80,4 +80,17 @@ test('frozen release JSON must be the bounded requested source file', () => {
   for (const patch of [{ type: 'symlink' }, { path: 'other.json' }, { size: content.length + 1 }, { size: 1024 * 1024 + 1 }, { encoding: 'none' }]) {
     assert.throws(() => decodeReleaseJson({ ...file, ...patch }, path));
   }
+});
+
+test('frozen Kimi closure data is decoded without executing release source', () => {
+  const path = 'packages/paperclip-runner/src/drivers/acpx/kimi-closure-pins.ts';
+  const source = `throw new Error("must not execute");\nexport const KIMI_DISTRIBUTION_CLOSURE_SHA256 = Object.freeze({ "darwin-arm64": "${'a'.repeat(64)}", "linux-x64": "${'b'.repeat(64)}", });`;
+  const bytes = Buffer.from(source), file = { type: 'file', path, encoding: 'base64', size: bytes.length, content: bytes.toString('base64') };
+  assert.deepEqual(decodeReleaseKimiClosures(file, path), { 'darwin-arm64': 'a'.repeat(64), 'linux-x64': 'b'.repeat(64) });
+  for (const patch of [{ path: 'other.ts' }, { type: 'symlink' }, { size: bytes.length + 1 }, { size: 1024 * 1024 + 1 },
+    { content: Buffer.from(source.replace('linux-x64', 'linux-arm64')).toString('base64') }]) {
+    assert.throws(() => decodeReleaseKimiClosures({ ...file, ...patch }, path));
+  }
+  const duplicate = Buffer.from(source + source);
+  assert.throws(() => decodeReleaseKimiClosures({ ...file, content: duplicate.toString('base64'), size: duplicate.length }, path));
 });

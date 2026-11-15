@@ -1,4 +1,4 @@
-import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginWorkspaceParams, PluginWorkspacePrepareParams, PluginWorkspacePrepareResult, PluginWorkspaceResult } from "./workspace-provider.js";
 import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -94,6 +94,8 @@ import type {
   PluginLoginPtyOpenParams,
   PluginLoginPtyOpenResult,
   PluginLoginPtyInputParams,
+  PluginLoginPtyReadCredentialParams,
+  PluginLoginPtyReadCredentialResult,
   PluginLoginPtyStopParams,
   PluginLoginPtyCloseParams,
   PluginLoginPtyCloseResult,
@@ -182,6 +184,8 @@ export interface PluginApiRequestInput {
 }
 
 export interface PluginApiResponse {
+  /** Server-only upstream for a declared WebSocket route. Never returned as JSON. */
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -404,6 +408,7 @@ export interface PluginDefinition {
   ): Promise<PluginEnvironmentValidationResult>;
 
   /** Required with manifest.workspaceProvider, together with project resource lifecycle. */
+  onWorkspacePrepare?(params: PluginWorkspacePrepareParams): Promise<PluginWorkspacePrepareResult>;
   onWorkspaceOperation?(params: PluginWorkspaceParams): Promise<PluginWorkspaceResult>;
 
   /** Provide Runner execution: prepare resources, start Runner, connect via PRP, and manage task lifecycle. */
@@ -520,6 +525,9 @@ export interface PluginDefinition {
 
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
   onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
+
+  /** Optional fixed credential read, advertised through supported-method discovery. */
+  onLoginPtyReadCredential?(params: PluginLoginPtyReadCredentialParams): Promise<PluginLoginPtyReadCredentialResult>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
   onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;

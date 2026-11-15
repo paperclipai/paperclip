@@ -52,7 +52,12 @@ the live lease and cleanup is confirmed. Inspect `platformQualificationRecorded`
 and its diagnostic in the probe result: connection success alone does not mean
 the image has native runtime qualification.
 
-The measured record is server-owned, company-bound and tied to the effective
+Paperclip-managed Cloud images use the current platform-selected image without
+a saved qualification prerequisite when the active Cloud configuration provisions
+the sandbox provider. Custom environments and active captured custom images
+retain qualification requirements.
+
+For other images, the measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
 and snapshots without verified provider identities do not qualify. Daytona
 qualification creates by provider ID and binds native execution to that same ID;
@@ -80,6 +85,26 @@ execution. Remote-driver probes and a real bounded run need their own evidence.
 
 ### `remote-execution`
 
+For `paperclip_runner`, a saved plugin environment can provide per-turn Runner
+execution when its manifest and worker expose the Runner task API. The task
+contract starts a provider-owned Runner without shell or workspace hooks. Core
+resolves the saved lease, connects through PRP, and verifies stop before lease
+cleanup. The provider owns the installed agent home and retained session files;
+data transfer is outside task execution. See the
+[plugin contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
+The [fake-provider integration](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
+checks acquisition, SDK dispatch, scope denial, stop proof and deletion recovery.
+Its WebSocket is mocked; it does not qualify a live provider or a real Runner handshake.
+Controller replacement reuses a surviving plugin task's active lease and Runner
+identity. Follow the [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+to verify recovery across main-server replacement.
+
+For a same-run retry on a replacement plugin task, verify that the retained
+checkpoint loads before provider startup. The prior execution must have a stop
+receipt, and the checkpoint must match the original session identity. Include a
+turn that ends without a completion result; a successful initial turn alone does
+not exercise this recovery path. Reject missing stop proof and changed identities.
+
 Automated: [execution target](../../server/src/__tests__/environment-execution-target.test.ts) and [custom images](../../server/src/__tests__/environment-custom-images-service.test.ts) cover contracts; [SSH live test](../../server/src/__tests__/environment-live-ssh.test.ts) requires its own external setup.
 
 The [environment runtime regression](../../server/src/__tests__/environment-runtime.test.ts)
@@ -97,6 +122,14 @@ Manual: Run a bounded command in the intended target, inspect its output and wor
   harness; the selected native runtime still needs its own setup and useful-task proof.
 - The local option may appear only when editing an existing local environment; availability follows current UI/provider capabilities.
 - Workspace service reachability and environment reachability are separate checks.
+
+The task-only setup path uses a Core-issued expiring probe identity and a real,
+read-only Runner hello. The plugin checks project authentication before provider startup.
+[Setup probe coverage](../../server/src/services/native-runtime/plugin-runner-probe.test.ts)
+uses the real Runner and a synthetic Codex provider through loopback PRP; TLS
+termination is replaced by the fixture. It does not qualify a live plugin provider.
+
+The plugin prepares execution-host resources and the provider descriptor. Core validates the result, then supplies task identity and PRP launch limits.
 
 ### Storybook verification
 
@@ -135,3 +168,8 @@ Scope: ui
 Storybook: Custom-image setup/capture/progress, terminal connect/disconnect/failure, unsupported capability and active-image drift.
 Production: Execute owned provider setup/capture/probe/terminal transport with correct saved image identity, authority, cleanup and shutdown; terminal screenshot cannot prove operation.
 Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-custom-images-service.test.ts](../../server/src/__tests__/environment-custom-images-service.test.ts)
+
+Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
+`check_project_auth` result for the exact prepared configuration, provider, and
+project set. New preparation removes old validation. Core checks the saved
+validation again in the dispatch update.

@@ -4,9 +4,9 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, companyMemberships, companyPromptInjectionPrevention, costEvents, promptInjectionInvocations,
+import { createDb, companies, agents, companyMemberships, companyPromptInjectionPrevention, costEvents, costAdjustments, promptInjectionInvocations,
   connectionGrants, connectionGrantMembers, toolConnectionInstalls, toolConnections, budgetPolicies, budgetReservations,
-  issues, projects, secretAccessEvents, companySecrets } from "@paperclipai/db";
+  issues, projects, secretAccessEvents, companySecrets, activityLog } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { PROMPT_INJECTION_DEFAULT_MODEL, updatePromptInjectionPreventionSchema } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -24,6 +24,7 @@ import { errorHandler } from "../middleware/index.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
+import { deliverBudgetEnforcement, flushBudgetEvaluationWork } from "../services/budgets.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>, home: string;
 beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-injection-")));
@@ -49,6 +50,144 @@ async function fixture() {
   return { companyId, agentId, connections, binding, provider, service, context, config };
 }
 describe("prompt injection service", () => {
+  it("returns the model verdict and committed charge before slow budget stop delivery", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, notifyEnabled: false });
+    f.provider.mockResolvedValue({ ...structuredClone(outcome), receipt: { ...outcome.receipt, costCents: "2.0000000" } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancelWorkForScope = vi.fn(() => gate);
+    const service = promptInjectionPreventionService(db, { provider: f.provider, budgetHooks: { cancelWorkForScope } });
+    const pending = service.classify(f.context, "Benign source code");
+    let delivery: Promise<void> | undefined;
+    let finished = false;
+    void pending.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "classified", violation: false });
+      expect(f.provider).toHaveBeenCalledOnce();
+      expect(cancelWorkForScope).not.toHaveBeenCalled();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ usageKind: "prompt_injection", costCents: 2 });
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
+      const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
+      expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
+      delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
+      await vi.waitFor(() => expect(cancelWorkForScope).toHaveBeenCalledOnce());
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementDeliveredVersion);
+      release(); await delivery;
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
+    } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
+  it.each(["company", "agent", "policy"] as const)("settles while an unrelated %s accounting row is locked", async locked => {
+    const f = await fixture();
+    const [policy] = await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 100, notifyEnabled: false }).returning();
+    let providerEntered!: () => void, finishProvider!: () => void, unlock!: () => void, lockedRow!: () => void;
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { lockedRow = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await providerGate; return structuredClone(outcome); });
+    const pending = f.service.classify({ ...f.context, source: "gateway", agentId: f.agentId }, "sample");
+    await entered;
+    const blocker = db.transaction(async tx => {
+      if (locked === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      if (locked === "agent") await tx.select().from(agents).where(eq(agents.id, f.agentId)).for("no key update");
+      if (locked === "policy") await tx.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)).for("no key update");
+      lockedRow(); await lockGate;
+    });
+    let finished = false;
+    void pending.finally(() => { finished = true; }).catch(() => undefined);
+    try {
+      await acquired; finishProvider();
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "classified", violation: false });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe("settled");
+    } finally { unlock(); finishProvider(); await blocker; await pending.catch(() => undefined); }
+  });
+  it.each(["company", "project"] as const)("denies paid admission when %s manual pause wins its control fence", async scope => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Control fence" }).returning();
+    let unlock!: () => void, locked!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const holding = db.transaction(async tx => {
+      if (scope === "company") await tx.select().from(companies).where(eq(companies.id, f.companyId)).for("no key update");
+      else await tx.select().from(projects).where(eq(projects.id, project.id)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await gate;
+      if (scope === "company") await tx.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+      else await tx.update(projects).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(projects.id, project.id));
+    });
+    const pid = await acquired;
+    const pending = f.service.classify({ ...f.context, projectId: project.id }, "sample");
+    try {
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 3000 });
+      unlock(); await holding;
+      expect(await pending).toMatchObject({ status: "unavailable" });
+      expect(f.provider).not.toHaveBeenCalled();
+      expect(await db.select().from(promptInjectionInvocations).where(eq(promptInjectionInvocations.companyId, f.companyId))).toHaveLength(0);
+    } finally { unlock(); await holding; await pending.catch(() => undefined); }
+  });
+  it.each([
+    { recoveryFirst: true, priced: true, corrected: false }, { recoveryFirst: false, priced: true, corrected: false },
+    { recoveryFirst: true, priced: false, corrected: false }, { recoveryFirst: false, priced: false, corrected: false },
+    { recoveryFirst: true, priced: true, corrected: true },
+  ])("keeps a real result with recovery first: $recoveryFirst, priced: $priced, corrected: $corrected", async ({ recoveryFirst, priced, corrected }) => {
+    const f = await fixture();
+    const realOutcome: PromptInjectionProviderOutcome = priced ? structuredClone(outcome) : { ...structuredClone(outcome), receipt: {
+      ...outcome.receipt, costCents: null, costStatus: "unpriced", pricingProvenance: { source: "unknown" } } };
+    let finishProvider!: () => void, providerEntered!: () => void;
+    const gate = new Promise<void>(resolve => { finishProvider = resolve; });
+    const entered = new Promise<void>(resolve => { providerEntered = resolve; });
+    f.provider.mockImplementationOnce(async () => { providerEntered(); await gate; return realOutcome; });
+    const pending = f.service.classify(f.context, "sample");
+    await entered;
+    await db.update(promptInjectionInvocations).set({ startedAt: new Date(Date.now() - 180_000) }).where(eq(promptInjectionInvocations.companyId, f.companyId));
+    let originalHash: string | null = null;
+    try {
+      if (recoveryFirst) {
+        await Promise.all([f.service.recoverInterrupted(), f.service.recoverInterrupted()]);
+        const [event] = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+        expect(event.costStatus).toBe("unpriced"); originalHash = event.receiptHash;
+        if (corrected) await billingReconciliationService(db).adjust(f.companyId, event.id, { idempotencyKey: "invoice-before-receipt",
+          expectedCents: "0", correctedCents: "0.005", reason: "Verified invoice before provider completed", pricing: { source: "operator" } }, "alice");
+      }
+      finishProvider();
+      expect(await pending).toMatchObject({ status: "classified", violation: false });
+      await f.service.recoverInterrupted();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ costStatus: priced ? "reported" : "unpriced", costCents: corrected ? 0.005 : priced ? 0.002 : 0 });
+      expect(events[0]).toMatchObject({ inputTokens: 100, cachedInputTokens: 0, outputTokens: 10,
+        providerRequestId: "fixture-request" });
+      const corrections = await db.select().from(costAdjustments).where(eq(costAdjustments.companyId, f.companyId));
+      expect(corrections).toHaveLength(recoveryFirst ? corrected ? 2 : 1 : 0);
+      if (recoveryFirst) {
+        expect(events[0]).toMatchObject({ receiptHash: originalHash, reportedCostCents: "0.0000000",
+          reportedUsageJson: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null } });
+        expect(corrections.find(row => row.idempotencyKey.endsWith(":late-receipt") || row.idempotencyKey.endsWith(":late-usage"))?.previousUsageJson)
+          .toMatchObject({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, providerRequestId: null });
+        if (priced && !corrected) expect(JSON.parse(corrections[0].pricing.evidence as string)).toMatchObject({ inputTokens: 100, outputTokens: 10, providerRequestId: "fixture-request" });
+      }
+      if (corrected) {
+        expect(events[0].pricingProvenance).toEqual({ source: "operator" });
+        const observed = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "accounting.late_receipt_observed")));
+        expect(observed).toHaveLength(1);
+        expect(observed[0].details).toMatchObject({ effectiveCostCents: "0.0050000", costCents: "0.0020000", inputTokens: 100, providerRequestId: "fixture-request" });
+      }
+      expect((await db.select().from(promptInjectionInvocations).where(eq(promptInjectionInvocations.companyId, f.companyId)))[0]).toMatchObject({
+        status: "succeeded", violation: false, costEventId: events[0].id, inputTokens: 100, outputTokens: 10 });
+      expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0].state).toBe(priced ? "settled" : "held");
+      expect(f.provider).toHaveBeenCalledOnce();
+    } finally { finishProvider(); await pending.catch(() => undefined); }
+  });
   it.each(["missing_key", "wrong_key", "remote_vault_outage"])("uses full regex fallback for %s without dispatch or charge", async failure => {
     const f = await fixture();
     const previousKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -156,15 +295,17 @@ describe("prompt injection service", () => {
     await f.service.configure(f.companyId, "alice", { ...f.config, enabled: false });
     expect(await f.service.classify(f.context, "sample")).toMatchObject({ reason: "disabled" }); expect(f.provider).not.toHaveBeenCalled();
   });
-  it.each(["disabled", "rotated", "configuration"])("rejects %s changes while admission waits for accounting", async change => {
+  it.each(["disabled", "rotated", "configuration"])("rejects %s changes while final admission waits for configuration", async change => {
     const f = await fixture();
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.companyId, f.companyId));
     let release!: () => void, locked!: (pid: number) => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const acquired = new Promise<number>(resolve => { locked = resolve; });
-    const holding = withAccountingTransaction(db, f.companyId, async tx => {
+    const holding = db.transaction(async tx => {
+      await tx.select().from(companyPromptInjectionPrevention).where(eq(companyPromptInjectionPrevention.companyId, f.companyId)).for("no key update");
       const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       locked(row.pid); await gate;
+      if (change === "configuration") await tx.update(companyPromptInjectionPrevention).set({ model: "changed/model" }).where(eq(companyPromptInjectionPrevention.companyId, f.companyId));
     });
     const pid = await acquired;
     const pending = f.service.classify(f.context, "sample");
@@ -173,10 +314,7 @@ describe("prompt injection service", () => {
         const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
         expect(row.count).toBeGreaterThan(0);
       }, { timeout: 5000 });
-      if (change === "configuration") {
-        // A timestamp alone is not a sufficient revision if two writes share a millisecond.
-        await db.update(companyPromptInjectionPrevention).set({ model: "changed/model" }).where(eq(companyPromptInjectionPrevention.companyId, f.companyId));
-      } else {
+      if (change !== "configuration") {
         await db.update(companySecrets).set(change === "disabled" ? { status: "disabled" } : { latestVersion: secret.latestVersion + 1 }).where(eq(companySecrets.id, secret.id));
       }
     } finally { release(); await holding; }

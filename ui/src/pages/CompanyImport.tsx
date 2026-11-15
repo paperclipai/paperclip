@@ -71,6 +71,7 @@ import {
   writeStoredImportJob,
 } from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
+import { describeError } from "@/api/errors";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -576,7 +577,7 @@ function importAdapterValues(
   sourceAdapterType?: string,
   runner?: AgentRunnerChoice,
 ): CreateConfigValues {
-  const nativeHarness = sourceAdapterType === "paperclip_runner" && ["codex_local", "claude_local"].includes(choice);
+  const nativeHarness = sourceAdapterType === "paperclip_runner" && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(choice);
   const nativeCodex = nativeHarness && choice === "codex_local";
   const savedBypass = sourceConfig?.dangerouslyBypassApprovalsAndSandbox
     ?? (nativeCodex ? undefined : sourceConfig?.dangerouslyBypassSandbox);
@@ -593,6 +594,8 @@ function importAdapterValues(
           ? (sourceConfig.codexPermissionMode ?? PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode) === "never"
           : resolveCodexLocalCliPolicy(sourceConfig).bypass,
     } : {}),
+    ...(sourceConfig && choice === "opencode_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "" } : {}),
+    ...(sourceConfig && choice === "pi_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.piThinkingLevel ?? sourceConfig.thinking ?? "") } : {}),
     ...(sourceConfig && choice === "claude_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.modelReasoningEffort ?? sourceConfig.reasoningEffort ?? sourceConfig.effort ?? "") } : {}),
     ...(nativeHarness && sourceConfig ? {
       cwd: typeof sourceConfig.cwd === "string" ? sourceConfig.cwd : "",
@@ -1100,7 +1103,6 @@ export function CompanyImport() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const runnerInstalled = availableAdapterTypes?.has("paperclip_runner") === true;
   const nativeRunnerAvailable = runnerInstalled && experimentalSettings?.enableNativeRunner === true;
@@ -1243,7 +1245,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Preview failed",
-        body: err instanceof Error ? err.message : "Failed to preview import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1397,7 +1399,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Import failed",
-        body: err instanceof Error ? err.message : "Failed to apply import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1451,7 +1453,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Package read failed",
-        body: err instanceof Error ? err.message : "Failed to read folder.",
+        body: describeError(err).body,
       });
     }
   }
@@ -1660,7 +1662,7 @@ export function CompanyImport() {
         }
         nextActivated.add(item.key);
       } catch (err) {
-        nextFailures[item.key] = err instanceof Error ? err.message : "Activation failed.";
+        nextFailures[item.key] = describeError(err).body;
       }
     }
     setActivatedKeys(nextActivated);
@@ -1681,7 +1683,8 @@ export function CompanyImport() {
     return importPreview.manifest.agents.map((a) => {
       const nativeCodex = a.adapterType === "paperclip_runner"
         && (a.adapterConfig?.provider === "codex" || a.adapterConfig?.provider === undefined);
-      const nativeHarness = nativeCodex || (a.adapterType === "paperclip_runner" && agentHarnessType(a.adapterType, a.adapterConfig) === "claude_local");
+      const nativeHarness = nativeCodex || (a.adapterType === "paperclip_runner"
+        && ["claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(a.adapterType, a.adapterConfig)));
       const adapterChoice = a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "openai_dot"
         ? "openai_dot" : a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "muse" ? "muse" : nativeHarness ? agentHarnessType(a.adapterType, a.adapterConfig) : a.adapterType;
       let fallbackAdapterType: string | null = null;
@@ -1690,7 +1693,7 @@ export function CompanyImport() {
         const available = nativeHarness ? runnerInstalled : adapterChoice === "openai_dot" ? dotAvailable : adapterChoice === "muse" ? museAvailable : nativeRunnerAvailable;
         if (!available && (availableAdapterTypes || !nativeHarness)) {
           availabilityWarning = nativeHarness
-            ? "Paperclip Runner is unavailable here. Choose a runner or another harness explicitly."
+            ? "Paperclip Runner is unavailable here. Choose another harness."
             : `Paperclip Runner provider ${String(a.adapterConfig?.provider)} requires its experimental feature to be enabled. This import keeps its saved harness until you choose another one.`;
         }
       } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
@@ -1735,7 +1738,7 @@ export function CompanyImport() {
       if (selectedType === agent.adapterChoice && !adapterConfigEditedSlugs.has(agent.slug)
         && (!configVals || configVals.runner === importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, agent.runner).runner)) continue;
       const retainsNativeHarness = agent.adapterType === "paperclip_runner"
-        && selectedType === agent.adapterChoice && ["codex_local", "claude_local"].includes(selectedType);
+        && selectedType === agent.adapterChoice && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType);
       const apiType = selectedType === "openai_dot" || selectedType === "muse" || retainsNativeHarness ? "paperclip_runner" : selectedType;
       const override: CompanyPortabilityAdapterOverride = { adapterType: apiType };
       if (configVals?.runner !== undefined) override.runner = configVals.runner;
@@ -1756,7 +1759,7 @@ export function CompanyImport() {
         const build = getUIAdapter(nativeClaudeForm ? "paperclip_runner" : configVals.adapterType).buildAdapterConfig;
         const edited = build(configVals);
         if (agent.adapterType === "paperclip_runner" && selectedType === agent.adapterChoice
-          && ["codex_local", "claude_local"].includes(selectedType) && configVals.adapterType === selectedType
+          && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType) && configVals.adapterType === selectedType
           && agentHarnessType("paperclip_runner", configVals.adapterSchemaValues) === selectedType) {
           const original = importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, configVals.runner);
           const baseline = build(original);
@@ -2176,15 +2179,13 @@ export function CompanyImport() {
             </p>
           </div>
         )}
-        {previewMutation.isError &&
+        {previewMutation.isError && // query-error-ok: mutation outcome for the upload the user just started, not a read
           !previewMutation.isPending &&
           previewMutation.variables === previewGenerationRef.current && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
             <p className="text-xs text-destructive">
               Preview failed:{" "}
-              {previewMutation.error instanceof Error
-                ? previewMutation.error.message
-                : "the request did not complete."}{" "}
+              {describeError(previewMutation.error).body}{" "}
               Retry, or re-export the package without large attachments to shrink it.
             </p>
           </div>
@@ -2274,13 +2275,11 @@ export function CompanyImport() {
               </p>
             </div>
           )}
-          {importMutation.isError && !importMutation.isPending && (
+          {importMutation.isError && !importMutation.isPending && ( // query-error-ok: mutation outcome for the import the user just started, not a read
             <div className="mx-5 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
               <p className="text-xs text-destructive">
                 Import failed:{" "}
-                {importMutation.error instanceof Error
-                  ? importMutation.error.message
-                  : "the request did not complete."}{" "}
+                {describeError(importMutation.error).body}{" "}
                 Nothing may have been created, or the import stopped partway — check the target company
                 before retrying.
               </p>

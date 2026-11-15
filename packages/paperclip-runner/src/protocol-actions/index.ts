@@ -4,6 +4,7 @@ import { selectWorkspaceAction } from "./select-workspace.js";
 import { prepareRepositoryAction } from "./prepare-repository.js";
 import { setTaskMonitorAction } from "./set-task-monitor.js";
 import { setTaskTitleAction } from "./set-task-title.js";
+import { sendChatMessageAction } from "./send-chat-message.js";
 import { submitComplaintAction, submitSuggestionAction } from "./submit-agent-commentary.js";
 import { readAgentInstructionsAction } from "./read-agent-instructions.js";
 import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
@@ -24,6 +25,7 @@ import { controlWorkspaceServiceAction } from "./control-workspace-service.js";
 import { createTaskAction } from "./create-task.js";
 import { handoffCaseAction } from "./handoff-case.js";
 import { createCaseAction, readCaseAction, updateCaseAction } from "./case-data.js";
+import { listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction } from "./workflows.js";
 import { decideApprovalAction } from "./decide-approval.js";
 import { exportCompanyAction } from "./export-company.js";
 import { finishTaskAction } from "./finish-task.js";
@@ -69,6 +71,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   prepareRepositoryAction,
 
   setTaskTitleAction,
+  sendChatMessageAction,
   setTaskMonitorAction,
   submitComplaintAction,
   submitSuggestionAction,
@@ -93,6 +96,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   readCaseAction,
   updateCaseAction,
   createCaseAction,
+  listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction,
   decideApprovalAction,
   exportCompanyAction,
   finishTaskAction,

@@ -89,6 +89,11 @@ Automated stop coverage is separate:
 [its configuration](../../tests/e2e/playwright-composer-stop.config.ts) and
 [ACP stop/continuation](../../tests/e2e/acp-stop-continuation.spec.ts). Inspect their
 fixture and opt-in prerequisites; skipped native cases are not native proof.
+The explicit [follow-up/Stop/resume journey](../../tests/runner-e2e/followup-stop-resume-flow.ts)
+requires a later user message before continuation. The
+[database Stop accounting regression](../../server/src/services/native-runtime/native-stop-accounting.integration.test.ts)
+checks complete and late receipts without another provider turn. These are
+separate scopes; database success does not establish deployed or Slack acceptance.
 
 Manual: queue three distinguishable messages. Edit one, reorder them, reload,
 and confirm the saved order. Discard one and confirm it never reaches execution.

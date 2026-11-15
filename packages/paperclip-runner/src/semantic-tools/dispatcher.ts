@@ -1,3 +1,4 @@
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import type {
   CapabilityCommandOutcome,
@@ -133,11 +134,13 @@ export class CapabilitySemanticDispatcher {
     }
 
     const validator = this.#validators.get(descriptor.operationId);
-    if (validator === undefined || !validator(call.input)) {
+    const schemaValid = validator !== undefined && validator(call.input);
+    const variantError = schemaValid ? toolInputVariantError(descriptor.operationId, call.input) : null;
+    if (!schemaValid || variantError !== null) {
       const decision = deniedDecision(
         invocation,
         "input_invalid",
-        formatValidationError(validator),
+        variantError ?? formatValidationError(validator),
       );
       const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
       this.#record(policyContext, decision, call.callId, call.input, result);
@@ -199,6 +202,10 @@ export class CapabilitySemanticDispatcher {
             "read_case" as const,
             "update_case" as const,
             "create_case" as const,
+            "list_workflows" as const,
+            "read_workflow" as const,
+            "create_workflow" as const,
+            "update_workflow" as const,
           ])],
         },
         this.options.explicitClaims ?? context.capabilities,

@@ -1,10 +1,11 @@
 import { and, eq, getTableColumns, inArray } from "drizzle-orm";
-import { agents, caseHandoffs, issues, type Db } from "@paperclipai/db";
+import { agents, caseHandoffs, issues, workflows, type Db } from "@paperclipai/db";
 import { authorizationService, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { listIssueStatusBlockerAttention } from "./issue-status-presentation.js";
 
 type CaseSummaryDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
-type CaseWorkIdentity = { id: string; companyId: string; workIssueId: string | null };
-const { actorContext: _actorContext, ...publicHandoffColumns } = getTableColumns(caseHandoffs);
+type CaseWorkIdentity = { id: string; companyId: string; workIssueId: string | null; workflowId?: string | null };
+const { actorContext: _actorContext, workflowPrompt: _prompt, baseWorkflowDocumentRevisionId: _base, ...publicHandoffColumns } = getTableColumns(caseHandoffs);
 
 /** Enrich an already-authorized page in batches; never load one task per case. */
 export async function enrichCaseWork<T extends CaseWorkIdentity>(
@@ -15,6 +16,9 @@ export async function enrichCaseWork<T extends CaseWorkIdentity>(
 ) {
   if (!rows.length) return [];
   const issueIds = [...new Set(rows.flatMap(row => row.workIssueId ? [row.workIssueId] : []))];
+  const workflowIds = [...new Set(rows.flatMap(row => row.workflowId ? [row.workflowId] : []))];
+  const workflowById = new Map((workflowIds.length ? await db.select({ id: workflows.id, name: workflows.name }).from(workflows)
+    .where(and(eq(workflows.companyId, companyId), inArray(workflows.id, workflowIds))) : []).map(row => [row.id, row]));
   const readCondition = await issueReadSqlCondition(db, actor);
   const [workRows, pendingRows] = await Promise.all([
     issueIds.length ? db.select({
@@ -32,6 +36,9 @@ export async function enrichCaseWork<T extends CaseWorkIdentity>(
   })));
   const visibleWork = workRows.filter((_, index) => workDecisions[index]?.allowed);
   const workById = new Map(visibleWork.map(row => [row.id, row]));
+  // Glyph-only blocker state (no blocker titles, IDs or identifiers), so a
+  // covered-blocked case task shows the same "in queue" glyph as its task pane.
+  const blockerAttention = await listIssueStatusBlockerAttention(db as Db, companyId, visibleWork);
   // A malformed/legacy link must not expose pending task instructions merely
   // because its case is readable. The primary task has its own access boundary.
   const primaryByCase = new Map(rows.map(row => [row.id, row.workIssueId]));
@@ -52,7 +59,9 @@ export async function enrichCaseWork<T extends CaseWorkIdentity>(
     const pending = pendingByCase.get(row.id);
     return {
       ...row,
-      workIssue: work ? { ...work, assigneeAgentName: work.assigneeAgentId ? names.get(work.assigneeAgentId) ?? null : null } : null,
+      workflow: row.workflowId ? workflowById.get(row.workflowId) ?? null : null,
+      workIssue: work ? { ...work, assigneeAgentName: work.assigneeAgentId ? names.get(work.assigneeAgentId) ?? null : null,
+        ...(blockerAttention.has(work.id) ? { blockerAttention: blockerAttention.get(work.id)! } : {}) } : null,
       pendingHandoff: pending ? { ...pending, fromAgentName: pending.fromAgentId ? names.get(pending.fromAgentId) ?? null : null,
         toAgentName: pending.toAgentId ? names.get(pending.toAgentId) ?? null : null } : null,
     };

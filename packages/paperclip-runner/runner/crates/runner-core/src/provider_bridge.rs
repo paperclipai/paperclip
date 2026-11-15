@@ -40,7 +40,8 @@ const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
 const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
-const QUESTION_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Required fields: idempotencyKey, interactionKind, title, prompt, and continuationPolicy. For questions, use payload.version=1 and a complete payload.questionSet matching the authorized schema. Preserve the supplied question and option IDs.";
+const HUMAN_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. For questions, use payload.version=1 and a complete payload.questionSet. Preserve question and option IDs. Correct the arguments and retry.";
+const APPROVAL_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. Keep approval requests in their confirmation or checkbox interactionKind; do not replace them with questions. Correct the arguments and retry.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
 const MONITOR_INPUT_SCHEMA_HINT: &str = "Invalid set_task_monitor arguments. Supply idempotencyKey and monitor: {nextCheckAt: <future UTC timestamp>, notes: <next check>}. Put all scheduling fields inside monitor, or use monitor: null to clear. Omit taskId for the current task. Correct the arguments and retry.";
 const API_INPUT_SCHEMA_HINT: &str = "Invalid call_api arguments. For responseText, use GET with offsetBytes >= 0 and responseText.limitBytes from 4 through 24576 bytes (default 24576). Follow nextOffsetBytes; null means complete. Correct the arguments and retry.";
@@ -242,11 +243,16 @@ impl ProviderBridgeError {
         }
     }
 
-    fn input_schema_validation(operation_id: &str) -> Self {
+    fn input_schema_validation(operation_id: &str, input: &Value) -> Self {
         let safe_provider_message = match operation_id {
             "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
-            "request_human_input" => Some(QUESTION_INPUT_SCHEMA_HINT),
+            "request_human_input" => {
+                Some(match input.get("interactionKind").and_then(Value::as_str) {
+                    Some("confirmation" | "checkbox") => APPROVAL_INPUT_SCHEMA_HINT,
+                    _ => HUMAN_INPUT_SCHEMA_HINT,
+                })
+            }
             "set_task_monitor" => Some(MONITOR_INPUT_SCHEMA_HINT),
             "call_api" => Some(API_INPUT_SCHEMA_HINT),
             _ => Some(TOOL_INPUT_SCHEMA_HINT),
@@ -280,6 +286,9 @@ impl ProviderBridgeError {
                                 .take(64)
                                 .collect::<String>();
                             format!("{location} (missing {name})")
+                        }
+                        jsonschema::error::ValidationErrorKind::MaxLength { limit } => {
+                            format!("{location} (maximum {limit} characters)")
                         }
                         _ => location,
                     }
@@ -667,8 +676,10 @@ impl ProviderToolBridge {
             ))
         })?;
         if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id)
-                .with_schema_locations(&validator, &input));
+            return Err(
+                ProviderBridgeError::input_schema_validation(&operation_id, &input)
+                    .with_schema_locations(&validator, &input),
+            );
         }
         if matches!(
             operation_id.as_str(),
@@ -678,7 +689,10 @@ impl ProviderToolBridge {
             .and_then(Value::as_str)
             .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
         {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+            return Err(ProviderBridgeError::input_schema_validation(
+                &operation_id,
+                &input,
+            ));
         }
         bounded_json(&input, MAX_TOOL_VALUE_BYTES, "provider tool input")?;
         let call = PendingToolCall {
@@ -881,6 +895,72 @@ impl ProviderToolBridge {
 
     pub fn pending_calls(&self) -> impl Iterator<Item = &PendingToolCall> {
         self.pending.values()
+    }
+
+    /// Settle a pending call whose recorded result this bridge rejected, such
+    /// as a malformed envelope or an oversized value. The provider then gets a
+    /// bounded error now instead of waiting on a call nothing can answer, and
+    /// the call stops blocking later turns. Returns None when the call is not
+    /// pending, so a conflicting or unknown result still fails as before.
+    pub fn settle_undeliverable_result(
+        &mut self,
+        rejected: &ToolResult,
+    ) -> Result<Option<ToolResult>, ProviderBridgeError> {
+        let Some(pending) = self.pending.get(&rejected.call_id) else {
+            return Ok(None);
+        };
+        let mut settlement = runner_tool_failure(
+            pending,
+            UNDELIVERABLE_RESULT_CODE,
+            "Paperclip ran this tool, but its result could not be returned to you. The action may already have completed; do not repeat it. Check the current state with a read tool instead.",
+        );
+        // Bind the settlement to the exact rejected result, so a replay of the
+        // same delivery after a crash is recognized as a duplicate.
+        settlement.result["error"]["rejectedResultDigest"] =
+            Value::String(rejected_result_digest(rejected));
+        self.apply_result(settlement.clone())?;
+        Ok(Some(settlement))
+    }
+
+    /// True when this exact result was already rejected and its call settled
+    /// by `settle_undeliverable_result`.
+    pub fn is_settled_undeliverable_replay(&self, result: &ToolResult) -> bool {
+        self.completed
+            .get(&result.call_id)
+            .or_else(|| self.settled_results.get(&result.call_id))
+            .is_some_and(|entry| {
+                let error = &entry.result.result["error"];
+                entry.result.is_error
+                    && entry.result.operation_id == result.operation_id
+                    && error["code"] == UNDELIVERABLE_RESULT_CODE
+                    && error["rejectedResultDigest"]
+                        == Value::String(rejected_result_digest(result))
+            })
+    }
+
+    /// Settle the calls a closed provider turn left pending. Their provider
+    /// turn ended without them, and a new run's authority can never deliver
+    /// the old run's result, so they would block every later run. Each is
+    /// recorded as a timed-out failure with an unknown outcome.
+    pub fn expire_closed_turn_calls(&mut self) -> Result<Vec<ToolResult>, ProviderBridgeError> {
+        if !self.turn_closed {
+            return Ok(Vec::new());
+        }
+        let expired = self
+            .pending
+            .values()
+            .map(|pending| {
+                runner_tool_failure(
+                    pending,
+                    EXPIRED_RESULT_CODE,
+                    "This Paperclip tool call timed out before its result reached you. Its outcome is unknown: check the current state before repeating any change.",
+                )
+            })
+            .collect::<Vec<_>>();
+        for settlement in &expired {
+            self.apply_result(settlement.clone())?;
+        }
+        Ok(expired)
     }
 
     /// Close provider admission/delivery, without inventing an operation outcome.
@@ -1293,6 +1373,26 @@ where
     deserializer.deserialize_map(RetainedResultsVisitor)
 }
 
+pub const UNDELIVERABLE_RESULT_CODE: &str = "semantic_tool_result_undeliverable";
+pub const EXPIRED_RESULT_CODE: &str = "semantic_tool_result_expired";
+
+fn rejected_result_digest(result: &ToolResult) -> String {
+    semantic_value_digest(&serde_json::json!({
+        "operationId": result.operation_id, "isError": result.is_error, "result": result.result,
+    }))
+}
+
+fn runner_tool_failure(pending: &PendingToolCall, code: &str, message: &str) -> ToolResult {
+    ToolResult {
+        call_id: pending.call_id.clone(),
+        operation_id: pending.operation_id.clone(),
+        result: serde_json::json!({
+            "error": { "code": code, "retryable": false, "message": message },
+        }),
+        is_error: true,
+    }
+}
+
 fn conflicting_tool_result(existing: &ToolResult, incoming: &ToolResult) -> ProviderBridgeError {
     // Correlate both receipts without leaking arguments or result content into
     // a user-visible error or diagnostic stream.
@@ -1626,7 +1726,7 @@ mod tests {
             "c": {"type": "string"}, "d": {"type": "string"},
         }});
         let validator = jsonschema::validator_for(&schema).unwrap();
-        let error = ProviderBridgeError::input_schema_validation("paperclip_finish")
+        let error = ProviderBridgeError::input_schema_validation("paperclip_finish", &json!({}))
             .with_schema_locations(&validator, &json!({"a": 1, "b": 2, "c": 3, "d": 4}));
         assert_eq!(
             error
@@ -1636,7 +1736,7 @@ mod tests {
                 .count(),
             3
         );
-        let other = ProviderBridgeError::input_schema_validation("some_other_tool")
+        let other = ProviderBridgeError::input_schema_validation("some_other_tool", &json!({}))
             .with_schema_locations(&validator, &json!({"a": 1}));
         let message = other.safe_provider_message().unwrap();
         assert!(message.starts_with(TOOL_INPUT_SCHEMA_HINT));
@@ -1662,8 +1762,9 @@ mod tests {
             json!({"idempotencyKey": "check-ci", "nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE"}),
             json!({"idempotencyKey": "check-ci", "monitor": {"nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE".repeat(100), "PRIVATE_FIELD": "PRIVATE_VALUE"}}),
         ] {
-            let error = ProviderBridgeError::input_schema_validation("set_task_monitor")
-                .with_schema_locations(&validator, &input);
+            let error =
+                ProviderBridgeError::input_schema_validation("set_task_monitor", &json!({}))
+                    .with_schema_locations(&validator, &input);
             let message = error.safe_provider_message().unwrap();
             assert!(message.contains("Put all scheduling fields inside monitor"));
             assert!(message.contains("/required") || message.contains("/properties/monitor/"));
@@ -1673,6 +1774,73 @@ mod tests {
             assert!(message.len() <= 512);
             assert!(!message.chars().any(char::is_control));
         }
+    }
+
+    #[test]
+    fn monitor_notes_length_error_reports_the_authorized_numeric_limit() {
+        let contract = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/capability/semantic-tool-contracts.json"),
+        )
+        .unwrap();
+        let tools: Value = serde_json::from_str(&contract).unwrap();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "set_task_monitor")
+            .unwrap();
+        let schema = &tool["inputSchema"];
+        let limit = schema["properties"]["monitor"]["properties"]["notes"]["maxLength"]
+            .as_u64()
+            .unwrap() as usize;
+        let validator = jsonschema::validator_for(schema).unwrap();
+        let valid = json!({"idempotencyKey": "check-ci", "monitor": {
+            "nextCheckAt": "2030-01-01T12:00:00Z", "notes": "x".repeat(limit)
+        }});
+        assert!(validator.is_valid(&valid));
+        let mut invalid = valid.clone();
+        invalid["monitor"]["notes"] = json!("x".repeat(limit + 1));
+        assert!(!validator.is_valid(&invalid));
+        let operation = AuthorizedTool {
+            operation_id: "set_task_monitor".to_owned(),
+            version: 1,
+            description: tool["description"].as_str().unwrap().to_owned(),
+            input_schema: schema.clone(),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+            .begin_call("maximum".to_owned(), "set_task_monitor".to_owned(), valid)
+            .unwrap();
+        let error = bridge
+            .begin_call(
+                "oversized".to_owned(),
+                "set_task_monitor".to_owned(),
+                invalid,
+            )
+            .unwrap_err();
+        assert!(!bridge.has_call_receipt("oversized"));
+        let message = error.safe_provider_message().unwrap();
+        assert!(
+            message.contains("/properties/monitor/properties/notes/maxLength"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("maximum {limit} characters")),
+            "{message}"
+        );
+        assert!(!message.contains(&"x".repeat(20)));
+        assert!(message.len() <= 512);
     }
 
     #[test]
@@ -2178,6 +2346,121 @@ mod tests {
                 json!({}),
             )
             .expect("a new durable run resets the full legacy ledger");
+    }
+
+    fn parallel_read_bridge() -> ProviderToolBridge {
+        let operations = ["list_documents", "list_workflows"]
+            .map(|operation_id| AuthorizedTool {
+                operation_id: operation_id.to_owned(),
+                version: 1,
+                description: "Read company records.".to_owned(),
+                input_schema: json!({"type": "object"}),
+                response_schema: json!({"type": "object", "additionalProperties": true}),
+            })
+            .to_vec();
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            })
+            .unwrap();
+        for (call_id, operation_id) in [("4", "list_documents"), ("5", "list_workflows")] {
+            bridge
+                .begin_call(call_id.to_owned(), operation_id.to_owned(), json!({}))
+                .unwrap();
+        }
+        bridge
+    }
+
+    #[test]
+    fn a_rejected_result_in_a_parallel_pair_still_settles_its_own_call() {
+        // Chat-eval cohort 13 issued list_documents and list_workflows together.
+        // The workflow result named its REST route as `operationId`, which the
+        // bridge reads as a mismatched semantic envelope.
+        let mut bridge = parallel_read_bridge();
+        bridge
+            .apply_result(ToolResult {
+                call_id: "4".to_owned(),
+                operation_id: "list_documents".to_owned(),
+                result: json!({"documents": []}),
+                is_error: false,
+            })
+            .unwrap();
+        let rejected = ToolResult {
+            call_id: "5".to_owned(),
+            operation_id: "list_workflows".to_owned(),
+            result: json!({"ok": true, "status": 200,
+                "operationId": "GET /api/companies/{companyId}/workflows", "data": []}),
+            is_error: false,
+        };
+        let error = bridge.apply_result(rejected.clone()).unwrap_err();
+        assert!(error.to_string().contains("envelope does not match"));
+        assert_eq!(bridge.pending_calls().count(), 1);
+
+        let settlement = bridge
+            .settle_undeliverable_result(&rejected)
+            .unwrap()
+            .expect("the pending call settles");
+        assert!(settlement.is_error);
+        assert_eq!(settlement.operation_id, "list_workflows");
+        assert_eq!(
+            settlement.result["error"]["code"],
+            UNDELIVERABLE_RESULT_CODE
+        );
+        assert_eq!(bridge.pending_calls().count(), 0);
+        // Its sibling keeps its own result, and a settled call is not settled twice.
+        assert_eq!(
+            bridge
+                .replay_result("4", "list_documents", &json!({}))
+                .unwrap()
+                .unwrap()
+                .result,
+            json!({"documents": []})
+        );
+        assert!(bridge
+            .settle_undeliverable_result(&rejected)
+            .unwrap()
+            .is_none());
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
+        let mut different = rejected.clone();
+        different.result["data"] = json!(["other"]);
+        assert!(!bridge.is_settled_undeliverable_replay(&different));
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
+        bridge.prepare_turn().expect("the next turn starts");
+    }
+
+    #[test]
+    fn only_a_closed_turn_expires_its_pending_calls() {
+        let mut bridge = parallel_read_bridge();
+        assert!(bridge.expire_closed_turn_calls().unwrap().is_empty());
+        assert_eq!(bridge.pending_calls().count(), 2);
+
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        let expired = bridge.expire_closed_turn_calls().unwrap();
+        assert_eq!(
+            expired
+                .iter()
+                .map(|call| call.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["4", "5"]
+        );
+        assert!(expired
+            .iter()
+            .all(|call| call.is_error && call.result["error"]["code"] == EXPIRED_RESULT_CODE));
+        assert_eq!(bridge.pending_calls().count(), 0);
+        let operations = bridge.authorized_tools().cloned().collect::<Vec<_>>();
+        bridge
+            .attach_run(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            })
+            .expect("the next run attaches");
     }
 
     #[test]

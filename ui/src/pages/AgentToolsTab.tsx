@@ -598,7 +598,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         pendingConnectionId={syncInstall.isPending ? syncInstall.variables?.connection.id ?? null : null}
         saving={syncInstall.isPending}
         unsaved={hasInstallUnsavedChanges}
-        error={syncInstall.isError && hasInstallUnsavedChanges}
+        error={syncInstall.isError && hasInstallUnsavedChanges} // query-error-ok: syncInstall is a save mutation result, not a query read
         onChange={(connectionId, installed) => {
           failedInstallDraftRef.current = null;
           setInstallDraft((current) => ({ ...current, [connectionId]: installed }));

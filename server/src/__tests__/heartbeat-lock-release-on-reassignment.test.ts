@@ -36,6 +36,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import * as runEvents from "../services/heartbeat-run-events.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -158,6 +159,28 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       wakeupRequestId,
     };
   }
+
+  it.each(["queued", "running"] as const)("releases a %s holder after the cancellation event append fails", async (holderStatus) => {
+    const { coderAgentId, issueId, holderRunId, wakeupRequestId } =
+      await seedCrossAgentScenario({ holderStatus });
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, coderAgentId));
+    const append = vi.spyOn(runEvents, "appendHeartbeatRunEvent").mockRejectedValueOnce(
+      Object.assign(new Error("event append failed"), { code: "40P01" }),
+    );
+    try {
+      const cancelled = await heartbeat.cancelRun(holderRunId);
+      expect(cancelled?.status).toBe("cancelled");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, holderRunId)))[0])
+        .toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0])
+        .toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+        .toMatchObject({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null });
+      expect((await db.select().from(agents).where(eq(agents.id, coderAgentId)))[0]?.status).toBe("idle");
+    } finally {
+      append.mockRestore();
+    }
+  });
 
   it("defers a cross-agent wake while the holder is still running and leaves the holder alone", async () => {
     const { coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =

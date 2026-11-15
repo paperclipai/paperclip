@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
 
 import { unresolvedSlackPublicationCondition } from "../../connectors/slack-publication.js";
@@ -181,13 +182,22 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
 
   async function processPendingPublications(
     limit = 25,
-    { waitForCompletion = true, maintenance = true }: { waitForCompletion?: boolean; maintenance?: boolean } = {},
+    { waitForCompletion = true, maintenance = true, scope, canContinue = () => true }: {
+      waitForCompletion?: boolean; maintenance?: boolean; canContinue?: () => boolean;
+      scope?: { companyId: string; endpointId: string; conversationId: string };
+    } = {},
   ) {
-    if (isShuttingDown()) return 0;
+    if (isShuttingDown() || !canContinue()) return 0;
     if (maintenance) {
       await enqueueInboundWakeupPublications();
       await reconcileTerminalConfirmationActions(limit);
     }
+    if (isShuttingDown() || !canContinue()) return 0;
+    const scopeCondition = scope ? and(eq(chatPublications.companyId, scope.companyId),
+      eq(chatPublications.endpointId, scope.endpointId), eq(chatPublications.conversationId, scope.conversationId)) : undefined;
+    const pendingTasks = () => scope
+      ? [publicationEndpointTasks.get(scope.endpointId)].filter((task): task is Promise<void> => Boolean(task))
+      : [...publicationEndpointTasks.values()];
     const now = new Date();
     const staleBefore = new Date(now.getTime() - 60_000);
     // A process that disappears after the provider accepted a post but before
@@ -196,6 +206,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
     // checking the provider conversation.
     const quarantinedPublications = await db.transaction(async tx => {
       const condition = and(
+        scopeCondition,
         sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,
         eq(chatPublications.state, "streaming"),
         lte(chatPublications.updatedAt, staleBefore),
@@ -232,9 +243,11 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
             ),
         ),
       );
-      const candidates = await tx.select({ id: chatPublications.id }).from(chatPublications).where(condition).for("update", { skipLocked: true });
+      const candidates = await tx.select({ id: chatPublications.id, companyId: chatPublications.companyId, issueId: chatPublications.issueId })
+        .from(chatPublications).where(condition).for("update", { skipLocked: true });
       if (!candidates.length) return [];
       await notifyChatPublicationWork(tx);
+      for (const candidate of candidates) await notifyChatResponseAvailability(tx, candidate);
       return tx
         .update(chatPublications)
         .set({
@@ -278,7 +291,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
     let failed = false;
     let firstError: unknown;
     try {
-      while (attemptedIds.length < limit && !failed && !isShuttingDown()) {
+      while (attemptedIds.length < limit && !failed && !isShuttingDown() && canContinue()) {
         if (publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY) {
           if (!waitForCompletion) break;
           await Promise.race(publicationEndpointTasks.values());
@@ -295,7 +308,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
           .select()
           .from(chatPublications)
           .where(
-            publicationEligibility({ now, busyEndpointIds, coolingTeamsPublicationIds, attemptedIds }),
+            and(scopeCondition, publicationEligibility({ now, busyEndpointIds, coolingTeamsPublicationIds, attemptedIds })),
           )
           .orderBy(
             asc(chatPublications.createdAt),
@@ -308,8 +321,9 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
           // exposing a new head that must be queried before declaring idle.
           if (busyEndpointIds.some((id) => !publicationEndpointTasks.has(id)))
             continue;
-          if (!waitForCompletion || publicationEndpointTasks.size === 0) break;
-          await Promise.race(publicationEndpointTasks.values());
+          const pending = pendingTasks();
+          if (!waitForCompletion || pending.length === 0) break;
+          await Promise.race(pending);
           continue;
         }
         let started = false;
@@ -318,7 +332,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
             publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY ||
             attemptedIds.length >= limit ||
             failed ||
-            isShuttingDown()
+            (isShuttingDown() || !canContinue())
           )
             break;
           if (publicationEndpointTasks.has(selectedPublication.endpointId))
@@ -330,6 +344,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
           // endpoint-exclusive credential fence instead of timing out behind it.
           const task = Promise.resolve()
             .then(async () => {
+              if (isShuttingDown() || !canContinue()) return;
               await processSelectedPublication(selectedPublication);
               await settleExternalConversation(db, selectedPublication.companyId, selectedPublication.issueId).catch((err) => {
                 logger.warn({ err, publicationId: selectedPublication.id }, "Slack conversation settlement deferred to reconciliation");

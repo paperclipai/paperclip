@@ -9,6 +9,37 @@ Cases are experimental and must be enabled with `experimental.enableCases`.
 If a route returns `403 Cases are disabled`, stop and report that the operator
 must enable cases before the skill can use this surface.
 
+**Reusable workflows.**
+
+Under the same Cases flag, use `list_workflows` to discover company-shared
+name-and-prompt definitions, `read_workflow` to read one, and `create_workflow`
+or `update_workflow` to author explicit reusable instructions. Creation needs
+`name`, `prompt`, and `idempotencyKey`; update needs `workflowId`, a retry key,
+and a name or prompt. These definitions are shared across the company. Case
+documents are never automatically published into them.
+
+Native `create_case` and REST kickoff accept **either** `workflowId` or the
+inline `workflow_document_text` described below; kickoff is still required.
+Adoption copies the prompt into the primary task's ordinary `workflow` document.
+Read that task document for current instructions, which may contain case-specific
+edits. Editing the shared definition leaves existing copies unchanged.
+
+On an agent `handoff_case`, omit `workflowId` to preserve the current definition
+and document. Supply an ID to adopt its current prompt, including the current ID
+to refresh explicitly. Supply null to leave the workflow while retaining task
+instructions. Free-text phases and case types are independent of definitions.
+The handoff captures the selected prompt when accepted and applies it only on
+transfer. If someone edits the task document in between, the handoff is held;
+read current state, cancel the unapplied handoff, then submit new intent. Do not
+overwrite intervening edits. The same case/task and document history survive
+A → B → A. Generic case updates cannot change workflow routing.
+
+`read_workflow` returns bounded JSON text in `data`. Continue with the same
+workflow ID, returned `snapshot`, and `responseText: {offsetBytes: <nextOffsetBytes>}`
+until `responseText.nextOffsetBytes` is null, then parse the concatenated JSON.
+An intervening edit returns 409; restart at offset zero without `snapshot`.
+Mutation responses contain metadata.
+
 ## Core Model
 
 A case has:
@@ -69,7 +100,7 @@ external id, source URL hash, or parent-derived request key.
 ## Start And Hand Off Work
 
 Native `create_case` always creates a case and starts its first ordinary task.
-`kickoff` and `workflow_document_text` are required; omitting either is rejected
+`kickoff` and either `workflowId` or `workflow_document_text` are required; missing kickoff or both instruction sources is rejected
 before any records are created. Provide the first agent, phase, instructions,
 the full workflow description, and optional initial task documents:
 
@@ -157,10 +188,10 @@ case, send `case: {"id": "<case-uuid>"}`, `expectedHandoffVersion`, and
 `expectedIssueStatusVersion` from fresh authorized context. The existing primary
 task is reused automatically. A passive case may explicitly bind an existing
 ordinary task with `bindIssueId` and its observed status version.
-New-case API creation also requires top-level `workflow_document_text`. Starting
+New-case API creation also requires top-level `workflowId` or `workflow_document_text`. Starting
 the first new task of an older passive case requires it too. New-case binding
 creates the bound task's `workflow` document only if that key is absent; an
-existing workflow key conflicts rather than being overwritten. Later primary-task
+existing workflow key conflicts for inline text. An explicit workflowId adopts the selected prompt as a new revision instead. Later primary-task
 handoffs omit workflow text. The agent-handoff input accepts `initialDocuments` only when
 it creates the first primary task, including for an existing passive case.
 Existing-task handoffs, task binding and `to: "done"` reject initial documents;
@@ -245,7 +276,7 @@ when cases are enabled:
 
 | Tool | Use |
 | --- | --- |
-| `create_case` | Create a case and start its first task with required `kickoff` and `workflow_document_text`, plus optional `initialDocuments`. |
+| `create_case` | Create a case and start its first task with required `kickoff` and either `workflowId` or `workflow_document_text`, plus optional `initialDocuments`. |
 | `read_case` | Read current case facts, fields, versions, document references, or a selected document body. |
 | `update_case` | Change title, summary or fields; fields replaces the entire object. |
 

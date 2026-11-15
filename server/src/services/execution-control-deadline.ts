@@ -20,3 +20,6 @@ export async function boundedExecutionCleanup(
     if (timer) clearTimeout(timer);
   }
 }
+export const EXECUTION_FINALIZATION_DEADLINE_EXCEEDED = "execution_finalization_deadline_exceeded";
+export const EXECUTION_FINALIZATION_DEADLINE_MESSAGE =
+  "The run stopped before it finished saving its work. Saved work is kept, and actions with unconfirmed outcomes will not be repeated.";

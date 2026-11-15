@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHeartbeatInstructionWorkingCopy } from "./instruction-working-copy.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
 import { AgentDirectoryReuseInvalidatedError } from "../agent-directory-working-copies.js";
+import { resolveHeartbeatNativeLifecyclePolicy } from "./native-lifecycle.js";
 
 const native = vi.hoisted(() => ({ reserve: vi.fn(), claim: vi.fn() }));
 vi.mock("../native-runtime/index.js", async importOriginal => ({
@@ -39,6 +40,10 @@ function fixture(executionTarget: Input["workspace"]["executionTarget"] = null, 
     appendRunEvent,
   });
   const prepare: Prepare = { runtimeConfig: { retained: true }, hasInstructionFilesystem: true,
+    nativeLifecyclePolicy: resolveHeartbeatNativeLifecyclePolicy({ adapterType: acpxAgent ? "paperclip_runner" : "codex_local",
+      backend: acpxAgent ? "acpx_runtime" : "codex_app_server", acpxAgent, agentMode: "warm", agentIdleTimeoutMs: undefined,
+      environmentPolicy: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerLifecyclePolicy : null,
+      managedAiSelected: false, taskOwned: Boolean(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && executionTarget.runnerTask) }),
     nativeRuntimeResolution: { kind: "native", profile: { backend: acpxAgent ? "acpx_runtime" : "codex_app_server" } } as Prepare["nativeRuntimeResolution"] };
   const reservation = { reuseRunId: "previous-run", adopt: vi.fn(), release: vi.fn().mockResolvedValue(undefined) };
   native.reserve.mockResolvedValue(reservation);
@@ -49,6 +54,18 @@ function fixture(executionTarget: Input["workspace"]["executionTarget"] = null, 
 beforeEach(() => { vi.clearAllMocks(); native.claim.mockResolvedValue(null); });
 
 describe("instruction working-copy extraction boundary", () => {
+  it("leaves the persistent agent home with the task provider", async () => {
+    const task = vi.fn();
+    const f = fixture({ kind: "remote", transport: "sandbox", providerKey: "plugin", remoteCwd: "/unused", leaseId: "task-lease",
+      runnerTask: task, runnerLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } });
+    await f.controller.prepare(f.prepare);
+    await f.controller.collectStoppedInstructions();
+    expect(f.controller.nativeInstructionWorkingCopy()).toBeUndefined();
+    expect(f.copies.prepare).not.toHaveBeenCalled();
+    expect(f.copies.collectStopped).not.toHaveBeenCalled();
+    expect(task).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["copilot", false, true], ["copilot", true, true],
     ["cursor", false, true], ["cursor", true, true],

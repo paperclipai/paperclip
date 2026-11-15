@@ -7,8 +7,11 @@ repository-relative `globs`. For repository-wide rules, set `alwaysApply: true`
 and omit `globs`. Use `**` for all descendants of a directory. Include sibling
 entry points explicitly when needed.
 
-Root `AGENTS.md` tells coding agents to read matching rules before editing or
-reviewing code. This directory is a repository convention: Cursor does not
+Root `AGENTS.md` tells coding agents to list the rule headers, follow the
+descriptions that cover their files, and read a rule body when they make a
+design decision in its area or a reviewer cites it. Write each `description` as
+one sentence that states the required behavior, because it is what an agent reads
+first. This directory is a repository convention: Cursor does not
 automatically load it as `.cursor/rules/`, and the `.mdc` extension alone does not
 make a tool apply a rule.
 
@@ -34,3 +37,10 @@ real decision. This applies to orchestration as well as UI.
 
 See the [Greptile file-reference documentation](https://www.greptile.com/docs/code-review/greptile-config-reference)
 for the manifest format.
+
+Background execution is covered by
+[`sleep-aware-background-work.mdc`](sleep-aware-background-work.mdc): new or
+expanded work must become quiet, use events and real scheduler deadlines, and
+preserve recovery across transactions, drain, and restart. This rule covers
+`server/src/index.ts` and the worker/producer paths in its scope. It does not
+require unrelated legacy polling to be migrated in the same PR.

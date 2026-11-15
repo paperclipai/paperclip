@@ -127,6 +127,37 @@ describe("heartbeat workspace module", () => {
     expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
   });
 
+  it("resolves plugin project identity without Core files", async () => {
+    const repoUrl = "/unavailable-controller-source.git";
+    const missingCwd = path.join(testRoot, "exists-only-on-plugin");
+    const configured = { ...workspace("selected", "project-one", missingCwd), repoUrl };
+    const database = databaseWithResults([configured], [{ id: "project-one" }]);
+    const stat = vi.spyOn(fs, "stat"); const mkdir = vi.spyOn(fs, "mkdir");
+    try {
+      const result = await createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+        { ...agent(), adapterType: "paperclip_runner" }, { projectId: "project-one" }, null,
+        { executionEnvironmentDriver: "plugin" });
+      expect(result).toMatchObject({ cwd: "/workspaces/selected", projectId: "project-one", workspaceId: "selected", repoUrl,
+        source: "project_primary", baseCwdFallback: false, additionalWorkspaces: [] });
+      expect(stat).not.toHaveBeenCalled(); expect(mkdir).not.toHaveBeenCalled();
+    } finally { stat.mockRestore(); mkdir.mockRestore(); }
+  });
+  it("keeps a projectless plugin scope without creating an agent directory on Core", async () => {
+    const mkdir = vi.spyOn(fs, "mkdir");
+    try {
+      const result = await createHeartbeatWorkspaceResolver(databaseWithResults().db).resolveWorkspaceForRun(
+        { ...agent(), adapterType: "paperclip_runner" }, {}, null, { executionEnvironmentDriver: "plugin" });
+      expect(result).toMatchObject({ cwd: "/workspaces/agent-one", projectId: null, workspaceId: null });
+      expect(mkdir).not.toHaveBeenCalled();
+    } finally { mkdir.mockRestore(); }
+  });
+  it("rejects plugin project scope outside the company", async () => {
+    const database = databaseWithResults([], []);
+    await expect(createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+      { ...agent(), adapterType: "paperclip_runner" }, { projectId: "foreign" }, null,
+      { executionEnvironmentDriver: "plugin" })).rejects.toMatchObject({ code: "workspace_validation_failed" });
+  });
+
   it("fails closed with workspace diagnostics when a configured directory is unavailable", async () => {
     const missingCwd = path.join(testRoot, "missing-configured-workspace");
     const database = databaseWithResults([workspace("selected", "project-one", missingCwd)]);

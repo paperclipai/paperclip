@@ -12,3 +12,5 @@ referenced file as the source of truth rather than maintaining a separate copy
 in dashboard instructions.
 
 Do not add package.json scripts for new utilities, checks, benchmarks, or specialized tests.
+The shared `verify` entry point is the repository-wide exception. Keep new
+specialized checks as direct script invocations.

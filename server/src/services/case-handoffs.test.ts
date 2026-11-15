@@ -25,6 +25,7 @@ import { documentService } from "./documents.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { recoveryService } from "./recovery/service.js";
 import { enrichCaseWork } from "./case-work-summary.js";
+import { workflowService } from "./workflows.js";
 
 describe("durable same-task case handoffs", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -161,6 +162,80 @@ describe("durable same-task case handoffs", () => {
       expectedHandoffVersion: 1, expectedIssueStatusVersion: issue!.statusVersion };
     return { ...f, q, first, runId, actor, input };
   }
+
+  it("reuses definitions, moves A → B → A, refreshes, and detaches without replacing the task", async () => {
+    const f = await fixture(), q = queue(() => new Date(Date.now() + 60_000));
+    const definitions = workflowService(db), docs = documentService(db);
+    const a = await definitions.write(f.companyId, board, { name: "Research", prompt: "Research the question." });
+    const b = await definitions.write(f.companyId, board, { name: "Delivery", prompt: "Deliver the findings." });
+    const { workflow_document_text: _inline, ...kickoff } = f.input;
+    const first = await f.service.handoff(f.companyId, board, { ...kickoff, workflowId: a.id });
+    const second = await f.service.handoff(f.companyId, board, { ...kickoff, idempotencyKey: randomUUID(), workflowId: a.id });
+    await q.worker.sweepPending();
+    await definitions.write(f.companyId, board, { name: "Research renamed", prompt: "Research with citations." }, a.id);
+    expect((await docs.getIssueDocumentByKey(first.taskId, "workflow"))?.body).toBe(a.prompt);
+    expect((await docs.getIssueDocumentByKey(second.taskId, "workflow"))?.body).toBe(a.prompt);
+    for (const [index, workflowId] of [b.id, a.id, a.id, null].entries()) {
+      const [task] = await db.select().from(issues).where(eq(issues.id, first.taskId));
+      const input = { case: { id: first.caseId }, idempotencyKey: randomUUID(), workflowId,
+        expectedHandoffVersion: index + 1, expectedIssueStatusVersion: task!.statusVersion,
+        toAgentId: f.triage, phase: `custom phase ${index}`, instructions: "Continue with this procedure." };
+      const accepted = await f.service.handoff(f.companyId, board, input);
+      expect(accepted.taskId).toBe(first.taskId);
+      expect(await f.service.handoff(f.companyId, board, input)).toMatchObject({ handoffId: accepted.handoffId, replayed: true });
+      await q.worker.sweepPending();
+    }
+    const [current] = await db.select().from(cases).where(eq(cases.id, first.caseId));
+    expect(current).toMatchObject({ workflowId: null, phase: "custom phase 3", workIssueId: first.taskId });
+    expect((await docs.getIssueDocumentByKey(first.taskId, "workflow"))?.body).toBe("Research with citations.");
+    expect(await docs.listIssueDocumentRevisions(first.taskId, "workflow")).toHaveLength(4);
+    const history = await f.service.list(board, first.caseId);
+    expect(history.items).toHaveLength(5);
+    expect(history.items.at(-1)?.workflowTransition?.to.name).toBe("Research");
+    expect(history.items[1]?.workflowTransition?.to.name).toBe("Research renamed");
+    expect(history.items.every(item => !("workflowPrompt" in item) && !("baseWorkflowDocumentRevisionId" in item))).toBe(true);
+  });
+
+  it("captures pending prompts, preserves intervening edits, and cancels without adopting", async () => {
+    const f = await fixture(), docs = documentService(db), definitions = workflowService(db);
+    let at = new Date(Date.now() + 60_000);
+    const q = queue(() => at);
+    const first = await f.service.handoff(f.companyId, board, f.input);
+    await q.worker.sweepPending();
+    const workflow = await definitions.write(f.companyId, board, { name: "New procedure", prompt: "Accepted prompt" });
+    const runId = await sourceRun(f.companyId, f.triage, first.taskId);
+    const [task] = await db.select().from(issues).where(eq(issues.id, first.taskId));
+    const receipt = await f.service.handoff(f.companyId, board, { case: { id: first.caseId }, workflowId: workflow.id,
+      idempotencyKey: randomUUID(), expectedHandoffVersion: 1, expectedIssueStatusVersion: task!.statusVersion,
+      toAgentId: f.engineer, phase: "arbitrary next phase", instructions: "Adopt on transfer" });
+    expect(receipt.state).toBe("awaiting_release");
+    await definitions.write(f.companyId, board, { prompt: "Edited shared prompt" }, workflow.id);
+    const original = await docs.getIssueDocumentByKey(first.taskId, "workflow");
+    await docs.upsertIssueDocument({ issueId: first.taskId, key: "workflow", format: "markdown",
+      body: "Intervening case edit", baseRevisionId: original!.latestRevisionId });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    await recordCaseHandoffExecutionReleased(db, runId, first.taskId);
+    at = new Date(at.getTime() + 60_000);
+    await q.worker.sweepPending();
+    const [pending] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, receipt.handoffId));
+    expect(pending).toMatchObject({ workflowPrompt: "Accepted prompt", assignmentAppliedAt: null });
+    expect(pending!.lastError).toBe("Document was updated by someone else");
+    expect((await db.select().from(cases).where(eq(cases.id, first.caseId)))[0]).toMatchObject({ workflowId: null, phase: "triage" });
+    await f.service.cancel(board, first.caseId, receipt.handoffId);
+    expect((await docs.getIssueDocumentByKey(first.taskId, "workflow"))?.body).toBe("Intervening case edit");
+    expect(await docs.listIssueDocumentRevisions(first.taskId, "workflow")).toHaveLength(2);
+    const next = await caseHandoffService(db).handoff(f.companyId, board, { case: { id: first.caseId }, workflowId: workflow.id,
+      idempotencyKey: randomUUID(), expectedHandoffVersion: 2, expectedIssueStatusVersion: task!.statusVersion,
+      toAgentId: f.engineer, phase: "retry with current document", instructions: "Adopt after re-reading" });
+    await definitions.write(f.companyId, board, { prompt: "Changed after acceptance again" }, workflow.id);
+    at = new Date(at.getTime() + 60_000);
+    await queue(() => at, true).worker.sweepPending();
+    at = new Date(at.getTime() + 120_000);
+    await queue(() => at).worker.sweepPending();
+    expect((await docs.getIssueDocumentByKey(first.taskId, "workflow"))?.body).toBe("Edited shared prompt");
+    expect(await docs.listIssueDocumentRevisions(first.taskId, "workflow")).toHaveLength(3);
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, next.handoffId)))[0]).toMatchObject({ state: "delivered" });
+  });
 
   it("creates one initial task through REST and replays lost responses without title dedupe", async () => {
     const f = await fixture();

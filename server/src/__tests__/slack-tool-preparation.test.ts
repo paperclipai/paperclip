@@ -18,6 +18,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
+const endpointIdOf = (tool: { providerMetadata?: unknown }) => (tool.providerMetadata as Record<string, unknown> | undefined)?.endpointId;
 
 function deferred() {
   let resolve!: () => void;
@@ -43,7 +44,7 @@ describeDatabase("Slack tool preparation", () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Briefing", assigneeAgentId: agentId, responsibleUserId: userId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId, source: "routine" } });
-    await initializeRunIdentity(db, { companyId, agentId, issueId, runId, responsibleUserId: userId, cause: "routine" });
+    await initializeRunIdentity(db, { companyId, issueId, runId, responsibleUserId: userId, cause: "routine" });
     const refs: ToolCredentialSecretRef[] = [];
     const endpoints: Array<typeof chatEndpoints.$inferSelect> = [];
     const links: Array<typeof chatIdentityLinks.$inferSelect> = [];
@@ -60,7 +61,7 @@ describeDatabase("Slack tool preparation", () => {
       await db.transaction(tx => syncSlackBotTools(tx, endpoint, userId, true));
     }
     const token = "current-bot-token";
-    const resolveSecretValue = vi.fn(async (_companyId: string, secretId: string) => {
+    const resolveSecretValue = vi.fn(async (_companyId: string, secretId: string): Promise<string> => {
       const ref = refs.find(ref => ref.secretId === secretId)!;
       return ref.configPath === "credentials.botToken" ? token : "webhook-secret";
     });
@@ -77,7 +78,7 @@ describeDatabase("Slack tool preparation", () => {
     assignments: async (binding: { companyId: string; agentId: string; runId: string; issueId: string }) =>
       (await slackAssignedResource(db, binding)).map(resource => resource.id),
     tools: async (binding: { companyId: string; agentId: string; runId: string; issueId: string }) =>
-      [...new Set((await slackToolsForSession(db, binding)).map(tool => String(tool.providerMetadata?.endpointId)))],
+      [...new Set((await slackToolsForSession(db, binding)).map(tool => String(endpointIdOf(tool))))],
   };
 
   it("does not compute an unused revision when preparing the session catalog", async () => {
@@ -90,7 +91,7 @@ describeDatabase("Slack tool preparation", () => {
     });
     try {
       const tools = await slackToolsForSession(measured, f.binding);
-      expect([...new Set(tools.map(tool => tool.providerMetadata?.endpointId))].sort()).toEqual(f.endpoints.map(endpoint => endpoint.id).sort());
+      expect([...new Set(tools.map(endpointIdOf))].sort()).toEqual(f.endpoints.map(endpoint => endpoint.id).sort());
       expect(queries.filter(query => query.includes("row_to_json(revision_row)"))).toHaveLength(0);
       queries.length = 0;
       const authority = await resolveSlackTaskAuthority(measured, { ...f.binding, endpointId: f.endpoints[1].id });
@@ -99,7 +100,7 @@ describeDatabase("Slack tool preparation", () => {
       await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.id, f.links[0].id));
       queries.length = 0;
       f.resolveSecretValue.mockClear();
-      expect([...new Set((await slackToolsForSession(measured, f.binding)).map(tool => tool.providerMetadata?.endpointId))]).toEqual([f.endpoints[1].id]);
+      expect([...new Set((await slackToolsForSession(measured, f.binding)).map(endpointIdOf))]).toEqual([f.endpoints[1].id]);
       expect(f.resolveSecretValue).toHaveBeenCalledTimes(1);
       expect(queries.filter(query => query.includes("row_to_json(revision_row)"))).toHaveLength(0);
     } finally {

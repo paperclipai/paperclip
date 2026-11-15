@@ -42,6 +42,9 @@ export function managedProviderRouting(
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
       env.CLAUDE_CODE_SUBAGENT_MODEL = model;
     }
+  } else if (harness === "pi_local" && route.kind === "openrouter") {
+    env.OPENROUTER_API_KEY = credential;
+    config.model = aiRoutingModel(route, harness, model);
   } else if (harness === "opencode_local") {
     const provider = route.kind === "openrouter" ? "openrouter" : "paperclip";
     if (route.kind === "openrouter") env.OPENROUTER_API_KEY = credential;
