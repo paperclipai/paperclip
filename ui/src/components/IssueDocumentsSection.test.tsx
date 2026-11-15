@@ -1490,6 +1490,40 @@ describe("IssueDocumentsSection", () => {
     window.localStorage.clear();
   });
 
+  it("keeps edits made after a document conflict when the user keeps their draft", async () => {
+    const { ApiError } = await import("../api/client");
+    const doc = createIssueDocument({ key: "report", title: "Report", body: "Original report" });
+    const remote = { ...doc, body: "Agent update", latestRevisionId: "revision-5", latestRevisionNumber: 5 };
+    mockIssuesApi.listDocuments.mockResolvedValue([doc]);
+    mockIssuesApi.getDocument.mockResolvedValue(remote);
+    mockIssuesApi.upsertDocument.mockRejectedValue(new ApiError("Document changed", 409, null));
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly />
+        </QueryClientProvider>,
+      ));
+      await flush();
+      await flush();
+      const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent?.trim() === label);
+      await act(async () => button("Edit document")!.click());
+      await act(async () => markdownEditorMockState.changeBody!("My first edit"));
+      await vi.waitFor(async () => {
+        await flush();
+        expect(button("Keep my draft")).toBeDefined();
+      }, { timeout: 3000 });
+      await act(async () => markdownEditorMockState.changeBody!("My first edit with a correction"));
+      await act(async () => button("Keep my draft")!.click());
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My first edit with a correction");
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
   it("restores an unsaved edit after reload and treats a 409 with our own text as saved", async () => {
     const { ApiError } = await import("../api/client");
     const document = createIssueDocument({ body: "Server body" });

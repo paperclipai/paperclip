@@ -829,7 +829,7 @@ function AccountIssueDocumentsSection({
 
   const keepConflictedDraft = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
-    setDraft(documentConflict.localDraft);
+    setDraft((current) => current?.key === key && !current.isNew ? current : documentConflict.localDraft);
     setDocumentConflict((current) =>
       current?.key === key
         ? { ...current, showRemote: false }
