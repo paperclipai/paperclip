@@ -22,6 +22,69 @@ import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.te
 describeIssueRecovery("issue recovery production producers and deadlines", () => {
   const state = issueRecoveryFixture();
   const { start, compete, fixture, completingProvider, settled, quiet, finish, completed } = state;
+  async function assertExactWatchdogReview(
+    f: { companyId: string; agentId: string },
+    source: Pick<typeof issues.$inferSelect, "id" | "identifier" | "title">,
+    watchdog: { watchdog: { id: string; instructions: string | null } },
+    reviewId: string,
+    completedReview: { id: string },
+  ) {
+    const reviewRuns = await state.db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${reviewId!}`,
+    ));
+    expect(reviewRuns).toHaveLength(1);
+    const [run] = reviewRuns;
+    expect(run.id).toBe(completedReview.id);
+    expect(run.companyId).toBe(f.companyId);
+    expect(run.agentId).toBe(f.agentId);
+    expect(run.status).toBe("succeeded");
+    expect(run.stdoutExcerpt).toContain("recovery-proof");
+    const reviews = await state.db.select().from(issues).where(and(eq(issues.companyId, f.companyId),
+      eq(issues.originKind, "task_watchdog"), eq(issues.originId, source.id)));
+    expect(reviews).toHaveLength(1);
+    const [review] = reviews;
+    expect(review.id).toBe(reviewId);
+    const [saved] = await state.db.select().from(issueWatchdogs).where(and(
+      eq(issueWatchdogs.companyId, f.companyId), eq(issueWatchdogs.id, watchdog.watchdog.id),
+    ));
+    expect(saved.watchdogIssueId).toBe(reviewId);
+    expect(saved.watchdogAgentId).toBe(f.agentId);
+    expect(saved.instructions).toBe(watchdog.watchdog.instructions);
+    expect(saved.lastObservedFingerprint).toMatch(/^task_watchdog_stop:[a-f0-9]{64}$/);
+    expect(review.originFingerprint).toBe(saved.lastObservedFingerprint);
+    const context = run.contextSnapshot ?? {};
+    expect([
+      ["task_watchdog_stopped_subtree", "task_watchdog"],
+      ["issue_assigned", "issue.assigned_todo_liveness_dispatch"],
+    ]).toContainEqual([context.wakeReason, context.source]);
+    expect(context.issueId).toBe(reviewId);
+    expect(context.taskId).toBe(reviewId);
+    expect(context.watchdogId).toBe(watchdog.watchdog.id);
+    expect(context.taskWatchdog).toEqual({
+      watchedIssueId: source.id,
+      watchedIssueIdentifier: source.identifier,
+      watchedIssueTitle: source.title,
+      stopFingerprint: saved.lastObservedFingerprint,
+      customInstructions: watchdog.watchdog.instructions,
+      terminalLeafSummaries: [],
+      pendingInteractions: {},
+      pendingApprovals: {},
+      capabilities: {
+        targetScope: {
+          watchedIssueId: source.id,
+          watchedIssueIdentifier: source.identifier,
+          watchdogIssueId: reviewId,
+          includeNonWatchdogDescendants: true,
+          excludedOriginKinds: ["task_watchdog"],
+        },
+        operations: ["comment_on_watched_subtree_issues", "transition_watched_subtree_issue_status", "reassign_watched_subtree_issues", "create_child_issues_under_non_watchdog_watched_subtree", "create_product_bug_followups_outside_watched_subtree", "resolve_issue_thread_interactions_through_ordinary_audience_policy", "update_reusable_watchdog_issue"],
+        deniedOperations: ["create_visible_probe_issues_or_throwaway_tasks", "create_product_bug_followups_as_source_tree_children", "mutate_task_watchdog_descendants", "mutate_outside_watched_subtree", "resolve_human_only_interactions_or_security_sensitive_approvals", "create_nested_task_watchdogs"],
+      },
+    });
+    expect(saved.status).toBe("disabled");
+    return run;
+  }
   it("keeps empty, configured idle, and terminal history quiet", async () => {
     await fixture(); await start(); await quiet();
   });
@@ -299,10 +362,9 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       const [row] = await state.db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog.watchdog.id));
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
-    await completed(reviewId!);
+    const completedReview = await completed(reviewId!);
     expect(failures).toEqual([]);
-    expect(await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
+    await assertExactWatchdogReview(f, source, watchdog, reviewId!, completedReview);
     await finish(reviewId!);
     await taskWatchdogService(state.db).disableForIssue(f.companyId, source.id);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); await quiet();

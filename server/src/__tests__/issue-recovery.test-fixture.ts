@@ -3,7 +3,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, closeFileStorageDb, closeLivenessDb, closeRegisteredClients, createDb, heartbeatRuns } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -49,7 +49,23 @@ export function issueRecoveryFixture() {
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => {
+    const failures: unknown[] = [];
+    for (const close of [
+      async () => { if (db) await closeFileStorageDb(db, 1); },
+      async () => { if (db) await closeLivenessDb(db, 1); },
+      async () => { await db?.$client.end({ timeout: 1 }); },
+      async () => {
+        const url = external ?? database?.connectionString;
+        if (url) await closeRegisteredClients(url, { scope: "database" });
+      },
+      async () => { await database?.cleanup(); },
+    ]) {
+      try { await close(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Issue recovery fixture teardown failed");
+  });
   async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
