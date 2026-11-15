@@ -2749,10 +2749,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
         const successors = (await readHeartbeatRunsByCompanyId(f.companyId)).filter(row => row.wakeupRequestId === receipt.id);
         const admitted = ["callback", "restart", "race"].includes(safetyScenario);
+        const sourceGone = { deleted_comment: "authority_source_comment", changed_generation: "authority_conversation_binding",
+          changed_source: "authority_source_shape" }[safetyScenario as "deleted_comment" | "changed_generation" | "changed_source"];
         expect(successors).toHaveLength(admitted ? 1 : 0);
         expect(settled).toMatchObject({ id: receipt.id, idempotencyKey: receipt.idempotencyKey,
           requestedByActorId: receipt.requestedByActorId, requestedAt: receipt.requestedAt,
-          status: admitted ? "queued" : "deferred_issue_execution" });
+          status: admitted ? "queued" : sourceGone ? "skipped" : "deferred_issue_execution",
+          ...(sourceGone ? { error: sourceGone, runId: null } : {}) });
         if (admitted) {
           expect(extractWakeCommentIds(successors[0].contextSnapshot)).toEqual([comment.id]);
           expect(successors[0].contextSnapshot?.chatConversationId).toBe(f.conversation.id);
