@@ -287,7 +287,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("stores no text that a plugin writes with a listed action through the general activity path", async () => {
     const companyId = await createCompany();
     const routineId = randomUUID();
-    const forged = { companyId, actorType: "plugin", action: "routine.created", details: { note: "Private customer wording" } };
+    const forged = { companyId, actorType: "plugin" as const, action: "routine.created", details: { note: "Private customer wording" } };
 
     await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "Private customer name", entityId: routineId });
     await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "routine", entityId: "Private customer text" });
@@ -295,7 +295,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId))).toHaveLength(0);
 
     await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "routine", entityId: routineId });
-    await logActivity(db, { ...forged, actorType: "Private actor type", actorId: "Private actor name", entityType: "routine", entityId: routineId });
+    await logActivity(db, { ...forged, actorType: "Private actor type" as "plugin", actorId: "Private actor name", entityType: "routine", entityId: routineId });
     const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
     expect(rows.map((row) => [row.actorType, row.actorId, row.entityType, row.entityId])).toEqual([
       ["plugin", "plugin", "routine", routineId],
