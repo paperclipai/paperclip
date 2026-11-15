@@ -20,7 +20,7 @@ import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQ
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
-import { listIssueSummaries } from "../services/issue-summaries.js";
+import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
@@ -8786,11 +8786,20 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
+      res.status(400).json({ error: `ids must contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs; navigation=true is the only optional parameter` });
       return;
     }
-    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
+    if (parsed.data.navigation && req.actor.type !== "board") {
+      res.status(403).json({ error: "Navigation summaries require board authentication" });
+      return;
+    }
+    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, readCondition);
     const visible = await filterIssuesForActor(req, rows);
+    const navigation = parsed.data.navigation ? await listIssueNavigationState(
+      db, companyId, visible.map(row => row.id), readCondition,
+      getActorInfo(req).actorId,
+    ) : null;
     // Blocked rows carry glyph-only blocker state so every task view resolves
     // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
@@ -8808,6 +8817,7 @@ export function issueRoutes(
         displayStatus: row.displayStatus,
         updatedAt: row.updatedAt,
         externalConversationState: row.externalConversationState,
+        ...(navigation ? { parentId: row.parentId, ...navigation.get(row.id) } : {}),
         ...(attention ? { blockerAttention: attention } : {}),
       };
     });
@@ -9115,6 +9125,15 @@ export function issueRoutes(
       string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as
       string | undefined;
+    if (req.query.includeReadState !== undefined && !["true", "false"].includes(req.query.includeReadState as string)) {
+      res.status(400).json({ error: "includeReadState must be true or false" });
+      return;
+    }
+    const includeReadState = req.query.includeReadState === "true";
+    if (includeReadState && req.actor.type !== "board") {
+      res.status(403).json({ error: "includeReadState requires board authentication" });
+      return;
+    }
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -9336,6 +9355,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
+      readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
       workspaceId: uuidFilters.workspaceId,
       executionWorkspaceId: uuidFilters.executionWorkspaceId,
@@ -17437,6 +17457,22 @@ export function issueRoutes(
       action: "issue.deleted",
       entityType: "issue",
       entityId: issue.id,
+      details: { parentId: issue.parentId },
+    });
+
+    // The removed child can no longer pass live read authorization. Notify
+    // its parent separately; delivery authorizes that parent and exposes no
+    // deleted-child identity or content to people who can only read the parent.
+    if (issue.parentId) await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.child_deleted",
+      entityType: "issue",
+      entityId: issue.parentId,
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);

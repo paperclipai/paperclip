@@ -1,4 +1,4 @@
-import { ApiError, type PaperclipClient } from "./client.ts";
+import { ApiError, type Clock, type PaperclipClient } from "./client.ts";
 import type { AgentProfile, Options } from "./config.ts";
 import { agentName, companyName, mapLimit, projectName, secretPrefix, type RunState, type StateStore } from "./state.ts";
 
@@ -138,3 +138,92 @@ export async function ensureAgents(input: {
 }
 
 export const AGENT_CREATE_PARALLELISM = 8;
+export const LIFECYCLE_ERROR_GRACE_MS = 60_000;
+export const AGENT_LIST_FAILURE_LIMIT = 5;
+
+export class AgentsNotReady extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentsNotReady";
+  }
+}
+
+const NOT_INVOKABLE = new Set(["paused", "terminated", "pending_approval"]);
+
+export function agentReady(agent: Json): boolean {
+  if (agent.lifecycleState === "ready") return !NOT_INVOKABLE.has(String(agent.status));
+  return agent.lifecycleState == null && ["idle", "active", "running", "error"].includes(String(agent.status));
+}
+
+export function describeAgent(agent: Json): string {
+  const parts = [`agent ${agent.name ?? agent.id} is ${agent.status ?? "missing"}`];
+  if (agent.lifecycleState) parts.push(`setup state ${agent.lifecycleState}`);
+  if (agent.pauseReason) parts.push(`pause reason ${agent.pauseReason}`);
+  if (Array.isArray(agent.lifecycleHolds) && agent.lifecycleHolds.length) parts.push(`holds ${agent.lifecycleHolds.join(", ")}`);
+  const reason = agent.lifecycleError ?? agent.errorReason;
+  return `${parts.join(", ")}; ${reason ? `Paperclip says: ${String(reason).slice(0, 400)}` : "Paperclip gave no reason"}`;
+}
+
+export async function waitForAgentsReady(input: {
+  api: PaperclipClient;
+  clock: Clock;
+  companyId: string;
+  agentIds: readonly string[];
+  timeoutMs: number;
+  pollMs: number;
+  shouldStop: () => boolean;
+  log: (line: string) => void;
+  tick?: () => Promise<boolean>;
+}): Promise<boolean> {
+  const { api, clock } = input;
+  const started = clock.now();
+  const erroredSince = new Map<string, number>();
+  let logged = false;
+  let readFailures = 0;
+  for (;;) {
+    if (input.shouldStop()) return false;
+    let listed: Json[];
+    try {
+      listed = await api.get<Json[]>(`/api/companies/${input.companyId}/agents`);
+      readFailures = 0;
+    } catch (error) {
+      readFailures += 1;
+      if (input.shouldStop()) return false;
+      const message = error instanceof Error ? error.message : String(error);
+      if (readFailures >= AGENT_LIST_FAILURE_LIMIT) {
+        throw new AgentsNotReady(`the agent list could not be read ${readFailures} times in a row while waiting for agent setup: ${message.slice(0, 300)}`);
+      }
+      if (clock.now() - started >= input.timeoutMs) {
+        throw new AgentsNotReady(`agent setup could not be checked within ${Math.round(input.timeoutMs / 60_000)} min: ${message.slice(0, 300)}`);
+      }
+      await clock.sleep(input.pollMs);
+      continue;
+    }
+    const byId = new Map(listed.map(agent => [String(agent.id), agent]));
+    const waiting = input.agentIds.map(id => byId.get(id) ?? { id, status: null }).filter(agent => !agentReady(agent));
+    if (!waiting.length) {
+      if (logged) input.log(`All ${input.agentIds.length} agents finished setup after ${Math.round((clock.now() - started) / 1_000)} s`);
+      return true;
+    }
+    if (input.shouldStop() || await input.tick?.()) return false;
+    const now = clock.now();
+    for (const agent of waiting) {
+      const id = String(agent.id);
+      if (agent.lifecycleError) {
+        if (!erroredSince.has(id)) erroredSince.set(id, now);
+      } else erroredSince.delete(id);
+    }
+    const stuck = waiting.find(agent => now - (erroredSince.get(String(agent.id)) ?? now) >= LIFECYCLE_ERROR_GRACE_MS);
+    if (stuck) {
+      throw new AgentsNotReady(`${waiting.length} of ${input.agentIds.length} agents cannot finish setup: ${describeAgent(stuck)}`);
+    }
+    if (now - started >= input.timeoutMs) {
+      throw new AgentsNotReady(`${waiting.length} of ${input.agentIds.length} agents did not finish setup within ${Math.round(input.timeoutMs / 60_000)} min: ${describeAgent(waiting[0]!)}`);
+    }
+    if (!logged) {
+      input.log(`Waiting for ${waiting.length} agents to finish setup (${describeAgent(waiting[0]!)})`);
+      logged = true;
+    }
+    await clock.sleep(input.pollMs);
+  }
+}

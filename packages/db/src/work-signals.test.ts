@@ -472,6 +472,22 @@ describe("database work scope identity", () => {
     } finally { await other.close(); }
   });
 
+  it("scopes an unhinted signal alongside a hinted one to the hinted set, locally and in another process", async () => {
+    const other = receiving(["alongside"]);
+    const local: Array<string[] | null> = [];
+    const stop = subscribeDatabaseWork(db, "alongside", (event, hints) => { if (event === "settled") local.push(hints ? [...hints] : null); });
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "alongside");
+        await signalDatabaseWork(tx, "alongside", "company-1");
+      }));
+      expect(local).toEqual([["company-1"]]);
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1"]]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["alongside", ["company-1"]]]);
+    } finally { stop(); await other.close(); }
+  });
+
   it("splits many hints into payloads an older receiver still reads, within the per-topic byte cap", async () => {
     const hints = Array.from({ length: 80 }, (_, index) => JSON.stringify({ companyId: `company-${String(index).padStart(4, "0")}` }));
     const other = receiving(["many"]);
