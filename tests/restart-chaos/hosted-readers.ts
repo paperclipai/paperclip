@@ -1,5 +1,5 @@
 import type { HostedApi } from "./hosted-api.js";
-import type { GradeRun, GradeTaskInput } from "./release-swap-grade.js";
+import { isAutoNotice, type GradeRun, type GradeTaskInput } from "./release-swap-grade.js";
 
 type Json = Record<string, any>;
 export type ReadApi = Pick<HostedApi, "get">;
@@ -157,18 +157,20 @@ export async function firstEventAfter(api: ReadApi, runId: string, after: number
   return times.length ? Math.min(...times) : null;
 }
 
-export async function duplicateAgentComments(api: ReadApi, issueIds: readonly string[]): Promise<Array<{ issueId: string; count: number }>> {
-  const found: Array<{ issueId: string; count: number }> = [];
+export async function duplicateAgentComments(api: ReadApi, issueIds: readonly string[]):
+  Promise<{ duplicateComments: Array<{ issueId: string; count: number }>; autoNoticeRepeats: Array<{ issueId: string; count: number }> }> {
+  const duplicateComments: Array<{ issueId: string; count: number }> = [];
+  const autoNoticeRepeats: Array<{ issueId: string; count: number }> = [];
   for (const id of issueIds) {
     const comments = await api.get<Json[]>(`/api/issues/${id}/comments`).catch(() => [] as Json[]);
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { body: string; count: number }>();
     for (const comment of comments) if (comment.authorAgentId) {
       const key = `${comment.authorAgentId}\u0000${comment.body}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      counts.set(key, { body: String(comment.body ?? ""), count: (counts.get(key)?.count ?? 0) + 1 });
     }
-    for (const count of counts.values()) if (count > 1) found.push({ issueId: id, count });
+    for (const { body, count } of counts.values()) if (count > 1) (isAutoNotice(body) ? autoNoticeRepeats : duplicateComments).push({ issueId: id, count });
   }
-  return found;
+  return { duplicateComments, autoNoticeRepeats };
 }
 
 export function duplicateChildren(issues: readonly HostedIssueRow[]): Array<{ parentId: string; title: string; count: number }> {

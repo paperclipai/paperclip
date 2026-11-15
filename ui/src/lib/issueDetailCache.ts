@@ -8,7 +8,8 @@ import {
   recentIssueActivityQueryKey,
   recentIssueRunWindowQueryKey,
 } from "./issue-chat-history-queries";
-import { startIssueChatBootstrap } from "./issue-chat-bootstrap";
+import { readFromIssueChatBootstrap, startIssueChatBootstrap } from "./issue-chat-bootstrap";
+import { isRestoredSavedRead } from "./persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
@@ -135,7 +136,7 @@ export function seedIssueDetailProjections(
   // Only the response's own refs are aliases; an arbitrary requested ref is not.
   for (const ref of getIssueDetailCacheRefs(issue)) {
     const key = [...queryKeys.issues.detail(ref), "core"];
-    if (queryClient.getQueryData(key) === undefined) {
+    if (queryClient.getQueryData(key) === undefined || isRestoredSavedRead(queryClient, key)) {
       queryClient.setQueryData(key, issue);
     }
   }
@@ -159,7 +160,14 @@ export function getIssueCoreQueryOptions(queryClient: QueryClient, issueRef: str
   return {
     queryKey: [...queryKeys.issues.detail(issueRef), "core"] as const,
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
-      const issue = await issuesApi.getCore(issueRef, { signal });
+      const key = [...queryKeys.issues.detail(issueRef), "core"];
+      const read = () => issuesApi.getCore(issueRef, { signal });
+      // The header shows a restored task at once, so its revalidation can
+      // wait for the page's chat bootstrap. Otherwise this small read keeps
+      // the header from waiting on the larger bootstrap.
+      const issue = isRestoredSavedRead(queryClient, key)
+        ? await readFromIssueChatBootstrap(queryClient, key, issueRef, (item) => item.issue, read)
+        : await read();
       seedIssueDetailProjections(queryClient, issue, issueRef);
       return issue;
     },

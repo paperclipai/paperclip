@@ -822,6 +822,107 @@ describe("Codex ACPX runtime adapter", () => {
     expect(port.steeringCapability!()).toBeNull();
     await port.close({ reason: "test finished" });
   });
+  it.each([true, false])("holds a permission request of Claude's own cycle until the cycle is adopted (%s) or dropped", async (adopt) => {
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
+    });
+    const cycles = port.providerCycles!()!;
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1",
+      update: { sessionUpdate: "tool_call", toolCallId: "toolu_cycle", title: "Bash", kind: "execute", status: "pending" } } });
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 5, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall: { toolCallId: "toolu_cycle" }, options: [] } });
+    const answer = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    let outcome: unknown;
+    const decided = runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "execute"), { signal: new AbortController().signal })
+      .then((value) => { outcome = value; });
+    try {
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(outcome).toBeUndefined();
+      if (adopt) expect(cycles.adopt({ onPermissionRequest: answer, busy: () => false })).toBe(true);
+      else cycles.drop();
+      await decided;
+      expect(answer).toHaveBeenCalledTimes(adopt ? 1 : 0);
+      expect(outcome).toEqual({ outcome: adopt ? "allow_once" : "cancel" });
+    } finally {
+      await port.close({ reason: "test finished" });
+    }
+  });
+  it.each([true, false])("hands a plan proposed in Claude's own cycle to that cycle's plan handler once adopted (%s) or cancels it", async (adopt) => {
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
+    });
+    const cycles = port.providerCycles!()!;
+    const toolCall = { toolCallId: "toolu_plan", kind: "switch_mode", rawInput: { plan: "# Plan\n\nShip it." } };
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1",
+      update: { sessionUpdate: "tool_call", toolCallId: "toolu_plan", title: "Ready to code?", kind: "switch_mode", status: "pending" } } });
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 7, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall, options: [] } });
+    const proposals: unknown[] = [];
+    const answer = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    const outcome = runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "switch_mode" as never,
+      { sessionId: "backend-1", toolCall, options: [] }), { signal: new AbortController().signal });
+    try {
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      if (adopt) {
+        expect(cycles.adopt({ onPermissionRequest: answer, onPlanProposal: (proposal) => proposals.push(proposal), busy: () => false })).toBe(true);
+      } else cycles.drop();
+      expect(await outcome).toEqual({ outcome: adopt ? "reject_once" : "cancel" });
+      expect(proposals).toEqual(adopt ? [{ toolCallId: "toolu_plan", markdown: "# Plan\n\nShip it." }] : []);
+      expect(answer).not.toHaveBeenCalled();
+    } finally {
+      await port.close({ reason: "test finished" });
+    }
+  });
+  it.each([true, false])("answers a later cycle's permission request only through that cycle once it is adopted (%s) or cancels it", async (adoptLater) => {
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
+    });
+    const cycles = port.providerCycles!()!;
+    const update = (body: Record<string, unknown>) => runtimeOptions!.onAcpMessage!("inbound",
+      { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1", update: body } });
+    const end = () => update({ sessionUpdate: "usage_update", used: 5, size: 100, cost: { amount: 0.1, currency: "USD" },
+      _meta: { "_claude/origin": { kind: "task-notification" }, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    update({ sessionUpdate: "tool_call", toolCallId: "toolu_first", title: "Read", kind: "read", status: "pending" });
+    end();
+    update({ sessionUpdate: "tool_call", toolCallId: "toolu_later", title: "Bash", kind: "execute", status: "pending" });
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 6, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall: { toolCallId: "toolu_later" }, options: [] } });
+    const first = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    const later = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    let outcome: unknown;
+    const decided = runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "execute",
+      { sessionId: "backend-1", toolCall: { toolCallId: "toolu_later" }, options: [] }), { signal: new AbortController().signal })
+      .then((value) => { outcome = value; });
+    try {
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      expect(cycles.adopt({ onPermissionRequest: first, busy: () => false })).toBe(true);
+      for (let item = await cycles.next(); item?.type !== "ended"; item = await cycles.next()) void item;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(outcome).toBeUndefined();
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      if (adoptLater) expect(cycles.adopt({ onPermissionRequest: later, busy: () => false })).toBe(true);
+      else cycles.drop();
+      await decided;
+      expect(first).not.toHaveBeenCalled();
+      expect(later).toHaveBeenCalledTimes(adoptLater ? 1 : 0);
+      expect(outcome).toEqual({ outcome: adoptLater ? "allow_once" : "cancel" });
+    } finally {
+      await port.close({ reason: "test finished" });
+    }
+  });
   it.each(["approve-reads", "approve-paperclip"] as const)("%s stops unassigned operations when approval has no handler", async (permissionMode) => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;

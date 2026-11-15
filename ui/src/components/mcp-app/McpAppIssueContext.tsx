@@ -1,19 +1,40 @@
-import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { McpAppViewSummary } from "@paperclipai/shared";
 import { mcpAppsApi } from "@/api/mcpApps";
 import { queryKeys } from "@/lib/queryKeys";
 import { mcpAppViewIndexFor } from "./mcp-app-matching";
 
-/** The task whose chat is showing, so a run's replies can find their MCP Apps views. */
-const McpAppIssueContext = createContext<string | null>(null);
+/**
+ * Sends a message as the viewer's own comment through the chat's normal send
+ * path (the same one the composer uses), with this client request id.
+ */
+export type McpAppSendMessage = (body: string, clientRequestId: string) => Promise<void>;
 
-export function McpAppIssueProvider({ issueId, children }: { issueId: string | null | undefined; children: ReactNode }) {
-  return <McpAppIssueContext.Provider value={issueId ?? null}>{children}</McpAppIssueContext.Provider>;
+interface McpAppIssueValue {
+  issueId: string | null;
+  sendMessage: McpAppSendMessage | null;
+}
+
+/** The task whose chat is showing, so a run's replies can find their MCP Apps views. */
+const McpAppIssueContext = createContext<McpAppIssueValue>({ issueId: null, sendMessage: null });
+
+export function McpAppIssueProvider({ issueId, sendMessage, children }: {
+  issueId: string | null | undefined;
+  /** Omitted when the viewer can't send messages here: views then can't propose any. */
+  sendMessage?: McpAppSendMessage | null;
+  children: ReactNode;
+}) {
+  const value = useMemo(() => ({ issueId: issueId ?? null, sendMessage: sendMessage ?? null }), [issueId, sendMessage]);
+  return <McpAppIssueContext.Provider value={value}>{children}</McpAppIssueContext.Provider>;
 }
 
 export function useMcpAppIssueId(): string | null {
-  return useContext(McpAppIssueContext);
+  return useContext(McpAppIssueContext).issueId;
+}
+
+export function useMcpAppSendMessage(): McpAppSendMessage | null {
+  return useContext(McpAppIssueContext).sendMessage;
 }
 
 const NO_VIEWS: McpAppViewSummary[] = [];

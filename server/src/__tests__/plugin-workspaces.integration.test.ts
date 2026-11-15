@@ -1,3 +1,4 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { isPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
@@ -16,6 +17,7 @@ import {
   pluginCompanySettings,
 } from "@paperclipai/db";
 import {
+  callWorkspaceProvider,
   preparePluginWorkspace,
   inspectPluginWorkspace,
   finalizePluginWorkspace,
@@ -51,7 +53,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
-    it.each(["ready", "lost_reply", "unconfirmed", "live_writer", "unsupported"] as const)(
+    it.each(["ready", "lost_reply", "unconfirmed", "transport", "worker_lookup", "live_writer", "older_retained", "unsupported"] as const)(
       "verifies the same checkout before choosing a fresh retry (%s)", async (state) => {
         const f = await fixture();
         const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
@@ -73,31 +75,50 @@ const support = await getEmbeddedPostgresTestSupport();
           status: state === "live_writer" ? "active" : "released",
           releasedAt: state === "live_writer" ? null : new Date(),
         });
+        if (state === "older_retained") {
+          const [older] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+            issueId: f.issueId, status: "succeeded", finishedAt: new Date() }).returning();
+          await db.insert(environmentLeases).values({
+            companyId: f.companyId, issueId: f.issueId, heartbeatRunId: older.id,
+            provider: "plugin:test:tasks", executionWorkspaceId: workspaceId, leasePolicy: "reuse_by_environment",
+            status: "retained", releasedAt: null,
+          });
+        }
         const retryIntentId = randomUUID();
         const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
           issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
         }).returning();
-        const fresh = { mode: "fresh_isolated_workspace", retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] } as const;
+        const fresh = { mode: "fresh_isolated_workspace" as const, retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] };
         const call = vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
           const result = await f.workers.call(...args) as { kind: string };
-          if (state === "unconfirmed") throw new Error("checkout incomplete");
+          if (state === "transport") throw new Error("connection closed");
+          if (state === "unconfirmed") throw new JsonRpcCallError({
+            code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+            message: "checkout incomplete",
+            data: workspaceOperationErrorData(new PluginWorkspaceOperationError("binding_mismatch")),
+          });
           return { ...result, created: false };
         });
         const workers: WorkspaceWorkers = {
           getWorker: (pluginId) => {
+            if (state === "worker_lookup") throw new Error("worker lookup timed out");
             const worker = f.workers.getWorker(pluginId);
             return worker && { ...worker, supportedMethods: ["workspaceOperation", "workspacePrepare"] };
           },
           call,
         };
         const verificationStarted = Date.now();
-        const result = await verifyRetryWorkspace(db, workers, retry, f.issueId, null,
-          { ...fresh, retainedSourceIds: [] });
+        const result = verifyRetryWorkspace(db, workers, retry, f.issueId, null, fresh);
+        if (state === "transport" || state === "worker_lookup") {
+          if (state === "transport") await expect(result).rejects.toMatchObject({ kind: "transport", retryable: true });
+          else await expect(result).rejects.toThrow("worker lookup timed out");
+          return;
+        }
         const verified = state === "ready" || state === "lost_reply";
-        expect(result).toEqual(verified
+        expect(await result).toEqual(verified
           ? { mode: "reuse_issue_workspace", retryIntentId, sourceRunId: f.runId, workspaceId, cwd: null }
           : fresh);
-        expect(f.calls.slice(1)).toHaveLength(state === "live_writer" || state === "unsupported" ? 0 : 1);
+        expect(f.calls.slice(1)).toHaveLength(["live_writer", "older_retained", "unsupported"].includes(state) ? 0 : 1);
         if (f.calls.length > 1) {
           expect(call).toHaveBeenCalledExactlyOnceWith(f.pluginId, "workspaceOperation", expect.objectContaining({
             executionWorkspaceId: workspaceId, runId: retry.id, operation: expect.objectContaining({ verifyExisting: true }),
@@ -109,6 +130,60 @@ const support = await getEmbeddedPostgresTestSupport();
         const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
         expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
       });
+
+    it("sends the run's own-driver environment only to a provider that declares it", async () => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const declare = (workspaceEnvironmentVersion?: 1) => db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: { type: "object" }, supportsTasks: true }],
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, workspaceVerificationVersion: 1,
+          ...(workspaceEnvironmentVersion ? { workspaceEnvironmentVersion } : {}) },
+      } }).where(eq(plugins.id, f.pluginId));
+      await declare(1);
+      const [row] = await db.insert(environments).values({ name: `Snapshot tasks ${f.pluginId}`, driver: "plugin", status: "active",
+        config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: { snapshot: "base", cpu: 2 } } }).returning();
+      const environment = { ...row, driver: "plugin" as const };
+      const expected = { id: row.id, driverKey: "tasks", config: { snapshot: "base", cpu: 2 } };
+
+      const prepared = await preparePluginWorkspace(db, f.workers, { ...f.input, environment });
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0].environment).toEqual(expected);
+      // Retry verification of the retained checkout carries the same environment.
+      await preparePluginWorkspace(db, f.workers, { ...f.input, environment, existingWorkspaceId: prepared!.id, verifyExisting: true });
+      expect(f.calls[1]).toMatchObject({ environment: expected, operation: { verifyExisting: true } });
+
+      const operation = f.calls[0].operation;
+      const send = async (selected: Parameters<typeof callWorkspaceProvider>[2]["environment"]) => {
+        await callWorkspaceProvider(db, f.workers, { workspace: prepared!, runId: f.runId, agentId: f.input.agentId,
+          environment: selected, operation });
+        return f.calls.at(-1)!;
+      };
+      const withEnvironment = await send(environment);
+      expect(withEnvironment.environment).toEqual(expected);
+      const without = await send(undefined);
+      expect(without).not.toHaveProperty("environment");
+      // The environment is context only; the operation identity does not change.
+      expect(withEnvironment.operationId).toBe(without.operationId);
+      expect(await send({ ...environment, config: { pluginKey: plugin.pluginKey, driverKey: "tasks" } }))
+        .toMatchObject({ environment: { id: row.id, driverKey: "tasks", config: {} } });
+      for (const omitted of [
+        { ...environment, config: { ...environment.config, pluginKey: "other.plugin" } },
+        { ...environment, config: { pluginKey: plugin.pluginKey, driverConfig: { snapshot: "base" } } },
+        { id: row.id, driver: "local" as const, config: {} },
+        { id: row.id, driver: "sandbox" as const, config: { provider: "e2b", pluginKey: plugin.pluginKey, driverKey: "tasks" } },
+        null,
+      ]) {
+        const request = await send(omitted);
+        expect(request).not.toHaveProperty("environment");
+        expect(request.operationId).toBe(without.operationId);
+      }
+
+      await declare();
+      const undeclared = await send(environment);
+      expect(undeclared).not.toHaveProperty("environment");
+      expect(undeclared.operationId).toBe(without.operationId);
+    });
 
     it("polls bounded requests using the provider's advertised preparation deadline", async () => {
       const f = await fixture();

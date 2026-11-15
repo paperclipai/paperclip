@@ -73,7 +73,7 @@ describe("hosted API readers", () => {
       "/api/issues/i1/comments": [{ authorAgentId: "a1", body: "DONE-x" }, { authorAgentId: "a1", body: "DONE-x" }, { authorUserId: "u", body: "DONE-x" }],
     });
     expect(await failureChain(api, "r9")).toEqual(["runner.lost: process gone"]);
-    expect(await duplicateAgentComments(api, ["i1"])).toEqual([{ issueId: "i1", count: 2 }]);
+    expect(await duplicateAgentComments(api, ["i1"])).toEqual({ duplicateComments: [{ issueId: "i1", count: 2 }], autoNoticeRepeats: [] });
     expect(duplicateChildren([{ id: "s1", identifier: null, title: "SM sub 1", status: "done", parentId: "p", assigneeAgentId: "a1", hidden: false },
       { id: "s2", identifier: null, title: "SM sub 1", status: "done", parentId: "p", assigneeAgentId: "a1", hidden: false }])).toEqual([{ parentId: "p", title: "SM sub 1", count: 2 }]);
   });
@@ -112,7 +112,8 @@ describe("hosted API readers", () => {
     expect(graded.pass).toBe(false);
     const json = JSON.parse(await readFile(path.join(dir, "hosted-release-swap.json"), "utf8"));
     expect(json.result.byLabel).toEqual({ "needed Retry (click worked)": 1, "nothing pending": 1 });
-    expect(json.failedRuns.map((failed: Json) => [failed.runId, failed.release])).toEqual([["r2", 1], ["r3", 1]]);
+    expect(json.failedRuns.map((failed: Json) => [failed.runId, failed.release])).toEqual([["r2", null], ["r3", null]]);
+    expect(graded.markdown).toContain("Failed outside a release window (more than 15 min after a stop and not live at it): r2, r3.");
     expect(graded.markdown).toContain("Unavailable over the API:");
     expect(graded.markdown).toContain("API requests: 9 requests, 3 failed, 1 slow, longest gap between answers 4.0 s.");
     expect(json.api).toMatchObject({ requests: 9, failures: 3 });

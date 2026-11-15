@@ -1,5 +1,6 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/protocol-actions/request-human-input.js";
+import { toolInputVariantError } from "../../../packages/paperclip-runner/src/contracts/tool-input-variants.js";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -500,7 +501,9 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(questionSetToAskUserQuestionsPayload(result.providerQuestionSet!).questions).toEqual([result.providerQuestion]);
       expect(result.instruction).toContain("questionSet:providerQuestionSet");
       expect(result.instruction).not.toContain("do not add questionSet");
-      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })).toBe(false);
+      // The advertised schema is a plain object; the questions rule is a server-checked variant.
+      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })
+        && toolInputVariantError("request_human_input", { ...input, payload: { version: 1 } }) === null).toBe(false);
       expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1,
         questionSet: { ...result.providerQuestionSet, questions: [{ ...result.providerQuestionSet!.questions[0], answerMode: "text" }] } } })).toBe(false);
       expect(result.results.every((item) => item.state !== "ready")).toBe(true);

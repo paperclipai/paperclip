@@ -20,6 +20,7 @@ import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
 import { preparePluginWorkspace, type WorkspaceWorkers } from "./plugin-workspaces.js";
+import { findWorkspaceProviderFailure } from "./workspace-provider-failure.js";
 import { readFreshContinuationReadiness } from "./fresh-continuation-fallback.js";
 
 export type ContinuationReadiness =
@@ -522,6 +523,9 @@ export async function verifyRetryWorkspace(
   issueId: string,
   responsibleUserId: string | null,
   readiness: ContinuationReadiness,
+  options?: {
+    selectCandidate?: (workspace: typeof executionWorkspaces.$inferSelect) => Promise<boolean>;
+  },
 ): Promise<ContinuationReadiness> {
   if (readiness.mode !== "fresh_isolated_workspace" ||
       run.contextSnapshot?.taskRetryRequestId !== readiness.retryIntentId) return readiness;
@@ -541,7 +545,7 @@ export async function verifyRetryWorkspace(
     companyId: run.companyId, issueId, agentId: run.agentId, successorRunId: run.id,
     source, cause: null, evidence: null,
     sourceRetryIntentId: source.contextSnapshot?.taskRetryRequestId,
-    verifyProviderWorkspace: workers ? async workspace => {
+    verifyProviderWorkspace: options?.selectCandidate ?? (workers ? async workspace => {
       try {
         return Boolean(await preparePluginWorkspace(db, workers, {
           companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id, responsibleUserId,
@@ -549,15 +553,22 @@ export async function verifyRetryWorkspace(
           existingWorkspaceId: workspace.id, mode: workspace.mode, strategy: workspace.strategyType,
           verifyExisting: true,
         }));
-      } catch {
+      } catch (error) {
+        const failure = findWorkspaceProviderFailure(error);
+        if (failure?.reason !== "binding_mismatch" && failure?.reason !== "unsupported_operation") throw error;
         return false;
       }
-    } : undefined,
+    } : undefined),
   });
   if (!retained) return readiness;
   const reuse: ContinuationReadiness = { mode: "reuse_issue_workspace", retryIntentId: readiness.retryIntentId,
     sourceRunId: source.id, workspaceId: retained.id, cwd: retained.cwd };
-  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "task-recovery",
-    action: "issue.retry_workspace_reused", entityType: "issue", entityId: issueId, runId: run.id, details: reuse });
+  if (!options?.selectCandidate) await recordVerifiedRetryWorkspace(db, run, issueId, reuse);
   return reuse;
+}
+
+export async function recordVerifiedRetryWorkspace(db: Db, run: { companyId: string; id: string }, issueId: string,
+  readiness: Extract<ContinuationReadiness, { mode: "reuse_issue_workspace" }>) {
+  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "task-recovery",
+    action: "issue.retry_workspace_reused", entityType: "issue", entityId: issueId, runId: run.id, details: readiness });
 }

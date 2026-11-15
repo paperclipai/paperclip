@@ -25,6 +25,7 @@ export interface HostedOptions {
   seed: number;
   keep: boolean;
   retryDuringWave: boolean;
+  quietMs: number;
 }
 
 export const HOSTED_FLAGS = ["hosted-base-url", "hosted-allow", "hosted-cleanup-only", "hosted-observe-only"] as const;
@@ -72,6 +73,7 @@ export function parseHostedCommand(argv: readonly string[], now = new Date()): H
       "hosted-health-seconds": { type: "string" },
       "hosted-keep": { type: "boolean" },
       "hosted-retry-during-wave": { type: "boolean" },
+      "hosted-quiet-seconds": { type: "string" },
       seed: { type: "string" },
     },
   });
@@ -102,5 +104,6 @@ export function parseHostedCommand(argv: readonly string[], now = new Date()): H
     seed: whole(values.seed, "seed", Number(now.getTime() % 100_000), 0, 2 ** 31 - 1),
     keep: values["hosted-keep"] === true,
     retryDuringWave: values["hosted-retry-during-wave"] === true,
+    quietMs: whole(values["hosted-quiet-seconds"], "hosted-quiet-seconds", 90, 0, 1_800) * 1_000,
   };
 }

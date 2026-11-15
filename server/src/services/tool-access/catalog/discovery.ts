@@ -1,4 +1,5 @@
 import { assertSupportedConnection } from "../connections/setup-policy.js";
+import { usesClientCredentials } from "../oauth/client-credentials.js";
 import { vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import type { ActorInfo } from "../types.js";
@@ -10,7 +11,7 @@ import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "../../connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
-import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import { BROWSER_USE_TOOLS, MCP_SKILLS_EXTENSION_ID } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "../../browser-use-client.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "../../cognee-connection.js";
 import { isMemoryConnectorId } from "@paperclipai/shared";
@@ -27,6 +28,9 @@ import {
   initializeMcpHttpSession,
   isModernMcpProtocolVersion,
   knownMcpProtocolVersion,
+  knownMcpServerCapabilities,
+  mcpServerDeclaresExtension,
+  rememberMcpServerCapabilities,
   MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION,
   mcpCacheHint,
@@ -94,9 +98,16 @@ type DiscoveryDependencies = {
 /** Fresh `tools/list` results, honoring the server's `ttlMs` and `cacheScope`. */
 const remoteToolListCache = new McpResultCache<McpToolDescriptor[]>(500);
 
+/** Fresh `skills/list` results (raw entries), honoring the server's `ttlMs` and `cacheScope`. */
+const remoteSkillListCache = new McpResultCache<unknown[]>(500);
+
 export function forgetRemoteToolListCache(connectionId: string) {
   remoteToolListCache.deletePrefix(`${connectionId}:`);
+  remoteSkillListCache.deletePrefix(`${connectionId}:`);
 }
+
+const MAX_SKILL_LIST_PAGES = 50;
+const MAX_LISTED_SKILLS = 5_000;
 
 export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentials;
@@ -158,7 +169,9 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
-      return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }));
+      return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }, {
+        declareClientCredentials: usesClientCredentials(connection),
+      }));
     };
     const connectionConfig = asRecord(connection.config);
     const sourceTemplateKey = typeof connectionConfig?.sourceTemplateKey === "string"
@@ -323,7 +336,10 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (
       response.status === 401 &&
       connection.authKind === "oauth" &&
-      connection.credentialSource === "paperclip_vault"
+      connection.credentialSource === "paperclip_vault" &&
+      // A machine sign-in probe with candidate credentials must fail on its own
+      // answer, not succeed by falling back to the stored ones.
+      !(credentialHeaders && usesClientCredentials(connection))
     ) {
       headers = {
         ...projectedConnectionHeaders(connection),
@@ -376,6 +392,15 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         connection.credentialSecretRefs.length === 0 &&
         Object.keys(headers).length === 0 &&
         !urlCarriesCredential(sentUrl);
+      if (response.status === 401 && usesClientCredentials(connection)) {
+        // Machine sign-in is pinned to the sign-in service recorded at setup.
+        // Never adopt whatever the server's challenge now advertises.
+        await response.body?.cancel().catch(() => undefined);
+        throw unprocessable(
+          "The server didn't accept this connection's machine sign-in. Test machine sign-in again from the connection's settings.",
+          { code: "client_credentials_rejected", status: response.status, setupUrl: connectionSetupUrl(connection) },
+        );
+      }
       if (
         response.status === 401 &&
         (/bearer|oauth|authorization/i.test(authenticate) ||
@@ -596,6 +621,70 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await validateCogneeConnection(connection, actor);
     return localTools(connection);
   }
-  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, discoverTools };
+  /**
+   * The skills a stateless MCP server publishes (`skills/list`), or null when
+   * the server does not declare the skills extension. Only called from a
+   * catalog refresh, never while an agent run is starting. A fresh listing
+   * (`ttlMs`) is reused, and `fresh: false` tells the caller nothing changed.
+   */
+  async function discoverSkills(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ): Promise<{ entries: unknown[]; fresh: boolean } | null> {
+    if (connection.transport !== "mcp_remote" || isRailwayConnection(connection)
+      || connection.config.sourceTemplateKey === "google-workspace") return null;
+    const endpoint = await resolvedRemoteEndpoint(connection, actor);
+    const eraKey = mcpEraKey(connection.id, endpoint);
+    const saved = asRecord(connection.config).mcpProtocolVersion;
+    if (!knownMcpProtocolVersion(eraKey) && typeof saved === "string") rememberMcpProtocolVersion(eraKey, saved);
+    const protocolVersion = knownMcpProtocolVersion(eraKey);
+    // The extension is defined for stateless MCP (2026-07-28 and later).
+    if (!isModernMcpProtocolVersion(protocolVersion)) return null;
+    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const requestHeaders = { ...headers, "MCP-Protocol-Version": protocolVersion };
+    const request = async (method: string, params: Record<string, unknown>, id: string, maxBytes?: number) => {
+      const response = await withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), mcpHttpRequestInit(requestHeaders, { id, method, params })));
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const payload = asRecord(await withMcpConnectionFailure(() => readMcpHttpResponse(response, id, maxBytes ? { maxBytes } : {})));
+      return payload.error === undefined ? asRecord(payload.result) : null;
+    };
+    let capabilities = knownMcpServerCapabilities(eraKey);
+    if (!capabilities) {
+      const discovered = await request("server/discover", {}, "paperclip-skills-discover", 256 * 1024);
+      if (!discovered) return null;
+      capabilities = asRecord(discovered.capabilities);
+      rememberMcpServerCapabilities(eraKey, capabilities);
+    }
+    // Clients issue skills/list only after observing the server's declaration.
+    if (!mcpServerDeclaresExtension(capabilities, MCP_SKILLS_EXTENSION_ID)) return null;
+    const privateKey = `${eraKey}:${mcpCredentialFingerprint(headers)}`;
+    const publicKey = `${eraKey}:public`;
+    const cached = remoteSkillListCache.get(privateKey) ?? remoteSkillListCache.get(publicKey);
+    if (cached) return { entries: structuredClone(cached), fresh: false };
+    const entries: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let cacheHint: { ttlMs: number; scope: "public" | "private" } | null = null;
+    let cursor: string | null = null;
+    for (let page = 0; page < MAX_SKILL_LIST_PAGES; page += 1) {
+      const result = await request("skills/list", cursor ? { cursor } : {}, `paperclip-skills-list-${page}`, 8 * 1024 * 1024);
+      if (!result || !Array.isArray(result.skills)) {
+        throw new HttpError(502, "This app's skill list could not be read", { code: "mcp_skills_list_invalid" });
+      }
+      entries.push(...result.skills);
+      const pageHint = mcpCacheHint(result);
+      cacheHint = page === 0 ? pageHint : pageHint && cacheHint
+        ? { ttlMs: Math.min(pageHint.ttlMs, cacheHint.ttlMs), scope: cacheHint.scope === "private" || pageHint.scope === "private" ? "private" : "public" }
+        : null;
+      cursor = typeof result.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+      if (!cursor || seenCursors.has(cursor) || entries.length >= MAX_LISTED_SKILLS) break;
+      seenCursors.add(cursor);
+    }
+    if (cacheHint) remoteSkillListCache.set(cacheHint.scope === "public" ? publicKey : privateKey, structuredClone(entries), cacheHint.ttlMs);
+    return { entries, fresh: true };
+  }
+  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, discoverTools, discoverSkills };
 }
 export type ToolCatalogDiscovery = ReturnType<typeof createToolCatalogDiscovery>;

@@ -1,4 +1,4 @@
-import { MCP_APPS_CLIENT_CAPABILITY } from "@paperclipai/shared";
+import { MCP_APPS_CLIENT_CAPABILITY, MCP_SKILLS_CLIENT_CAPABILITY } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
@@ -32,6 +32,13 @@ export const MCP_ERROR_MISSING_CLIENT_CAPABILITY = -32021;
 export const MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 const MODERN_ERROR_CODES = new Set([MCP_ERROR_HEADER_MISMATCH, MCP_ERROR_MISSING_CLIENT_CAPABILITY, MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION]);
 
+/** MCP Tasks extension; see mcp-tasks.ts. Kept here so request building has no import cycle. */
+export const MCP_TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks";
+const MCP_TASK_METHODS = new Set(["tasks/get", "tasks/update", "tasks/cancel"]);
+
+/** MCP OAuth Client Credentials extension; declared only by connections that use machine sign-in. */
+export const MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID = "io.modelcontextprotocol/oauth-client-credentials";
+
 const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
@@ -50,10 +57,26 @@ export function isModernMcpProtocolVersion(version: unknown): version is string 
  * they may then return URL input requests, which Paperclip shows as a link.
  * Legacy sessions keep the handshake capabilities they have always received.
  */
-export function mcpClientCapabilities(protocolVersion: string): Record<string, unknown> {
-  return isModernMcpProtocolVersion(protocolVersion)
-    ? { elicitation: { url: {} }, extensions: MCP_APPS_CLIENT_CAPABILITY }
-    : { extensions: MCP_APPS_CLIENT_CAPABILITY };
+export function mcpClientCapabilities(protocolVersion: string, options: { declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean } = {}): Record<string, unknown> {
+  const version: string = protocolVersion;
+  // The skills and tasks extensions are defined against stateless MCP only.
+  // Tasks are declared only where Paperclip can wait on one: a provider tool
+  // call over HTTP and the task requests themselves (spec: per request).
+  // Form questions are declared only where a person can answer them: an HTTP
+  // tool call that belongs to a task, or an HTTP session (whose questions
+  // outside a task are answered "cancel" at once). See MCP-ELICITATION.md.
+  if (isModernMcpProtocolVersion(protocolVersion)) {
+    return { elicitation: options.elicitationForm ? { form: {}, url: {} } : { url: {} }, extensions: {
+      ...MCP_APPS_CLIENT_CAPABILITY, ...MCP_SKILLS_CLIENT_CAPABILITY,
+      ...(options.declareTasks ? { [MCP_TASKS_EXTENSION_ID]: {} } : {}),
+      ...(options.declareClientCredentials ? { [MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID]: {} } : {}),
+    } };
+  }
+  // 2025-06-18 knows only form questions (`{}`); 2025-11-25 added URL mode.
+  const legacyElicitation = !options.elicitationForm ? null
+    : version >= "2025-11-25" ? { form: {}, url: {} }
+      : version >= "2025-06-18" ? {} : null;
+  return { ...(legacyElicitation ? { elicitation: legacyElicitation } : {}), extensions: MCP_APPS_CLIENT_CAPABILITY };
 }
 
 /** Newest version both sides support, or null when there is none. */
@@ -190,18 +213,20 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean; progressToken?: string } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
   let params = message.params ?? {};
+  // Asks the server to stream `notifications/progress` for this request.
+  if (options.progressToken) params = { ...params, _meta: { ...record(params._meta), progressToken: options.progressToken } };
   if (isModernMcpProtocolVersion(protocolVersion)) {
     params = {
       ...params,
       _meta: {
         ...record(params._meta),
         [META_PROTOCOL_VERSION]: protocolVersion,
-        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion),
+        [META_CLIENT_CAPABILITIES]: mcpClientCapabilities(protocolVersion, { declareTasks: options.declareTasks, elicitationForm: options.elicitationForm, declareClientCredentials: options.declareClientCredentials }),
         [META_CLIENT_INFO]: MCP_CLIENT_INFO,
       },
     };
@@ -209,7 +234,8 @@ export function mcpHttpRequestInit(
   for (const key of Object.keys(requestHeaders)) if (key.toLowerCase().startsWith("mcp-param-")) delete requestHeaders[key];
   setHeader(requestHeaders, "Mcp-Method", message.method);
   const name = message.method === "resources/read" ? params.uri
-    : message.method === "tools/call" || message.method === "prompts/get" ? params.name : undefined;
+    : message.method === "tools/call" || message.method === "prompts/get" ? params.name
+      : MCP_TASK_METHODS.has(message.method) ? params.taskId : undefined;
   if (typeof name === "string") setHeader(requestHeaders, "Mcp-Name", encodeMcpHeaderValue(name));
   else for (const key of Object.keys(requestHeaders)) if (key.toLowerCase() === "mcp-name") delete requestHeaders[key];
   if (message.method === "tools/call" && options.toolInputSchema !== undefined) {
@@ -383,6 +409,40 @@ export function knownMcpProtocolVersion(eraKey: string): string | null {
 
 export function forgetMcpProtocolVersion(eraKey: string) {
   eras.delete(eraKey);
+  serverCapabilities.delete(eraKey);
+}
+
+// Which extensions a stateless server declared in `server/discover`, kept
+// beside its era so a catalog refresh can tell whether the server serves skills
+// without asking again. Only the extension names are kept, never the payload,
+// so each entry is small and bounded however large the server's answer is.
+const MAX_REMEMBERED_EXTENSIONS = 32;
+const MAX_EXTENSION_ID_LENGTH = 128;
+const serverCapabilities = new Map<string, { capabilities: Record<string, unknown>; expiresAt: number }>();
+
+export function rememberMcpServerCapabilities(eraKey: string, capabilities: Record<string, unknown>) {
+  const declared = Object.keys(record(capabilities.extensions) ?? {})
+    .filter((id) => id.length <= MAX_EXTENSION_ID_LENGTH)
+    .slice(0, MAX_REMEMBERED_EXTENSIONS);
+  for (const [key, value] of serverCapabilities) if (value.expiresAt <= Date.now()) serverCapabilities.delete(key);
+  if (serverCapabilities.size >= 2000) serverCapabilities.delete(serverCapabilities.keys().next().value!);
+  serverCapabilities.set(eraKey, {
+    capabilities: { extensions: Object.fromEntries(declared.map((id) => [id, {}])) },
+    expiresAt: Date.now() + ERA_TTL_MS,
+  });
+}
+
+/** The extensions a stateless server last declared (`{extensions: {id: {}}}`), or null when not known in this process. */
+export function knownMcpServerCapabilities(eraKey: string): Record<string, unknown> | null {
+  const cached = serverCapabilities.get(eraKey);
+  if (!cached || cached.expiresAt <= Date.now()) return null;
+  return cached.capabilities;
+}
+
+/** Whether advertised capabilities declare an MCP extension. */
+export function mcpServerDeclaresExtension(capabilities: Record<string, unknown> | null, extensionId: string): Record<string, unknown> | null {
+  const extensions = record(capabilities?.extensions);
+  return record(extensions?.[extensionId]);
 }
 
 type McpInitializeInput = {
@@ -391,9 +451,15 @@ type McpInitializeInput = {
   requestId: string;
   /** Identifies the server (connection + endpoint) so its era is probed once. */
   eraKey?: string;
+  /**
+   * Declare form questions at `initialize`. Only for sessions whose every
+   * request answers a server's `elicitation/create` (tool calls); a session
+   * that only reads must not invite a question it would leave waiting.
+   */
+  elicitationForm?: boolean;
 };
 
-type DiscoverOutcome = { protocolVersion: string } | { legacy: true };
+type DiscoverOutcome = { protocolVersion: string; capabilities?: Record<string, unknown> } | { legacy: true };
 
 /**
  * Ask the server which versions it supports (`server/discover`). A modern
@@ -433,7 +499,8 @@ async function discoverMcpProtocol(input: McpInitializeInput): Promise<DiscoverO
   if (result && Array.isArray(result.supportedVersions)) {
     const selected = selectMcpProtocolVersion(result.supportedVersions);
     if (!selected) throw new McpHttpInitializationError("This app uses an MCP version Paperclip does not support yet.", "initialize", response.status);
-    return { protocolVersion: selected };
+    const capabilities = record(result.capabilities);
+    return { protocolVersion: selected, ...(capabilities ? { capabilities } : {}) };
   }
   const modernError = mcpModernErrorOf(payload);
   if (modernError) {
@@ -483,6 +550,7 @@ export async function negotiateMcpProtocolVersion(input: McpInitializeInput): Pr
   const outcome = await discoverMcpProtocol(input);
   const protocolVersion = "protocolVersion" in outcome ? outcome.protocolVersion : MCP_PROTOCOL_VERSION;
   if (input.eraKey) rememberMcpProtocolVersion(input.eraKey, protocolVersion);
+  if (input.eraKey && "capabilities" in outcome && outcome.capabilities) rememberMcpServerCapabilities(input.eraKey, outcome.capabilities);
   return protocolVersion;
 }
 
@@ -496,7 +564,7 @@ async function initializeLegacyMcpHttpSession(input: McpInitializeInput, request
       method: "initialize",
       params: {
         protocolVersion: requestedVersion,
-        capabilities: mcpClientCapabilities(requestedVersion),
+        capabilities: mcpClientCapabilities(requestedVersion, { elicitationForm: input.elicitationForm }),
         clientInfo: MCP_CLIENT_INFO,
       },
     }),
@@ -604,6 +672,15 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   throw new SyntaxError("MCP SSE response contained no data events");
 }
 
+/** A `notifications/progress` for this request's token, or null for any other message. */
+export function mcpProgressNotificationOf(message: unknown, progressToken: string | undefined): { progress: unknown; total: unknown; message: unknown } | null {
+  const payload = record(message);
+  if (!progressToken || !payload || payload.method !== "notifications/progress" || "id" in payload) return null;
+  const params = record(payload.params);
+  if (!params || params.progressToken !== progressToken) return null;
+  return { progress: params.progress, total: params.total, message: params.message };
+}
+
 export type McpHttpResponseProgress = {
   bytesReceived: number;
   chunksReceived: number;
@@ -621,6 +698,15 @@ export async function readMcpHttpResponse(
     maxBytes?: number;
     onRequest?: (message: Record<string, unknown>) => Promise<void>;
     onProgress?: (progress: McpHttpResponseProgress) => void;
+    /**
+     * Bound an SSE stream per message instead of in total, so handled
+     * notifications (such as progress) do not use up the result's limit. Only
+     * for callers with an overall deadline: a stream of small notifications
+     * could otherwise never end.
+     */
+    limitPerMessage?: boolean;
+    /** Notifications sent on this request's stream before its result. Must not block. */
+    onNotification?: (message: Record<string, unknown>) => void;
   } = {},
 ): Promise<unknown> {
   const progress: McpHttpResponseProgress = { bytesReceived: 0, chunksReceived: 0, eventsReceived: 0, matchedResponse: false, ended: false };
@@ -652,6 +738,10 @@ export async function readMcpHttpResponse(
       return record;
     }
     if ("method" in record && "id" in record) await options.onRequest?.(record);
+    else if ("method" in record) {
+      // A notification observer never fails or delays the call.
+      try { options.onNotification?.(record); } catch { /* ignored */ }
+    }
     return undefined;
   };
   const event = async (value: string) => {
@@ -667,17 +757,22 @@ export async function readMcpHttpResponse(
       progress.bytesReceived = bytes;
       if (value) progress.chunksReceived += 1;
       progress.ended = done;
-      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+      // A JSON body is one message. An SSE stream is bounded in total unless the
+      // caller asks for a per-message bound (see limitPerMessage).
+      const perMessage = isStream && options.limitPerMessage === true;
+      if (!perMessage && bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.
         buffer = buffer.replace(/\r\n/g, "\n");
         let boundary: number;
         while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+          if (perMessage && Buffer.byteLength(buffer.slice(0, boundary), "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
           const result = await event(buffer.slice(0, boundary));
           buffer = buffer.slice(boundary + 2);
           if (result !== undefined) return result;
         }
+        if (perMessage && Buffer.byteLength(buffer, "utf8") > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       }
       if (done) break;
     }

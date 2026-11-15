@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -144,3 +144,113 @@ test("the pinned OpenCode executable serves health, sessions, SSE, and a local-p
   await readEvents;
   assert.equal((await api(`/session/${session.id}`, { method: "DELETE" })).status, 200);
 });
+
+// Output custody against the real executable: a command that prints a
+// configured secret and a file read of that secret must reach neither the
+// model request nor OpenCode's session store. Requires `pnpm build:typescript`.
+for (const custody of [false, true]) {
+  test(`configured secrets ${custody ? "stay out of" : "reach (unprotected baseline)"} OpenCode's store and model requests`, {
+    skip: !enabled,
+    timeout: 90_000,
+  }, async (t) => {
+    const { prepareOpenCodeOutputCustody } = await import("../dist/drivers/opencode/output-custody.js");
+    const secret = `synthetic-qualification-secret-${Date.now().toString(36)}`;
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-custody-"));
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    let child;
+    let step = 0;
+    const bodies = [];
+    const provider = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const raw = Buffer.concat(chunks).toString("utf8");
+      bodies.push(raw);
+      const body = JSON.parse(raw || "{}");
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      const call = (name, args) => [{ role: "assistant", tool_calls: [{ index: 0, id: `call_${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, null];
+      let frames = [[{ role: "assistant", content: "title" }, null], [{}, "stop"]];
+      if (Array.isArray(body.tools) && body.tools.length > 0) {
+        step += 1;
+        frames = step === 1 ? [call("bash", { command: "printenv QUALIFY_SECRET; printenv QUALIFY_SECRET > leak.txt; exit 3", description: "print" }), [{}, "tool_calls"]]
+          : step === 2 ? [call("read", { filePath: join(workspace, "leak.txt") }), [{}, "tool_calls"]]
+          : [[{ role: "assistant", content: "custody-done" }, null], [{}, "stop"]];
+      }
+      for (const [delta, finish_reason] of frames) response.write(`data: ${JSON.stringify({ id: "q", object: "chat.completion.chunk", created: 1, model: "q", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+      response.end("data: [DONE]\n\n");
+    });
+    t.after(async () => {
+      if (child?.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+      provider.closeAllConnections();
+      await new Promise((done) => provider.close(done));
+      await rm(root, { recursive: true, force: true });
+    });
+    provider.listen(0, "127.0.0.1");
+    await once(provider, "listening");
+    const configHome = join(root, "config");
+    await mkdir(join(configHome, "opencode"), { recursive: true });
+    const env = {
+      PATH: `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      HOME: root, XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true", OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+      OPENCODE_SERVER_USERNAME: "paperclip", OPENCODE_SERVER_PASSWORD: "local-fixture-only", QUALIFY_SECRET: secret,
+    };
+    const config = {
+      model: "openrouter/q", small_model: "openrouter/q", share: "disabled", autoupdate: false, plugin: [], instructions: [],
+      enabled_providers: ["openrouter"],
+      provider: { openrouter: { options: { baseURL: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "local-fixture-only" }, models: { q: { name: "q", limit: { context: 100000, output: 1000 } } } } },
+      permission: { "*": "allow", external_directory: { "*": "allow" } },
+    };
+    if (custody) {
+      const prepared = await prepareOpenCodeOutputCustody({ directory: join(root, "custody"), binDirectory: join(root, "bin"),
+        configDirectory: join(configHome, "opencode"), environment: env, secrets: [{ name: "QUALIFY_SECRET", value: secret }] });
+      Object.assign(config, prepared.config);
+      Object.assign(env, prepared.environment);
+    }
+    await writeFile(join(configHome, "opencode", "opencode.json"), JSON.stringify(config));
+    const command = resolve(process.env.PAPERCLIP_TEST_OPENCODE_BINARY ?? join(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"));
+    child = spawn(command, ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output = `${output}${chunk}`.slice(-16384); });
+    let baseUrl;
+    for (let attempt = 0; attempt < 150 && !baseUrl; attempt++) { baseUrl = output.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0]; if (!baseUrl) await delay(100); }
+    assert.ok(baseUrl, `OpenCode did not start: ${output}`);
+    const headers = { Authorization: `Basic ${Buffer.from("paperclip:local-fixture-only").toString("base64")}`, "Content-Type": "application/json" };
+    const api = async (path, options = {}) => {
+      const response = await fetch(`${baseUrl}${path}`, { headers, signal: AbortSignal.timeout(15_000), ...options });
+      assert.ok(response.ok, `${path}: ${response.status}`);
+      return response;
+    };
+    const session = await (await api("/session", { method: "POST", body: "{}" })).json();
+    await api(`/session/${session.id}/prompt_async`, { method: "POST", body: JSON.stringify({ model: { providerID: "openrouter", modelID: "q" }, parts: [{ type: "text", text: "go" }] }) });
+    let messages = [];
+    for (let attempt = 0; attempt < 300; attempt++) {
+      messages = await (await api(`/session/${session.id}/message`)).json();
+      if (messages.some((message) => message.parts.some((part) => part.type === "text" && part.text === "custody-done"))) break;
+      await delay(100);
+    }
+    const tools = messages.flatMap((message) => message.parts.filter((part) => part.type === "tool"));
+    assert.equal(tools.length, 2, JSON.stringify(tools));
+    assert.equal(tools[0].state.metadata?.exit, 3);
+    process.kill(-child.pid, "SIGTERM");
+    await once(child, "exit");
+    const persisted = [];
+    const scan = async (directory) => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const file = join(directory, entry.name);
+        if (entry.isDirectory()) await scan(file);
+        else if (entry.isFile() && (await readFile(file)).includes(secret)) persisted.push(file);
+      }
+    };
+    await scan(join(root, "data"));
+    const sent = bodies.filter((body) => body.includes(secret)).length;
+    if (custody) {
+      assert.deepEqual(persisted, []);
+      assert.equal(sent, 0);
+      assert.match(String(tools[0].state.output), /\[REDACTED\]/);
+      assert.match(String(tools[1].state.output), /\[REDACTED\]/);
+    } else {
+      assert.ok(persisted.length > 0 && sent > 0, "the unprotected baseline must reproduce the leak");
+    }
+  });
+}

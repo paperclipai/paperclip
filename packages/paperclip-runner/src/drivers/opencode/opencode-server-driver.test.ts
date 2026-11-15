@@ -403,6 +403,43 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("protects configured secrets in OpenCode output across controller and runner cutovers in one saved session", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-output-custody-"));
+    roots.push(root);
+    const configured = { PUBLISHING_API_KEY: "synthetic-delivered-secret", PLAIN_SETTING: "ordinary-setting" };
+    const launch = async (secretKeys: string[]) => {
+      const driver = new OpenCodeServerDriver({
+        model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        environment: { ...configuredEnvironmentProjection(configured, secretKeys), PATH: process.env.PATH },
+      });
+      const session = await driver.openSession({ runId: `custody-${secretKeys.length}`, normalizedSessionId: "custody", workingDirectory: root });
+      try {
+        const config = JSON.parse(await readFile(join(root, "custody", "config", "opencode", "opencode.json"), "utf8"));
+        const environment = JSON.parse(await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8"));
+        return { config, environment, ids: session.ids() };
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    };
+    // Saved by a controller that predates secret names: today's launch, unchanged.
+    const before = await launch([]);
+    expect(before.config.plugin).toEqual([]);
+    expect(before.config.shell).toBeUndefined();
+    expect(before.environment.keys).not.toContain("PAPERCLIP_OUTPUT_CUSTODY_KEYS");
+    // Resumed by a controller that names the secret: custody applies to the same session.
+    const after = await launch(["PUBLISHING_API_KEY"]);
+    expect(after.config.shell).toMatch(/output-custody\/[0-9a-f]{24}\/(?:zsh|bash|sh)$/);
+    expect(after.config.plugin).toEqual([expect.stringMatching(/^file:\/\/.*\/\.paperclip-output-custody\/paperclip-output-custody\.js$/)]);
+    expect(after.environment.keys).toEqual(expect.arrayContaining(["PAPERCLIP_OUTPUT_CUSTODY_KEYS", "PAPERCLIP_OUTPUT_CUSTODY_NONCE", "PAPERCLIP_OUTPUT_CUSTODY_DIR", "PUBLISHING_API_KEY"]));
+    expect(after.environment.keys).not.toContain("PAPERCLIP_SECRET_ENV_KEYS");
+    expect(JSON.stringify(after.config)).not.toContain(configured.PUBLISHING_API_KEY);
+    // A rollback to a controller without secret names still launches the saved session.
+    const rollback = await launch([]);
+    expect(rollback.config.plugin).toEqual([]);
+    expect(rollback.ids).toMatchObject({ providerSessionId: expect.any(String) });
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
@@ -1164,6 +1201,171 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("passes OpenRouter's stream through unchanged and records the host that served it on the turn's usage", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const stream = [
+      ": OPENROUTER PROCESSING\n\n",
+      'data: {"id":"gen-1762981234-AbCdEfGh","provider":"Novita","model":"deepseek/deepseek-v4.1-flash-1017","choices":[{"delta":{"content":"Hi"}}]}\n\n',
+      "data: {broken\n\n",
+      "data: [DONE]\n\n",
+    ];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        for (const chunk of stream) response.write(chunk);
+        response.end();
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-served-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-served-key" } });
+      session = await driver.openSession({ runId: "served", normalizedSessionId: "served", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "served", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const response = await fetch(`${baseURL}/chat/completions`, { method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString("utf8")).toBe(stream.join(""));
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload;
+      expect(usage).toMatchObject({ usage: { upstreamProvider: "Novita", providerRequestId: "gen-1762981234-AbCdEfGh", input: 3, output: 2 } });
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1762981234-AbCdEfGh" });
+    } finally {
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("keeps a finished call's host on its usage while OpenCode's next model call is already in flight", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    let releaseNext: (() => void) | undefined;
+    let call = 0;
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        call += 1;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        if (call === 1) {
+          response.end('data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
+          return;
+        }
+        response.write('data: {"id":"gen-next","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\n');
+        await new Promise<void>(resolve => { releaseNext = resolve; });
+        response.end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-inflight-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-inflight-key" } });
+      session = await driver.openSession({ runId: "inflight", normalizedSessionId: "inflight", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "inflight", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const send = () => fetch(`${baseURL}/chat/completions`, { method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+      await (await send()).arrayBuffer();
+      const next = await send();
+      expect(next.status).toBe(200);
+      const reader = next.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"provider":"Chutes"');
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
+      expect(usage).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-first" });
+      releaseNext?.();
+      while (!(await reader.read()).done);
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await collectTurnEvents(session.events());
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-next" });
+    } finally {
+      releaseNext?.();
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("does not carry an earlier call's host onto a call the tap skips, or into another run", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const responses = [
+      'data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      'data: {"id":"gen-second","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      'data: {"id":"gen-third","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+    ];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        response.writeHead(200, { "content-type": "text/event-stream" }).end(responses.shift());
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-skipped-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-skipped-key" } });
+      session = await driver.openSession({ runId: "skipped", normalizedSessionId: "skipped", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "skipped", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const call = async () => {
+        const response = await fetch(`${baseURL}/chat/completions`, { method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+      };
+      await call();
+      await call();
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
+      expect(usage).toMatchObject({ input: 3, output: 2 });
+      expect(usage).not.toHaveProperty("upstreamProvider");
+      expect(usage).not.toHaveProperty("providerRequestId");
+      await call();
+      expect(await session.usage?.()).not.toHaveProperty("upstreamProvider");
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await collectTurnEvents(session.events());
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-third" });
+      session.attachRun?.({ runId: "skipped-next" });
+      const attached = await session.usage?.();
+      expect(attached).not.toHaveProperty("upstreamProvider");
+      expect(attached).not.toHaveProperty("providerRequestId");
+    } finally {
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
   it.each([["HTTP_PROXY", "file"], ["ALL_PROXY", "directory"]] as const)("uses the runtime's %s, %s trust, and NO_PROXY without changing global transport", async (proxySetting, trust) => {
     const requests: string[] = [];
     const outgoingProxy = createHttpServer((request, response) => {
@@ -1905,7 +2107,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and assigned MCP gateway after startup retry=%s", async (retryStartup) => {
+  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and only the task bridge after startup retry=%s", async (retryStartup) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-context-"));
     const workspace = await mkdtemp(
@@ -2007,12 +2209,10 @@ describe("OpenCodeServerDriver", () => {
       },
       mcp: {
         paperclip: { enabled: true },
-        "paperclip-assigned": {
-          url: "https://paperclip.example/mcp",
-          enabled: true,
-        },
       },
     });
+    expect(Object.keys(config.mcp)).toEqual(["paperclip"]);
+    expect(JSON.stringify(config)).not.toContain("x".repeat(40));
     await expect(
       readFile(join(instructionRoot, "sibling.md"), "utf8"),
     ).resolves.toBe("instruction sibling\n");

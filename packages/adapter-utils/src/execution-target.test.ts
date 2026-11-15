@@ -7,6 +7,8 @@ import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetSessionIdentity,
+  normalizeAdapterExecutionTargetSessionIdentity,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   ensureAdapterExecutionTargetDirectory,
   ensureAdapterExecutionTargetCommandResolvable,
@@ -34,6 +36,23 @@ function sshExecutionTarget(): AdapterSshExecutionTarget {
     },
   };
 }
+
+describe("persisted execution target identities", () => {
+  it("retains SSH session guards without persisting connection credentials or socket paths", () => {
+    const target = sshExecutionTarget();
+    target.spec.useHostAuth = false;
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, privateKey: "credential canary", tailscaleSocket: "/private/socket", unexpected: { secret: "canary" } })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, port: "22" })).toBeNull();
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, host: {} })).toBeNull();
+  });
+  it("retains sandbox lease guards and rejects unknown transports", () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "fixture", environmentId: "environment", leaseId: "lease" };
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, credential: "canary" })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, transport: "unknown" })).toBeNull();
+  });
+});
 
 describe("execution target validation failures", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -236,6 +255,14 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+
+  it("uses a managed home on SSH when the agent has a configured AI connection", () => {
+    const target = sshExecutionTarget();
+    expect(adapterExecutionTargetUsesManagedHome(target, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: false } }, true)).toBe(true);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: true } }, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome(null, true)).toBe(false);
   });
 });
 

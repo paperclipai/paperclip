@@ -191,7 +191,7 @@ async function usageKeys(ctx: ChatCatalogContext, secretId: string) {
 }
 async function acceptTeamBinding(ctx: ChatCatalogContext, marker: TeamBindingApproval, memberName: string, userId: string) {
   const page = ctx.input.page, budget = chatCatalogNativePhaseRemainingBudget(ctx), remaining = () => Math.max(1_000, budget ? budget() : 120_000), issueId = ctx.issue()!.id;
-  const card = page.locator(`[data-testid="task-chat-interaction"][id=${JSON.stringify(`interaction-${marker.interactionId}`)}]`);
+  const card = page.locator(`[data-testid="task-chat-interaction"][data-interaction-id=${JSON.stringify(marker.interactionId)}]`);
   await expect(card).toBeVisible({ timeout: remaining() });
   for (const text of [memberName, marker.configPath]) await expect(card).toContainText(text, { timeout: remaining() });
   const response = page.waitForResponse(res => new URL(res.url()).origin === new URL(page.url()).origin && new URL(res.url()).pathname === `/api/issues/${issueId}/interactions/${marker.interactionId}/accept` && res.request().method() === "POST", { timeout: remaining() });

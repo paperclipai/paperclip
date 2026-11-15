@@ -16,6 +16,8 @@ export const ALLOWED_SPAN_ATTRIBUTES: ReadonlySet<string> = new Set([
   "paperclip.page.outcome",
   "paperclip.page.ready_signal",
   "paperclip.page.was_hidden",
+  "paperclip.page.suspended",
+  "paperclip.page.view",
   "paperclip.page.navigation_type",
   "paperclip.page.ttfb_ms",
   "paperclip.page.dom_content_loaded_ms",
@@ -24,6 +26,7 @@ export const ALLOWED_SPAN_ATTRIBUTES: ReadonlySet<string> = new Set([
   "paperclip.web_vital.value",
   "paperclip.web_vital.rating",
   "paperclip.api.area",
+  "paperclip.api.timing_source",
   "http.request.method",
   "http.response.status_code",
   "error.type",
@@ -96,7 +99,8 @@ export function sanitizeSpan(span: ReadableSpan): ReadableSpan {
     status: { code: span.status.code },
     attributes,
     links: [],
-    // Network timing events keep their names and times, never attributes.
+    // Any span event keeps its name and time, never its attributes. The fetch
+    // instrumentation runs with `ignoreNetworkEvents`, so request spans have none.
     events: span.events.map((event) => ({ name: event.name, time: event.time, droppedAttributesCount: 0 })),
     duration: span.duration,
     ended: span.ended,

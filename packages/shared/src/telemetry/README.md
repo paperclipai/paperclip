@@ -126,9 +126,8 @@ This document covers Paperclip Telemetry only. The generated Telemetry
 contract covers neither the Observability path nor the run-log path. Two other
 data paths document their own contract in their own file:
 
-- [Observability](../../../../doc/observability.md) — the OpenTelemetry trace
-  path, the sandbox startup trace spans, and the sandbox duplex transport
-  instrumentation.
+- [Observability](../../../../doc/observability.md) — the operator-enabled
+  OpenTelemetry trace path and Sentry error monitoring.
 - [Run-Log Events](../../../../doc/run-log-events.md) — events written to the
   local `heartbeat_run_events` table.
 

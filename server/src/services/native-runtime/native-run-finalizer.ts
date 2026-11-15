@@ -32,10 +32,11 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
+import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -404,7 +405,7 @@ export async function endSupersededNativeFinalizationRuns(db: Db, runIds?: reado
         : accepted === "succeeded" ? "succeeded" as const : accepted === "cancelled" ? "cancelled" as const : "failed" as const;
       await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-      await notifyExecutionRunWork(tx, { companyId: run.companyId });
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
       await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
@@ -625,7 +626,7 @@ async function recordRetryableFailure(input: {
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     }
-    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
@@ -1765,6 +1766,8 @@ export async function finalizeNativeRun(input: {
       // into a blocker; the committer rechecks that under the issue lock.
       failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
         && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
+      toolCallLoopContinuation: assessment.reportedDisposition === "yielded"
+        && assessment.continuation?.idempotencyKey === toolCallLoopContinuationKey(run.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -2015,10 +2018,11 @@ export async function finalizeNativeRun(input: {
       const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
         : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
       // A run projected to failed always records why, even when the provider
-      // reported a failed terminal without a classified failure.
+      // reported a failed terminal without a classified failure. A recorded
+      // runner turn failure names that cause.
       const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
       const explained = projectsFailedStatus
-        ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
         : null;
       const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
         else ${nextError} end`;
@@ -2073,7 +2077,7 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
         if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);

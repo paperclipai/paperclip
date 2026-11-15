@@ -202,6 +202,7 @@ export interface PluginEnvironmentDriverDeclaration {
   /** Codex task retention and authorized run attachment, version 1. */
   warmTaskVersion?: 1;
   sessionHandoffVersion?: 1;
+  protectedEnvironmentKeys?: string[];
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -726,6 +727,8 @@ export interface PaperclipPluginManifestV1 {
     supportsMergeAncestry?: boolean;
     recoveryPullRequestVersion?: 1;
     freshWorkspaceVersion?: 1;
+    /** Accepts the run's selected environment (one of this plugin's drivers) in workspace params. */
+    workspaceEnvironmentVersion?: 1;
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;
     defaultForProjects?: {

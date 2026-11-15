@@ -2049,7 +2049,7 @@ for (const execution of executions) {
           await expect(turnReply).toBeVisible({ timeout: reviewUiTimeout() });
           const pendingReview = waitingState.interactions.find(isPendingWarmConfirmation)!;
           const reviewCard = page.getByTestId("task-chat-interaction")
-            .and(page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`));
+            .and(page.locator(`[data-interaction-id=${JSON.stringify(pendingReview.id)}]`));
           await expect(reviewCard).toBeVisible({ timeout: reviewUiTimeout() });
           await expect(reviewCard.getByRole("button", { name: "Continue work", exact: true }))
             .toBeEnabled({ timeout: reviewUiTimeout() });

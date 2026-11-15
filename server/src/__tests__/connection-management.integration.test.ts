@@ -895,7 +895,10 @@ describe("connection management with production default agents", () => {
     expect(started, JSON.stringify(started)).toMatchObject({ status: 200, body: {
       expiresAt: null, requiredUserAction: { userId: f.userId, resource: { id: created.body.id } },
     } });
-    expect(new URL(started.body.authorizationUrl).searchParams.get("resume")).toBe(created.body.id);
+    // The agent links this in chat, so it is a relative app route, never the server's own origin.
+    expect(started.body.authorizationUrl).toMatch(/^\/[^/]/);
+    expect(started.body.requiredUserAction.setupPath).toBe(started.body.authorizationUrl);
+    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").searchParams.get("resume")).toBe(created.body.id);
     expect(await f.request("POST", path, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, created.body.id))).toHaveLength(0);
   });
@@ -984,6 +987,19 @@ describe("connection management with production default agents", () => {
         const updated = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body);
         expect(updated, JSON.stringify(updated)).toMatchObject({ status: 200, body: { revision: 1, configuration: { memberAccess: "selected" } } });
         expect(await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body)).toMatchObject({ status: 409 });
+        const otherUserId = randomUUID();
+        await accessService(server.db).ensureMembership(f.companyId, "user", otherUserId, "operator", "active");
+        for (const token of [f.key.token, f.jwt]) {
+          for (const field of ["responsible", "guest"]) {
+            const configuration = structuredClone(updated.body.configuration);
+            if (field === "responsible") configuration.responsibleUserId = otherUserId;
+            else configuration.people.push({ kind: "guest", githubUserId: "42", login: "guest", sponsorUserId: otherUserId, permissionProfile: "restricted" });
+            const denied = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, { expectedRevision: 1, configuration }, token);
+            expect(denied, JSON.stringify(denied)).toMatchObject({ status: 403 });
+            expect(JSON.stringify(denied.body)).toContain("task sponsor");
+          }
+        }
+        expect((await f.request("GET", `/chat-endpoints/${result.body.id}/github/configuration`)).body).toMatchObject({ revision: 1, configuration: updated.body.configuration });
         const handoff = await f.request("POST", `/chat-endpoints/${result.body.id}/github/identity/start`, {});
         expect(handoff).toMatchObject({ status: 200, body: { requiredUserAction: { userId: f.userId, resource: { id: result.body.id } } } });
       }

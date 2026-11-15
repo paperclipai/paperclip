@@ -6,7 +6,7 @@
 // source as the declarations from server/scripts/typecheck-layers.mjs, which this
 // script builds first. It then fails if a project still loads server source,
 // because that is what makes these programs large. See "Typecheck memory" in
-// doc/DEVELOPING.md.
+// doc/test-infrastructure.md.
 //
 // --reuse-declarations skips the build. Use it only straight after a server
 // typecheck on the same commit, because stale declarations pass silently.

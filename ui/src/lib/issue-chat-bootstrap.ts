@@ -3,6 +3,7 @@ import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS } from "@paperclipai/shared";
 import { api } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "@/lib/issue-detail-preload-events";
+import { isRestoredSavedRead } from "@/lib/persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   hasFreshIssueChatFirstFrame,
@@ -257,6 +258,25 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
 }
 
 /**
+ * At app start, adopt the bootstrap a hard load of a task URL started, so
+ * every reader of that task's chat shares it, including ones that start before
+ * the task page mounts. A task the saved read cache restored is also known by
+ * its id and identifier. Starts no request of its own.
+ */
+export function adoptHardLoadChatBootstrap(queryClient: QueryClient) {
+  if (typeof window === "undefined") return;
+  const early = (window as unknown as Record<string, EarlyChatBootstrap | undefined>)[EARLY_CHAT_BOOTSTRAP_GLOBAL];
+  if (!early?.ref || currentEntry(queryClient, early.ref)) return;
+  const restored = queryClient.getQueryData<{ id?: unknown; identifier?: unknown; companyId?: unknown }>([...queryKeys.issues.detail(early.ref), "core"]);
+  const companyId = typeof restored?.companyId === "string" ? restored.companyId : null;
+  if (!adoptEarlyChatBootstrap(queryClient, companyId, early.ref)) return;
+  const entry = currentEntry(queryClient, early.ref);
+  for (const alias of [restored?.id, restored?.identifier]) {
+    if (entry && typeof alias === "string" && alias && !currentEntry(queryClient, alias)) entries.set(refKey(alias), entry);
+  }
+}
+
+/**
  * The single-task route, for a task whose company the caller does not know
  * (a link's open intent). The task's own company owns the answer.
  */
@@ -275,14 +295,23 @@ function startSingle(queryClient: QueryClient, ref: string) {
  * is loading, loaded recently, or the task's first frame is cached and fresh.
  * Without a company it uses the single-task route. Resolves when the task's
  * bootstrap (new or already loading) settles; it never rejects.
+ *
+ * `aliases` are other refs the caller already knows the task by (a restored
+ * task's id): reads keyed by them share the request while it is loading.
  */
 export function startIssueChatBootstrap(
   queryClient: QueryClient,
   companyId: string | null | undefined,
   ref: string | null | undefined,
+  aliases: readonly (string | null | undefined)[] = [],
 ): Promise<unknown> {
   if (!ref) return Promise.resolve();
-  const settled = () => currentEntry(queryClient, ref)?.promise ?? Promise.resolve();
+  const settled = () => {
+    const entry = currentEntry(queryClient, ref);
+    if (!entry) return Promise.resolve();
+    for (const alias of aliases) if (alias && !currentEntry(queryClient, alias)) entries.set(refKey(alias), entry);
+    return entry.promise;
+  };
   if (currentEntry(queryClient, ref)) return settled();
   if (adoptEarlyChatBootstrap(queryClient, companyId, ref)) return settled();
   if (companyId) {
@@ -297,8 +326,10 @@ export function startIssueChatBootstrap(
 /**
  * For a task page's first read of `key`: when this account's bootstrap for
  * the task is loading or just arrived, use its part of the answer instead of
- * sending another request. A key that already holds data is being refreshed
- * (after a write, an invalidation or a poll), so it always asks the server.
+ * sending another request. A key that already holds data read in this
+ * document is being refreshed (after a write, an invalidation or a poll), so
+ * it always asks the server. Data restored from the saved read cache has not
+ * been read yet: its first revalidation shares the bootstrap like an empty key.
  * Falls back to the normal read when there is no bootstrap, or it lacks the task.
  */
 export async function readFromIssueChatBootstrap<T>(
@@ -308,7 +339,7 @@ export async function readFromIssueChatBootstrap<T>(
   pick: (item: ChatBootstrapItem) => T | undefined,
   read: () => Promise<T>,
 ): Promise<T> {
-  if (queryClient.getQueryData(key) !== undefined) return read();
+  if (queryClient.getQueryData(key) !== undefined && !isRestoredSavedRead(queryClient, key)) return read();
   const entry = currentEntry(queryClient, ref);
   // Only share an answer that is still loading or a moment old.
   if (entry && (entry.settledAt === undefined || Date.now() - entry.settledAt < SHARE_WINDOW_MS)) {

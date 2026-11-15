@@ -6,7 +6,10 @@
 //   - decides once per page session whether this session is sampled; an
 //     unsampled session does nothing else and downloads nothing,
 //   - measures the hard load and every client-side navigation
-//     (`page-load-recorder.ts`), and
+//     (`page-load-recorder.ts`),
+//   - keeps the Resource Timing entries of this origin's `/api/` requests
+//     until the SDK loads, so the SDK can show the hard load's API requests,
+//     and
 //   - after the page settles, downloads the tracing SDK chunk (`sdk.ts`),
 //     which exports the measurements, Web Vitals, and API request spans.
 // See doc/browser-performance-tracing.md.
@@ -16,6 +19,7 @@ import type { BrowserTracingConfig } from "@paperclipai/shared";
 import { whenPageSettles } from "@/lib/when-page-settles";
 import { readPageContentGates } from "./page-content-gates";
 import { createPageLoadRecorder, PAGE_LOAD_TIMEOUT_MS, type PageLoadRecorder } from "./page-load-recorder";
+import { pageViewFor } from "./page-view";
 
 export type RouterNavigationType = "PUSH" | "POP" | "REPLACE";
 
@@ -30,8 +34,19 @@ export interface TracingSdkHandle {
   shutdown(): Promise<void>;
 }
 
+/** Resource Timing entries for this origin's `/api/` requests, kept until the SDK takes them. */
+export interface ApiResourceCollector {
+  entries(): readonly PerformanceResourceTiming[];
+  /** Stops observing and drops the entries. */
+  stop(): void;
+}
+
 export interface TracingSdkModule {
-  startTracingSdk(config: BrowserTracingConfig, recorder: PageLoadRecorder): TracingSdkHandle;
+  startTracingSdk(
+    config: BrowserTracingConfig,
+    recorder: PageLoadRecorder,
+    options?: { apiResources?: ApiResourceCollector },
+  ): TracingSdkHandle;
 }
 
 export interface BrowserTracingControllerOptions {
@@ -69,6 +84,67 @@ export function resetPageSessionSampleForTest(): void {
 /** Any query that has no data yet and is fetching is the page's primary data. */
 export function hasPendingPrimaryData(queryClient: QueryClient): boolean {
   return queryClient.isFetching({ predicate: (query) => query.state.data === undefined }) > 0;
+}
+
+/** At most this many entries are kept; a hard load makes far fewer requests. */
+const API_RESOURCE_LIMIT = 500;
+
+/**
+ * Collects Resource Timing entries for `fetch`/XHR requests to `origin/api/`.
+ * `buffered: true` delivers the requests that finished before this ran (the
+ * hard load's session request, for example), and an observer keeps receiving
+ * entries after the browser's resource buffer (250 entries by default) is
+ * full. One observer callback per batch of finished requests; nothing else.
+ */
+export function observeApiResources(
+  origin: string,
+  Observer: typeof PerformanceObserver | null = typeof PerformanceObserver === "function" ? PerformanceObserver : null,
+): ApiResourceCollector {
+  let kept: PerformanceResourceTiming[] = [];
+  if (!Observer || !(Observer.supportedEntryTypes ?? []).includes("resource")) {
+    return { entries: () => kept, stop: () => {} };
+  }
+  const prefix = `${origin}/api/`;
+  let observer: PerformanceObserver | null = null;
+  try {
+    observer = new Observer((list) => {
+      for (const entry of list.getEntries() as PerformanceResourceTiming[]) {
+        if (kept.length >= API_RESOURCE_LIMIT) break;
+        if ((entry.initiatorType === "fetch" || entry.initiatorType === "xmlhttprequest") && entry.name.startsWith(prefix)) {
+          kept.push(entry);
+        }
+      }
+    });
+    observer.observe({ type: "resource", buffered: true });
+  } catch {
+    observer = null;
+  }
+  return {
+    entries: () => kept,
+    stop() {
+      observer?.disconnect();
+      observer = null;
+      kept = [];
+    },
+  };
+}
+
+/**
+ * When the tab was first hidden since navigation start, or null if it has
+ * been visible throughout. Chromium records each visibility change as a
+ * `visibility-state` performance entry (including the initial state); where
+ * it does not, a tab that is hidden now counts as hidden from the start, as
+ * `web-vitals` assumes.
+ */
+function firstHiddenTime(): number | null {
+  try {
+    const entries = performance.getEntriesByType?.("visibility-state") ?? [];
+    const hidden = entries.find((entry) => entry.name === "hidden");
+    if (hidden) return hidden.startTime;
+  } catch {
+    // Not supported.
+  }
+  return document.visibilityState === "hidden" ? 0 : null;
 }
 
 function pathnameOf(url: string | URL | null | undefined): string | null {
@@ -136,15 +212,17 @@ export function startBrowserTracingController(
     isDocumentHidden: () => document.visibilityState === "hidden",
     hasPendingPrimaryData: () => hasPendingPrimaryData(options.queryClient),
     readGates: readPageContentGates,
+    readView: (routeTemplate) => pageViewFor(routeTemplate, window.location.search),
   });
+  const apiResources = observeApiResources(window.location.origin);
   const history = trackHistoryChanges(now);
   const onVisibilityChange = () => {
-    if (document.visibilityState === "hidden") recorder.noteHidden();
+    if (document.visibilityState === "hidden") recorder.noteHidden(now());
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
 
   // The hard load started at navigation start (time 0), before this code ran.
-  recorder.begin({ routeTemplate: options.initialRouteTemplate, loadType: "hard", startTime: 0 });
+  recorder.begin({ routeTemplate: options.initialRouteTemplate, loadType: "hard", startTime: 0, hiddenAt: firstHiddenTime() });
   let lastPathname = options.initialPathname;
 
   let stopped = false;
@@ -161,10 +239,11 @@ export function startBrowserTracingController(
     void loadSdk()
       .then((module) => {
         if (stopped) return;
-        sdk = module.startTracingSdk(config, recorder);
+        sdk = module.startTracingSdk(config, recorder, { apiResources });
       })
       .catch(() => {
         // Tracing is optional; a failed chunk load must not affect the page.
+        apiResources.stop();
       });
   };
   const deadline = window.setTimeout(startLoad, options.sdkLoadDeadlineMs ?? SDK_LOAD_DEADLINE_MS);
@@ -191,6 +270,7 @@ export function startBrowserTracingController(
       history.stop();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       recorder.stop();
+      apiResources.stop();
       void sdk?.shutdown();
       sdk = null;
     },

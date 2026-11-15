@@ -35,7 +35,7 @@ describe("Antigravity private managed AI home", () => {
     const version = [{ epoch: 1, version: 1 }];
     const db = { select: (fields: Record<string, unknown>) => ({ from: () => ({
       where: () => Object.assign(Promise.resolve("refs" in fields ? [{ refs: account.refs, status: "active" }] : version),
-        { limit: async () => version }),
+        { limit: async () => version, for: async () => version }),
     }) }) } as unknown as Db;
     const input = {
       companyId: "44444444-4444-4444-8444-444444444444", agentId: "55555555-5555-4555-8555-555555555555", responsibleUserId: "alice",

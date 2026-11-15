@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
+import type { LiveEvent } from "@paperclipai/shared";
+import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -50,6 +54,7 @@ import {
 } from "@paperclipai/db";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
+import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -2820,7 +2825,11 @@ rl.on("line", (line) => {
     }
   });
 
-  it("starts with another user's personal app and requests authorization only when used", async () => {
+  it.each([
+    { longIdentity: false, existing: false },
+    { longIdentity: true, existing: false },
+    { longIdentity: true, existing: true },
+  ])("requests another user's personal authorization only when used (long: $longIdentity, existing: $existing)", async ({ longIdentity, existing }) => {
     const originalApiUrl = process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_API_URL = "http://paperclip.example.test";
     const company = await createCompany(db);
@@ -2845,6 +2854,7 @@ rl.on("line", (line) => {
       // may be unable to authenticate even though this user's grant is valid.
       // The cached catalog must remain visible so grant resolution can happen.
       await db.update(toolConnections).set({
+        ...(longIdentity ? { uid: `https://mcp.example.test/${"connection/".repeat(25)}`, name: "Personal connection ".repeat(10) } : {}),
         credentialPolicy: "per_user",
         healthStatus: "error",
         healthMessage: "This app needs you to sign in.",
@@ -2878,7 +2888,7 @@ rl.on("line", (line) => {
       const call = () => request(app).post(endpoint).set("authorization", `Bearer ${runtime[0]!.token}`)
         .send({ jsonrpc: "2.0", id: "call", method: "tools/call", params: { name: tool.name, arguments: {} } });
 
-      await db.insert(issueThreadInteractions).values({
+      if (existing) await db.insert(issueThreadInteractions).values({
         companyId: company.id,
         issueId: issue.id,
         kind: "request_confirmation",
@@ -2909,10 +2919,14 @@ rl.on("line", (line) => {
         effectiveResolverPolicy: "human_only",
         addresseeUserId: "carol",
       });
-      expect(interaction!.payload).toMatchObject({
-        prompt: `Connect your ${connection.name} account to continue`,
-        target: { key: `connection:${connection.uid}:user:carol` },
-      });
+      const payload = requestConfirmationPayloadSchema.parse(interaction!.payload);
+      expect(payload.target?.type).toBe("custom");
+      expect(payload.target && "key" in payload.target && payload.target.key.length).toBeLessThanOrEqual(120);
+      // A repeated refused call refreshes the same request, with a stable target.
+      await call().expect(409);
+      const cards = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(cards).toHaveLength(1);
+      expect(cards[0].payload).toEqual(interaction!.payload);
 
       await db.insert(connectionGrants).values({
         companyId: company.id,
@@ -3583,6 +3597,7 @@ rl.on("line", (line) => {
         "kv_get",
         "kv_list",
         "kv_set",
+        "slow_with_progress",
       ]);
 
       await allowAllToolsForAgent(db, company.id, agent.id);
@@ -3613,6 +3628,61 @@ rl.on("line", (line) => {
         expect.objectContaining({ key: "streamable-key", value: "streamable-value" }),
       ]);
     } finally {
+      await kvDemo.close();
+    }
+  });
+
+  it("shows a run's viewers the provider's progress for a long call, saves it on the call, and returns the same result", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const kvDemo: KvDemoHttpServer = createKvDemoHttpServer();
+    const port = await kvDemo.listen(0, "127.0.0.1");
+    const events: LiveEvent[] = [];
+    const otherEvents: LiveEvent[] = [];
+    const stop = subscribeCompanyLiveEvents(company.id, (event) => { events.push(event); });
+    const stopOther = subscribeCompanyLiveEvents(other.id, (event) => { otherEvents.push(event); });
+    try {
+      const access = toolAccessService(db);
+      const connection = await access.createConnection(company.id, {
+        name: "KV demo progress fixture", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none",
+        ownership: "customer", connectionKind: "managed",
+        config: { url: `http://127.0.0.1:${port}/mcp` }, transportConfig: { url: `http://127.0.0.1:${port}/mcp` },
+        credentialSecretRefs: [], enabled: true, status: "active",
+      });
+      await access.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
+      const slowTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.upstreamToolName === "slow_with_progress");
+      expect(slowTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { steps: 6, stepMs: 200 },
+      });
+      expect(result).toMatchObject({ status: "completed", result: { data: { isError: false, transport: "mcp_http" } } });
+
+      const progress = events.filter((event) => event.type === "heartbeat.run.tool_progress");
+      // Throttled: six provider updates over ~1.2s, a handful of events, the last one marks the end.
+      expect(progress.length).toBeGreaterThanOrEqual(3);
+      expect(progress.length).toBeLessThanOrEqual(7);
+      expect(progress.every((event) => event.companyId === company.id && event.payload.runId === run.id
+        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name
+        && event.payload.nativeToolName === nativeAssignedToolName(slowTool!.name))).toBe(true);
+      expect(progress[0]!.payload).toMatchObject({ progress: 1, total: 6, message: "Finished step 1 of 6", done: false });
+      expect(progress.at(-1)!.payload).toMatchObject({ done: true });
+      expect(otherEvents.filter((event) => event.type === "heartbeat.run.tool_progress")).toEqual([]);
+      const [invocation] = await db.select().from(toolInvocations)
+        .where(eq(toolInvocations.id, String(progress[0]!.payload.invocationId)));
+      expect(invocation).toMatchObject({ companyId: company.id, runId: run.id, status: "succeeded" });
+      expect(invocation!.progress).toMatchObject({ total: 6 });
+    } finally {
+      stop();
+      stopOther();
       await kvDemo.close();
     }
   });
@@ -6592,5 +6662,55 @@ rl.on("line", (line) => {
       },
       (error) => expectGatewayError(error, 403, "run_context_mismatch"),
     );
+  });
+
+  it("advertises on initialize only the capabilities that the gateway token may list", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `capability-gateway-${randomUUID()}`,
+      name: `Capability gateway ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Capability gateway", profileId: profile!.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const createToken = (allowedActions?: ToolMcpGatewayTokenAction[]) =>
+      gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: {
+          name: `Token ${randomUUID()}`,
+          clientLabel: "Capability client",
+          ownerNote: "Capability fixture token",
+          ...(allowedActions ? { allowedActions } : {}),
+        },
+      });
+    const capabilitiesFor = async (allowedActions?: ToolMcpGatewayTokenAction[]) => {
+      const token = await createToken(allowedActions);
+      const initialized = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "initialize" })
+        .expect(200);
+      return initialized.body.result.capabilities;
+    };
+
+    expect(await capabilitiesFor(["tools/list", "tools/call"])).toEqual({ tools: {} });
+    expect(await capabilitiesFor(["tools/list", "tools/call", "prompts/list"])).toEqual({ tools: {}, prompts: {} });
+    expect(await capabilitiesFor(["tools/list", "resources/list", "resources/read"])).toEqual({ tools: {}, resources: {} });
+    expect(await capabilitiesFor(["tools/call", "resources/read", "prompts/get"])).toEqual({});
+    expect(await capabilitiesFor()).toEqual({ tools: {}, resources: {}, prompts: {} });
+
+    const toolsOnly = await createToken(["tools/list", "tools/call"]);
+    const resources = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${toolsOnly.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "resources/list" })
+      .expect(403);
+    expect(resources.body.error.data.reasonCode).toBe("gateway_token_action_denied");
   });
 });

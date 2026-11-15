@@ -34,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./native-provider-turn-wait.js";
 export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
@@ -73,6 +74,9 @@ export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
 export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, type ToolInputSchemaAdmission } from "./drivers/tool-input-schema.js";
+export { TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./contracts/tool-input-variants.js";
+export { providerToolSchemaShapeIssues } from "./contracts/provider-tool-schema-shape.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
@@ -133,7 +137,7 @@ export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/ru
 
 export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
 
-export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
+export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchPreparationDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";
