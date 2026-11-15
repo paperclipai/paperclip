@@ -2,6 +2,7 @@ import type { agentWakeupRequests, chatActions } from "@paperclipai/db";
 import {
   assertDurableChatWakeupReceipt,
   createDurableChatWakeupRequest,
+  SILENT_CHAT_WAKE_SETTLEMENT_KEY,
 } from "./durable-chat-wakeup.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../modules/wake-queue/index.js";
 
@@ -129,6 +130,8 @@ export function resolveInboundWakeReceipt(
   // A completed run already received this message and answered it. Saying
   // "not started" would be wrong; it keeps the same silence as a promotion.
   if (declined && owner.status === "cancelled" && owner.error === QUEUED_MESSAGES_DELIVERED_REASON)
+    return null;
+  if (declined && [owner, receipt].some(row => row.payload?.[SILENT_CHAT_WAKE_SETTLEMENT_KEY] === true))
     return null;
   if (declined)
     return owner.runId || receipt.runId

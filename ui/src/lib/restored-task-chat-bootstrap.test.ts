@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import {
+  adoptHardLoadChatBootstrap,
   readFromIssueChatBootstrap,
   resetIssueChatBootstrapsForTest,
   startIssueChatBootstrap,
@@ -136,6 +137,24 @@ describe("a task restored from the saved read cache", () => {
     respond(answer({ issue: { ...answer().issue, planDocument: { key: "plan", body: "# Plan" } } as unknown as Issue }));
     await expect(plan).resolves.toMatchObject({ key: "plan" });
     expect(ownRead).not.toHaveBeenCalled();
+  });
+
+  it("is shared with readers that start before the task page mounts, by any ref the task is known by", async () => {
+    const { client } = restoredPage();
+    let respond!: (item: ChatBootstrapItem) => void;
+    earlyBootstrap(new Promise((resolve) => { respond = resolve; }));
+    // App start, before any route renders.
+    adoptHardLoadChatBootstrap(client);
+    const ownRead = vi.fn(async () => []);
+    const byId = readFromIssueChatBootstrap(client, queryKeys.issues.liveRuns(TASK_ID), TASK_ID, (item) => item.liveRuns, ownRead);
+    const byRef = readFromIssueChatBootstrap(client, queryKeys.issues.liveRuns(REF), REF, (item) => item.liveRuns, ownRead);
+    respond(answer({ liveRuns: [{ id: "run-1" }] as never }));
+    await expect(byId).resolves.toEqual([{ id: "run-1" }]);
+    await expect(byRef).resolves.toEqual([{ id: "run-1" }]);
+    expect(ownRead).not.toHaveBeenCalled();
+    // The task page's own start reuses the adopted request.
+    await startIssueChatBootstrap(client, "company-one", REF, [TASK_ID]);
+    expect(api.chatBootstrap).not.toHaveBeenCalled();
   });
 
   it("reads the task itself when no bootstrap is loading (a stale page refresh)", async () => {
