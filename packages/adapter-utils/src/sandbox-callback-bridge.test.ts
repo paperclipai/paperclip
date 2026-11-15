@@ -1007,6 +1007,46 @@ describe("sandbox callback bridge", () => {
     expect(requestStep).toBeNull();
   });
 
+  it("starts the bridge process with the owning run id, so the SSH stop check finds it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-run-id-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge run id test\n", "utf8");
+
+    const inner = createExecRunner();
+    const launchEnvs: Array<Record<string, string> | undefined> = [];
+    const runner = {
+      execute: async (input: Parameters<typeof inner.execute>[0]) => {
+        if ((input.args ?? []).some((arg) => arg.includes("nohup "))) launchEnvs.push(input.env);
+        return await inner.execute(input);
+      },
+    };
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime(queueRuntimeInput(runner, remoteWorkspaceDir, localWorkspaceDir, bridgeAsset));
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+
+    for (const runId of ["run-bridge-env-1", undefined]) {
+      launchEnvs.length = 0;
+      const bridge = await startSandboxCallbackBridgeServer({
+        runner,
+        runId,
+        remoteCwd: remoteWorkspaceDir,
+        assetRemoteDir: prepared.assetDirs.bridge,
+        queueDir,
+        bridgeToken: createSandboxCallbackBridgeToken(),
+        timeoutMs: 30_000,
+      });
+      await bridge.stop();
+      expect(launchEnvs).toHaveLength(1);
+      expect(launchEnvs[0]?.PAPERCLIP_RUN_ID).toBe(runId);
+    }
+  });
+
   it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
     cleanupDirs.push(rootDir);

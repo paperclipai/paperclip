@@ -228,6 +228,37 @@ export function providerResourceDispositionForTerminalRun(
   return status === "succeeded" ? desired : "stop_and_retain";
 }
 
+/**
+ * A cancelled run on a remote lease counts as stopped only with a termination
+ * receipt. Some drivers release a lease without one, so an agent stop would
+ * wait for the receipt forever. Ask the environment runtime to confirm the
+ * termination for each such lease. A failed or unproven check leaves the lease
+ * as it is, so the stop stays pending and a later attempt checks again.
+ */
+export async function confirmCancelledRemoteRunTerminations(
+  db: Db,
+  environmentRuntime: { confirmRemoteRunTermination(input: { lease: typeof environmentLeases.$inferSelect }): Promise<boolean> },
+  runs: Array<Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">>,
+) {
+  const cancelledRunIds = runs.filter(run => run.status === "cancelled").map(run => run.id);
+  if (cancelledRunIds.length === 0) return;
+  const leases = await db.select().from(environmentLeases).where(and(
+    inArray(environmentLeases.heartbeatRunId, cancelledRunIds),
+    isNotNull(environmentLeases.releasedAt),
+    isNotNull(environmentLeases.provider), ne(environmentLeases.provider, "local"),
+    sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? 'remoteExecutionTermination')`,
+  ));
+  for (const lease of leases) {
+    try {
+      await environmentRuntime.confirmRemoteRunTermination({ lease });
+    } catch (error) {
+      // The error can carry connection details, so log only its type.
+      logger.warn({ leaseId: lease.id, runId: lease.heartbeatRunId, errorType: error instanceof Error ? error.name : typeof error },
+        "could not confirm the termination of a cancelled remote run; the agent stop stays pending");
+    }
+  }
+}
+
 export async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;

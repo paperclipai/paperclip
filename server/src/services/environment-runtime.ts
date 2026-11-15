@@ -35,12 +35,12 @@ import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/nati
 import { acceptedStopOnlyReceipt, hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_ALLOCATION_HOLDER_STATUSES, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
-import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { inspectCloudSandboxCleanupAbsence } from "./sandbox-absence-proof.js";
 import { hasNativeWorkspaceExportResume, releaseCompletedNativeWorkspaceExportRetention } from "./native-runtime/native-workspace-export-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { currentControllerProcess } from "./controller-process-identity.js";
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions, environmentLeases, heartbeatRuns } from "@paperclipai/db";
 import type {
@@ -70,7 +70,7 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady, stopSshRunProcesses } from "@paperclipai/adapter-utils/ssh";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -736,6 +736,14 @@ export interface EnvironmentRuntimeDriver {
    */
   retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<unknown>;
   /**
+   * Stop what a cancelled run left on the provider resource of a released
+   * lease, and return a termination receipt (`{ providerLeaseId, state }`) only
+   * when the provider proves that nothing of the run still runs there. Return
+   * null when the driver cannot prove it. A driver whose release already
+   * persists a receipt does not need this method.
+   */
+  confirmRunTermination?(input: { environment: Environment; lease: EnvironmentLease }): Promise<unknown>;
+  /**
    * Report whether the provider worker can run an orphan teardown now. A plugin
    * sandbox provider worker can be briefly down during its own restart window.
    * A teardown in that window throws, and the cleanup sweep would count that
@@ -1241,6 +1249,22 @@ function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
 function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
   const environmentsSvc = environmentService(db);
 
+  // Return a `stopped` termination receipt only when the SSH host proves that
+  // no process of the lease's run remains. The receipt is valid only for the
+  // host that ran the lease.
+  async function confirmSshRunTermination(environment: Environment, lease: EnvironmentLease) {
+    const remoteCwd = typeof lease.metadata?.remoteCwd === "string" ? lease.metadata.remoteCwd.trim() : "";
+    if (!lease.heartbeatRunId || !lease.providerLeaseId || !remoteCwd) return null;
+    const parsed = await resolveEnvironmentDriverConfigForRuntime(db, lease.companyId, environment, {
+      heartbeatRunId: lease.heartbeatRunId,
+    });
+    if (parsed.driver !== "ssh") return null;
+    const { host, port, username } = parsed.config;
+    if (lease.providerLeaseId !== `ssh://${username}@${host}:${port}${remoteCwd}`) return null;
+    const result = await stopSshRunProcesses(parsed.config, { runId: lease.heartbeatRunId, remoteCwd });
+    return result === "stopped" ? { providerLeaseId: lease.providerLeaseId, state: "stopped" } : null;
+  }
+
   return {
     driver: "ssh",
 
@@ -1280,6 +1304,24 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
 
     async releaseRunLease(input) {
       return await environmentsSvc.releaseLease(input.lease.id, input.status);
+    },
+
+    // An SSH command runs without a terminal, so the end of the local SSH client
+    // does not prove that the run's remote processes ended. The release above
+    // records no receipt; this method supplies one after a remote check.
+    async confirmRunTermination({ environment, lease }) {
+      return await confirmSshRunTermination(environment, lease);
+    },
+
+    // An SSH lease has no provider resource to destroy: the host and its
+    // workspace stay. A pending cleanup only needs proof that the run's
+    // remote processes ended. Without that proof the method throws, so the
+    // cleanup sweep keeps the lease for a later retry.
+    async retryPendingSandboxTeardown({ environment, lease }) {
+      if (!environment) throw new Error("SSH lease cleanup requires its environment.");
+      const receipt = await confirmSshRunTermination(environment, lease);
+      if (!receipt) throw new Error("SSH lease cleanup could not prove that the run's remote processes ended.");
+      return receipt;
     },
 
     async realizeWorkspace(input) {
@@ -4398,6 +4440,31 @@ export function environmentRuntimeService(
         );
       }
       return await driver.retryPendingSandboxTeardown(input);
+    },
+
+    // A cancelled run's released remote lease needs a termination receipt before
+    // the agent counts as stopped (see `agentExecutionsHaveStopped`). Ask the
+    // driver for proof and persist the receipt on the lease. Return true only
+    // when the lease now holds a valid receipt.
+    async confirmRemoteRunTermination(input: { lease: typeof environmentLeases.$inferSelect }): Promise<boolean> {
+      const row = input.lease;
+      if (hasRemoteTerminationReceipt(row)) return true;
+      if (!row.releasedAt || !["released", "expired", "failed"].includes(row.status) ||
+          !row.environmentId || !row.heartbeatRunId || !row.provider || row.provider === "local") return false;
+      const environment = await environmentsSvc.getById(row.environmentId);
+      if (!environment) return false;
+      const lease = toEnvironmentLeaseSnapshot(row);
+      const driver = getDriver(getLeaseDriverKey(lease, environment));
+      if (!driver?.confirmRunTermination) return false;
+      const termination = remoteTerminationReceipt(lease, await driver.confirmRunTermination({ environment, lease }));
+      if (!termination) return false;
+      const [updated] = await db.update(environmentLeases).set({
+        cleanupStatus: "success",
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: termination })}::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.companyId, row.companyId),
+        eq(environmentLeases.status, row.status), isNotNull(environmentLeases.releasedAt))).returning();
+      return Boolean(updated && hasRemoteTerminationReceipt(updated));
     },
 
     // Report whether the provider worker can run an orphan teardown now. The

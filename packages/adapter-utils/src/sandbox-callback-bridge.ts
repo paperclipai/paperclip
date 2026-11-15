@@ -1699,6 +1699,12 @@ export async function startSandboxCallbackBridgeServer(input: {
   queueDir: string;
   bridgeToken: string;
   bridgeAsset?: SandboxCallbackBridgeAsset | null;
+  /**
+   * The run that owns the bridge. The bridge process gets it as
+   * PAPERCLIP_RUN_ID, so the SSH stop check finds a bridge that outlived its
+   * run.
+   */
+  runId?: string | null;
   host?: string;
   port?: number | null;
   pollIntervalMs?: number | null;
@@ -1751,6 +1757,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     cwd: input.remoteCwd,
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+      ...(input.runId?.trim() ? { PAPERCLIP_RUN_ID: input.runId.trim() } : {}),
       ...env,
     },
     timeoutMs,
