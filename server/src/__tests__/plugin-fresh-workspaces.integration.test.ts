@@ -98,6 +98,24 @@ describe.skipIf(!support.supported)("provider-owned fresh retry reservations", (
     expect(settled.metadata?.workspaceProviderRemoved).toBe(true);
     expect(cache.release).toHaveBeenCalledTimes(2);
   });
+  it("prepares provider storage for a fresh retry that follows a workspace the provider does not own", async () => {
+    const f = await createPluginWorkspaceFixture(db); await enable(f.pluginId);
+    const [previous] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: f.input.projectId,
+      projectWorkspaceId: f.input.projectWorkspaceId, sourceIssueId: f.issueId, mode: "isolated_workspace",
+      strategyType: "project_primary", name: "Fresh task workspace", status: "active", providerType: "adapter_managed" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: previous.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+      issueId: f.issueId, status: "running" }).returning();
+    const fresh = { attemptId: randomUUID(), sourceRunId: f.runId, previousWorkspaceId: previous.id, recoverySnapshots: [] };
+    const workspace = await preparePluginWorkspace(db, f.workers, { ...f.input, runId: run.id,
+      existingWorkspaceId: previous.id, fresh, expectedBindingRevision: 1 });
+    expect(workspace).not.toBeNull();
+    expect(workspace!.id).not.toBe(previous.id);
+    expect(workspace!.providerType).toBe("plugin");
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].operation).toMatchObject({ kind: "prepare", fresh, branchName: null });
+  });
   it("rejects a changed task revision before calling the provider", async () => {
     const f = await fixture(); await enable(f.pluginId);
     await db.update(issues).set({ workspaceBindingRevision: 2 }).where(eq(issues.id, f.issueId));
