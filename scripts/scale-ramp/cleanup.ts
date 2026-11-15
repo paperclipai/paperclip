@@ -102,12 +102,10 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
   });
 
   const taskIds = new Set(state.taskIds);
-  if (!state.taskIds.length) {
-    await mapLimit([...agentIds], PARALLELISM, async agentId => {
-      const issues = await read<Json[]>(`list tasks of ${agentId}`, `/api/companies/${companyId}/issues?assigneeAgentId=${agentId}&limit=500`, []);
-      for (const issue of issues) if (issue.assigneeAgentId === agentId && !issue.hiddenAt) taskIds.add(String(issue.id));
-    });
-  }
+  await mapLimit([...agentIds], PARALLELISM, async agentId => {
+    const issues = await read<Json[]>(`list tasks of ${agentId}`, `/api/companies/${companyId}/issues?assigneeAgentId=${agentId}&limit=500`, []);
+    for (const issue of issues) if (issue.assigneeAgentId === agentId && !issue.hiddenAt) taskIds.add(String(issue.id));
+  });
   await mapLimit([...taskIds], PARALLELISM, async taskId => {
     const archived = await attempt(`archive task ${taskId}`, async () => {
       try {

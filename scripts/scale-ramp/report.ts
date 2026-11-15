@@ -26,6 +26,9 @@ export interface RampResult {
   stop: RampOutcome["stop"];
   steps: RampOutcome["steps"];
   notMeasured: string[];
+  incompleteReasons: string[];
+  drained: boolean;
+  openTasksAtEnd: number;
   tasksCreated: number;
   taskCapReached: boolean;
   recordedSpendUsd: number | null;
@@ -40,8 +43,18 @@ export function verdictOf(outcome: RampOutcome | null, error: string | null): Ve
   if (outcome.stop && outcome.stop.criterion) return "fail";
   if (outcome.stop) return "interrupted";
   if (outcome.steps.some(step => step.criteriaFinal.some(result => result.status === "fail"))) return "fail";
-  if (outcome.steps.some(step => step.criteriaFinal.some(result => result.status === "not_measured"))) return "incomplete";
+  if (incompleteReasons(outcome).length) return "incomplete";
   return "pass";
+}
+
+export function incompleteReasons(outcome: RampOutcome | null): string[] {
+  if (!outcome) return [];
+  const reasons: string[] = [];
+  const missing = notMeasured(outcome);
+  if (missing.length) reasons.push(`criteria not measured: ${missing.join(", ")}`);
+  if (outcome.taskCapReached) reasons.push("the task cap was reached, so a step may have run below its concurrency");
+  if (outcome.openTasksAtEnd > 0) reasons.push(`${outcome.openTasksAtEnd} tasks were still open when the drain ended`);
+  return reasons;
 }
 
 export function notMeasured(outcome: RampOutcome | null): string[] {
@@ -81,6 +94,9 @@ export function buildResult(input: {
     stop: outcome?.stop ?? null,
     steps: outcome?.steps ?? [],
     notMeasured: notMeasured(outcome),
+    incompleteReasons: verdictOf(outcome, input.error) === "incomplete" ? incompleteReasons(outcome) : [],
+    drained: outcome?.drained ?? false,
+    openTasksAtEnd: outcome?.openTasksAtEnd ?? 0,
     tasksCreated: outcome?.tasksCreated ?? 0,
     taskCapReached: outcome?.taskCapReached ?? false,
     recordedSpendUsd: outcome ? outcome.recordedSpendUsd : null,
@@ -136,6 +152,8 @@ export function summaryLines(result: RampResult): string[] {
     );
   }
   if (result.notMeasured.length) lines.push(`Not measured: ${result.notMeasured.join(", ")}.`, "");
+  if (result.incompleteReasons.length) lines.push(`Incomplete because: ${result.incompleteReasons.join("; ")}.`, "");
+  lines.push(`Drain: ${result.drained ? "every task finished" : `${result.openTasksAtEnd} tasks still open`}.`, "");
   if (result.cleanup) {
     const c = result.cleanup;
     lines.push(`Cleanup in ${seconds(c.durationMs)}: ${c.runsCancelled} runs cancelled, ${c.tasksArchived} tasks archived, ${c.agentsDeleted} agents deleted`

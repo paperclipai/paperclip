@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface RunState {
@@ -37,10 +37,19 @@ export interface StateStore {
 }
 
 export function fileStateStore(dir: string): StateStore {
+  let queue: Promise<void> = Promise.resolve();
+  const write = async (body: string) => {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const temporary = `${statePath(dir)}.${process.pid}.tmp`;
+    await writeFile(temporary, body, { mode: 0o600 });
+    await rename(temporary, statePath(dir));
+  };
   return {
-    async save(state) {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      await writeFile(statePath(dir), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    save(state) {
+      const body = `${JSON.stringify(state, null, 2)}\n`;
+      const next = queue.then(() => write(body));
+      queue = next.catch(() => undefined);
+      return next;
     },
     async load() {
       try {
@@ -67,12 +76,18 @@ export function memoryStateStore(initial: RunState | null = null): StateStore & 
 
 export async function mapLimit<T>(items: readonly T[], limit: number, run: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
+  let failure: { error: unknown } | null = null;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
+    while (!failure && next < items.length) {
       const item = items[next]!;
       next += 1;
-      await run(item);
+      try {
+        await run(item);
+      } catch (error) {
+        failure ??= { error };
+      }
     }
   });
   await Promise.all(workers);
+  if (failure) throw (failure as { error: unknown }).error;
 }

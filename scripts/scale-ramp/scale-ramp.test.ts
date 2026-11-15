@@ -12,9 +12,9 @@ import { classifyHost, resolveTarget, TargetRefused } from "./guard.ts";
 import { EXIT, main, type MainDeps } from "./main.ts";
 import { Ramp } from "./ramp.ts";
 import { verdictOf, type RampResult } from "./report.ts";
-import { prepareCompany } from "./setup.ts";
+import { ensureAgents, prepareCompany } from "./setup.ts";
 import { distribution } from "./stats.ts";
-import { emptyState, fileStateStore, type RunState } from "./state.ts";
+import { emptyState, fileStateStore, mapLimit, type RunState } from "./state.ts";
 import { runTiming } from "./workload.ts";
 
 const TOKEN = "board-token-SECRET-4f2a9c";
@@ -337,13 +337,52 @@ describe("ramp against the fake API", () => {
     assert.equal(result.steps[1]!.metrics.peakRunning, 2);
   });
 
-  it("stops creating tasks at the task cap", async () => {
+  it("stops creating tasks at the task cap and grades the run incomplete", async () => {
     const out = await tempDir();
-    const h = harness();
+    const h = harness({ metricsUrl: METRICS_URL, metrics: goodMetrics }, { PAPERCLIP_SCALE_METRICS_URL: METRICS_URL });
     await main(baseArgs(out, ["--steps", "2", "--max-tasks", "3"]), h.deps);
     const result = await readResult(out);
     assert.equal(result.tasksCreated, 3);
     assert.equal(result.taskCapReached, true);
+    assert.equal(result.verdict, "incomplete");
+    assert.ok(result.incompleteReasons.some(reason => reason.includes("task cap")));
+  });
+
+  it("grades a run incomplete when tasks are still open after the drain", async () => {
+    const out = await tempDir();
+    const h = harness({ runDurationMs: 20 * 60_000 });
+    await main(baseArgs(out, ["--steps", "2", "--min-concurrency-ratio", "0.5"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(result.drained, false);
+    assert.ok(result.openTasksAtEnd > 0);
+    assert.ok(result.incompleteReasons.some(reason => reason.includes("still open")));
+    assertCleanedUp(h.fake);
+  });
+
+  it("creates no more tasks once interrupted", async () => {
+    const out = await tempDir();
+    const h = harness();
+    const original = h.deps.fetcher;
+    h.deps.fetcher = async (url, init) => {
+      if (init.method === "POST" && new URL(url).pathname.endsWith("/issues")) h.interrupt();
+      return original(url, init);
+    };
+    await main(baseArgs(out, ["--steps", "4"]), h.deps);
+    assert.equal(h.fake.issues.size, 1);
+    assertCleanedUp(h.fake);
+  });
+
+  it("keeps tracking its runs when the company run list is full of other runs", async () => {
+    const out = await tempDir();
+    const h = harness({ metricsUrl: METRICS_URL, metrics: goodMetrics }, { PAPERCLIP_SCALE_METRICS_URL: METRICS_URL });
+    h.fake.addNoiseRuns(1_000);
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.match(result.sources.runsAndTasks!, /full/);
+    assert.equal(result.steps[0]!.metrics.peakRunning, 2);
+    assert.ok(result.steps[0]!.metrics.tasksFinished >= 2);
+    assert.ok(result.recordedSpendUsd! > 0);
+    assert.ok(result.drained, "finished runs are not left counted as running");
   });
 
   it("cleans up after a crash in the middle of the ramp", async () => {
@@ -392,6 +431,24 @@ describe("ramp against the fake API", () => {
     assert.ok([...h.fake.companies.values()].every(company => company.status === "archived"));
   });
 
+  it("archives a task the state file never recorded", async () => {
+    const out = await tempDir();
+    const h = harness();
+    const options = parseOptions(baseArgs(out, ["--steps", "2"]), h.deps.env, h.clock.now());
+    const api = new PaperclipClient(options.target, TOKEN, h.deps.fetcher, h.clock, new Redactor([TOKEN]));
+    const store = fileStateStore(options.outDir);
+    const state: RunState = emptyState(options.label, options.target.baseUrl, h.clock.now());
+    await prepareCompany({ api, options, state, store, credential: PROVIDER_KEY, log: () => {} });
+    await ensureAgents({ api, options, state, store, count: 2 });
+    const recorded = await api.post<{ id: string }>(`/api/companies/${state.companyId}/issues`, { title: "recorded", assigneeAgentId: state.agentIds[0] });
+    state.taskIds.push(recorded.id);
+    await store.save(state);
+    const unrecorded = await api.post<{ id: string }>(`/api/companies/${state.companyId}/issues`, { title: "unrecorded", assigneeAgentId: state.agentIds[1] });
+    assert.equal(await main(["--base-url", ORIGIN, "--target-kind", "test-stack", "--out", out, "--cleanup-only", "scale-test-run", "--yes"], h.deps), EXIT.pass);
+    assert.ok(h.fake.issues.get(unrecorded.id)!.hiddenAt);
+    assertCleanedUp(h.fake);
+  });
+
   it("finds the run by name for --cleanup-only when the state file is gone", async () => {
     const out = await tempDir();
     const h = harness();
@@ -420,6 +477,39 @@ describe("ramp against the fake API", () => {
     assert.equal(code, EXIT.incomplete);
     assertCleanedUp(h.fake);
     assert.equal(h.fake.companies.get(companyId)!.status, "active", "a supplied company is never archived");
+  });
+});
+
+describe("state and parallel work", () => {
+  it("stops assigning work after a failure and waits for started work", async () => {
+    const started: number[] = [];
+    let running = 0;
+    let finishedAfterFailure = 0;
+    let failed = false;
+    await assert.rejects(mapLimit([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 3, async item => {
+      started.push(item);
+      running += 1;
+      await new Promise(resolve => setTimeout(resolve, item === 2 ? 1 : 10));
+      running -= 1;
+      if (item === 2) {
+        failed = true;
+        throw new Error("create failed");
+      }
+      if (failed) finishedAfterFailure += 1;
+    }), /create failed/);
+    assert.equal(running, 0, "every started worker finished before the error surfaced");
+    assert.deepEqual(started, [1, 2, 3], "no item was started after the failure");
+    assert.equal(finishedAfterFailure, 2);
+  });
+
+  it("keeps state.json readable under overlapping saves", async () => {
+    const dir = await tempDir();
+    const store = fileStateStore(dir);
+    const state = emptyState("scale-test-run", ORIGIN, 0);
+    await Promise.all(Array.from({ length: 25 }, (_, index) => store.save({ ...state, agentIds: Array.from({ length: index + 1 }, (_, n) => `agent-${n}`) })));
+    const saved = await store.load();
+    assert.equal(saved!.agentIds.length, 25);
+    assert.deepEqual(await readdir(dir), ["state.json"]);
   });
 });
 

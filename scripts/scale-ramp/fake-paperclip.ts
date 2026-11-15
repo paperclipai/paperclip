@@ -99,6 +99,14 @@ export class FakePaperclip {
     return id;
   }
 
+  addNoiseRuns(count: number): void {
+    for (let index = 0; index < count; index += 1) {
+      const id = this.id();
+      this.runs.set(id, { id, agentId: "noise-agent", issueId: "noise-issue", status: "succeeded", createdAt: this.clock.now() + 1e10 + index,
+        startedAt: null, finishedAt: null, willFail: false });
+    }
+  }
+
   running(): number {
     return [...this.runs.values()].filter(run => run.status === "running").length;
   }

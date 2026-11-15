@@ -4,7 +4,7 @@ import { evaluate, firstFailure, type CriterionResult, type ServerMetrics, type 
 import { LIVE_RUN_STATUSES } from "./cleanup.ts";
 import { ensureAgents } from "./setup.ts";
 import { distribution } from "./stats.ts";
-import { taskTag, type RunState, type StateStore } from "./state.ts";
+import { mapLimit, taskTag, type RunState, type StateStore } from "./state.ts";
 import { runTiming, taskBrief, taskNonce, taskTitle, type RunEvent } from "./workload.ts";
 
 type Json = Record<string, any>;
@@ -26,6 +26,8 @@ const RETRY_RECHECK_MS = 30_000;
 const EVENT_FETCHES_PER_TICK = 10;
 const EVENT_PAGES = 4;
 const SINGLE_READS_PER_TICK = 50;
+const AGENT_RUN_PAGE = 20;
+const AGENT_RUN_READ_PARALLELISM = 8;
 
 interface TaskRecord {
   id: string;
@@ -84,6 +86,7 @@ export interface RampOutcome {
   steps: StepResult[];
   stop: StopReason | null;
   drained: boolean;
+  openTasksAtEnd: number;
   tasksCreated: number;
   taskCapReached: boolean;
   recordedSpendUsd: number;
@@ -215,7 +218,7 @@ export class Ramp {
       result.criteriaFinal = evaluate(result.metrics, options.thresholds);
     }
     return {
-      steps: results, stop, drained, tasksCreated: this.tasks.size, taskCapReached: this.taskCapReached,
+      steps: results, stop, drained, openTasksAtEnd: this.openTasks().length, tasksCreated: this.tasks.size, taskCapReached: this.taskCapReached,
       recordedSpendUsd: this.recordedSpend(), runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
     };
   }
@@ -234,7 +237,7 @@ export class Ramp {
         await this.poll();
         const stop = this.immediateStop(stepIndex);
         if (stop) return stop;
-        if (!draining) await this.topUp(concurrency, stepIndex);
+        if (!draining) await this.topUp(concurrency, stepIndex, until);
         else if (this.openTasks().length === 0) return null;
       }
       const wake = Math.min(this.nextBoardAt, this.nextPollAt, until);
@@ -264,9 +267,10 @@ export class Ramp {
     return Math.round(total * 100) / 100;
   }
 
-  private async topUp(concurrency: number, stepIndex: number): Promise<void> {
+  private async topUp(concurrency: number, stepIndex: number, until: number): Promise<void> {
     const { api, state, store, options } = this.deps;
     for (const agentId of state.agentIds.slice(0, concurrency)) {
+      if (this.deps.shouldStop() || this.deps.clock.now() >= until) return;
       if (this.openByAgent.has(agentId)) continue;
       if (this.tasks.size >= this.deps.maxTasks) {
         this.taskCapReached = true;
@@ -327,7 +331,7 @@ export class Ramp {
     const previous = this.runs.get(id);
     this.runs.set(id, {
       id, taskId, agentId: String(row.agentId), status: String(row.status), createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
-      finishedAt: ms(row.finishedAt), costUsd: num(row.costUsd) ?? 0, sampled: previous?.sampled ?? false,
+      finishedAt: ms(row.finishedAt), costUsd: num(row.costUsd) ?? previous?.costUsd ?? 0, sampled: previous?.sampled ?? false,
     });
     const own = this.runsByTask.get(taskId) ?? new Set<string>();
     own.add(id);
@@ -339,11 +343,15 @@ export class Ramp {
     for (const row of page) this.noteRun(row);
     if (page.length < RUN_PAGE) return;
     this.runsListTruncated = true;
-    const seen = new Set(page.map(row => String(row.issueId ?? row.contextSnapshot?.issueId ?? "")));
-    for (const task of this.openTasks().filter(task => !seen.has(task.id)).slice(0, 50)) {
-      const own = await this.deps.api.get<Json[]>(`/api/issues/${task.id}/runs`).catch(() => [] as Json[]);
-      for (const row of own) this.noteRun({ ...row, issueId: task.id });
-    }
+    const listed = new Set(page.map(row => String(row.id)));
+    const agents = new Set<string>();
+    for (const run of this.runs.values()) if (LIVE_RUN_STATUSES.has(run.status) && !listed.has(run.id)) agents.add(run.agentId);
+    for (const task of this.openTasks()) if (!(this.runsByTask.get(task.id)?.size)) agents.add(task.agentId);
+    await mapLimit([...agents], AGENT_RUN_READ_PARALLELISM, async agentId => {
+      const own = await this.deps.api.get<Json[]>(`/api/companies/${this.companyId}/heartbeat-runs?agentId=${agentId}&summary=true&limit=${AGENT_RUN_PAGE}`)
+        .catch(() => [] as Json[]);
+      for (const row of own) this.noteRun(row);
+    });
   }
 
   private async readTasks(): Promise<void> {
