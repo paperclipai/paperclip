@@ -483,3 +483,74 @@ describe("staging-mix completion from accepted results", () => {
     expect(stagingMixDescription(nonce, { turnMinutes: 5, rounds: 4, subtasks: 0, followUpAfterMs: null, arriveAtMs: 0, holdMs: 0 })).toContain("Post exactly one comment");
   });
 });
+
+describe("a follow-up whose run failed before any provider turn (w-20261114T231451-s7110 t005)", () => {
+  const nonce = "0c544491";
+  const comment = "3f6a9eb9-29d9-47d6-a434-a222769dbc54";
+  const first = "60bdd4dc-0dde-4052-9a4d-b81924aa70c1", undelivered = "76f30f70-f42f-4e8f-bef8-71e0ae1b33a3", served = "fdf1f793-95a3-4b90-a196-389ef4416c3d";
+  const t005 = (undeliveredTurn: boolean): WakeEvidenceFile => ({
+    completedAt: 1_794_699_341_813,
+    runs: [{ runId: first, createdAt: 1_794_698_171_163, startedAt: 1_794_698_171_226, invocationSource: "assignment", triggerDetail: "system",
+      wakeupRequestId: "035375c8", acceptedDisposition: "done", acceptedAt: 1_794_699_137_418, finishedAt: 1_794_699_138_705, status: "succeeded", providerTurnStarted: true },
+    { runId: undelivered, createdAt: 1_794_699_138_879, startedAt: 1_794_699_139_744, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "7aa52728", acceptedDisposition: null, acceptedAt: null, finishedAt: 1_794_699_184_470, status: "failed",
+      contextSnapshot: { wakeCommentIds: [comment], wakeCommentId: comment }, providerTurnStarted: undeliveredTurn },
+    { runId: served, createdAt: 1_794_699_254_459, startedAt: 1_794_699_303_349, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "fb81665c", acceptedDisposition: "done", acceptedAt: 1_794_699_340_097, finishedAt: 1_794_699_341_889, status: "succeeded", providerTurnStarted: true }],
+    wakes: [{ id: "035375c8", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_698_171_163 },
+    { id: "7aa52728", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_698_885_238, payload: { commentId: comment, _paperclipWakeContext: { wakeCommentIds: [comment] } } },
+    { id: "fb81665c", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: "execution-recovery", createdAt: 1_794_699_254_459 }],
+  });
+  const posted = commentEvidence([
+    { body: "Ledger document now includes the FOLLOWUP line.", authorAgentId: "a", createdByRunId: served, createdAt: "2026-11-14T23:35:42.025Z" },
+    { body: "Done. All 10 rounds completed.", authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-14T23:32:18.864Z" },
+    { body: doneMarker(nonce), authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-14T23:32:05.368Z" }]);
+  const completionOnce = (comments: typeof posted, completion: CompletionEvidence) => gradeStagingMix(nonce,
+    { turnMinutes: 14, rounds: 4, subtasks: 0, followUpAfterMs: 497_251, arriveAtMs: 20_000, holdMs: 600_000 },
+    { issueStatus: "done", documents: { ledger: `${ledger(nonce, 4)}\nFOLLOWUP-${nonce}` }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stagingMix: { followUp: { at: 1_794_698_884_902, commentId: comment, duringRun: true, inOverlap: true, error: null }, followUpErrors: [], retries: [], comments,
+        completion } }).checks.find(check => check.name === "completion_once")!;
+  const both = (evidence: WakeEvidenceFile) => [evidenceCompletion(evidence)!, completionEvidence({ completedAt: evidence.completedAt!, wakes: evidence.wakes,
+    runs: evidence.runs!.map(run => ({ ...run, acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null })) })];
+
+  it("credits the follow-up to the run that served it, with one completer and no extra turn", () => {
+    const evidence = t005(false);
+    expect(followUpsAnsweredLater("t005", evidence)).toEqual([{ taskId: "t005", runId: served, commentIds: [comment], postedAt: 1_794_698_885_238,
+      queuedAt: 1_794_699_254_459, startedAt: 1_794_699_303_349 }]);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(anchor).toEqual({ at: 1_794_699_137_418, source: "accepted_result" });
+      expect(completionRunIds(posted, nonce, completion)).toEqual([first]);
+      const after = runsAfterDone("t005", evidence, anchor);
+      expect(after.started).toEqual([]);
+      expect(after.answeredFollowUp.map(turn => turn.runId)).toEqual([served]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still fails a recovery re-completion when the run that received the follow-up started its provider turn", () => {
+    const evidence = t005(true);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t005", evidence, anchor).started.map(turn => [turn.runId, turn.wakeReason])).toEqual([[served, "issue_recovery_action_restored"]]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 60bdd4dc, fdf1f793 each reported completion" });
+    }
+  });
+
+  it("lets only the serving run re-complete, and still fails a later recovery run that answers nothing", () => {
+    const extra = "8e8e8e8e-extra";
+    const evidence = t005(false);
+    evidence.runs!.push({ runId: extra, createdAt: 1_794_699_400_000, startedAt: 1_794_699_400_100, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "w-extra", acceptedDisposition: "done", acceptedAt: 1_794_699_410_000, status: "succeeded", providerTurnStarted: true });
+    evidence.wakes!.push({ id: "w-extra", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: "execution-recovery", createdAt: 1_794_699_400_000 });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t005", evidence, anchor).started.map(turn => turn.runId)).toEqual([extra]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 60bdd4dc, 8e8e8e8e each reported completion" });
+    }
+  });
+});

@@ -2,7 +2,7 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, exists, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, sql, type Placeholder } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -31,6 +31,7 @@ import { logger } from "./logger.js";
 import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
 import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { preparedStatement } from "../services/prepared-statements.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
 import { notifyChatCompanyAuthorityChange } from "../services/chat-run-milestone-notifications.js";
@@ -76,11 +77,20 @@ const agentAuthenticationFields = {
   lifecycleHolds: agents.lifecycleHolds,
 };
 
-async function loadResponsibleUserMemberships(
-  db: Db,
-  input: { companyId: string; userId: string | null },
-) {
-  if (!input.userId) return [];
+type Bound<Value> = Value | Placeholder;
+
+export function agentAuthenticationQuery(db: Db, agentId: Bound<string>) {
+  return db.select(agentAuthenticationFields).from(agents).where(eq(agents.id, agentId));
+}
+
+const agentAuthenticationStatement = preparedStatement(db =>
+  agentAuthenticationQuery(db, sql.placeholder("agentId")).prepare("agent_authentication"));
+
+function loadAgentAuthentication(db: Db, agentId: string) {
+  return agentAuthenticationStatement(db).execute({ agentId }).then((rows) => rows[0] ?? null);
+}
+
+export function responsibleUserMembershipsQuery(db: Db, input: { companyId: Bound<string>; userId: Bound<string> }) {
   return db
     .select({
       companyId: companyMemberships.companyId,
@@ -97,6 +107,19 @@ async function loadResponsibleUserMemberships(
         exists(db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.id, input.userId))),
       ),
     );
+}
+
+const responsibleUserMembershipsStatement = preparedStatement(db => responsibleUserMembershipsQuery(db, {
+  companyId: sql.placeholder("companyId"),
+  userId: sql.placeholder("userId"),
+}).prepare("responsible_user_memberships"));
+
+async function loadResponsibleUserMemberships(
+  db: Db,
+  input: { companyId: string; userId: string | null },
+) {
+  if (!input.userId) return [];
+  return responsibleUserMembershipsStatement(db).execute({ companyId: input.companyId, userId: input.userId });
 }
 
 /**
@@ -357,11 +380,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const agentRecord = await db
-        .select(agentAuthenticationFields)
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
-        .then((rows) => rows[0] ?? null);
+      const agentRecord = await loadAgentAuthentication(db, claims.sub);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
         next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
@@ -478,11 +497,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .set({ lastUsedAt: new Date() })
       .where(eq(agentApiKeys.id, key.id));
 
-    const agentRecord = await db
-      .select(agentAuthenticationFields)
-      .from(agents)
-      .where(eq(agents.id, key.agentId))
-      .then((rows) => rows[0] ?? null);
+    const agentRecord = await loadAgentAuthentication(db, key.agentId);
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));

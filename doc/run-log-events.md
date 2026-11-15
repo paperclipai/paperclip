@@ -462,7 +462,7 @@ runner lifecycle, `other` for an unknown value, or `unavailable` when the state 
 none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
 provider cleanup or warm transition is pending. These fields explain how the runner
 stopped. The event is not recorded when a scheduled retry resumes a runner that
-exited after a settled suspension; see `doc/execution-semantics.md`.
+exited after a settled suspension.
 
 `native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
 failed run whose reattachment proved the Runner process gone

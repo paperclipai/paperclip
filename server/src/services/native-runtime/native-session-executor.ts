@@ -11131,11 +11131,25 @@ async function executePaperclipNativeSessionAttempt(
   let claimedStartupContext: NativeExecutionContext | undefined;
   let freshClaimAttempt: number | undefined;
   let scheduledResumeContinuation = false;
+  const startupContextBeforeClaim = nativeSessionStartups.get(input.execution.binding.runId)?.executionContext;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
       () =>
-        input.db.transaction(async (tx) => {
+        // The claim locks the coordinator, then the run row. A writer holding
+        // those rows in the other order can deadlock it (40P01); a lock wait
+        // can also time out (55P03). Either rolls the claim back whole and it
+        // starts no provider work, so a fresh attempt re-reads and re-proves
+        // everything. Without it the run failed before its first turn and the
+        // task needed reconciliation.
+        retryTransientLockContention(() => input.db.transaction(async (tx) => {
+          // A rolled-back attempt may have opened a startup context; drop it.
+          if (claimedStartupContext) {
+            claimedStartupContext.finish();
+            claimedStartupContext = undefined;
+            const startup = nativeSessionStartups.get(input.execution.binding.runId);
+            if (startup) startup.executionContext = startupContextBeforeClaim;
+          }
           const coordinator = await tx
             .select()
             .from(nativeRunFinalizations)
@@ -11369,7 +11383,7 @@ async function executePaperclipNativeSessionAttempt(
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
           return nextAttempt;
-        }).then(async claimedAttempt => {
+        })).then(async claimedAttempt => {
           const startup = nativeSessionStartups.get(input.execution.binding.runId);
           if (!startup) throw new Error("native_session_startup_owner_missing");
           startup.leaseOwner = leaseOwner;
@@ -16643,6 +16657,7 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
+      launchDigestVersion: description.launchDigestVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,

@@ -8478,9 +8478,9 @@ export function issueRoutes(
     companyId: string;
     projectId: string | null;
     goalId: string | null;
-  }) {
+  }, options: { workspaceProvider?: boolean } = {}) {
     const projectPromise = issue.projectId
-      ? projectsSvc.getById(issue.projectId)
+      ? projectsSvc.getById(issue.projectId, options)
       : Promise.resolve(null);
     const directGoalPromise = issue.goalId
       ? goalsSvc.getById(issue.goalId)
@@ -10157,20 +10157,20 @@ export function issueRoutes(
       workProducts,
       createdFrom,
     ] = await Promise.all([
-      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue)),
-      timing.time("ancestors", () => svc.getAncestors(issue.id)),
-      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false })),
+      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue, { workspaceProvider: false })),
+      timing.time("ancestors", () => svc.getAncestors(issue.id, { parentId: issue.parentId })),
+      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false, issue })),
       timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
-      timing.time("relations", () => svc.getRelationSummaries(issue.id)),
+      timing.time("relations", () => svc.getRelationSummaries(issue.id, { companyId: issue.companyId })),
       timing.time("blockers", () => svc
         .listBlockerAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
       timing.time("review", () => svc
         .listReviewAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
-      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id)),
+      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id, undefined, { companyId: issue.companyId })),
       timing.time("handoff", () => listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])),
-      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id)),
+      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id, { companyId: issue.companyId })),
       timing.time("recovery", () => recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)),
       inboxArchiveFieldsPromise,
       timing.time("channel", () => getExternalChannelBindingSummary(db, issue.companyId, issue.id)),
@@ -18402,7 +18402,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
-      await issueThreadInteractionService(db).listForIssue(id);
+      await issueThreadInteractionService(db).listForIssue(issue.id, issue);
     if (req.actor.type === "agent" && req.actor.agentId && req.actor.runId) {
       await recordDeclinedInteractionRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
         issue, interactions: interactions as Parameters<typeof recordDeclinedInteractionRead>[1]["interactions"] })

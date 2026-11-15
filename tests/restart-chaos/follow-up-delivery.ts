@@ -6,6 +6,7 @@ export interface DeliveryRun {
   startedAt?: number | null;
   wakeupRequestId: string | null;
   contextSnapshot?: unknown;
+  providerTurnStarted?: boolean | null;
 }
 
 export interface DeliveryWake { id: string | null; createdAt?: number | null; payload?: unknown }
@@ -30,23 +31,44 @@ export function wakeInputCommentIds(run: Pick<DeliveryRun, "contextSnapshot">, w
     ...strings(payload.commentId), ...strings(wakeContext.wakeCommentIds), ...strings(wakeContext.wakeCommentId)])];
 }
 
-export function laterAnswers(evidence: { runs?: readonly DeliveryRun[]; wakes?: readonly DeliveryWake[] } | null): Map<string, LaterAnswer> {
+const earliest = (a: number | null, b: number | null) => a === null ? b : b === null ? a : Math.min(a, b);
+
+type DeliveryEvidence = { runs?: readonly DeliveryRun[]; wakes?: readonly DeliveryWake[] } | null;
+
+function followUpDeliveries(evidence: DeliveryEvidence): { answers: Map<string, LaterAnswer>; undelivered: Set<string> } {
   const answers = new Map<string, LaterAnswer>();
-  if (!evidence) return answers;
+  const undelivered = new Set<string>();
+  if (!evidence) return { answers, undelivered };
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
   const started = (evidence.runs ?? []).filter((run): run is DeliveryRun & { runId: string; startedAt: number } => Boolean(run.runId) && typeof run.startedAt === "number")
     .sort((a, b) => a.startedAt - b.startedAt);
   const firstStart = started[0]?.startedAt ?? null;
+  let carried: { commentIds: string[]; postedAt: number | null } | null = null;
   started.forEach((run, index) => {
     const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
-    const owed = wakeInputCommentIds(run, wake);
     const postedAt = typeof wake?.createdAt === "number" ? wake.createdAt : null;
     const postedDuringWork = postedAt !== null && firstStart !== null ? postedAt >= firstStart : index > 0;
-    if (index > 0 && postedDuringWork && owed.length) {
-      answers.set(run.runId, { runId: run.runId, commentIds: owed, postedAt, queuedAt: run.createdAt, startedAt: run.startedAt });
+    const owed = index > 0 && postedDuringWork ? wakeInputCommentIds(run, wake) : [];
+    const commentIds = [...new Set([...(carried?.commentIds ?? []), ...owed])];
+    if (!commentIds.length) return;
+    const firstPostedAt = owed.length ? earliest(carried?.postedAt ?? null, postedAt) : carried?.postedAt ?? null;
+    if (run.providerTurnStarted === false) {
+      carried = { commentIds, postedAt: firstPostedAt };
+      undelivered.add(run.runId);
+      return;
     }
+    carried = null;
+    answers.set(run.runId, { runId: run.runId, commentIds, postedAt: firstPostedAt, queuedAt: run.createdAt, startedAt: run.startedAt });
   });
-  return answers;
+  return { answers, undelivered };
+}
+
+export function laterAnswers(evidence: DeliveryEvidence): Map<string, LaterAnswer> {
+  return followUpDeliveries(evidence).answers;
+}
+
+export function undeliveredFollowUpRuns(evidence: DeliveryEvidence): Set<string> {
+  return followUpDeliveries(evidence).undelivered;
 }
 
 export const COMPLETION_INCOMPLETE_KEY = "native-completion-incomplete";
