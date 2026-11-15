@@ -458,6 +458,7 @@ export const CLOUD_CONTROL_ACTIONS = [
   "connector-events:wake",
   "mcp-device:mint",
   "mcp-dot:principal",
+  "product-summary:read",
 ] as const;
 export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
 
