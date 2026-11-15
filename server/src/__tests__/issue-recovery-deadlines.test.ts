@@ -210,7 +210,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       tx => notifyChatInboundWakeNotices(tx, { companyId: f.companyId, runId }),
       tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "lock_released", issueId: null, runId }),
     ];
-    for (const [runId, expected] of [[graph.runId, graph.affected], [taskless.id, []]] as const) {
+    for (const [runId, expected] of [[graph.runId, graph.affected], [taskless.id, []]] as Array<[string, string[]]>) {
       for (const writer of writers(runId)) {
         checked.length = 0; assigned.length = 0;
         await state.db.transaction(tx => writer(tx));

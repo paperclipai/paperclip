@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { setImmediate as immediate } from "node:timers/promises";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { trimWorkSignalStack, workSignalDebug } from "@paperclipai/db/work-signal-debug";
 import { issueService } from "../services/issues.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
@@ -85,8 +85,15 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
         const [run] = await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
         if (!run!.contextSnapshot?.issueId) { response.end("ok"); return; }
         const issueId = String(run!.contextSnapshot?.issueId);
-        await issueService(state.db).addComment(issueId, "Progress: done with this step", { agentId: run!.agentId, runId });
-        await issueService(state.db).update(issueId, { status: "in_review" });
+        const deadlocked = (error: unknown): boolean => typeof error === "object" && error !== null
+          && ((error as { code?: string }).code === "40P01" || deadlocked((error as { cause?: unknown }).cause));
+        const retryDeadlock = async (write: () => Promise<unknown>) => {
+          for (let attempt = 1; ; attempt++) {
+            try { return await write(); } catch (error) { if (attempt >= 3 || !deadlocked(error)) throw error; }
+          }
+        };
+        await retryDeadlock(() => issueService(state.db).addComment(issueId, "Progress: done with this step", { agentId: run!.agentId, runId }));
+        await retryDeadlock(() => issueService(state.db).update(issueId, { status: "in_review" }));
         response.end("ok");
       } catch (error) { failures.push(error); response.statusCode = 500; response.end("failed"); }
     });
@@ -109,10 +116,38 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
     await state.start({});
     await advance(10 * MINUTE);
     events.length = 0;
+    const counts = async () => {
+      const [runs] = await state.db.select({ finished: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')::int`,
+        failed: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'failed')::int`, all: sql<number>`count(*)::int` })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.runtimeMode, "legacy")));
+      const [events] = await state.db.select({ n: sql<number>`count(*)::int` }).from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.companyId, f.companyId));
+      const [comments] = await state.db.select({ n: sql<number>`count(*)::int` }).from(issueComments)
+        .where(and(eq(issueComments.companyId, f.companyId), sql`${issueComments.authorAgentId} is not null`));
+      return { ...runs!, events: events!.n, agentComments: comments!.n };
+    };
+    const workBefore = await counts();
     const before = state.meter.read();
+    const startedAt = Date.now();
+    const byCheck: Record<string, number> = {}, settingsCallers: Record<string, number> = {};
+    const tally = (log: ReturnType<typeof state.meter.stopLog>) => {
+      for (const entry of log) {
+        const stack = entry.stack ?? "";
+        const owner = stack.includes("reconcileStrandedAssignedIssues") ? "stranded-assignments"
+          : /assigned-work-sweep|checkIssue/.test(stack) ? "assigned-work-invariant"
+            : stack.includes("sweepStaleIssueLocks") ? "stale-issue-locks" : stack.includes("recovery/work.ts") ? "recovery-loads" : "other";
+        byCheck[owner] = (byCheck[owner] ?? 0) + 1;
+        if (/from "instance_settings"/.test(entry.sql)) {
+          const frame = stack.split("\n").map(line => line.trim()).find(line => /server\/src\/services\//.test(line) && !/instance-settings/.test(line)) ?? "unknown";
+          const key = `${owner} ${frame.replace(/^at (async )?/, "").replace(/\(?\/.*\/server\/src\//, "(").replace(/:\d+\)?$/, ")")}`;
+          settingsCallers[key] = (settingsCallers[key] ?? 0) + 1;
+        }
+      }
+    };
     state.meter.startLog({ stacks: true });
     let next = 12;
     for (let minute = 0; minute < minutes; minute++) {
+      const minuteEnds = startedAt + (minute + 1) * MINUTE;
       for (let started = 0; started < runsPerMinute; started++) {
         const issueId = population.inReview[next++ % population.inReview.length]!;
         const comment = await issueService(state.db).addComment(issueId, "Please take another pass", { userId: "recovery-user" });
@@ -128,28 +163,20 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
           reason: "manual", requestedByActorType: "user", requestedByActorId: "recovery-user",
           contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: new Date().toISOString() } });
       }
-      await advance(MINUTE);
+      await advance(minuteEnds - Date.now());
       await state.heartbeat.drainActiveRunExecutions();
+      tally(state.meter.stopLog());
+      state.meter.startLog({ stacks: true });
     }
+    const seconds = (Date.now() - startedAt) / 1000;
     const after = state.meter.read();
-    const log = state.meter.stopLog();
-    const byCheck: Record<string, number> = {}, settingsCallers: Record<string, number> = {};
-    for (const entry of log) {
-      const stack = entry.stack ?? "";
-      const owner = stack.includes("reconcileStrandedAssignedIssues") ? "stranded-assignments"
-        : /assigned-work-sweep|checkIssue/.test(stack) ? "assigned-work-invariant"
-          : stack.includes("sweepStaleIssueLocks") ? "stale-issue-locks" : stack.includes("recovery/work.ts") ? "recovery-loads" : "other";
-      byCheck[owner] = (byCheck[owner] ?? 0) + 1;
-      if (/from "instance_settings"/.test(entry.sql)) {
-        const frame = stack.split("\n").map(line => line.trim()).find(line => /server\/src\/services\//.test(line) && !/instance-settings/.test(line)) ?? "unknown";
-        const key = `${owner} ${frame.replace(/^at (async )?/, "").replace(/\(?\/.*\/server\/src\//, "(").replace(/:\d+\)?$/, ")")}`;
-        settingsCallers[key] = (settingsCallers[key] ?? 0) + 1;
-      }
-    }
-    const runs = await state.db.select({ status: heartbeatRuns.status, mode: heartbeatRuns.runtimeMode, n: sql<number>`count(*)::int` })
-      .from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId)).groupBy(heartbeatRuns.status, heartbeatRuns.runtimeMode);
-    const seconds = minutes * 60;
-    const summary = { ...summarize(events, seconds), statementsPerSecond: Number(((after.statements - before.statements) / seconds).toFixed(1)), runs,
+    tally(state.meter.stopLog());
+    const workAfter = await counts();
+    const work = { started: workAfter.all - workBefore.all, finished: workAfter.finished - workBefore.finished,
+      failed: workAfter.failed - workBefore.failed, events: workAfter.events - workBefore.events,
+      agentComments: workAfter.agentComments - workBefore.agentComments };
+    const summary = { ...summarize(events, seconds), seconds, work,
+      statementsPerSecond: Number(((after.statements - before.statements) / seconds).toFixed(1)),
       agentWriteFailures: fake.failures.length,
       statementsPerSecondBy: Object.fromEntries(Object.entries(byCheck).map(([owner, count]) => [owner, Number((count / seconds).toFixed(1))])),
       instanceSettingsReads: settingsCallers };
@@ -157,19 +184,30 @@ describeIssueRecovery("recovery checks while runs are active in a staging-shaped
     return summary;
   }
 
+  function expectWorkload(summary: Awaited<ReturnType<typeof measure>>, taskRuns: number, tasklessRuns: number) {
+    expect(summary.agentWriteFailures).toBe(0);
+    expect(summary.work.started).toBeGreaterThanOrEqual(taskRuns + tasklessRuns);
+    expect(summary.work.finished).toBeGreaterThanOrEqual(taskRuns + tasklessRuns);
+    expect(summary.work.failed).toBeLessThanOrEqual(Math.ceil(0.1 * summary.work.started));
+    expect(summary.work.agentComments).toBeGreaterThanOrEqual(taskRuns);
+    expect(summary.work.events).toBeGreaterThan(summary.work.finished);
+  }
+
   it("re-checks only the tasks seven runs a minute touch, among 850 open tasks", async () => {
     const summary = await measure(7, 10, 1);
     report("7 runs/min", summary);
+    expectWorkload(summary, 70, 10);
     expect(summary.checks["stranded-assignments"]?.company ?? 0).toBe(0);
     expect(summary.signals).toEqual({});
-    expect(summary.stranded / 600).toBeLessThan(2);
+    expect(summary.stranded / summary.seconds).toBeLessThan(2);
   }, 1_800_000);
 
   it("re-checks only the tasks fifty runs a minute touch, among 850 open tasks", async () => {
     const summary = await measure(50, 6, 5);
     report("50 runs/min", summary);
+    expectWorkload(summary, 300, 30);
     expect(summary.checks["stranded-assignments"]?.company ?? 0).toBe(0);
     expect(summary.signals).toEqual({});
-    expect(summary.stranded / 360).toBeLessThan(3);
+    expect(summary.stranded / summary.seconds).toBeLessThan(3);
   }, 1_800_000);
 });
