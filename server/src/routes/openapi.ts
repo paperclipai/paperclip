@@ -10480,6 +10480,19 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/link-previews/cached",
+  tags: ["companies"],
+  summary: "Read a batch of stored link statuses without contacting providers",
+  description: "Board-only and company/viewer scoped. Canonical links are reused across tasks. Stale records have maxAgeMs zero; absent records are omitted. This is a read-only cache projection.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: { content: { "application/json": { schema: z.object({ urls: z.array(z.string().max(2048)).max(50) }) } } },
+  },
+  responses: { 200: r.ok(z.object({ results: z.record(z.string(), z.unknown()) })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/external-objects",
   tags: ["issues"],
