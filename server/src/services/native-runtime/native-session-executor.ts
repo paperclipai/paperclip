@@ -10735,7 +10735,7 @@ export async function executePaperclipNativeSession(input: {
     executionFailure = error;
     if (error instanceof NativeControllerRecoveryWaitingError) {
       await deferNativeControllerRecovery(input.db, { ...input.execution.binding,
-        leaseOwner: input.leaseOwner, retryAt: error.retryAt });
+        leaseOwner: input.leaseOwner, retryAt: error.retryAt, waitingForOwner: error.owner });
     }
     if (!(error instanceof NativeRunnerOwnershipUnverifiedError) && !(error instanceof NativeStartupCleanupPendingError) && startup.stopRequested && startup.executionContext?.signal.reason instanceof Error &&
         startup.executionContext.signal.reason.message === "native_session_cancelled") {
