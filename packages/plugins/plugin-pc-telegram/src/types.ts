@@ -130,6 +130,7 @@ export type InboxPeerUpdate =
     accountId: string;
     peerId: string;
     photo: string;
+    photoId?: string;
   }
   | {
     type: "gap";

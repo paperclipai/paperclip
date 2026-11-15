@@ -29,7 +29,9 @@ import {
   upsertConnection,
 } from "./connections.js";
 import { chatListLabel, dialogOriginId, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
+import { createDialogCache, preferCachedPhoto, type CacheScope } from "./dialog-cache.js";
 import { historyCacheKey, historyHitIsFresh, patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
+import { createInboxLive } from "./inbox-live.js";
 import { publicForward } from "./forward.js";
 import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
 import {
@@ -53,6 +55,7 @@ import {
 } from "./secrets.js";
 import { publicChannelTitle, publicPhoto, publicPresence, publicSharedChats, unreadCount } from "./peer-card.js";
 import { createGramJsClientFactory, telegramSessionDeviceModel } from "./telegram-gramjs.js";
+import type { PeerSummary } from "./peer-card.js";
 import type {
   InboxPeerUpdate,
   LiveTelegramAccount,
@@ -131,11 +134,19 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const peerLabels = new Map<string, string>();
   const dialogCards = new Map<string, { cards: Map<string, DialogCard> }>();
   const dialogPhotos = new Map<string, string>();
+  const dialogPhotoIds = new Map<string, string>();
+  const dialogCache = createDialogCache();
+  const historyRefresh = new Set<string>();
+  const cardRefresh = new Map<string, Promise<void>>();
+  let refreshDialogCards: (companyId: string, accountId: string) => void = () => undefined;
+  let scheduleDialogPersist: (companyId: string, accountId: string) => void = () => undefined;
+  let scheduleHistoryPersist: (accountId: string, peerId: string) => void = () => undefined;
   const cardJobs = new Map<string, Promise<Map<string, DialogCard>>>();
   const historyCache = new Map<string, { at: number; messages: ChatBubble[] }>();
   const historyJobs = new Map<string, Promise<ChatBubble[]>>();
   const pendingLatest = new Map<string, ChatBubble[]>();
   const issueRefs = new Map<string, string>();
+  const inboxLive = new Map<string, ReturnType<typeof createInboxLive>>();
   const outboundMemory = new Map<string, { hash: string; at: number; sentHashes: string[] }>();
   const pendingOutbound = new Map<string, string>();
   const followupChains = new Map<string, Promise<void>>();
@@ -158,14 +169,23 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     ctx.streams.emit(LOGIN_STREAM_CHANNEL, { companyId, status });
   }
 
+  function companyInbox(companyId: string) {
+    const current = inboxLive.get(companyId);
+    if (current) return current;
+    const created = createInboxLive();
+    inboxLive.set(companyId, created);
+    return created;
+  }
+
   function emitInbox(companyId: string, event: Record<string, unknown>) {
+    companyInbox(companyId).push(event);
     const ctx = pluginContext;
     if (!ctx) return;
     try {
       ctx.streams.open(INBOX_STREAM, companyId);
       ctx.streams.emit(INBOX_STREAM, event);
     } catch {
-      // The open dialog still refreshes from the worker slice when the stream is down.
+      // The parked inbox-wait read delivers the same event when the host drops the push.
     }
   }
 
@@ -177,23 +197,39 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     return `${companyId}:${accountId}:${peerId}`;
   }
 
-  function keepDialogPhoto(companyId: string, accountId: string, peerId: string, photo: string | null, replace: boolean): string | null {
+  function keepDialogPhoto(
+    companyId: string,
+    accountId: string,
+    peerId: string,
+    photo: string | null,
+    replace: boolean,
+    photoId = "",
+  ): string | null {
     const key = dialogPhotoKey(companyId, accountId, peerId);
-    const safe = publicPhoto(photo);
-    if (safe && (replace || !dialogPhotos.has(key))) dialogPhotos.set(key, safe);
-    return dialogPhotos.get(key) ?? null;
+    const current = dialogPhotos.get(key) ?? null;
+    if (!replace && current) return current;
+    const currentId = dialogPhotoIds.get(key) ?? "";
+    const chosen = preferCachedPhoto(current, publicPhoto(photo), currentId, photoId);
+    if (!chosen) return null;
+    const nextId = photoId || currentId;
+    if (chosen !== current) {
+      dialogPhotos.set(key, chosen);
+      if (nextId) dialogPhotoIds.set(key, nextId);
+      void dialogCache.writeAvatar(companyId, accountId, peerId, { photoId: nextId, dataUrl: chosen }).catch(() => undefined);
+    } else if (photoId && photoId !== currentId) {
+      dialogPhotoIds.set(key, photoId);
+      void dialogCache.writeAvatar(companyId, accountId, peerId, { photoId, dataUrl: chosen }).catch(() => undefined);
+    }
+    return chosen;
   }
 
-  function dropAccountCache(accountId: string) {
+  function dropHistoryMemory(accountId: string) {
     const prefix = `${accountId}:`;
     for (const key of historyCache.keys()) {
       if (key.startsWith(prefix)) historyCache.delete(key);
     }
-    for (const key of dialogCards.keys()) {
-      if (key.endsWith(`:${accountId}`)) dialogCards.delete(key);
-    }
-    for (const key of cardJobs.keys()) {
-      if (key.endsWith(`:${accountId}`)) cardJobs.delete(key);
+    for (const key of historyJobs.keys()) {
+      if (key.startsWith(prefix)) historyJobs.delete(key);
     }
     for (const key of pendingLatest.keys()) {
       if (key.startsWith(prefix)) pendingLatest.delete(key);
@@ -271,6 +307,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         at: key.endsWith(":latest") ? entry.at : Date.now(),
         messages: patchHistoryMessages(entry.messages, [bubble]),
       });
+      if (key.endsWith(":latest")) scheduleHistoryPersist(accountId, peerId);
     }
     const queued = (pendingLatest.get(pendingHistoryKey(accountId, peerId)) ?? []).some((message) => message.id === bubble.id);
     if (!hasLatest && inserted) stashPendingBubble(accountId, peerId, bubble);
@@ -288,26 +325,29 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     }
     if (update.inserted && !already && update.bubble.direction === "in") card.unread += 1;
     if (update.inserted && !already && update.bubble.direction === "out") card.unread = 0;
+    scheduleDialogPersist(update.companyId, update.accountId);
     return card;
   }
 
   function applyInboxUpdate(update: InboxPeerUpdate, knownRef = "") {
     if (update.type === "gap") {
-      dropAccountCache(update.accountId);
+      dropHistoryMemory(update.accountId);
+      refreshDialogCards(update.companyId, update.accountId);
       emitInbox(update.companyId, { companyId: update.companyId, kind: "gap" });
       return;
     }
     if (update.type === "photo") {
-      const photo = keepDialogPhoto(update.companyId, update.accountId, update.peerId, update.photo, true);
-      if (!photo) return;
+      const before = dialogPhotos.get(dialogPhotoKey(update.companyId, update.accountId, update.peerId)) ?? null;
+      const photo = keepDialogPhoto(update.companyId, update.accountId, update.peerId, update.photo, true, update.photoId ?? "");
+      if (!photo || photo === before) return;
       const card = cardBucket(update.companyId, update.accountId)?.get(update.peerId);
       if (card) card.photo = photo;
       void issueRefFor(update.companyId, update.accountId, update.peerId, knownRef).then((issueRef) => {
-        if (!issueRef) return;
         emitInbox(update.companyId, {
           companyId: update.companyId,
           kind: "dialog",
           issueRef,
+          peerId: update.peerId,
           photo,
           preview: card?.preview ?? "",
           unread: card?.unread ?? 0,
@@ -332,11 +372,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       const targets = update.peerId ? [update.peerId] : [...peers];
       for (const peerId of targets) {
         void issueRefFor(update.companyId, update.accountId, peerId, knownRef).then((issueRef) => {
-          if (!issueRef) return;
           emitInbox(update.companyId, {
             companyId: update.companyId,
             kind: "delete",
             issueRef,
+            peerId,
             messageIds: update.messageIds,
           });
         });
@@ -346,16 +386,15 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     const already = patchPeerHistory(update.accountId, update.peerId, update.bubble, update.inserted);
     const card = touchDialogCard(update, already);
     void issueRefFor(update.companyId, update.accountId, update.peerId, knownRef).then((issueRef) => {
-      if (!issueRef) return;
       emitInbox(update.companyId, {
         companyId: update.companyId,
         kind: "message",
         issueRef,
+        peerId: update.peerId,
         bubble: update.bubble,
         preview: card?.preview ?? update.bubble.text.replace(/\s+/g, " ").trim().slice(0, 80),
         unread: card?.unread ?? 0,
         activityAt: card?.activityAt || update.bubble.at,
-        photo: keepDialogPhoto(update.companyId, update.accountId, update.peerId, card?.photo ?? null, false),
       });
     });
   }
@@ -684,63 +723,245 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         };
       });
 
+      async function hydrateDialogCards(companyId: string, accountId: string): Promise<Map<string, DialogCard> | null> {
+        const rows = await dialogCache.readDialogs(companyId, accountId);
+        if (!rows || rows.length === 0) return null;
+        const cards = new Map<string, DialogCard>();
+        for (const row of rows) {
+          const key = dialogPhotoKey(companyId, accountId, row.id);
+          const avatar = await dialogCache.readAvatar(companyId, accountId, row.id);
+          if (avatar?.dataUrl) {
+            dialogPhotos.set(key, avatar.dataUrl);
+            if (avatar.photoId) dialogPhotoIds.set(key, avatar.photoId);
+          } else if (row.photoId) {
+            dialogPhotoIds.set(key, row.photoId);
+          }
+          cards.set(row.id, {
+            name: row.name,
+            preview: row.preview,
+            unread: row.unread,
+            photo: dialogPhotos.get(key) ?? null,
+            presence: row.presence,
+            activityAt: row.activityAt,
+          });
+        }
+        return cards;
+      }
+
+      async function persistDialogCards(companyId: string, accountId: string, cards: Map<string, DialogCard>): Promise<void> {
+        const rows = [...cards.entries()].map(([id, card]) => ({
+          id,
+          name: card.name,
+          preview: card.preview,
+          unread: card.unread,
+          photoId: dialogPhotoIds.get(dialogPhotoKey(companyId, accountId, id)) ?? "",
+          presence: card.presence,
+          activityAt: card.activityAt,
+        }));
+        await dialogCache.writeDialogs(companyId, accountId, rows);
+      }
+
+      async function applySummaries(companyId: string, accountId: string, rows: PeerSummary[]): Promise<Map<string, DialogCard>> {
+        const key = `${companyId}:${accountId}`;
+        const previous = cardBucket(companyId, accountId) ?? new Map<string, DialogCard>();
+        if (rows.length === 0 && previous.size > 0) return previous;
+        const cards = new Map<string, DialogCard>();
+        for (const row of rows) {
+          if (!row?.id || !row.name) continue;
+          const prior = previous.get(row.id);
+          const photoId = typeof row.photoId === "string" ? row.photoId : "";
+          const beforePhoto = dialogPhotos.get(dialogPhotoKey(companyId, accountId, row.id)) ?? null;
+          const photo = keepDialogPhoto(companyId, accountId, row.id, publicPhoto(row.photo), true, photoId);
+          const next: DialogCard = {
+            name: row.name,
+            preview: typeof row.preview === "string" ? row.preview.slice(0, 80) : prior?.preview ?? "",
+            unread: unreadCount(row.unread),
+            photo,
+            presence: publicPresence(row.presence),
+            activityAt: typeof row.activityAt === "string" && row.activityAt ? row.activityAt : prior?.activityAt ?? "",
+          };
+          cards.set(row.id, next);
+          if (!prior) continue;
+          const photoChanged = Boolean(photo) && photo !== beforePhoto;
+          const textChanged = next.preview !== prior.preview || next.unread !== prior.unread || next.activityAt !== prior.activityAt;
+          if (!photoChanged && !textChanged) continue;
+          const issueRef = await issueRefFor(companyId, accountId, row.id);
+          emitInbox(companyId, {
+            companyId,
+            kind: "dialog",
+            issueRef,
+            peerId: row.id,
+            preview: next.preview,
+            unread: next.unread,
+            activityAt: next.activityAt,
+            ...(photoChanged ? { photo } : {}),
+          });
+        }
+        if (cards.size === 0) return previous;
+        dialogCards.set(key, { cards });
+        await persistDialogCards(companyId, accountId, cards).catch(() => undefined);
+        return cards;
+      }
+
+      function refreshDialogCardsJob(companyId: string, accountId: string): Promise<void> {
+        const key = `${companyId}:${accountId}`;
+        const pending = cardRefresh.get(key);
+        if (pending) return pending;
+        const job = (async () => {
+          const live = liveByAccount.get(accountId);
+          if (!live || live.companyId !== companyId) return;
+          try {
+            await applySummaries(companyId, accountId, await live.peerSummaries());
+          } catch {
+            log.warn("Telegram dialog cards are unavailable");
+          }
+        })().finally(() => {
+          if (cardRefresh.get(key) === job) cardRefresh.delete(key);
+        });
+        cardRefresh.set(key, job);
+        return job;
+      }
+
       async function cardsForAccount(companyId: string, accountId: string): Promise<Map<string, DialogCard>> {
         const key = `${companyId}:${accountId}`;
         const stored = cardBucket(companyId, accountId);
         if (stored) return stored;
         const pending = cardJobs.get(key);
         if (pending) return pending;
-        const live = liveByAccount.get(accountId);
-        if (!live || live.companyId !== companyId) return new Map();
         const job = (async () => {
           try {
-            const cards = new Map<string, DialogCard>();
-            for (const row of await live.peerSummaries()) {
-              if (!row?.id || !row.name) continue;
-              cards.set(row.id, {
-                name: row.name,
-                preview: typeof row.preview === "string" ? row.preview.slice(0, 80) : "",
-                unread: unreadCount(row.unread),
-                photo: keepDialogPhoto(companyId, accountId, row.id, publicPhoto(row.photo), false),
-                presence: publicPresence(row.presence),
-                activityAt: typeof row.activityAt === "string" ? row.activityAt : "",
-              });
+            const hydrated = await hydrateDialogCards(companyId, accountId);
+            if (hydrated && hydrated.size > 0) {
+              dialogCards.set(key, { cards: hydrated });
+              return { cards: hydrated, fromDisk: true };
             }
-            dialogCards.set(key, { cards });
-            return cards;
+          } catch {
+            log.warn("Telegram dialog cache is unavailable");
+          }
+          const live = liveByAccount.get(accountId);
+          if (!live || live.companyId !== companyId) {
+            return { cards: cardBucket(companyId, accountId) ?? new Map<string, DialogCard>(), fromDisk: false };
+          }
+          try {
+            const cards = await applySummaries(companyId, accountId, await live.peerSummaries());
+            return { cards, fromDisk: false };
           } catch {
             log.warn("Telegram dialog cards are unavailable");
-            return cardBucket(companyId, accountId) ?? new Map();
+            return { cards: cardBucket(companyId, accountId) ?? new Map<string, DialogCard>(), fromDisk: false };
           }
         })();
-        cardJobs.set(key, job);
+        const mapped = job.then((result) => result.cards);
+        cardJobs.set(key, mapped);
         void job.finally(() => {
-          if (cardJobs.get(key) === job) cardJobs.delete(key);
+          if (cardJobs.get(key) === mapped) cardJobs.delete(key);
         });
-        return job;
+        const result = await job;
+        if (result.fromDisk) void refreshDialogCardsJob(companyId, accountId);
+        return result.cards;
       }
 
-      async function loadHistory(accountId: string, peerId: string, beforeId: string): Promise<ChatBubble[]> {
+      function historyStamp(messages: ChatBubble[]): string {
+        return messages.map((message) => message.id).join(",");
+      }
+
+      function refreshHistory(companyId: string, accountId: string, peerId: string) {
+        const token = `${accountId}:${peerId}`;
+        if (historyRefresh.has(token)) return;
+        historyRefresh.add(token);
+        void (async () => {
+          try {
+            const live = liveByAccount.get(accountId);
+            if (!live || live.companyId !== companyId) return;
+            const fetched = await live.readHistory(peerId, 40);
+            const key = historyCacheKey(accountId, peerId, "");
+            const previous = historyCache.get(key)?.messages ?? [];
+            const queued = takePendingBubbles(accountId, peerId);
+            const merged = patchHistoryMessages(patchHistoryMessages(previous, fetched), queued);
+            historyCache.set(key, { at: Date.now(), messages: merged });
+            await dialogCache.writeHistory(companyId, accountId, peerId, merged);
+            if (historyStamp(previous) !== historyStamp(merged)) {
+              const issueRef = await issueRefFor(companyId, accountId, peerId);
+              emitInbox(companyId, { companyId, kind: "refresh-thread", issueRef, peerId });
+            }
+          } catch {
+            log.warn("Telegram history is unavailable");
+          } finally {
+            historyRefresh.delete(token);
+          }
+        })();
+      }
+
+      async function loadHistory(companyId: string, accountId: string, peerId: string, beforeId: string): Promise<ChatBubble[]> {
         const live = liveByAccount.get(accountId);
-        if (!live) return [];
         const key = historyCacheKey(accountId, peerId, beforeId);
         const hit = historyCache.get(key);
         if (hit && historyHitIsFresh(beforeId, hit.at, Date.now())) return hit.messages;
+        if (!beforeId) {
+          try {
+            const disk = await dialogCache.readHistory(companyId, accountId, peerId);
+            if (disk && disk.length > 0 && !historyCache.has(key)) {
+              const messages: ChatBubble[] = disk.map((message) => ({
+                id: message.id,
+                direction: message.direction,
+                text: message.text,
+                at: message.at,
+                forward: message.forward,
+              }));
+              historyCache.set(key, { at: Date.now(), messages });
+              refreshHistory(companyId, accountId, peerId);
+              return messages;
+            }
+          } catch {
+            log.warn("Telegram dialog cache is unavailable");
+          }
+        }
+        if (!live || live.companyId !== companyId) return historyCache.get(key)?.messages ?? [];
         const pending = historyJobs.get(key);
         if (pending) return pending;
-        const job = live.readHistory(peerId, 40, beforeId || undefined).then((messages) => {
+        const task = live.readHistory(peerId, 40, beforeId || undefined).then((messages) => {
           const current = historyCache.get(key);
           const fetched = current && !beforeId ? patchHistoryMessages(current.messages, messages) : messages;
-          const pending = beforeId ? [] : takePendingBubbles(accountId, peerId);
-          const merged = pending.length > 0 ? patchHistoryMessages(fetched, pending) : fetched;
+          const queued = beforeId ? [] : takePendingBubbles(accountId, peerId);
+          const merged = queued.length > 0 ? patchHistoryMessages(fetched, queued) : fetched;
           historyCache.set(key, { at: Date.now(), messages: merged });
+          if (!beforeId) void dialogCache.writeHistory(companyId, accountId, peerId, merged).catch(() => undefined);
           return merged;
         }).finally(() => {
-          if (historyJobs.get(key) === job) historyJobs.delete(key);
+          if (historyJobs.get(key) === task) historyJobs.delete(key);
         });
-        historyJobs.set(key, job);
-        return job;
+        historyJobs.set(key, task);
+        return task;
       }
+
+      refreshDialogCards = (companyId, accountId) => {
+        void refreshDialogCardsJob(companyId, accountId);
+      };
+      const dialogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+      scheduleDialogPersist = (companyId, accountId) => {
+        const token = `${companyId}:${accountId}`;
+        const existing = dialogTimers.get(token);
+        if (existing) clearTimeout(existing);
+        dialogTimers.set(token, setTimeout(() => {
+          dialogTimers.delete(token);
+          const cards = cardBucket(companyId, accountId);
+          if (!cards || cards.size === 0) return;
+          void persistDialogCards(companyId, accountId, cards).catch(() => undefined);
+        }, 400));
+      };
+      const historyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+      scheduleHistoryPersist = (accountId, peerId) => {
+        const companyId = liveByAccount.get(accountId)?.companyId ?? "";
+        if (!companyId) return;
+        const token = `${companyId}:${accountId}:${peerId}`;
+        const existing = historyTimers.get(token);
+        if (existing) clearTimeout(existing);
+        historyTimers.set(token, setTimeout(() => {
+          historyTimers.delete(token);
+          const messages = historyCache.get(historyCacheKey(accountId, peerId, ""))?.messages;
+          if (!messages || messages.length === 0) return;
+          void dialogCache.writeHistory(companyId, accountId, peerId, messages).catch(() => undefined);
+        }, 500));
+      };
 
       async function resolveDialogLabel(companyId: string, issue: { title?: string | null; originId?: string | null }): Promise<string> {
         const titled = chatListLabel(issue.title ?? "");
@@ -810,7 +1031,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           if (!account || account.companyId !== companyId) continue;
           if (historyCache.has(historyCacheKey(parsed.accountId, parsed.peerId, ""))) continue;
           warming += 1;
-          void loadHistory(parsed.accountId, parsed.peerId, "").catch(() => undefined);
+          void loadHistory(companyId, parsed.accountId, parsed.peerId, "").catch(() => undefined);
         }
         return { chats: page };
       });
@@ -851,6 +1072,14 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         return bubbles;
       }
 
+      ctx.data.register("inbox-wait", async (params) => {
+        const companyId = readString(params.companyId);
+        if (!companyId) return { seq: 0, reset: false, events: [] };
+        const sinceRaw = Number(params.since);
+        const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? Math.floor(sinceRaw) : 0;
+        return companyInbox(companyId).wait(since, 12_000);
+      });
+
       ctx.data.register("chat-thread", async (params) => {
         const companyId = readString(params.companyId);
         const issueRef = readString(params.issueRef);
@@ -867,6 +1096,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           label: card?.name || remembered || chatListLabel(issue.title ?? ""),
           issueId: issue.id,
           identifier: issue.identifier ?? null,
+          peerId: parsed?.peerId ?? null,
         };
         if (!header.label || header.label === "Telegram") {
           void resolveDialogLabel(companyId, issue).catch(() => undefined);
@@ -880,7 +1110,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         const account = parsed ? liveByAccount.get(parsed.accountId) : undefined;
         if (account && parsed && account.companyId === companyId) {
           try {
-            const messages = await loadHistory(parsed.accountId, parsed.peerId, beforeId);
+            const messages = await loadHistory(companyId, parsed.accountId, parsed.peerId, beforeId);
             return { ...header, ...face, live: true, hasMore: messages.length >= 40, messages };
           } catch {
             log.warn("Telegram history is unavailable");
@@ -929,6 +1159,71 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           log.warn("Telegram profile is unavailable");
           return base;
         }
+      });
+
+      function accountIdsForCompany(companyId: string): string[] {
+        const ids = new Set<string>();
+        for (const [accountId, live] of liveByAccount) {
+          if (live.companyId === companyId) ids.add(accountId);
+        }
+        const prefix = `${companyId}:`;
+        for (const key of dialogCards.keys()) {
+          if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+        }
+        return [...ids];
+      }
+
+      function forgetCompanyCache(companyId: string, scope: CacheScope) {
+        const prefix = `${companyId}:`;
+        const accounts = accountIdsForCompany(companyId);
+        if (scope === "all" || scope === "dialogs") {
+          for (const key of [...dialogCards.keys()]) if (key.startsWith(prefix)) dialogCards.delete(key);
+          for (const key of [...cardJobs.keys()]) if (key.startsWith(prefix)) cardJobs.delete(key);
+          for (const key of [...peerLabels.keys()]) if (key.startsWith(prefix)) peerLabels.delete(key);
+          for (const accountId of accounts) dropHistoryMemory(accountId);
+        }
+        if (scope === "all" || scope === "avatars") {
+          for (const key of [...dialogPhotos.keys()]) if (key.startsWith(prefix)) dialogPhotos.delete(key);
+          for (const key of [...dialogPhotoIds.keys()]) if (key.startsWith(prefix)) dialogPhotoIds.delete(key);
+          for (const [key, bucket] of dialogCards) {
+            if (!key.startsWith(prefix)) continue;
+            for (const card of bucket.cards.values()) card.photo = null;
+          }
+        }
+      }
+
+      ctx.data.register("cache-status", async (params) => {
+        const companyId = readString(params.companyId);
+        const empty = { enabled: true, bytes: 0, dialogs: 0, avatars: 0, maxBytes: 64 * 1024 * 1024, updatedAt: null };
+        if (!companyId) return empty;
+        try {
+          return await dialogCache.status(companyId);
+        } catch {
+          log.warn("Telegram dialog cache is unavailable");
+          return empty;
+        }
+      });
+
+      ctx.actions.register("cache-save", async (params, actionCtx) => {
+        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
+        const patch: { enabled?: boolean; maxBytes?: number } = {};
+        if (typeof params.enabled === "boolean") patch.enabled = params.enabled;
+        if (typeof params.maxBytes === "number") patch.maxBytes = params.maxBytes;
+        return dialogCache.saveSettings(companyId, patch);
+      });
+
+      ctx.actions.register("cache-clear", async (params, actionCtx) => {
+        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
+        const scope = params.scope === "avatars" || params.scope === "dialogs" || params.scope === "all" ? params.scope : "";
+        if (!scope) throw new Error("Unknown cache scope.");
+        const accounts = accountIdsForCompany(companyId);
+        await dialogCache.clear(companyId, scope);
+        forgetCompanyCache(companyId, scope);
+        if (scope === "avatars") {
+          for (const accountId of accounts) refreshDialogCards(companyId, accountId);
+        }
+        emitInbox(companyId, { companyId, kind: "gap" });
+        return dialogCache.status(companyId);
       });
 
       ctx.actions.register("send-chat-reply", async (params, actionCtx) => {
@@ -1257,6 +1552,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       try {
         await reconnectAll(ctx);
         await syncDialogFollowups(ctx, log);
+        for (const live of liveByAccount.values()) {
+          void cardsForAccount(live.companyId, live.account.telegramUserId).catch(() => undefined);
+        }
       } catch (error) {
         try {
           log.error("Telegram session reconnect failed", {
