@@ -35,6 +35,23 @@ describe("openCode models", () => {
     );
   });
 
+  it("matches an OpenCode V2 provider/model#variant id on its bare catalog id", async () => {
+    const spy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "openai/gpt-5\n",
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    });
+
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({ model: "openai/gpt-5#low" }),
+    ).resolves.toContainEqual({ id: "openai/gpt-5", label: "openai/gpt-5" });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects malformed provider/model ids before discovery", () => {
     expect(() => requireOpenCodeModelId("gpt-5.2-codex")).toThrow(
       "OpenCode requires `adapterConfig.model`",

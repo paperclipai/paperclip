@@ -53,6 +53,11 @@ export function requireOpenCodeModelId(input: unknown): string {
   return model;
 }
 
+export function openCodeCatalogModelId(model: string): string {
+  const hash = model.indexOf("#");
+  return hash < 0 ? model : model.slice(0, hash);
+}
+
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const deduped: AdapterModel[] = [];
@@ -271,6 +276,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+  const catalogId = openCodeCatalogModelId(model);
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -317,7 +323,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [{ id: model, label: model }];
   }
 
-  if (!models.some((entry) => entry.id === model)) {
+  if (!models.some((entry) => entry.id === catalogId)) {
     // `opencode models` reads a persistent models.dev cache. Long-lived runner
     // hosts can therefore report a stale non-empty catalog even while the
     // configured provider serves the model. Refresh once before treating a
@@ -329,7 +335,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
         cwd: input.cwd,
         env: input.env,
       });
-      if (refreshedModels.some((entry) => entry.id === model)) {
+      if (refreshedModels.some((entry) => entry.id === catalogId)) {
         return refreshedModels;
       }
       if (refreshedModels.length > 0) models = refreshedModels;
