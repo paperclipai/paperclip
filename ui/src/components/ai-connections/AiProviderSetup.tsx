@@ -116,6 +116,15 @@ export function AiProviderSetup({
     reconnect?.routing?.auth ?? "bearer",
   );
   const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const requiresPrivateHttpOptIn = (() => {
+    try {
+      const url = new URL(baseUrl.trim());
+      return url.protocol === "http:" &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    } catch {
+      return false;
+    }
+  })();
   const [allowPrivateHttp, setAllowPrivateHttp] = useState(
     reconnect?.routing?.allowPrivateHttp ?? false,
   );
@@ -348,7 +357,7 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect)}
                 />
               </label>
-              {baseUrl.toLowerCase().startsWith("http://") && (
+              {requiresPrivateHttpOptIn && (
                 <label className="flex items-start gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
@@ -456,7 +465,7 @@ export function AiProviderSetup({
           </p>
 
           {(provider === "local" || provider === "gateway") &&
-            /^http:\/\//i.test(baseUrl.trim()) &&
+            requiresPrivateHttpOptIn &&
             !allowPrivateHttp && (
               <p role="alert" className="text-sm text-destructive">
                 HTTP connection blocked. Enable "Allow HTTP to a
@@ -468,7 +477,7 @@ export function AiProviderSetup({
           {save.error &&
             !(
               (provider === "local" || provider === "gateway") &&
-              /^http:\/\//i.test(baseUrl.trim()) &&
+              requiresPrivateHttpOptIn &&
               !allowPrivateHttp &&
               save.error instanceof Error &&
               save.error.name === "ZodError"
