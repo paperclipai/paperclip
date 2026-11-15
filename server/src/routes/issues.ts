@@ -18402,7 +18402,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
-      await issueThreadInteractionService(db).listForIssue(id);
+      await issueThreadInteractionService(db).listForIssue(issue.id, issue);
     if (req.actor.type === "agent" && req.actor.agentId && req.actor.runId) {
       await recordDeclinedInteractionRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
         issue, interactions: interactions as Parameters<typeof recordDeclinedInteractionRead>[1]["interactions"] })

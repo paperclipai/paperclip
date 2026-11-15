@@ -8,6 +8,7 @@ import { boardSessionApp, seedBoardRouteFixture } from "./helpers/route-census-f
 import { describeEmbeddedPostgres, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 import { createStatementCensus, formatStatementCensus } from "./helpers/statement-census.js";
 import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 
 const GOLDEN = new URL("./fixtures/issue-detail-response.json", import.meta.url);
 
@@ -118,5 +119,24 @@ describeEmbeddedPostgres("GET /api/issues/:id statements per request", () => {
     expect((await svc.getAncestors(fixture.issue.id, { parentId: fixture.parent.id })).map((ancestor) => ancestor.id)).toEqual(expected);
     await ctx.db.update(issues).set({ parentId: fixture.blocker.id }).where(eq(issues.id, fixture.blocker.id));
     expect(await svc.getAncestors(fixture.blocker.id)).toEqual([]);
+  }, 60_000);
+  it("answers the interactions poll without reading the issue again", async () => {
+    const census = createStatementCensus(ctx.db);
+    try {
+      const fixture = await seed();
+      const app = boardSessionApp(ctx.db, () => fixture.userId);
+      const path = `/api/issues/${fixture.issue.id}/interactions`;
+      await request(app).get(path).expect(200);
+      let response: request.Response | undefined;
+      const measured = await census.measure(async () => {
+        response = await request(app).get(path).expect(200);
+      });
+      const expected = await issueThreadInteractionService(ctx.db).listForIssue(fixture.issue.id);
+      expect(response!.body).toEqual(JSON.parse(JSON.stringify(expected)));
+      expect(measured.shapes.filter((shape) => shape.shape.startsWith('select "status", "company_id", "execution_workspace_id" from "issues"'))).toEqual([]);
+      expect(measured.statements, formatStatementCensus(path, measured, 20)).toBeLessThanOrEqual(10);
+    } finally {
+      census.uninstall();
+    }
   }, 60_000);
 });
