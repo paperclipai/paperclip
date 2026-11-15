@@ -956,19 +956,20 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
-  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop", "own-process", "inherited-then-own-process"])("does not publish an admission wait after authority changes: %s", async scenario => {
+  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop", "own-process", "inherited-then-own-process", "inherited-then-own-identity"])("does not publish an admission wait after authority changes: %s", async scenario => {
     const fixture = await seed(), runId = randomUUID();
     const scope = { ...fixture.scope, runId };
-    const ownProcess = scenario === "own-process" || scenario === "inherited-then-own-process";
+    const ownProcess = scenario.startsWith("own-process") || scenario.startsWith("inherited-then-own");
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
       status: scenario === "stopped" ? "cancelled" : "running", runtimeMode: "native",
       resultJson: scenario === "operator-stop" ? { cancellation: { source: "operator", expected: true,
         initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() } } : null,
       ...(ownProcess ? { processPid: 4242, processGroupId: 4242, processStartedAt: new Date() } : {}),
       runnerProfileJson: { nativeExecutionInput: { binding: scope },
-        ...(scenario === "inherited-then-own-process" ? { inheritedProcessIdentityRunId: fixture.scope.runId } : {}) } });
-    if (scenario === "inherited-then-own-process") {
-      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, eventType: "native.process_start_requested" });
+        ...(scenario.startsWith("inherited-then-own") ? { inheritedProcessIdentityRunId: fixture.scope.runId } : {}) } });
+    if (scenario.startsWith("inherited-then-own")) {
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+        eventType: scenario === "inherited-then-own-process" ? "native.process_start_requested" : "native.process_identity_recorded" });
     }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed",

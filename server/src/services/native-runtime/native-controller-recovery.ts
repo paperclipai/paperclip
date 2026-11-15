@@ -5,7 +5,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput, type DurablePrpCheckpoint, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { readRunCancellation } from "../run-cancellation.js";
-import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBootstrap, nativeSessionProviderEvidence } from "./native-session-resume.js";
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -106,7 +106,7 @@ export async function deferNativeControllerRecovery(db: Db, input: {
       && !(await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.companyId, input.companyId), eq(heartbeatRunEvents.runId, input.runId),
         isNull(heartbeatRunEvents.sourceEventId),
-        inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]))).limit(1)).length;
+        inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES]))).limit(1)).length;
     if (!run || run.runtimeMode !== "native" || run.status !== "running" || task?.executionRunId !== input.runId
       || !owner || owner.phase !== "observed" || owner.resultId || owner.attempt !== 0
       || owner.controllerGeneration !== 0 || owner.leaseOwner !== (input.leaseOwner ?? null)
