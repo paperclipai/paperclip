@@ -4507,9 +4507,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
         await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
         expect(f.responseWrites).toHaveLength(baseline + 1);
+        // The retained requests only record that they wait for a newer run.
         expect(await db.select().from(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId))))
           .toEqual(expect.arrayContaining(history.map(row => expect.objectContaining({ id: row.actionId,
-            status: "processed", result: { code: "fast_response_superseded" } }))));
+            status: "processed", result: { code: "fast_response_superseded", terminalWaitKey: expect.any(String) } }))));
         expect(errors).toEqual([]);
       } finally {
         await coordinator.stop();

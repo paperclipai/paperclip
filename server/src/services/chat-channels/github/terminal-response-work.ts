@@ -10,6 +10,10 @@ import { HttpError } from "../../../errors.js";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string; conversationId: string; repositoryId: string | null; number: number | null; dueAt: number };
 
+/** A load of a whole company (or every company) rather than a targeted hint. */
+const broad = (scope?: Scope) => !scope || (!scope.issueId && !scope.deliveryId && !scope.conversationId &&
+  !scope.endpointId && !scope.repositoryId && !scope.number);
+
 export function registerGitHubTerminalResponseWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -19,28 +23,38 @@ export function registerGitHubTerminalResponseWork(
   const repositoryId = sql<string | null>`${chatEndpointResources.metadata}->>'providerRepositoryId'`;
   const number = sql<string | null>`substring(${chatConversations.externalThreadId}
     from '^github:[^:]+:(?:issue:)?([1-9][0-9]*)(?::rc:[1-9][0-9]*)?$')`;
-  // Status of the assigned agent's latest run bound to the issue, where a run's
-  // issue is coalesce(native_issue_id, context_snapshot->>'issueId'). The two
+  // The assigned agent's latest run bound to the issue, where a run's issue is
+  // coalesce(native_issue_id, context_snapshot->>'issueId'). The two
   // precedence branches are disjoint and each uses an issue index, so a
   // candidate does not walk (and detoast) the agent's whole run history.
-  const latestIssueRunStatus = sql<string | null>`select latest.status from (
-    (select r.status, r.created_at, r.id from ${heartbeatRuns} r
+  const latestIssueRun = db.select({
+    status: sql<string>`latest.status`.as("latest_run_status"),
+    version: sql<string>`latest.id::text || ':' || latest.status || ':' || extract(epoch from latest.updated_at)::text`
+      .as("latest_run_version"),
+  }).from(sql`((select r.status, r.created_at, r.id, r.updated_at from ${heartbeatRuns} r
       where r.company_id = ${chatActions.companyId} and r.native_issue_id = ${chatConversations.issueId}
         and r.agent_id = ${chatEndpoints.assignedAgentId}
       order by r.created_at desc, r.id desc limit 1)
     union all
-    (select r.status, r.created_at, r.id from ${heartbeatRuns} r
+    (select r.status, r.created_at, r.id, r.updated_at from ${heartbeatRuns} r
       where r.company_id = ${chatActions.companyId} and r.native_issue_id is null
         and r.context_snapshot->>'issueId' = ${chatConversations.issueId}::text
         and r.agent_id = ${chatEndpoints.assignedAgentId}
-      order by r.created_at desc, r.id desc limit 1)
-  ) latest order by latest.created_at desc, latest.id desc limit 1`;
+      order by r.created_at desc, r.id desc limit 1)) latest`)
+    .orderBy(sql`latest.created_at desc, latest.id desc`).limit(1).as("latest_issue_run");
+  // Whether a request can progress depends on the task's latest run, the task's
+  // status and the request's own row. A request that has to wait records this
+  // key, and a broad rebuild skips it until one of them changes. A reply
+  // publication changes none of them, but releasing its lease sends a targeted
+  // hint, and a targeted load always reads its requests again.
+  const actionVersion = sql<string>`extract(epoch from ${chatActions.updatedAt})::text`;
+  const waitKey = sql<string>`coalesce(${latestIssueRun.version}, 'none') || '|' || ${issues.status} || '|' || ${actionVersion}`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
     return db.select({
       id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,
       deliveryId: chatActions.deliveryId, conversationId: chatConversations.id, issueId: issues.id,
       agentId: chatEndpoints.assignedAgentId, issueStatus: issues.status,
-      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number, result: chatActions.result,
+      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number, result: chatActions.result, actionVersion, waitKey,
       sourceMessageId: sql<string | null>`(select l.comment_id from ${chatMessageLinks} l
         where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
           and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound' limit 1)`,
@@ -53,10 +67,12 @@ export function registerGitHubTerminalResponseWork(
       .innerJoin(chatDeliveries, and(eq(chatDeliveries.id, chatActions.deliveryId), eq(chatDeliveries.companyId, chatActions.companyId)))
       .innerJoin(issues, and(eq(issues.id, chatConversations.issueId), eq(issues.companyId, chatActions.companyId)))
       .leftJoin(chatEndpointResources, and(eq(chatEndpointResources.id, chatConversations.resourceId), eq(chatEndpointResources.companyId, chatActions.companyId)))
+      .leftJoinLateral(latestIssueRun, sql`true`)
       .where(and(eq(chatActions.kind, "github_response_comment"), eq(chatActions.status, "processed"),
         isNotNull(chatActions.deliveryId), isNotNull(chatEndpoints.assignedAgentId),
         sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`,
-        sql`(${issues.status} = 'blocked' or (${latestIssueRunStatus}) in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled'))`,
+        sql`(${issues.status} = 'blocked' or ${latestIssueRun.status} in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled'))`,
+        broad(scope) && !actionId ? sql`${chatActions.result}->>'terminalWaitKey' is distinct from ${waitKey}` : undefined,
         scope ? eq(chatActions.companyId, scope.companyId) : undefined,
         scope?.issueId ? eq(issues.id, scope.issueId) : undefined,
         scope?.conversationId ? eq(chatActions.conversationId, scope.conversationId) : undefined,
@@ -67,7 +83,8 @@ export function registerGitHubTerminalResponseWork(
         cursor ? gt(chatActions.id, cursor) : undefined, actionId ? eq(chatActions.id, actionId) : undefined,
       )).orderBy(asc(chatActions.id)).limit(100);
   }
-  async function entry(row: Awaited<ReturnType<typeof page>>[number]): Promise<Entry | null> {
+  type Row = Awaited<ReturnType<typeof page>>[number];
+  async function entry(row: Row): Promise<Entry | null> {
     const pending: Entry = { id: row.id, companyId: row.companyId, endpointId: row.endpointId, deliveryId: row.deliveryId!,
       issueId: row.issueId, conversationId: row.conversationId, repositoryId: row.repositoryId,
       number: row.number ? Number(row.number) : null, dueAt: row.leaseExpiresAt ? Date.parse(row.leaseExpiresAt) : 0 };
@@ -81,6 +98,26 @@ export function registerGitHubTerminalResponseWork(
       // check and cancellation; it must not poison discovery for other requests.
     }
     return pending;
+  }
+  /** Record the wait of requests that cannot progress yet. A request whose row
+   * changed after the read gets no key and is read again. The write leaves
+   * updated_at alone, because the key includes it. */
+  async function park(rows: Row[]) {
+    const waiting = rows.filter(row => row.result?.terminalWaitKey !== row.waitKey);
+    if (!waiting.length) return;
+    await db.execute(sql`update ${chatActions}
+      set result = coalesce(${chatActions.result}, '{}'::jsonb) || jsonb_build_object('terminalWaitKey', waiting.key)
+      from unnest(${sql.param(waiting.map(row => row.id))}::uuid[], ${sql.param(waiting.map(row => row.actionVersion))}::text[],
+        ${sql.param(waiting.map(row => row.waitKey))}::text[]) as waiting(id, version, key)
+      where ${chatActions.id} = waiting.id and ${actionVersion} = waiting.version
+        and ${chatActions.status} = 'processed' and coalesce(${chatActions.result}->>'final', 'false') <> 'true'`);
+  }
+  async function current(actionId: string) {
+    const [row] = await page(undefined, undefined, actionId);
+    if (!row) return null;
+    const value = await entry(row);
+    if (!value) await park([row]);
+    return value;
   }
 
   return registerScopedDeadlineWork(coordinator, {
@@ -97,22 +134,22 @@ export function registerGitHubTerminalResponseWork(
       let cursor: string | undefined;
       while (canRun() && !signal?.aborted) {
         const rows = await page(scope, cursor);
+        const waiting: Row[] = [];
         for (const row of rows) {
           if (!canRun() || signal?.aborted) throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
-          const value = await entry(row); if (value) entries.push(value);
+          const value = await entry(row); if (value) entries.push(value); else waiting.push(row);
         }
+        await park(waiting);
         if (rows.length < 100) return entries;
         cursor = rows[rows.length - 1].id;
       }
       throw signal?.reason ?? new Error("GitHub terminal-response recovery stopped");
     },
     check: async (value: Entry, signal?: AbortSignal) => {
-      const [row] = await page(undefined, undefined, value.id);
-      const current = row ? await entry(row) : null;
-      if (!current || current.dueAt > Date.now() || !canRun() || signal?.aborted) return current;
-      await acknowledge(current.deliveryId, () => canRun() && !signal?.aborted);
-      const [remaining] = await page(undefined, undefined, value.id);
-      return remaining ? entry(remaining) : null;
+      const due = await current(value.id);
+      if (!due || due.dueAt > Date.now() || !canRun() || signal?.aborted) return due;
+      await acknowledge(due.deliveryId, () => canRun() && !signal?.aborted);
+      return current(value.id);
     },
   }, canRun);
 }
