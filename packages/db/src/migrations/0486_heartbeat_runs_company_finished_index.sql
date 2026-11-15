@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_finished_idx" ON "heartbeat_runs" USING btree ("company_id","finished_at" DESC NULLS LAST) WHERE "heartbeat_runs"."finished_at" is not null;

@@ -289,3 +289,34 @@ test("a terminal's background task report matches the shared accepted and reject
     assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), false, name);
   }
 });
+
+test("provider-started turn frames are closed and the provider-lost diagnostic is enforced only for its code", () => {
+  const event = (eventType, payload, extra = {}) => ({ ...messages[2], eventType, payload, ...extra });
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider" }, { turnId: "provider-1" })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(event("runtime.turn_started", { origin: "controller" })), false);
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider", extra: true })), false);
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider" }, { turnId: null })), false);
+  const diagnostic = (payload) => event("runtime.diagnostic", payload, { turnId: null });
+  assert.equal(validate(diagnostic({ code: "ACPX_PROVIDER_PROCESS_LOST", message: "The provider exited." })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(diagnostic({ code: "ACPX_PROVIDER_PROCESS_LOST", message: "x".repeat(8_192) })), true, JSON.stringify(validate.errors));
+  for (const payload of [
+    { code: "ACPX_PROVIDER_PROCESS_LOST" },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: "x".repeat(8_193) },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: 7 },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: "The provider exited.", detail: "extra" },
+  ]) {
+    assert.equal(validate(diagnostic(payload)), false, JSON.stringify(payload));
+  }
+  for (const payload of [
+    { code: "sidecar_input_failed", message: "Bad input." },
+    { code: "sidecar_shutdown_requested", message: "x".repeat(9_000) },
+    { code: "malformed_frame" },
+    { code: "acpx_terminal_usage_unavailable", message: "Unavailable.", detail: "extra" },
+  ]) {
+    assert.equal(validate(diagnostic(payload)), true, JSON.stringify(payload));
+  }
+  const command = (params) => ({ ...messages[0], command: "session.provider_turn", params });
+  assert.equal(validate(command({ turnId: "turn-1", armed: true })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(command({ turnId: "turn-1" })), false);
+  assert.equal(validate(command({ turnId: "turn-1", armed: true, extra: 1 })), false);
+});

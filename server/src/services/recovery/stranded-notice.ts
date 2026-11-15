@@ -27,6 +27,13 @@ export type StrandedRecoveryNoticeSeed = {
   nextAction?: string;
 };
 
+export const SAVED_WORK_HELD_SENTENCE = "Paperclip is holding this task until its saved work is settled.";
+
+export function withoutRetryInstruction(text: string): string {
+  const kept = text.split(/(?<=[.!?])\s+/).filter(sentence => !/\bretry\b/i.test(sentence));
+  return [...kept, SAVED_WORK_HELD_SENTENCE].join(" ");
+}
+
 export type StrandedRecoveryEscalationNotice = {
   body: string;
   presentation: IssueCommentPresentation;
@@ -270,6 +277,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   recoveryCause?: string | null;
   recoveryActionId: string;
   continuesAutomatically?: boolean;
+  retryOffered?: boolean;
   recoveryOwner: { id: string; name: string | null } | null | undefined;
   sourceRun: {
     id: string;
@@ -292,7 +300,8 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     tone: "danger" as const,
   } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();
-  const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
+  const honest = (text: string) => input.retryOffered === false ? withoutRetryInstruction(text) : text;
+  const body = honest(seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY));
   const title =
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
     seed?.title ??
@@ -310,9 +319,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
         ),
     keyValueRow(
       "Next action",
-      seed?.nextAction ?? (input.recoveryOwner
+      honest(seed?.nextAction ?? (input.recoveryOwner
         ? "The assigned agent continues the task from the saved work"
-        : RETRY_FROM_SAVED_WORK_NEXT_ACTION),
+        : RETRY_FROM_SAVED_WORK_NEXT_ACTION)),
     ),
   ];
 

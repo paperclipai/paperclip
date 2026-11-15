@@ -566,3 +566,32 @@ describe("automatic scheduled retry", () => {
       .toMatchObject({ state: "failed", canRetry: true });
   });
 });
+
+describe("hand-off of a run that failed before any provider work", () => {
+  const now = Date.parse("2026-11-13T15:08:12Z");
+  const failed = { ...run, runtimeMode: "native" as const, errorCode: "adapter_failed", finishedAt: new Date(now - 3_000),
+    resultJson: { failureCause: "native_predecessor_retirement_unproven", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  const inProgress = { ...issue, status: "in_progress" };
+
+  it("shows the task as working while its fresh-sandbox continuation is being queued", () => {
+    for (const failureCause of ["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]) {
+      expect(projectTaskInterruption(inProgress, { run: { ...failed, resultJson: { ...failed.resultJson, failureCause } },
+        agent, paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false });
+    }
+  });
+
+  it("keeps the task working after the fallback is recorded while its continuation is still being scheduled", () => {
+    const recorded = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    expect(projectTaskInterruption(inProgress, { run: recorded, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("offers Retry when the continuation was refused or never queued", () => {
+    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false },
+      continuationScheduling: "refused" } };
+    expect(projectTaskInterruption(inProgress, { run: refused, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(inProgress, { run: { ...failed, finishedAt: new Date(now - 31_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});

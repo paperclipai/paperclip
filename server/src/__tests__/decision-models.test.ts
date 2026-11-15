@@ -405,6 +405,54 @@ describe("company decision service", () => {
     expect((await first).status).toBe("succeeded"); expect((await second).status).toBe("succeeded");
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(2);
   });
+  it("keeps an admission's budget observation when another decision reads the same credential mid-admission", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });
+    let unlock!: () => void, locked!: (pid: number) => void, finishProviders!: () => void;
+    const lockGate = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProviders = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(companyDecisionModels).where(eq(companyDecisionModels.companyId, f.companyId)).for("no key update");
+      const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      locked(row.pid); await lockGate;
+    });
+    const pid = await acquired;
+    const waitingAdmissions = (count: number) => vi.waitFor(async () => {
+      const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
+      expect(row.count).toBe(count);
+    }, { timeout: 10_000 });
+    let providersEntered = 0, bothEntered!: () => void;
+    const bothProvidersEntered = new Promise<void>(resolve => { bothEntered = resolve; });
+    f.provider.mockImplementation(async () => {
+      if (++providersEntered === 2) bothEntered();
+      await providerGate; return structuredClone(outcome);
+    });
+    // Order the two admissions so the second one's credential read happens
+    // after the first admission took its budget observation. Reading a
+    // credential must not invalidate that observation.
+    const first = f.service.decide(f.context, DECISION_TEST_REQUEST);
+    let second: ReturnType<typeof f.service.decide> | undefined;
+    try {
+      await waitingAdmissions(1);
+      second = f.service.decide(f.context, DECISION_TEST_REQUEST);
+      await waitingAdmissions(2);
+      // An obligation committed after both observations. An admission that
+      // keeps its observation ignores it; one that restarts is denied by it.
+      await db.insert(budgetReservations).values({ companyId: f.companyId, decisionInvocationId: randomUUID(), amountCents: "1" });
+      unlock(); await holding;
+      // Before the providers finish, a decision settles only if admission denied it.
+      const settledEarly = (name: string, pending: typeof first) => pending.then(result => `${name} settled before its provider call: ${JSON.stringify(result)}`);
+      expect(await Promise.race([bothProvidersEntered.then(() => "both admitted"), settledEarly("first", first), settledEarly("second", second)])).toBe("both admitted");
+      expect(f.provider).toHaveBeenCalledTimes(2);
+      const holds = await db.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, f.companyId), sql`${budgetReservations.decisionInvocationId} in (select id from decision_invocations)`));
+      expect(holds).toHaveLength(2);
+      expect(holds.every(row => row.state === "held" && row.amountCents === "1.0000000")).toBe(true);
+    } finally { unlock(); finishProviders(); await holding; await Promise.allSettled([first, second]); }
+    expect((await first).status).toBe("succeeded"); expect((await second!).status).toBe("succeeded");
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(2);
+  });
   it("denies new work when an already committed reservation consumes the observed budget", async () => {
     const f = await fixture();
     await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId, windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });

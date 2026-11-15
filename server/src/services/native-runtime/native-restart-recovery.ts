@@ -26,7 +26,7 @@ import {
   recordNativeLocalProcessStopInTransaction,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql, type SQLWrapper } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1030,7 +1030,7 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
   run: typeof heartbeatRuns.$inferSelect; coordinator: typeof nativeRunFinalizations.$inferSelect;
   issueAssigneeAgentId: string | null; issueStatus: string;
 }, now: Date, reason: string, event: ReturnType<typeof historyEntry>, recoveryRequestId: string | null) {
-  await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+  await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
   await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
     nextAttemptAt: null, failureCode: "native_restart_recovery_blocked",
     failureDetail: { ...row.coordinator.failureDetail, reason, executorStopEvidence: "unverified" },
@@ -1062,6 +1062,17 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
   if (updatedRun) await preserveNativeFailedWorkspace(tx, updatedRun);
 }
 
+export function settledNativeControllerNamespaceAttention(owner: {
+  companyId: SQLWrapper | string; issueId: SQLWrapper | string; runId: SQLWrapper | string; leaseExpiresAt: SQLWrapper | string;
+}) {
+  return sql`exists (select 1 from ${issueRecoveryActions} settled
+    where settled.company_id = ${owner.companyId}::uuid and settled.source_issue_id = ${owner.issueId}::uuid
+      and settled.evidence->>'runId' = ${owner.runId}::text
+      and settled.status = 'resolved' and settled.cause = 'native_restart_recovery_blocked'
+      and starts_with(settled.fingerprint, 'native-controller-space:' || ${owner.runId}::text || ':')
+      and settled.resolved_at >= ${owner.leaseExpiresAt}::timestamptz)`;
+}
+
 /** Shared by restart inspection and failed-owner cleanup under their existing
  * issue/coordinator/run locks. Publishing attention never grants a new turn. */
 export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
@@ -1085,6 +1096,12 @@ export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
   const sameSource = existing?.cause === "native_restart_recovery_blocked"
     && existing.evidence.runId === input.run.id
     && ["controller_process_space_unverified", "remote_controller_process_space_unverified"].includes(String(existing.evidence.reason));
+  if (!existing && input.coordinator.leaseExpiresAt) {
+    const [settled] = await db.execute<{ settled: boolean }>(sql`select ${settledNativeControllerNamespaceAttention({
+      companyId: input.run.companyId, issueId: input.coordinator.issueId, runId: input.run.id,
+      leaseExpiresAt: input.coordinator.leaseExpiresAt.toISOString() })} as settled`);
+    if (settled?.settled) return;
+  }
   if (!existing || (sameSource && existing.fingerprint !== fingerprint)) {
     await attention.upsertSourceScoped({
       companyId: input.run.companyId, sourceIssueId: input.coordinator.issueId,
@@ -1116,6 +1133,7 @@ export async function claimNativeRestartRecoveries(input: {
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
   /** Runs this process handed to the next server (graceful drain or hot restart). */
   handedOffForShutdown?: (runId: string) => boolean;
+  handedOffByThisController?: (runId: string) => boolean;
   now?: Date;
   limit?: number;
   /** Called after each committed claim, before scanning the next candidate. */
@@ -1412,6 +1430,9 @@ export async function claimNativeRestartRecoveries(input: {
       // A run this process handed to the next server (graceful drain or hot
       // restart) stays with that server: this process is about to exit.
       const ownControllerProcess = !nonExecutionOwner && isCurrentNativeControllerProcess(row.coordinator);
+      if (ownControllerProcess && input.handedOffByThisController?.(row.run.id)) {
+        return { kind: "blocked", runId: row.run.id, reason: "handed_off_to_next_controller", transitionUnchanged: true } as const;
+      }
       if (ownControllerProcess && activeNativeExecutionRunIds.has(row.run.id)) {
         return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
       }
@@ -1487,7 +1508,7 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       if (!takeover.allowed) {
-        if (namespaceAttentionNeeded) {
+        if (namespaceAttentionNeeded && !["done", "cancelled"].includes(row.issueStatus)) {
           await surfaceNativeControllerNamespaceAttention(tx as unknown as Db, {
             run: row.run, coordinator: row.coordinator, expiryEpoch: row.controllerLeaseExpiryEpoch, remoteProcess,
           });
@@ -1911,7 +1932,7 @@ export async function claimNativeRestartRecoveries(input: {
           recycledProviderPids: providerProcesses.recycledPids,
           stderrTail: row.run.stderrExcerpt,
         });
-        await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
         await tx
           .update(nativeRunFinalizations)
           .set({

@@ -1557,6 +1557,25 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       } finally { unsubscribe(); }
     });
 
+    it("keeps the run's stored redaction history when a coalesced wake replaces its context", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const history = {
+        paperclipSecretRedactions: [{ fingerprintSha256: "a".repeat(64), material: { scheme: "synthetic" } }],
+        paperclipOutputSecretRedactions: [{ fingerprintSha256: "b".repeat(64), material: { scheme: "synthetic" } }],
+      };
+      const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { taskKey: "issue-1", ...history } });
+      await db.transaction(async (tx) => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
+        createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+          companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "running",
+          mergedContextSnapshot: { taskKey: "issue-1", commentId: "fresh-input" },
+          source: "on_demand", triggerDetail: null, payload: null,
+          requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
+        }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+        .toEqual({ taskKey: "issue-1", commentId: "fresh-input", ...history });
+    });
+
     // Review test (b), the coalesce write: a foreign company affects no row
     // on the active execution run either.
     it("refuses to coalesce into a run for a company that does not own it, and leaves the run and the wake table untouched", async () => {

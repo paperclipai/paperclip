@@ -44,6 +44,16 @@ describe("plugin manifest validators", () => {
     }
     expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, supportsMergeAncestry: "false" } }).success).toBe(false);
   });
+  it("accepts only version 1 of the workspace environment capability", () => {
+    const manifest = { id: "example.storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Tests",
+      categories: ["workspace"], capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+      entrypoints: { worker: "worker.js" }, workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } };
+    expect(pluginManifestV1Schema.parse(manifest).workspaceProvider?.workspaceEnvironmentVersion).toBeUndefined();
+    expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, workspaceEnvironmentVersion: 1 } })
+      .workspaceProvider?.workspaceEnvironmentVersion).toBe(1);
+    for (const workspaceEnvironmentVersion of [2, "1", true])
+      expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, workspaceEnvironmentVersion } }).success).toBe(false);
+  });
   it("limits environment skills to unique declarations owned by the plugin", () => {
     const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
       capabilities: ["environment.drivers.register", "skills.managed"],

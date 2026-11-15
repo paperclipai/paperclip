@@ -30,12 +30,16 @@ export interface RunForIssue {
   scheduledRetryAttempt?: number;
   scheduledRetryReason?: string | null;
   retryExhaustedReason?: string | null;
+  /** Who started a retry run: a named person who pressed Retry, or automatic recovery. */
+  retriedBy?: { kind: "person"; personName: string; summary: string } | { kind: "automatic"; summary: string } | null;
   livenessState?: RunLivenessState | null;
   livenessReason?: string | null;
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   wakeCommentIds?: string[] | null;
+  /** Queued messages this run's first provider turn took while it was starting. */
+  firstTurnCommentIds?: string[] | null;
   wakeCommentId?: string | null;
   contextCommentId?: string | null;
   contextIssueId?: string | null;

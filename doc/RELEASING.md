@@ -129,6 +129,21 @@ and the next push publishes. If a canary is missing after a quiet period, look
 at the failed `Reuse exact-source verification` job. It names the readiness run
 and lists each failed job as a lost runner or a failure.
 
+A canary builds its Runner daemons (`release_runner_binaries`) while it waits
+for the source proof. Those jobs only build and upload artifacts.
+`publish_canary` still requires `verify_canary`, so nothing is published from
+unverified source. If verification fails, the daemon builds for that commit are
+discarded. The native daemon build cache holds dependency crates only. Its key
+covers the Cargo manifest, Cargo configuration, host and target, but not the
+Runner's own source, so a Runner change does not discard the dependencies.
+
+During a release (`PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR` set), the Runner
+package build does not compile `paperclip-runnerd`. It verifies the
+exact-source release daemon for the publisher's own target (source, digest,
+architecture and build metadata) and stages it at `dist/bin`, so the build
+stamp and the server's vendored Runner stay current. Every other build still
+runs `build:binary`.
+
 After publication, the onboarding smoke checks out the same source SHA and
 installs its test dependencies from the publisher's resolved lockfile with
 `--frozen-lockfile`. The same-run artifact is captured before tracked files are
@@ -387,6 +402,22 @@ pipeline that master already ran.
 Without a matching successful merge-group
 run, or on any mismatch or error, the push builds from source. The PID 1 probe,
 exact-source gate and signing apply on both paths.
+
+The `master` ruleset requires `ci / verify` and `ci / e2e`, which `pr.yml`
+reports only for pull requests.
+[`merge-queue-checks.yml`](../.github/workflows/merge-queue-checks.yml) reports
+both names on each merge-group commit so the queue does not stall. It runs no
+tests: a pull request enters the queue only after both checks pass on it, and
+the exact-source gate still tests every `master` commit before publication.
+The queue can therefore land a commit while its image is still building. The
+`master` push waits up to 15 minutes for that build before it builds from
+source. Publication waits for the exact-source gate in any case.
+
+To turn the queue on, add **Require merge queue** to the `master` ruleset with
+merge method Squash, build concurrency 5, group size 1 to 5 and a 60 minute
+status check timeout. After the first queued merge, confirm that the `master`
+commit SHA equals the SHA of its merge-group runs; promotion depends on it.
+To turn it off, remove the rule. `master` then builds from source again.
 
 Canary dispatches first look up the full-SHA master image. Reuse requires a
 valid multi-platform index with both `linux/amd64` and `linux/arm64`, a matching

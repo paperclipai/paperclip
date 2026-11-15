@@ -181,6 +181,16 @@ refs and the same ownership checks. A personal resolver must not fall back to a
 company credential. Ownership mismatch is `grant_credential_invalid` and tells
 the owner to reconnect.
 
+Dedicated agent connections keep credentials on their agent grant. Background
+catalog and health work may use a single active grant for that connection and
+company. An agent caller must use its own grant. Missing, revoked, or ambiguous
+agent authorizations fail before provider requests; they never fall back to a
+personal, organization, or connection-owned credential. Renaming or pausing the
+connection must preserve the grant and its secret bindings. A later successful
+catalog refresh clears an earlier connection-health error without new consent.
+An agent caller denied for lacking its own grant must not change shared health
+or the catalog, including when that agent has permission to manage the connection.
+
 Existing personal connections with company-scoped invocation credentials require
 their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
 a user-owned credential and updates the grant and declarations while preserving

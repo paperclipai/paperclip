@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { enableReattachPhase, joinReattachPhase, resetReattachPhaseForTests, settleReattachRun } from "../services/heartbeat/run-admission.js";
 import {
   activityLog, agents, agentTaskSessions, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueApprovals,
   issueRecoveryActions, issueRelations, issues, issueThreadInteractions, nativeRunFinalizations,
@@ -367,6 +368,33 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(queue.calls).toHaveLength(0);
   }, 60_000);
 
+  it("takes no action while handed-over live runs are being reached, and acts once the phase ends", async () => {
+    const f = await seedCompany();
+    const otherBoot = randomUUID();
+    const controllerProcess = { bootId: otherBoot, pid: 4242, hostHash: "host-b", processStartedAt: new Date(Date.now() - HOUR).toISOString() };
+    const lapsed = await f.issue();
+    await f.run(lapsed, { status: "running", errorCode: null, finishedAt: null, controllerBootId: otherBoot, controllerProcess,
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000) });
+    const queue = wakeQueue();
+    const settle = vi.fn(async () => undefined);
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup, settleLostRunProcess: settle,
+      proveOwner: async () => ({ verdict: "gone", reason: "controller_stopped" }) });
+    try {
+      enableReattachPhase(180_000);
+      joinReattachPhase([{ runId: "handed-over-live-run", reason: "handed_over", claimableAt: Date.now() }]);
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId: lapsed }))
+        .toMatchObject({ outcome: "deferred_reattach_phase", verdict: { reason: "run_owner_gone" } });
+      expect(settle).not.toHaveBeenCalled();
+      expect(queue.calls).toHaveLength(0);
+      settleReattachRun("handed-over-live-run", "reached");
+      expect(await sweep.checkIssue({ companyId: f.companyId, issueId: lapsed }))
+        .toMatchObject({ outcome: "settled_lost_run", verdict: { reason: "run_owner_gone" } });
+      expect(settle).toHaveBeenCalledTimes(1);
+    } finally {
+      resetReattachPhaseForTests();
+    }
+  }, 60_000);
+
   it("leaves tasks waiting on an approval, a question, a dependency or a declared unblock action", async () => {
     const f = await seedCompany();
     const approvalTask = await f.issue();
@@ -418,7 +446,7 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(deadlines).toHaveLength(1);
     // Too soon: spaced, not repaired and not reported as fine.
     clock = new Date(clock.getTime() + 60_000);
-    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "waiting_unchanged", verdict: { kind: "violation" } });
     // After the spacing it is admitted; the queue later declines the claim
     // (for example behind the old run's pending cleanup) and the wake is skipped.
     admit = true;
@@ -444,8 +472,9 @@ describePostgres("assigned-work invariant sweep", () => {
       evidence: { runId: run.id, originalFailureCode: "process_lost" }, nextAction: "Reconcile the stopped run.", attemptCount: 1 });
     const heartbeat = heartbeatService(db);
     try {
+      // The wake became the continuation, so the sweep counts it as repaired.
       const first = await heartbeat.checkAssignedWorkInvariant({ companyId: f.companyId, issueId });
-      expect(first).toMatchObject({ outcome: "enqueue_refused", verdict: { kind: "violation" } });
+      expect(first).toMatchObject({ outcome: "repaired", verdict: { kind: "violation" } });
       const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         sqlTag`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`));
       expect(queued).toHaveLength(0);
@@ -454,7 +483,7 @@ describePostgres("assigned-work invariant sweep", () => {
       expect(pending).toHaveLength(0);
       const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
-      expect(entry.details).toMatchObject({ outcome: "not_started" });
+      expect(entry.details).toMatchObject({ outcome: "queued", continuedFromSavedWork: "true" });
       const [record] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
         sqlTag`${issueRecoveryActions.evidence}->'freshContinuation' is not null`));
       expect(record!.evidence).toMatchObject({ continuationDelivery: "pending" });

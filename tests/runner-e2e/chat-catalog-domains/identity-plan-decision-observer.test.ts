@@ -124,7 +124,7 @@ it("retains the original180-second phase when the case has more time remaining",
   expect(port.deadline).toBe(f.now + 180_000);
 });
 it.each(["missing", "invalid", "expired", "late await"])("rejects %s original deadline without resetting it", async fault => {
-  const f = fixture("questions-and-approvals.review-plan", fault === "invalid" ? NaN : fault === "expired" ? -1 : 600_000);
+  const f = fixture("questions-and-approvals.review-plan", fault === "invalid" ? NaN : fault === "expired" ? -1 : 600_000); vi.spyOn(Date, "now").mockReturnValue(f.now);
   const ctx: ChatCatalogContext = fault === "missing" ? { ...f.ctx, observationDeadlineAt: undefined } : f.ctx;
   if (fault === "late await") port.afterLoadNow = f.now + 180_001;
   await expect(planReviewIdentityCases[0]!.act!(ctx, f.state)).rejects.toThrow(fault === "late await" ? "CONTROL_SOURCE_NOT_SETTLED" : "Original plan-review observation budget");

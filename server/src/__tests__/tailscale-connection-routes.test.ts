@@ -7,10 +7,11 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { badRequest } from "../errors.js";
 
 const fixture = vi.hoisted(() => ({
-  service: { list: vi.fn(), start: vi.fn(), devices: vi.fn(), complete: vi.fn(), disconnect: vi.fn(), pairing: vi.fn() },
+  service: { list: vi.fn(), start: vi.fn(), devices: vi.fn(), complete: vi.fn(), disconnect: vi.fn(), pairing: vi.fn(), resume: vi.fn() },
   configured: vi.fn(), enrollment: vi.fn(), activity: vi.fn(),
 }));
 vi.mock("../services/connectors/tailscale/connections.js", () => ({ tailscaleConnectionService: () => fixture.service }));
+vi.mock("../services/connectors/tailscale/device-login.js", () => ({ tailscaleDeviceLoginService: () => fixture.service }));
 vi.mock("../services/paperclip-cloud-connector.js", () => ({ paperclipCloudConnectorConfigFromEnv: fixture.configured }));
 vi.mock("../services/paperclip-cloud-connector-enrollment.js", () => ({ startPaperclipCloudConnectorEnrollment: fixture.enrollment }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: fixture.activity }));
@@ -41,10 +42,10 @@ describe("Tailscale connector routes", () => {
     fixture.service.disconnect.mockResolvedValue({ id: connectionId, companyId, status: "disconnected" });
     fixture.service.pairing.mockResolvedValue({ privateKeySecretId: "fixture-key-ref", publicKey: "fixture-public-key", command: "fixture-public-pairing-command" });
   });
-  it("starts consent with the signed-in user, company, and fixed connector callback", async () => {
+  it("starts device sign-in with the signed-in user and company", async () => {
     const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
     expect(response.status).toBe(201);
-    expect(fixture.service.start).toHaveBeenCalledWith({ companyId, userId: "fixture-user", name: "Home", returnUri: "http://localhost:3100/api/tools/oauth/tailscale/callback" });
+    expect(fixture.service.start).toHaveBeenCalledWith({ companyId, userId: "fixture-user", name: "Home" });
     expect(fixture.activity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "tailscale.authorization_started", companyId }));
   });
   it("rejects foreign-origin browser mutations before starting consent", async () => {
@@ -113,26 +114,15 @@ describe("Tailscale connector routes", () => {
     expect(response.headers.location).toBeUndefined();
     expect(fixture.activity).not.toHaveBeenCalled();
   });
-  it("starts existing instance enrollment when no broker identity exists", async () => {
+  it("starts device sign-in without a Cloud broker identity or pilot admission", async () => {
     fixture.configured.mockReturnValue(null);
-    fixture.enrollment.mockResolvedValue({ instanceId: "fixture-instance", environment: "development", status: "pending", verificationUrl: "http://localhost:3000/connections/enroll?id=fixture", expiresAt: "2099-01-01T00:00:00Z" });
     const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
     expect(response.status).toBe(201);
-    expect(response.body.authorizationUrl).toContain("/connections/enroll");
-    expect(fixture.enrollment).toHaveBeenCalledWith(expect.objectContaining({ companyId, initiatedBy: "user:fixture-user", origin: "http://localhost:3100", returnTo: "/apps/tailscale" }));
-    expect(fixture.service.start).not.toHaveBeenCalled();
-    expect(fixture.activity).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
-      companyId,
-      actorType: "user",
-      actorId: "fixture-user",
-      action: "paperclip_cloud_connector.enrollment_started",
-      entityType: "connector_instance",
-      entityId: "fixture-instance",
-      details: { environment: "development", status: "pending" },
-    });
+    expect(fixture.enrollment).not.toHaveBeenCalled();
+    expect(fixture.service.start).toHaveBeenCalledWith({ companyId, userId: "fixture-user", name: "Home" });
+    expect(response.headers["cache-control"]).toBe("no-store");
   });
-  it("checks origin, admin status, and company access before self-hosted enrollment", async () => {
-    fixture.configured.mockReturnValue(null);
+  it("checks origin, admin status, and company access before device sign-in and status requests", async () => {
     for (const [actor, origin] of [
       [board, "https://untrusted.example.test"],
       [{ ...board, isInstanceAdmin: false }, "http://localhost:3100"],
@@ -140,18 +130,25 @@ describe("Tailscale connector routes", () => {
       [{ type: "agent", source: "agent_key", agentId: "fixture-agent", companyId }, "http://localhost:3100"],
     ] as const) {
       expect((await request(app(actor as any)).post(path).set("Origin", origin).send({ name: "Home" })).status).toBe(403);
+      expect((await request(app(actor as any)).post(path + `/${connectionId}/device-login`).set("Origin", origin).send({})).status).toBe(403);
     }
-    expect(fixture.enrollment).not.toHaveBeenCalled();
     expect(fixture.service.start).not.toHaveBeenCalled();
+    expect(fixture.service.resume).not.toHaveBeenCalled();
     expect(fixture.activity).not.toHaveBeenCalled();
   });
+  it("returns device sign-in progress only to the authorized initiator", async () => {
+    fixture.service.resume.mockResolvedValue({ connection: { id: connectionId, status: "authorizing" }, needsApproval: true });
+    const response = await request(app()).post(path + `/${connectionId}/device-login`).set("Origin", "http://localhost:3100").send({});
+    expect(response.status).toBe(200);
+    expect(fixture.service.resume).toHaveBeenCalledWith(companyId, connectionId, "fixture-user");
+    expect(response.body.needsApproval).toBe(true);
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
   it("does not record a successful enrollment start when enrollment fails", async () => {
-    fixture.configured.mockReturnValue(null);
-    fixture.enrollment.mockRejectedValue(new Error("Enrollment unavailable"));
+    fixture.service.start.mockRejectedValueOnce(new Error("Enrollment unavailable"));
     const response = await request(app()).post(path).set("Origin", "http://localhost:3100").send({ name: "Home" });
     expect(response.status).toBe(500);
     expect(fixture.activity).not.toHaveBeenCalled();
-    expect(fixture.service.start).not.toHaveBeenCalled();
   });
   it("prepares machine pairing for an authorized board user without returning a private key", async () => {
     const response = await request(app()).post(path + `/${connectionId}/pairing`).set("Origin", "http://localhost:3100").send({ deviceId: "stable-device" });

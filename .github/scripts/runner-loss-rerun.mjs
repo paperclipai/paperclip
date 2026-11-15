@@ -27,9 +27,10 @@ export const AGGREGATE_JOBS = new Set(["ci / verify", "ci / e2e"]);
 // would move the whole run to GitHub-hosted runners, so leave it to a human.
 export const GATE_JOB_PREFIX = "ci / gate / ";
 export const RERUN_CONCLUSIONS = new Set(["failure", "cancelled"]);
-// A shutdown signal often reaches the check run only as this annotation; the
-// signal itself is logged as an error line in the job log.
-const CANCELLED_MESSAGE = "The operation was canceled.";
+// A shutdown signal often reaches the check run only as one of these
+// annotations; the signal itself is logged as an error line in the job log.
+const CANCELLED_MESSAGES = new Set(["The operation was canceled.", "A task was canceled."]);
+const isCancellation = (annotation) => CANCELLED_MESSAGES.has(annotation.message);
 
 export function createGithubClient({ token, fetcher = fetch, apiUrl = "https://api.github.com" }) {
   if (!token) throw new Error("GITHUB_TOKEN is required");
@@ -83,12 +84,12 @@ export async function classifyJob(job, { annotations, readLog }) {
   const isRunnerLoss = (annotation) => RUNNER_LOSS_PATTERN.test(annotation.message ?? "");
   const match = failures.find(isRunnerLoss);
   if (match) return { lost: true, evidence: firstLine(match.message) };
-  if (failures.some((annotation) => annotation.message === CANCELLED_MESSAGE) && logShowsRunnerLoss(await readLog(job))) {
+  if (failures.some(isCancellation) && logShowsRunnerLoss(await readLog(job))) {
     return { lost: true, evidence: "job log: runner received a shutdown signal or lost communication" };
   }
-  const real = failures.find((annotation) => annotation.message !== CANCELLED_MESSAGE);
+  const real = failures.find((annotation) => !isCancellation(annotation));
   if (real) return { lost: false, evidence: firstLine(real.message) };
-  if (failures.length > 0) return { lost: false, evidence: `${CANCELLED_MESSAGE} (no runner-loss error in the job log)` };
+  if (failures.length > 0) return { lost: false, evidence: `${firstLine(failures[0].message)} (no runner-loss error in the job log)` };
   return { lost: false, evidence: "no failure annotation" };
 }
 
