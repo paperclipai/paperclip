@@ -34,6 +34,12 @@ const spec = {
 const RUN_ID = "4f17d9d6-a124-4432-9040-a93d53d1e9f2";
 const OTHER_RUN_ID = "0b6f9a51-5d0e-4f3e-9d43-2f0c8f1e7a10";
 
+// The remote script travels base64-encoded on stdin; the ssh argv carries only
+// a fixed reader that decodes and evals it.
+function remoteScriptOf(target: { stdinPrefix: string }) {
+  return Buffer.from(target.stdinPrefix.trim(), "base64").toString("utf8");
+}
+
 // The stop script waits 10 s between TERM and KILL; the tests wait 1 s.
 function stopScript(runId: string, procRoot = "/proc") {
   return buildStopSshRunSessionsScript(runId).replace(/^wait=10$/m, "wait=1").replaceAll("/proc", procRoot);
@@ -100,7 +106,7 @@ describe("SSH run session tracking", () => {
       args: ["--print"],
       env: { PAPERCLIP_RUN_ID: RUN_ID },
     });
-    const remoteScript = String(target.args.at(-1) ?? "");
+    const remoteScript = remoteScriptOf(target);
     const record = remoteScript.indexOf(`.paperclip/run-sessions/${RUN_ID}`);
     expect(record).toBeGreaterThan(-1);
     expect(record).toBeLessThan(remoteScript.indexOf("exec env "));
@@ -110,12 +116,12 @@ describe("SSH run session tracking", () => {
 
   it("records the session under the explicit run id, without PAPERCLIP_RUN_ID in the env", async () => {
     const target = await buildSshSpawnTarget({ spec, command: "node", args: [], env: { FOO: "bar" }, runId: RUN_ID });
-    expect(String(target.args.at(-1) ?? "")).toContain(`.paperclip/run-sessions/${RUN_ID}`);
+    expect(remoteScriptOf(target)).toContain(`.paperclip/run-sessions/${RUN_ID}`);
     await target.cleanup();
     const both = await buildSshSpawnTarget({
       spec, command: "node", args: [], env: { PAPERCLIP_RUN_ID: OTHER_RUN_ID }, runId: RUN_ID,
     });
-    const script = String(both.args.at(-1) ?? "");
+    const script = remoteScriptOf(both);
     expect(script).toContain(`.paperclip/run-sessions/${RUN_ID}`);
     expect(script).not.toContain(`.paperclip/run-sessions/${OTHER_RUN_ID}`);
     await both.cleanup();
@@ -125,7 +131,7 @@ describe("SSH run session tracking", () => {
     const envs: Record<string, string>[] = [{ FOO: "bar" }, { PAPERCLIP_RUN_ID: "../escape" }];
     for (const env of envs) {
       const target = await buildSshSpawnTarget({ spec, command: "node", args: [], env });
-      expect(String(target.args.at(-1) ?? "")).not.toContain("run-sessions");
+      expect(remoteScriptOf(target)).not.toContain("run-sessions");
       await target.cleanup();
     }
     expect(sshRunSessionRecordDir("../escape")).toBeNull();
@@ -183,8 +189,9 @@ describeLinux("SSH run session stop (real processes)", () => {
     return home;
   }
 
-  // Runs the remote script exactly as the spawn target sends it, in a new
-  // session, as sshd does for a non-pty exec channel.
+  // Runs the remote command exactly as the spawn target sends it (the argv's
+  // reader, fed the script on stdin), in a new session, as sshd does for a
+  // non-pty exec channel.
   async function spawnAsSshd(command: string, args: string[]) {
     const target = await buildSshSpawnTarget({
       spec: { ...spec, remoteCwd: home },
@@ -195,9 +202,10 @@ describeLinux("SSH run session stop (real processes)", () => {
     await target.cleanup();
     const child = spawn("sh", ["-c", String(target.args.at(-1))], {
       detached: true,
-      stdio: "ignore",
+      stdio: ["pipe", "ignore", "ignore"],
       env: { PATH: process.env.PATH, HOME: home },
     });
+    child.stdin!.end(target.stdinPrefix);
     children.push(child);
     return child;
   }
@@ -667,7 +675,8 @@ describeSshd("SSH run session stop through sshd", () => {
       env: { PAPERCLIP_RUN_ID: runId },
       runId,
     });
-    const client = spawn("ssh", target.args, { stdio: "ignore" });
+    const client = spawn("ssh", target.args, { stdio: ["pipe", "ignore", "ignore"] });
+    client.stdin!.end(target.stdinPrefix);
     try {
       const [sleeper, escaped, shell] = await readPids(pidFile, 3);
       await until(() => existsSync(path.join(recordRoot, runId)));
