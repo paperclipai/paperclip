@@ -25,6 +25,7 @@ const RETRY_CHECK_AFTER_MS = 60_000;
 const RETRY_RECHECK_MS = 30_000;
 const EVENT_FETCHES_PER_TICK = 10;
 const EVENT_PAGES = 4;
+const SINGLE_READS_PER_TICK = 50;
 
 interface TaskRecord {
   id: string;
@@ -154,6 +155,7 @@ export class Ramp {
   private nextBoardAt = 0;
   private nextPollAt = 0;
   private taskCapReached = false;
+  private fallbackCursor = 0;
   private runsListTruncated = false;
   private metricsSource: RampOutcome["metricsSource"];
   private readonly deps: RampDeps;
@@ -346,14 +348,24 @@ export class Ramp {
 
   private async readTasks(): Promise<void> {
     const open = this.openTasks();
+    const missing: TaskRecord[] = [];
     for (let offset = 0; offset < open.length; offset += IDS_PER_READ) {
       const batch = open.slice(offset, offset + IDS_PER_READ);
       const body = await this.deps.api.get<unknown>(`/api/companies/${this.companyId}/issues?view=rows&ids=${batch.map(task => task.id).join(",")}`).catch(() => null);
       const byId = new Map(rows(body).map(row => [String(row.id), row]));
       for (const task of batch) {
-        const row = byId.get(task.id) ?? await this.deps.api.get<Json>(`/api/issues/${task.id}`).catch(() => null);
+        const row = byId.get(task.id);
         if (row?.status) this.settle(task, String(row.status));
+        else missing.push(task);
       }
+    }
+    if (!missing.length) return;
+    const start = this.fallbackCursor % missing.length;
+    const chosen = [...missing.slice(start), ...missing.slice(0, start)].slice(0, SINGLE_READS_PER_TICK);
+    this.fallbackCursor += chosen.length;
+    for (const task of chosen) {
+      const row = await this.deps.api.get<Json>(`/api/issues/${task.id}`).catch(() => null);
+      if (row?.status) this.settle(task, String(row.status));
     }
   }
 
