@@ -139,6 +139,28 @@ describe("queued run dispatch order", () => {
     expect(ordered.map(entry => entry.id)).toEqual([urgent.id, earlier.id, later.id, inProgress.id, todo.id]);
   });
 
+  it("picks reviewer-reworked runs ahead of older and higher-priority peers at the same readiness without outranking readiness or person class", () => {
+    const olderPeer = run({ wakeReason: "issue_assigned", readinessRank: 0, priorityRank: 2, createdAt: minutesAgo(20) });
+    const higherPriorityPeer = run({ wakeReason: "issue_assigned", readinessRank: 0, priorityRank: 0, createdAt: minutesAgo(10) });
+    const rework = run({ wakeReason: "execution_changes_requested", readinessRank: 0, priorityRank: 2, rework: true, createdAt: minutesAgo(1) });
+    const blockedRework = run({ wakeReason: "execution_changes_requested", readinessRank: 3, priorityRank: 0, rework: true, createdAt: minutesAgo(30) });
+    const todoPeer = run({ wakeReason: "issue_assigned", readinessRank: 1, priorityRank: 3, createdAt: minutesAgo(2) });
+    const personRun = personRetry(1);
+
+    const input = { now, startsSinceRecovery: 0 };
+    const ordered = orderQueuedRunsForDispatch([olderPeer, higherPriorityPeer, blockedRework, todoPeer, rework, personRun], input);
+    expect(ordered.map(entry => entry.id)).toEqual([
+      personRun.id,
+      rework.id,
+      higherPriorityPeer.id,
+      olderPeer.id,
+      todoPeer.id,
+      blockedRework.id,
+    ]);
+    expect(queuedRunDispatchLine([olderPeer, higherPriorityPeer, blockedRework, todoPeer, rework, personRun], input).map(entry => entry.id))
+      .toEqual(ordered.map(entry => entry.id));
+  });
+
   it("starts an old queued continuation within a bounded number of starts while fresh agent and recovery work keeps arriving", () => {
     const continuation = run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(150), sourceEndedAt: minutesAgo(152) });
     const started: QueuedRunDispatchFacts[] = [];

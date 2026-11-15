@@ -25,6 +25,8 @@ export type QueuedRunDispatchFacts = {
   requestedByUser: boolean;
   sourceEndedAt: Date | null;
   readinessRank: number;
+  /** Reviewer-requested rework (`executionState.status === "changes_requested"`), picked before non-rework peers at the same readiness. */
+  rework?: boolean;
   priorityRank: number;
   shareDeferred?: boolean;
   /** The task was created by a person, who waits on its outcome whichever system wake moves it. */
@@ -169,6 +171,7 @@ function sortForDispatch<T extends QueuedRunDispatchFacts>(runs: readonly T[], n
   return [...runs].sort((left, right) =>
     tier(left) - tier(right)
     || left.readinessRank - right.readinessRank
+    || Number(!left.rework) - Number(!right.rework)
     || left.priorityRank - right.priorityRank
     || left.createdAt.getTime() - right.createdAt.getTime());
 }
