@@ -36,22 +36,39 @@ describe.skipIf(!support.supported)("governed legacy handoff persistence", () =>
       currentParticipant: { type: "agent" as const, agentId: reviewer.id }, returnAssignee: { type: "agent" as const, agentId: worker.id },
       completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null, reviewRequest: null };
     const service = issueService(db);
+    const mutationId = randomUUID();
     await expect(service.update(issue.id, { status: "in_review", assigneeAgentId: reviewer.id, executionState: state,
-      preserveActorExecutionOnHandoff: true })).rejects.toThrow("running agent");
+      preserveActorExecutionOnHandoff: true, handoffMutationId: mutationId })).rejects.toThrow("running agent");
     expect(await service.getById(issue.id)).toMatchObject({ status: "in_progress", assigneeAgentId: worker.id, executionRunId: source.id });
     const [other] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: worker.id, status: "running", runtimeMode: "legacy" }).returning();
     await db.update(issues).set({ executionRunId: other.id }).where(eq(issues.id, issue.id));
     await expect(service.update(issue.id, { status: "in_review", assigneeAgentId: reviewer.id, executionState: state,
-      actorAgentId: worker.id, actorRunId: source.id, preserveActorExecutionOnHandoff: true })).rejects.toThrow("owner changed");
+      actorAgentId: worker.id, actorRunId: source.id, preserveActorExecutionOnHandoff: true, handoffMutationId: mutationId })).rejects.toThrow("owner changed");
     expect(await service.getById(issue.id)).toMatchObject({ status: "in_progress", assigneeAgentId: worker.id, executionRunId: other.id });
     await db.update(issues).set({ executionRunId: source.id }).where(eq(issues.id, issue.id));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, other.id));
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0].contextSnapshot)
       .not.toHaveProperty("governedSelfHandoff");
-    await service.update(issue.id, { status: "in_review", assigneeAgentId: reviewer.id, executionState: state,
-      actorAgentId: worker.id, actorRunId: source.id, preserveActorExecutionOnHandoff: true });
+    const handoffPatch = { status: "in_review" as const, assigneeAgentId: reviewer.id, executionState: state,
+      actorAgentId: worker.id, actorRunId: source.id, preserveActorExecutionOnHandoff: true, handoffMutationId: mutationId };
+    await expect(db.transaction(async tx => {
+      await service.update(issue.id, handoffPatch, tx);
+      await service.addComment(issue.id, "Unbound comment", { agentId: worker.id, runId: source.id }, undefined, tx);
+    })).rejects.toThrow("handed off");
+    expect(await service.getById(issue.id)).toMatchObject({ status: "in_progress", assigneeAgentId: worker.id, executionRunId: source.id });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0].contextSnapshot)
+      .not.toHaveProperty("governedSelfHandoff");
+    await db.transaction(async tx => {
+      await service.update(issue.id, handoffPatch, tx);
+      const comment = await service.addComment(issue.id, "Ready for review", { agentId: worker.id, runId: source.id },
+        { governedHandoffMutationId: mutationId }, tx);
+      expect(comment.body).toBe("Ready for review");
+    });
     expect(await service.getById(issue.id)).toMatchObject({ assigneeAgentId: reviewer.id, executionRunId: source.id, checkoutRunId: null });
 
+    await expect(service.addComment(issue.id, "Late comment", { agentId: worker.id, runId: source.id })).rejects.toThrow("handed off");
+    await expect(service.addComment(issue.id, "Forged comment", { agentId: worker.id, runId: source.id },
+      { governedHandoffMutationId: "wrong-request" })).rejects.toThrow("handed off");
     await expect(service.update(issue.id, { title: "Late mutation", actorAgentId: worker.id, actorRunId: source.id })).rejects.toThrow("handed off");
     const [recorded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id));
     expect(recorded.contextSnapshot).toMatchObject({ governedSelfHandoff: { runId: source.id, issueId: issue.id } });

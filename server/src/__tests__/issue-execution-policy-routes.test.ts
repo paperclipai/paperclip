@@ -830,11 +830,29 @@ describe("issue execution policy routes", () => {
         issueId: issue.id, governedSelfHandoff: { runId: issue.executionRunId, issueId: issue.id },
       } } as never);
     mockIssueService.update.mockClear();
+    const originalSelectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table: unknown) => {
+      if (getTableName(table as never) === "case_handoffs") {
+        return { where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) };
+      }
+      if (getTableName(table as never) !== "heartbeat_runs") return originalSelectFrom(table);
+      const rows = [{ id: issue.executionRunId, companyId: issue.companyId, agentId: issue.assigneeAgentId,
+        contextSnapshot: { issueId: issue.id, governedSelfHandoff: { runId: issue.executionRunId, issueId: issue.id } } }];
+      const result = { then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
+      return { where: () => ({ ...result, for: () => result, limit: () => result,
+        orderBy: () => ({ ...result, limit: () => result }) }) };
+    });
     const late = await request(await createApp({ type: "agent", source: "agent_jwt",
       agentId: issue.assigneeAgentId, companyId: issue.companyId, runId: issue.executionRunId }))
       .patch(`/api/issues/${issue.id}`).send({ title: "Late outgoing edit" });
     expect(late.status, JSON.stringify(late.body)).toBe(403);
     expect(mockIssueService.update).not.toHaveBeenCalled();
+    const lateComment = await request(await createApp({ type: "agent", source: "agent_jwt",
+      agentId: issue.assigneeAgentId, companyId: issue.companyId, runId: issue.executionRunId }))
+      .post(`/api/issues/${issue.id}/comments`).send({ body: "Late outgoing comment" });
+    expect(lateComment.status, JSON.stringify(lateComment.body)).toBe(403);
+    expect(lateComment.body.details?.code).toBe("issue_handed_off");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
