@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import express, { type Request } from "express";
 import request from "supertest";
@@ -58,13 +58,15 @@ describe("durable Dot Runner integration", () => {
   let root: string;
   beforeAll(async () => {
     const runnerRoot = fileURLToPath(new URL("../../../packages/paperclip-runner/", import.meta.url));
-    execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
+    const prebuiltRunner = process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER;
+    if (prebuiltRunner && !isAbsolute(prebuiltRunner)) throw new Error("Explicit prebuilt Runner path must be absolute");
+    if (!prebuiltRunner) execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
     db = createDb(externalUrl ?? temporary.connectionString);
     root = await mkdtemp(join(tmpdir(), "paperclip-dot-state-"));
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
-    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(runnerRoot, "runner/target/release", process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd"));
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", prebuiltRunner ?? join(runnerRoot, "runner/target/release", process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd"));
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(root, "runner-state"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false });

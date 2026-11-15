@@ -133,7 +133,7 @@ it.each([
   }
 }, 45000);
 
-it.each(["local", "local pending finish", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
+it.each(["local", "local pending finish", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller", "external launcher dead daemon"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
@@ -143,6 +143,9 @@ it.each(["local", "local pending finish", "custom local directory", "external la
   const settlements = new Map<string, unknown>();
   const dispatches: unknown[] = [];
   let controllerPort = 0;
+  const deadDaemon = launch === "external launcher dead daemon";
+  let ownedChild: ReturnType<typeof spawn> | undefined;
+  let ownedCompletion: Promise<unknown> | undefined;
   const emptyController = launch === "external launcher empty controller";
   const pendingFinish = launch === "local pending finish";
   const firstCompletion = vi.fn(() => new Promise<string>(() => {}));
@@ -152,7 +155,7 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     execution: input, stateDirectory: join(root, "state"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
-    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
+    runnerBinary: deadDaemon ? process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? defaultCapabilityRunnerdBinary() : resolve("runner/target/debug/paperclip-runnerd"),
     onSpawn: async process => { spawned = process; },
     controlPlaneRegistration: async authority => {
       if (emptyController) {
@@ -185,19 +188,23 @@ it.each(["local", "local pending finish", "custom local directory", "external la
       const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
       const startedAt = new Date().toISOString();
       spawned = { pid: child.pid!, processGroupId: null, startedAt };
-      return { child, startedAt, completion: new Promise((resolve, reject) => {
-        child.once("error", reject); child.once("exit", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
-      }) };
+      const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolve, reject) => {
+        child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal, stdout: "", stderr: "" }));
+      });
+      ownedChild = child; ownedCompletion = completion;
+      return { child, startedAt, completion };
     };
   }
+  let firstFailure: unknown;
   const driver = new RunnerdDotDriver(options);
-  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
   const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
     requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
     normalizedSessionId: input.session.normalizedSessionId!, turnId: options.identity.turnId, assignmentRevision: 1,
     action, input: args, digest: externalOperationDigest(action, args),
   });
   try {
+    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
     await session.startTurn({ message: { role: "user", text: "Read the synthetic counter." } });
     await send!(operation("accept", {}));
     const call = operation("tool", { name: "synthetic_counter", arguments: {} });
@@ -221,6 +228,13 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     const snapshot = await session.snapshot();
     expect(snapshot).toMatchObject({ providerSessionId: null, activeTurnId: options.identity.turnId, providerRecoveryPolicy: "same_session_only" });
     await session.detachControllerForRestart!();
+    const priorDaemonPid = spawned!.pid;
+    if (deadDaemon) {
+      expect(ownedChild?.pid).toBe(priorDaemonPid);
+      expect(ownedChild!.kill("SIGTERM")).toBe(true);
+      await ownedCompletion;
+      expect(ownedChild!.exitCode !== null || ownedChild!.signalCode !== null).toBe(true);
+    }
     if (emptyController) {
       await rm(options.stateDirectory, { recursive: true });
       checkpoint!.restoreSessionDirectory(options.stateDirectory);
@@ -229,10 +243,11 @@ it.each(["local", "local pending finish", "custom local directory", "external la
       ...(pendingFinish ? { completionFeedback: recoveredCompletion } : {}),
       ...(emptyController ? { runnerBinary: join(root, "unavailable-old-runner"),
         runnerArtifact: { version: checkpoint!.runnerVersion, digest: checkpoint!.runnerDigest } } : {}),
-      adoptExistingRunner: { ...spawned!, isAlive: () => true } });
+      ...(!deadDaemon ? { adoptExistingRunner: { ...spawned!, isAlive: () => true } } : {}) });
     const recovered = await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal });
     expect(recovered.recovered).toBe(true);
     session = recovered.session!;
+    if (deadDaemon) expect(spawned!.pid).not.toBe(priorDaemonPid);
     if (pendingFinish) {
       expect(options.recoverSemanticToolInput).toBeUndefined();
       await vi.waitFor(() => expect(settlements.get(finish.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
@@ -246,10 +261,26 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     await session.close({ reason: "Synthetic test complete" });
     await rm(join(runnerState, "dot-provider-state.json"));
     expect(await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal })).toMatchObject({ recovered: false });
+  } catch (error) {
+    firstFailure = error; throw error;
   } finally {
-    await session.close({ reason: "Test cleanup", force: true }).catch(() => {});
-    if (spawned) { try { process.kill(spawned.pid, "SIGTERM"); } catch {} }
-    await rm(root, { recursive: true, force: true });
+    if (deadDaemon) {
+      const cleanupFailures: unknown[] = [];
+      try { await session?.close({ reason: "Test cleanup", force: true }); } catch (error) { cleanupFailures.push(error); }
+      try {
+        if (ownedChild && ownedChild.exitCode === null && ownedChild.signalCode === null) ownedChild.kill("SIGTERM");
+        await ownedCompletion;
+      } catch (error) { cleanupFailures.push(error); }
+      try { await rm(root, { recursive: true, force: true }); } catch (error) { cleanupFailures.push(error); }
+      if (cleanupFailures.length) throw new AggregateError(firstFailure === undefined ? cleanupFailures : [firstFailure, ...cleanupFailures],
+        "Dead external daemon recovery cleanup failed", { cause: firstFailure ?? cleanupFailures[0] });
+    } else {
+      await session?.close({ reason: "Test cleanup", force: true }).catch(() => {});
+      if (ownedChild && ownedChild.exitCode === null && ownedChild.signalCode === null) ownedChild.kill("SIGTERM");
+      await ownedCompletion;
+      if (!ownedChild && spawned) { try { process.kill(spawned.pid, "SIGTERM"); } catch {} }
+      await rm(root, { recursive: true, force: true });
+    }
   }
 }, 45000);
 

@@ -218,6 +218,7 @@ import {
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
   parseNativeExecutionInput,
+  externalOperationDigest,
   parsePaperclipQuestionSet,
   resolveSourceCodexHome,
   readRunnerdArtifactBinding,
@@ -15559,7 +15560,8 @@ async function observeUnansweredRunnerProgress(input: {
 export async function verifyRemoteRunnerOrSettledExit(
   input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
     claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true };
-    unansweredRunnerProgress?: UnansweredRunnerProgressProbe; admittedAttemptLimit?: number },
+    unansweredRunnerProgress?: UnansweredRunnerProgressProbe; admittedAttemptLimit?: number;
+    checkpointRecoveryEligible?: () => Promise<boolean> },
 ): Promise<Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>> | undefined> {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -15577,15 +15579,21 @@ export async function verifyRemoteRunnerOrSettledExit(
     const freshBootstrap = diagnostic !== null && exitedRunnerRequestedFreshBootstrap(diagnostic);
     const attemptLimit = Math.max(input.admittedAttemptLimit ?? 0, freshBootstrap && input.claim.replaceUnansweredRunner === true
       ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT);
+    const checkpointedRestart = input.checkpointRecoveryEligible !== undefined &&
+      input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT &&
+      diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running" &&
+      diagnostic.runnerLifecycle === "ready" && diagnostic.runnerSettled === true &&
+      await input.checkpointRecoveryEligible().catch(() => false) === true;
     if (input.providerAttempt > attemptLimit || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        (!exitedBeforeSessionOpen && !freshBootstrap &&
+        (!exitedBeforeSessionOpen && !freshBootstrap && !checkpointedRestart &&
           (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
     if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
-    if (freshBootstrap ? !runnerStateRequestsFreshBootstrap(state) : exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
+    if (checkpointedRestart ? state.lifecycle !== "ready" || !describeExitedRemoteRunner(state).runnerSettled || state.warmTransition != null
+      : freshBootstrap ? !runnerStateRequestsFreshBootstrap(state) : exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
@@ -16252,6 +16260,39 @@ export async function createRunnerdBackend(input: {
   }
 }
 
+export function canRestartExternalRunnerCheckpoint(saved: Record<string, unknown> | null, expected: {
+  provider: "openai_dot" | "grok_bot"; companyId: string; agentId: string;
+  bindingId: string; bindingGeneration: number; expiresAtUnixMs: number;
+  runId: string; sessionId: string; turnId: string;
+}): boolean {
+  const descriptor = record(saved?.descriptor);
+  const tools = record(saved?.tools);
+  const operations = record(saved?.operations);
+  return ["openai_dot", "grok_bot"].includes(expected.provider) && expected.expiresAtUnixMs > Date.now() &&
+    saved?.schema === "paperclip.runner.dot-provider-state.v1" &&
+    saved.runId === expected.runId && saved.sessionId === expected.sessionId && saved.turnId === expected.turnId &&
+    saved.lifecycle === "running" && saved.completion === null && saved.completionInput === null &&
+    descriptor.kind === expected.provider && descriptor.companyId === expected.companyId &&
+    descriptor.agentId === expected.agentId && descriptor.bindingId === expected.bindingId &&
+    descriptor.bindingGeneration === expected.bindingGeneration && descriptor.expiresAtUnixMs === expected.expiresAtUnixMs &&
+    tools.pending != null && typeof tools.pending === "object" && !Array.isArray(tools.pending) &&
+    Object.keys(record(tools.pending)).length === 0 && saved.operations != null &&
+    typeof saved.operations === "object" && !Array.isArray(saved.operations) &&
+    Object.entries(operations).every(([requestId, receipt]) => {
+      const status = record(record(receipt).outcome).status;
+      if (status === "completed" || status === "rejected") return true;
+      const operation = record(record(receipt).operation);
+      return status === "accepted" && operation.action === "accept" && operation.requestId === requestId &&
+        operation.runId === expected.runId && operation.normalizedSessionId === expected.sessionId &&
+        operation.turnId === expected.turnId && operation.bindingId === expected.bindingId &&
+        operation.bindingGeneration === expected.bindingGeneration &&
+        Number.isSafeInteger(saved.assignmentRevision) && Number(saved.assignmentRevision) > 0 &&
+        operation.assignmentRevision === saved.assignmentRevision && operation.input != null &&
+        typeof operation.input === "object" && !Array.isArray(operation.input) && Object.keys(operation.input).length === 0 &&
+        operation.digest === externalOperationDigest("accept", record(operation.input));
+    });
+}
+
 /** Dot uses the same managed process launcher and authenticated PRP transports.
  * Its execution contract still exposes no workspace, shell, or provider secrets. */
 async function prepareRemoteExternalRunner({ input, target, runner, root, identity }: {
@@ -16294,10 +16335,12 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
       throw new Error("runner_remote_artifact_verification_failed");
     }
   };
-  const readProviderState = async () => {
+  const readProviderState = async (deadline?: number) => {
+    const timeoutMs = deadline === undefined ? 10000 : Math.min(10000, deadline - Date.now());
+    if (timeoutMs <= 0) throw new Error("dot_provider_checkpoint_unavailable");
     const result = await runner.execute({ command: "sh", args: ["-c",
       'set -eu; if test ! -e "$1" && test ! -L "$1"; then exit 3; fi; test -f "$1" && test ! -L "$1"; test "$(wc -c < "$1")" -le 33554432; base64 < "$1"',
-      "paperclip-dot-checkpoint", posix.join(runnerStateDirectory, checkpointFile)], bypassSession: true, timeoutMs: 10000 });
+      "paperclip-dot-checkpoint", posix.join(runnerStateDirectory, checkpointFile)], bypassSession: true, timeoutMs });
     if (result.exitCode === 3 && !result.timedOut) return null;
     if (result.exitCode !== 0 || result.timedOut) throw new Error("dot_provider_checkpoint_unavailable");
     const state = record(JSON.parse(Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8")));
@@ -16320,10 +16363,21 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
   let identityFailed: (error: unknown) => void = () => {};
   const processIdentityReady = new Promise<void>((resolve, reject) => { identityReady = resolve; identityFailed = reject; });
   void processIdentityReady.catch(() => {});
+  const provider = input.execution.provider;
+  const externalCheckpoint = provider.kind === "openai_dot" || provider.kind === "grok_bot" ? {
+    provider: provider.kind, companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    bindingId: provider.binding.bindingId, bindingGeneration: provider.binding.bindingGeneration,
+    expiresAtUnixMs: provider.binding.expiresAtUnixMs,
+    runId: identity.runId, sessionId: identity.normalizedSessionId, turnId: identity.turnId,
+  } : null;
+  const reattachmentDeadline = Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS;
   const adoptExistingRunner = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyRemoteRunnerOrSettledExit({ claim: input.restartRecovery, target, identity: { ...identity },
         runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
-        providerAttempt: input.restartRecovery.providerAttempt }) : undefined;
+        providerAttempt: input.restartRecovery.providerAttempt, recoveryDeadline: reattachmentDeadline,
+        ...(externalCheckpoint ? { checkpointRecoveryEligible: async () =>
+          canRestartExternalRunnerCheckpoint(await readProviderState(reattachmentDeadline), externalCheckpoint) } : {}),
+      }) : undefined;
   if (adoptExistingRunner) { spawned(); identityReady(); }
   const launch = createRemoteRunnerProcessLauncher({ target, runner, remoteBinary,
     processIdentityPath: posix.join(runnerStateDirectory, "runner-process.identity"), stateDirectory: runnerStateDirectory,

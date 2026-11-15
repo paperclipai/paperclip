@@ -13,7 +13,7 @@ import * as ownerProof from "../owner-proof.js";
 import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import * as remoteWarmRecoveryRuntime from "./remote-warm-session-recovery.js";
 import * as pluginTaskOwnership from "../plugin-task-ownership.js";
-import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { DurablePrpControlPlane, externalOperationDigest } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginCredentialWriteback from "../plugin-task-credential-writeback.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
@@ -485,6 +485,7 @@ import {
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
+  canRestartExternalRunnerCheckpoint,
   nativeRecoveryCommandUnanswered,
   nativeUnansweredRunnerReplacementDisposition,
   nativeAdmittedProviderAttemptLimit,
@@ -1170,6 +1171,50 @@ describe("remote controller restart adoption", () => {
     await expect(verifyRemoteRunnerOrSettledExit({ ...input,
       target: exitedRunner({ ...externalReady, pendingProviderCleanup: { pid: 7 } }) as never })).rejects.toMatchObject({ code: "runner_remote_process_identity_unavailable" });
     expect(input.checkpointRecoveryEligible).not.toHaveBeenCalled();
+  });
+  const admittedExternal = () => {
+    const expected = { provider: "openai_dot" as const, companyId: "company", agentId: "agent", bindingId: "binding",
+      bindingGeneration: 1, expiresAtUnixMs: Date.now() + 60000, runId: "run", sessionId: "session", turnId: "turn" };
+    const saved = { schema: "paperclip.runner.dot-provider-state.v1", runId: "run", sessionId: "session", turnId: "turn",
+      lifecycle: "running", completion: null, completionInput: null,
+      descriptor: { kind: expected.provider, companyId: expected.companyId, agentId: expected.agentId,
+        bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration, expiresAtUnixMs: expected.expiresAtUnixMs },
+      tools: { pending: {} }, operations: { stable: { outcome: { status: "completed" } } } };
+    return { expected, saved };
+  };
+  it("the external checkpoint owner accepts only its current settled replay tuple", () => {
+    const { expected, saved } = admittedExternal();
+    expect(canRestartExternalRunnerCheckpoint(saved, expected)).toBe(true);
+    expect(canRestartExternalRunnerCheckpoint(null, expected)).toBe(false);
+    for (const field of ["runId", "sessionId", "turnId", "schema"])
+      expect(canRestartExternalRunnerCheckpoint({ ...saved, [field]: "foreign" }, expected)).toBe(false);
+    for (const field of Object.keys(saved.descriptor))
+      expect(canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, [field]: "foreign" } }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint(saved, { ...expected, expiresAtUnixMs: 1 })).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...saved, tools: { pending: { effect: {} } } }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...saved, operations: { effect: { outcome: { status: "unknown" } } } }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...saved, completionInput: {} }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, kind: "muse" } }, expected)).toBe(false);
+  });
+  it("recovers the actual settled accept acknowledgement without treating pending work as settled", () => {
+    const { expected, saved } = admittedExternal();
+    const requestId = "75920c98-56cb-45d3-a299-3e5c6503307d";
+    const operation = { requestId, bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration,
+      runId: expected.runId, normalizedSessionId: expected.sessionId, turnId: expected.turnId,
+      assignmentRevision: 1, action: "accept", input: {}, digest: externalOperationDigest("accept", {}) };
+    const accepted = { ...saved, assignmentRevision: 1,
+      operations: { [requestId]: { operation, outcome: { status: "accepted" } } } };
+    expect(canRestartExternalRunnerCheckpoint(accepted, expected)).toBe(true);
+    for (const field of ["requestId", "bindingId", "bindingGeneration", "runId", "normalizedSessionId", "turnId", "assignmentRevision", "action", "digest"])
+      expect(canRestartExternalRunnerCheckpoint({ ...accepted,
+        operations: { [requestId]: { operation: { ...operation, [field]: "foreign" }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...accepted,
+      operations: { [requestId]: { operation: { ...operation, input: { unexpected: true },
+        digest: externalOperationDigest("accept", { unexpected: true }) }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
+    for (const status of ["pending", "unknown"])
+      expect(canRestartExternalRunnerCheckpoint({ ...accepted,
+        operations: { [requestId]: { operation, outcome: { status } } } }, expected)).toBe(false);
+    expect(canRestartExternalRunnerCheckpoint({ ...accepted, tools: { pending: { effect: {} } } }, expected)).toBe(false);
   });
   const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
   it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
