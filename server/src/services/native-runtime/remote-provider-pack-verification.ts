@@ -133,7 +133,7 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     "const path=require('node:path')",
     "const root=process.argv[1]",
     "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
-    "const fail=(check,detail)=>{process.stdout.write('\\npaperclip-pack-check='+check+'\\n');throw new Error(detail)}",
+    "const fail=(check,detail)=>{fs.writeSync(2,detail+'\\n');fs.writeSync(1,'\\npaperclip-pack-check='+check+'\\n');process.exit(3)}",
     "let actual;try{actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()}catch{fail('manifest_unreadable','provider pack manifest unreadable')}",
     "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
     "let manifest;try{manifest=JSON.parse(actual)}catch{fail('manifest_invalid','provider pack manifest invalid')}",

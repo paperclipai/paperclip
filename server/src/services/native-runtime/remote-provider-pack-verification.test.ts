@@ -58,6 +58,12 @@ describe("installed provider pack compatibility", () => {
         message: expect.stringContaining("nodeCommand digest mismatch"), failureCheck: "artifact_digest:nodeCommand" });
       await rm(join(root, "provider-pack.json"));
       await expect(verifyRemoteProviderPack(input)).rejects.toMatchObject({ failureCheck: "manifest_unreadable" });
+      const combined = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        const result = await execute(request);
+        return { ...result, stdout: `${result.stdout}${result.stderr}`, stderr: "" };
+      });
+      await expect(verifyRemoteProviderPack({ ...input, runner: { execute: combined } }))
+        .rejects.toMatchObject({ failureCheck: "manifest_unreadable" });
       await writeFile(join(root, "provider-pack.json"), JSON.stringify(installed));
       execute.mockClear();
       const selected = await verifyRemoteProviderPack({ ...input,
