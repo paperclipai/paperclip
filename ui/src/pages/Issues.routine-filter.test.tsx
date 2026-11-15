@@ -33,6 +33,7 @@ vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasks
   <button onClick={onLoadMoreIssues}>Load more</button>
   <button data-updated-custom onClick={() => onUpdatedFilterChange({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-03" })}>Custom</button>
   <button data-updated-any onClick={() => onUpdatedFilterChange({ updatedWithin: null, updatedFrom: null, updatedTo: null })}>Any time</button>
+  <button data-clear onClick={() => { onRoutineTasksOnlyChange(false); onUpdatedFilterChange({ updatedWithin: null, updatedFrom: null, updatedTo: null }); }}>Clear</button>
   <data data-updated-filter={JSON.stringify(updatedFilter)} />
   <button data-sort onClick={() => onSortChange({ sortField: "created", sortDir: sort?.sortDir === "desc" ? "asc" : "desc" })}>Created</button>
   <output data-search-filters={JSON.stringify(searchFilters)}>{issues.map(issue => issue.id).join(",")}</output>
@@ -145,6 +146,21 @@ it("reads and writes the Updated filter in the Tasks URL", async () => {
     flushSync(() => host.querySelector<HTMLButtonElement>("[data-updated-any]")!.click());
     await vi.waitFor(() => expect(params()).toEqual({ view: "all" }));
     expect(updatedFilter()).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+  } finally {
+    flushSync(() => root.unmount()); client.clear(); host.remove();
+  }
+});
+
+it("clears the routine and Updated URL filters together in one event", async () => {
+  mocks.list.mockResolvedValue([{ id: "task" }]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all&originKind=routine_execution&updated=3d"]}><Issues /></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("task"));
+    flushSync(() => host.querySelector<HTMLButtonElement>("[data-clear]")!.click());
+    await vi.waitFor(() => expect(host.querySelector("p")?.textContent).toBe("?view=all"));
   } finally {
     flushSync(() => root.unmount()); client.clear(); host.remove();
   }

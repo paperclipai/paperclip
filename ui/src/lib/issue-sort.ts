@@ -19,6 +19,8 @@ export type IssueSortContext = {
   assignee?: string | null;
   project?: string | null;
   parentTask?: string | null;
+  /** The time a list shows as "Last updated"; defaults to the stored `updatedAt`. */
+  updated?: Date | string | null;
 };
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -35,7 +37,7 @@ export function sortIssues(issues: readonly Issue[], sort: IssueSort, context: (
       case "priority": return issuePriorityOrder.indexOf(issue.priority);
       case "title": return issue.title;
       case "created": return new Date(issue.createdAt).getTime();
-      case "updated": return new Date(issue.updatedAt).getTime();
+      case "updated": return new Date(context(issue).updated ?? issue.updatedAt).getTime();
       case "taskId": return issue.identifier;
       case "createdBy": return context(issue).createdBy;
       case "assignee": return context(issue).assignee;

@@ -195,16 +195,26 @@ function OrganizationIssues({
   const includeBlockedBy = sort?.sortField === "workflow";
   const serverSortField = sort?.sortField === "created" ? "created" : "updated";
   const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
-  const handleSortChange = useCallback((nextSort: IssueSort) => {
+  // React Router does not queue functional search updates, so writes made in the
+  // same event (Clear resets several URL filters) build on each other here.
+  const pendingSearchParamsRef = useRef<URLSearchParams | null>(null);
+  const writeTaskParams = useCallback((mutate: (next: URLSearchParams) => void) => {
     setSearchParams(current => {
-      const next = new URLSearchParams(current);
+      const next = new URLSearchParams(pendingSearchParamsRef.current ?? current);
       if (syncedSearch) next.set("q", syncedSearch);
       else next.delete("q");
-      next.set("sortField", nextSort.sortField);
-      next.set("sortDir", nextSort.sortDir);
+      mutate(next);
+      if (!pendingSearchParamsRef.current) queueMicrotask(() => { pendingSearchParamsRef.current = null; });
+      pendingSearchParamsRef.current = next;
       return next;
     }, { replace: true });
   }, [setSearchParams, syncedSearch]);
+  const handleSortChange = useCallback((nextSort: IssueSort) => {
+    writeTaskParams(next => {
+      next.set("sortField", nextSort.sortField);
+      next.set("sortDir", nextSort.sortDir);
+    });
+  }, [writeTaskParams]);
   const [updatedBefore, setUpdatedBefore] = useState<string | undefined>(undefined);
   // The Tasks URL owns the Updated filter, so a filtered link opens filtered.
   const urlUpdated = searchParams.get("updated");
@@ -216,27 +226,17 @@ function OrganizationIssues({
     ...(urlUpdatedTo ? { updatedTo: urlUpdatedTo } : {}),
   })), [urlUpdated, urlUpdatedFrom, urlUpdatedTo]);
   const handleUpdatedFilterChange = useCallback((filter: IssueUpdatedFilter) => {
-    setSearchParams(current => {
-      const next = new URLSearchParams(current);
-      if (syncedSearch) next.set("q", syncedSearch);
-      else next.delete("q");
-      writeIssueUpdatedParams(next, filter);
-      return next;
-    }, { replace: true });
-  }, [setSearchParams, syncedSearch]);
+    writeTaskParams(next => writeIssueUpdatedParams(next, filter));
+  }, [writeTaskParams]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
   const handleRoutineTasksOnlyChange = useCallback((checked: boolean) => {
-    setSearchParams(current => {
-      const next = new URLSearchParams(current);
-      if (syncedSearch) next.set("q", syncedSearch);
-      else next.delete("q");
+    writeTaskParams(next => {
       if (checked) next.set("originKind", "routine_execution");
       else next.delete("originKind");
-      return next;
-    }, { replace: true });
-  }, [setSearchParams, syncedSearch]);
+    });
+  }, [writeTaskParams]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;

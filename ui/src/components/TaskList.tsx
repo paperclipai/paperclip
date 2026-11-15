@@ -103,7 +103,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const ordered = sortIssues(items.map(item => item.issue), taskListOrderToIssueSort(sort ?? defaultTaskListSort), issue => {
     const item = byId.get(issue.id)!;
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
-    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null };
+    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null, updated: issueUpdatedTime(issue) };
   });
   const { roots, childMap } = buildIssueTree(ordered);
   const rowIds: string[] = [];

@@ -2,7 +2,7 @@
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createIssue } from "../../storybook/fixtures/paperclipData";
+import { createIssue as createFixtureIssue } from "../../storybook/fixtures/paperclipData";
 import { TaskList, topRenderedTaskRefs, type TaskListItem } from "./TaskList";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -17,6 +17,10 @@ vi.mock("@/lib/router", () => ({
 }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+// The fixture's activity times would override updatedAt as the sorted time.
+const createIssue = (overrides: Parameters<typeof createFixtureIssue>[0] = {}) =>
+  createFixtureIssue({ lastActivityAt: null, lastExternalCommentAt: null, ...overrides });
 
 const items: TaskListItem[] = Array.from({ length: 14 }, (_, index) => ({
   issue: createIssue({
