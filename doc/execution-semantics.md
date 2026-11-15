@@ -3836,6 +3836,18 @@ to a replacement during a deploy overlap closes its idle warm sessions within
 a second, and closes each session that becomes idle after that, so the
 replacement usually waits only for that close.
 
+The same wait applies before a follow-up resumes a Runner that its saved state
+shows as suspended. A suspended state read during the outgoing server's close
+does not prove that the close finished. The follow-up starts only when that
+server is gone, or when a harness backup that holds the suspended state was
+completed after the finished turn. A resume that starts a new Runner uses the
+OpenCode launch files the session was admitted with. When no harness backup
+carries that admission, it reads the receipt recorded on the session's last
+run. A server that leaves new run starts to a replacement also leaves same-run
+retries to it, and re-checks every few seconds in case the replacement stops.
+A blocked parent whose run waits for its exact same-run resume on a remote
+Runner shows that scheduled resume and no Retry.
+
 A fresh sandbox is only requested, not guaranteed: the next acquisition
 replaces the marked sandbox only when the saved workspace and harness backup
 allow it. When the next attempt meets an unretired owner again on the same

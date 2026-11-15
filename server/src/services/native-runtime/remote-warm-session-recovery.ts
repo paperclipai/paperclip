@@ -37,6 +37,28 @@ export async function liveWarmSessionOwnerRetryAt(input: {
   return new Date(Math.min(now.getTime() + WARM_OWNER_RECHECK_MS, closesBy));
 }
 
+export async function waitForLiveWarmSessionOwner(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  priorRunId: string;
+  checkpointedAt: () => Promise<Date | null>;
+}): Promise<void> {
+  const { binding } = input.execution;
+  const [owner] = await input.db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, input.priorRunId), eq(nativeRunFinalizations.companyId, binding.companyId))).limit(1);
+  if (!owner) return;
+  const [prior] = await input.db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.priorRunId), eq(heartbeatRuns.companyId, binding.companyId),
+    eq(heartbeatRuns.agentId, binding.agentId))).limit(1);
+  const finishedAt = prior?.finishedAt ?? null;
+  const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
+    idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
+  if (!retryAt) return;
+  const checkpointedAt = await input.checkpointedAt();
+  if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
+  throw new NativeControllerRecoveryWaitingError(retryAt);
+}
+
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
   checkpoint: PersistedNativeSession;
