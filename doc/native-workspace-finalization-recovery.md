@@ -369,8 +369,7 @@ refuses any archive whose manifest names an absolute or escaping link. Omitting
 a tracked link shows as a deletion in `git status` after restore.
 
 Saves that recovery exhausted before this policy (capture policy version 1) are
-retried once automatically; see the capture-policy re-arm in
-`doc/execution-semantics.md`.
+retried once automatically.
 
 ## Automatic unsafe archive recovery
 
