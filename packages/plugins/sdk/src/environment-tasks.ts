@@ -186,7 +186,10 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict(),
   z.object({ kind: z.literal("state"), taskId: providerId, state: z.record(z.string(), z.unknown()) }).strict(),
-  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch, projectAuthCheckAtSubmit: z.literal(true).optional() }).strict(),
+  z.object({ kind: z.literal("prepared"), taskId: providerId, launch: preparedLaunch, projectAuthCheckAtSubmit: z.literal(true).optional(),
+    /** The provider ran the managed project-authentication check for this launch's configuration, provider and
+     * projects inside this preparation, and it allowed them. A denial omits it, so Core runs its own check. */
+    projectAuthChecked: z.literal(true).optional() }).strict(),
   z.object({ kind: z.literal("credentials"), taskId: providerId, /** Null proves that cancellation fenced admission before the task could start. It must not mean an unavailable export. */
     credential: environmentTaskCredentialSchema.nullable() }).strict(),
   z.object({ kind: z.literal("description"), taskId: providerId,
