@@ -25,7 +25,6 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { environments, instanceSettings } from "@paperclipai/db";
 import { instanceSettingsService } from "./instance-settings.js";
-import { invalidateInstanceSettingsCache } from "./instance-settings-cache.js";
 import { agentsNeedSetupForEnvironmentChange } from "./plugin-environment-driver.js";
 
 /** Singleton key of the instance settings row that holds `defaultEnvironmentId`. */
@@ -44,7 +43,7 @@ export interface FillInstanceDefaultResult {
  * and no active agent following the default would need setup for it first.
  */
 export async function fillUnsetInstanceDefault(db: Db, environmentId: string): Promise<FillInstanceDefaultResult> {
-  return await db.transaction(async (tx): Promise<FillInstanceDefaultResult> => {
+  return await db.transaction(async (tx) => {
     const settings = instanceSettingsService(tx as unknown as Db);
     // Creates the singleton row on a fresh instance, so the lock below always
     // has a row to hold.
@@ -70,5 +69,5 @@ export async function fillUnsetInstanceDefault(db: Db, environmentId: string): P
     }
     await settings.update({ defaultEnvironmentId: environmentId }, { db: tx });
     return { filled: true, previousDefaultEnvironmentId: current };
-  }).finally(invalidateInstanceSettingsCache);
+  });
 }

@@ -59,7 +59,7 @@ import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
 import { forbidden } from "../errors.js";
-import { invalidateInstanceSettingsCache, readThroughInstanceSettings } from "./instance-settings-cache.js";
+import { announceInstanceSettingsChange, readThroughInstanceSettings } from "./instance-settings-cache.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -581,7 +581,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      invalidateInstanceSettingsCache();
+      await announceInstanceSettingsChange(runner);
       return toInstanceSettings(updated ?? current);
     },
 
@@ -623,7 +623,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      invalidateInstanceSettingsCache();
+      await announceInstanceSettingsChange(db);
       return toInstanceSettings(updated ?? current);
     },
 
@@ -658,6 +658,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        await announceInstanceSettingsChange(tx);
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
@@ -702,7 +703,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           .where(eq(instanceSettings.id, current.id))
           .returning();
       });
-      invalidateInstanceSettingsCache();
       return toInstanceSettings(updated ?? current);
     },
 
