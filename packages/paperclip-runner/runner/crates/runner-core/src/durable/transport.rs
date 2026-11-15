@@ -32,6 +32,12 @@ const QUEUED_CONTROL_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
+/// A listener has no peer to back off from: the controller's connection waits
+/// in the kernel backlog until the Runner's next `accept`. Check for it on a
+/// short fixed interval rather than the dial reconnect delay (250 ms by
+/// default), which every listen-mode connect otherwise waits out in part, and
+/// in full after an authority rotation or a park claim.
+const LISTENER_ACCEPT_INTERVAL: Duration = Duration::from_millis(10);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -250,6 +256,17 @@ impl RunnerTransportEndpoint {
         }
         *self = Self::new(input, run_id)?;
         Ok(())
+    }
+
+    /// The wait before the next connection attempt, and the base of its
+    /// backoff after a failed one. Dial mode keeps the configured reconnect
+    /// delay, so a Runner never redials a controller faster than configured.
+    /// A listener only checks its backlog sooner; it never dials anyone.
+    pub(crate) fn retry_delay(&self, configured: Duration) -> Duration {
+        match self {
+            Self::Dial(_) => configured,
+            Self::Listen { .. } => configured.min(LISTENER_ACCEPT_INTERVAL),
+        }
     }
 
     fn open(
@@ -2170,6 +2187,28 @@ mod tests {
                 "{authority}"
             );
         }
+    }
+
+    #[test]
+    fn listener_checks_its_backlog_sooner_than_a_dial_reconnects() {
+        let configured = Duration::from_millis(250);
+        let listener = RunnerTransportEndpoint::Listen {
+            listener: TcpListener::bind("0.0.0.0:0").unwrap(),
+            path: "/api/runner/v1/connect/run_1".to_owned(),
+        };
+        assert_eq!(listener.retry_delay(configured), LISTENER_ACCEPT_INTERVAL);
+        assert!(LISTENER_ACCEPT_INTERVAL <= Duration::from_millis(25));
+        // A shorter configured delay (tests use 1 ms) still applies.
+        assert_eq!(
+            listener.retry_delay(Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        let dial = RunnerTransportEndpoint::new(
+            "ws://127.0.0.1:43127/api/runner/v1/connect/run_1",
+            "run_1",
+        )
+        .unwrap();
+        assert_eq!(dial.retry_delay(configured), configured);
     }
 
     #[test]
