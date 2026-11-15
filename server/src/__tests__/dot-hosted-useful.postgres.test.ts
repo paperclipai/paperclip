@@ -825,13 +825,42 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect(current).toMatchObject({companyId,agentId});
       expect(current.status).toBe("running");
     },{timeout:retryUsefulRemaining,interval:50});
+    // Keep only the last bounded response shape; no token, headers or full payload.
+    const readRecord=z.record(z.string(),z.unknown());
+    const readText=(value:unknown)=>typeof value==="string"
+      ? /(?:bearer|token|secret|capability|authorization|cookie|session)\b/i.test(value)
+        ? "<redacted-sensitive-text>"
+        : value.replace(/[A-Za-z0-9_-]{32,}/g,"<redacted>").slice(0,240)
+      : undefined;
+    const readTextHash=(value:unknown)=>typeof value==="string"&&readText(value)!==value
+      ? createHash("sha256").update(value).digest("hex") : undefined;
+    let lastReadAttempt:Record<string,unknown>|undefined;
     let successorAssignments:typeof dotRunnerAssignments.$inferSelect[]=[];
     await vi.waitFor(async()=>{
       successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
       expect(successorAssignments).toHaveLength(1);
       assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
       expect(["offered","accepted"]).toContain(assignment.status);
-      const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});expect(assigned.body.result.isError,JSON.stringify(assigned.body)).toBe(false);
+      const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});
+      const envelope=readRecord.safeParse(assigned.body);
+      const body=envelope.success?envelope.data:{};
+      const result=readRecord.safeParse(body.result),error=readRecord.safeParse(body.error);
+      const data=readRecord.safeParse(error.success?error.data.data:undefined);
+      const texts=result.success&&result.data.isError===true&&Array.isArray(result.data.content)
+        ? result.data.content.slice(0,2).map(item=>readRecord.safeParse(item)).flatMap(item=>item.success&&item.data.type==="text"?[readText(item.data.text)]:[])
+        : [];
+      lastReadAttempt={httpStatus:assigned.status,
+        bodyKind:assigned.body===null?"null":Array.isArray(assigned.body)?"array":typeof assigned.body,
+        envelopeKeys:Object.keys(body).filter(key=>/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(key)).slice(0,12),
+        errorCode:error.success?readText(error.data.code)??(typeof error.data.code==="number"?error.data.code:undefined):readText(body.error),
+        errorMessage:(error.success?readText(error.data.message):undefined)??readText(body.error_description),
+        errorMessageSHA256:error.success?readTextHash(error.data.message):undefined,
+        errorDescriptionSHA256:readTextHash(body.error_description),
+        errorDataCode:data.success?readText(data.data.code)??(typeof data.data.code==="number"?data.data.code:undefined):undefined,
+        resultPresent:Object.hasOwn(body,"result"),isError:result.success&&typeof result.data.isError==="boolean"?result.data.isError:undefined,
+        errorContentText:texts};
+      expect(result.success,JSON.stringify(lastReadAttempt)).toBe(true);
+      expect(result.success?result.data.isError:undefined,JSON.stringify(lastReadAttempt)).toBe(false);
       if(runId===failedRunId)expect(assignment.id).toBe(preFaultAssignments[0].id);
     },{timeout:30_000,interval:50});
     await operation("paperclip_dot_accept",{},runId===failedRunId?preFaultAcceptId:undefined);expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id)))[0].status).toBe("accepted");
