@@ -169,34 +169,52 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const readinessStatuses:number[]=[];let readinessOverflow=0;
   let wakeEvidence:{sleepStatus:number;failedReadinessStatus:number;retryStatus:number;admissionDigest:string;grantId:string;bindingGeneration:number;healthStatuses:number[];overflow:number}|undefined;
 
-  type ObservedPhase="callback"|"token"|"device-first-select"|"device-retry-select";
+  type ObservedPhase="callback"|"token"|"device-first-select"|"device-retry-select"|"public-read";
   let observingPhase:ObservedPhase|undefined,tokenObservationOverflow=0,tokenObservationStart=0;
   let callbackHttp:{status:number;code:"temporarily_unavailable"|"invalid_grant"|"invalid_request"|"access_denied"|"unclassified";retryAfter30:boolean}|undefined;
   let observedMirrorStage:"unknown"|"pending"|"complete"="unknown";
   let restoreGateObservation:(()=>void)|undefined,gateObservationOverflow=0,gateObserverFailures=0,pendingGateObservers=0;
-  const gateReads:Array<{phase:ObservedPhase;relativeMs:number;signalAlreadyAborted:boolean;kind:"pending"|"read"|"refused"|"timeout"|"aborted"|"original-rejection";load:"not-entered"|"pending"|"fulfilled"|"rejected";loadEnteredMs?:number;loadSettledMs?:number;readSettledMs?:number}>=[];
+  const gateReads:Array<{phase:ObservedPhase;relativeMs:number;signalAlreadyAborted:boolean;kind:"pending"|"read"|"refused"|"timeout"|"aborted"|"original-rejection";load:"not-entered"|"pending"|"fulfilled"|"rejected";loadEnteredMs?:number;loadSettledMs?:number;readSettledMs?:number;ownerKnown?:boolean;ownerPresent?:boolean}>=[];
+  const publicReadGate={attempts:0,calls:0,loadEntered:0,loadFulfilled:0,loadRejected:0,read:0,refused:0,timeout:0,aborted:0,rejected:0,ownerKnown:0,ownerPresent:0,ownerAbsent:0};
+  let lastPublicReadGate:typeof gateReads[number]|undefined;
   const observeGateOwner=(owner:GateReadOwner)=>{
     const originalRead=owner.read;
     owner.read=function<T>(this:GateReadOwner,stack:string,source:string,signal:AbortSignal,load:()=>Promise<T>):Promise<GateReadResult<T>>{
       const invoke=originalRead<T>;
       if(!observingPhase||stack!==stackId)return invoke.call(this,stack,source,signal,load);
-      if(gateReads.length>=16){gateObservationOverflow++;return invoke.call(this,stack,source,signal,load);}
+      const publicRead=observingPhase==="public-read";
+      if(publicRead)publicReadGate.calls++;
+      else if(gateReads.length>=16){gateObservationOverflow++;return invoke.call(this,stack,source,signal,load);}
       const started=performance.now();
-      const record:typeof gateReads[number]={phase:observingPhase,relativeMs:started-tokenObservationStart,signalAlreadyAborted:signal.aborted,kind:"pending",load:"not-entered"};gateReads.push(record);
+      const record:typeof gateReads[number]={phase:observingPhase,relativeMs:started-tokenObservationStart,signalAlreadyAborted:signal.aborted,kind:"pending",load:"not-entered"};
+      if(publicRead)lastPublicReadGate=record;else gateReads.push(record);
       const observe=<V,>(promise:Promise<V>,fulfilled:(value:V)=>void,rejected:()=>void)=>{
         pendingGateObservers++;
         try{void promise.then(value=>{pendingGateObservers--;try{fulfilled(value);}catch{gateObserverFailures++;}},()=>{pendingGateObservers--;try{rejected();}catch{gateObserverFailures++;}});}catch{pendingGateObservers--;gateObserverFailures++;}
       };
       const observedLoad=()=>{
-        record.load="pending";record.loadEnteredMs=performance.now()-started;
+        record.load="pending";record.loadEnteredMs=performance.now()-started;if(publicRead)publicReadGate.loadEntered++;
         try{
           const originalLoadPromise=load();
-          observe(originalLoadPromise,()=>{record.load="fulfilled";record.loadSettledMs=performance.now()-started;},()=>{record.load="rejected";record.loadSettledMs=performance.now()-started;});
+          observe(originalLoadPromise,()=>{record.load="fulfilled";record.loadSettledMs=performance.now()-started;if(publicRead)publicReadGate.loadFulfilled++;},()=>{record.load="rejected";record.loadSettledMs=performance.now()-started;if(publicRead)publicReadGate.loadRejected++;});
           return originalLoadPromise;
-        }catch(error){record.load="rejected";record.loadSettledMs=performance.now()-started;throw error;}
+        }catch(error){record.load="rejected";record.loadSettledMs=performance.now()-started;if(publicRead)publicReadGate.loadRejected++;throw error;}
       };
       const originalReadPromise=invoke.call(this,stack,source,signal,observedLoad);
-      observe(originalReadPromise,value=>{record.kind=value.kind;record.readSettledMs=performance.now()-started;},()=>{record.kind="original-rejection";record.readSettledMs=performance.now()-started;});
+      observe(originalReadPromise,value=>{
+        record.kind=value.kind;record.readSettledMs=performance.now()-started;
+        if(publicRead){
+          publicReadGate[value.kind]++;
+          if(value.kind==="read"&&value.value&&typeof value.value==="object"){
+            record.ownerKnown=Object.hasOwn(value.value,"owner");
+            if(record.ownerKnown){
+              const actualOwner:unknown=Object.getOwnPropertyDescriptor(value.value,"owner")?.value;
+              record.ownerPresent=actualOwner!==undefined&&actualOwner!==null;
+              publicReadGate.ownerKnown++;if(record.ownerPresent)publicReadGate.ownerPresent++;else publicReadGate.ownerAbsent++;
+            }
+          }
+        }
+      },()=>{record.kind="original-rejection";record.readSettledMs=performance.now()-started;if(publicRead)publicReadGate.rejected++;});
       return originalReadPromise;
     };
     restoreGateObservation=()=>{owner.read=originalRead;};
@@ -841,7 +859,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect(successorAssignments).toHaveLength(1);
       assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
       expect(["offered","accepted"]).toContain(assignment.status);
-      const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});
+      const previousPhase=observingPhase,previousStart=tokenObservationStart;
+      observingPhase="public-read";tokenObservationStart=performance.now();publicReadGate.attempts++;
+      let assigned:Awaited<ReturnType<typeof tool>>;
+      try{assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});}
+      finally{observingPhase=previousPhase;tokenObservationStart=previousStart;}
       const envelope=readRecord.safeParse(assigned.body);
       const body=envelope.success?envelope.data:{};
       const result=readRecord.safeParse(body.result),error=readRecord.safeParse(body.error);
@@ -1069,7 +1091,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
     if(tokenDiagnostic){
       if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
-      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
+      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,publicReadGate,lastPublicReadGate,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
     }
     if(!errors.length&&casePassed&&home)removeTestHome(home);
     if(errors.length)throw new AggregateError(errors,"Principal normal App owned cleanup failed");
