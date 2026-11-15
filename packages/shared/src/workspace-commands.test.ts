@@ -363,6 +363,29 @@ describe("resolveRuntimeServiceStopTarget", () => {
     expect(target(1)).toEqual({ scope: "one", runtimeServiceId: null });
   });
 
+  it("stops nothing when a sibling's folder depends on who started it", () => {
+    const target = (cwd: string) => resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { name: "web", command: "pnpm dev", cwd: "Agent" },
+          { name: "web", command: "pnpm dev", cwd },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        { id: "runtime-agent", serviceName: "web", command: "pnpm dev", cwd: "/repo/Agent", port: null, status: "running" },
+      ],
+      workspaceCwd: "/repo",
+      resolveServiceCwd: (command) => command.cwd === "Agent" ? "/repo/Agent" : "/repo/Board",
+    });
+
+    expect(target("{{agent.name}}")).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(target("{{ issue.identifier }}")).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(target("{{workspace.env.APP_DIR}}")).toEqual({ scope: "one", runtimeServiceId: null });
+    expect(target("{{workspace.branchName}}")).toEqual({ scope: "one", runtimeServiceId: "runtime-agent" });
+  });
+
   it("skips a stopped record that matches the service as well as the running one", () => {
     expect(resolveRuntimeServiceStopTarget({
       workspaceRuntime: { services: [{ name: "web", command: "pnpm dev", port: 3000 }, { name: "worker", command: "pnpm worker" }] },

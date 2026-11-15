@@ -280,6 +280,22 @@ function sameCwd(left: string, right: string) {
   return (normalizePosixPath(left) ?? left) === (normalizePosixPath(right) ?? right);
 }
 
+const CALLER_INDEPENDENT_CWD_TOKENS = new Set([
+  "workspace.cwd",
+  "workspace.branchName",
+  "workspace.worktreePath",
+  "workspace.repoUrl",
+  "workspace.repoRef",
+  "port",
+]);
+
+function cwdDependsOnCaller(cwd: string | null) {
+  for (const match of (cwd ?? "").matchAll(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g)) {
+    if (!CALLER_INDEPENDENT_CWD_TOKENS.has(match[1]!)) return true;
+  }
+  return false;
+}
+
 function runtimeServiceNameForCommand(command: Pick<WorkspaceCommandDefinition, "rawConfig">) {
   const rawName = command.rawConfig.name;
   return typeof rawName === "string" && rawName.length > 0 ? rawName : "service";
@@ -307,11 +323,12 @@ export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServic
   const portless = (entry: WorkspaceCommandDefinition) => ({ ...entry, port: null });
   const hasFixedPort = (entry: WorkspaceCommandDefinition, service: T) =>
     entry.port !== null && service.port === entry.port;
-  const couldHaveStarted = (entry: WorkspaceCommandDefinition, service: T) => {
+  const couldHaveStarted = (entry: WorkspaceCommandDefinition, service: T, anyCaller = false) => {
     if (!service.cwd || scoreWorkspaceRuntimeServiceMatch(portless(entry), { ...service, configIndex: null }) < 0) {
       return false;
     }
     if (isRecord(entry.rawConfig.port) && entry.rawConfig.port.type === "auto" && service.port == null) return false;
+    if (anyCaller && cwdDependsOnCaller(entry.cwd)) return true;
     const expectedCwd = resolveExpectedServiceCwd(entry, service, input);
     return Boolean(expectedCwd && sameCwd(service.cwd, expectedCwd));
   };
@@ -320,7 +337,7 @@ export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServic
     if (service.status && !ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.status)) return false;
     if (otherCommandsWithName.length === 0) return true;
     if (!couldHaveStarted(command, service)) return false;
-    return !otherCommandsWithName.some((entry) => couldHaveStarted(entry, service));
+    return !otherCommandsWithName.some((entry) => couldHaveStarted(entry, service, true));
   });
   const runtimeService = matchWorkspaceRuntimeServiceToCommand(
     portless(command),
