@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { readRecentSubtasks } from "@/lib/recent-subtask-requests";
 import { ChevronRight } from "lucide-react";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -36,28 +37,45 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
   const anchor = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
   const contentId = useId();
+  const queryClient = useQueryClient();
+  const queryKey = [...queryKeys.issues.list(task.companyId), "recent-subtasks", userId ?? "__local_board__", task.id];
   const count = task.subtaskCount ?? 0;
   useEffect(() => { if (selectedChild) setExpanded(true); }, [selectedChild?.id]);
   // Large recent histories must not start one child request per offscreen parent.
   useEffect(() => {
     if (!anchor.current || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry?.isIntersecting) { setVisible(true); observer.disconnect(); }
+      setVisible(Boolean(entry?.isIntersecting));
     });
     observer.observe(anchor.current);
     return () => observer.disconnect();
   }, [count, rail]);
+  const enabled = count > 0 && expanded && visible && !rail;
   const query = useInfiniteQuery({
-    queryKey: [...queryKeys.issues.list(task.companyId), "recent-subtasks", userId ?? "__local_board__", task.id],
-    queryFn: ({ pageParam, signal }) => issuesApi.listCompact(task.companyId, {
+    queryKey,
+    queryFn: ({ pageParam, signal }) => readRecentSubtasks(signal, () => issuesApi.listCompact(task.companyId, {
       parentId: task.id, projection: "rows", limit: RECENT_SUBTASK_PAGE_SIZE,
       sortField: "id", sortDir: "asc", afterId: pageParam, includeRoutineExecutions: true, includeReadState: true,
-    }, { signal, cache: "no-store", fresh: true }),
+    }, { signal, cache: "no-store", fresh: true })),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.length === RECENT_SUBTASK_PAGE_SIZE ? lastPage.at(-1)?.id : undefined,
-    enabled: count > 0 && expanded && visible && !rail,
+    enabled,
     staleTime: 30_000,
   });
+  useEffect(() => {
+    if (!enabled) void queryClient.cancelQueries({ queryKey, exact: true });
+    // Scope and eligibility own cancellation; queryKey is rebuilt each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, task.companyId, task.id, userId, enabled]);
+  const preview = () => {
+    setShowAllLoaded(false);
+    // Cancel first so an in-flight next page cannot restore discarded pages.
+    void queryClient.cancelQueries({ queryKey, exact: true }).then(() => {
+      queryClient.setQueryData<typeof query.data>(queryKey, data => data ? {
+        pages: data.pages.slice(0, 1), pageParams: data.pageParams.slice(0, 1),
+      } : data);
+    });
+  };
   const view = useQueryView(query);
   // Always filter by scope/parent, including cache data after an account switch.
   const pages = query.data?.pages ?? [];
@@ -78,7 +96,7 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
     <div className="relative">
       <div className="pl-5">{children}</div>
       <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} subtasks of ${task.title}`} aria-expanded={expanded} aria-controls={expanded ? contentId : undefined}
-        onClick={() => setExpanded(value => !value)}
+        onClick={() => { if (expanded) preview(); setExpanded(value => !value); }}
         className="absolute left-0 top-1 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring">
         <ChevronRight aria-hidden="true" className={cn("size-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")} />
       </button>
@@ -96,7 +114,7 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
         onClick={() => { setShowAllLoaded(true); if (loaded.length <= displayed.length + (pinned ? 1 : 0) && query.hasNextPage) void query.fetchNextPage(); }}>
         {query.isFetching ? "Loading…" : `Show more (${remaining})`}{hiddenUnread > 0 ? ` · ${hiddenUnread} unread` : ""}
       </button>}
-      {showAllLoaded && displayed.length > RECENT_SUBTASK_PAGE_SIZE && <button type="button" className={controlClass} onClick={() => setShowAllLoaded(false)}>Show less</button>}
+      {showAllLoaded && displayed.length > RECENT_SUBTASK_PAGE_SIZE && <button type="button" className={controlClass} onClick={preview}>Show less</button>}
     </div>}
   </div>;
 }

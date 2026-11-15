@@ -12,6 +12,7 @@ import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent }
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { activityToastIdentity } from "./activity-toast-identity.js";
+import { recentSubtaskParents } from "./recent-subtask-parents.js";
 import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { trackIdleWork } from "../services/task-admission.js";
@@ -292,7 +293,12 @@ export function setupLiveEventsWebSocketServer(
         if (event.type === "activity.logged" && event.payload.entityType === "issue") {
           return { ...event, payload: { ...event.payload,
             taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
-            ...await activityToastIdentity(db, event.companyId, event.payload) } };
+            ...await activityToastIdentity(db, event.companyId, event.payload),
+            ...await recentSubtaskParents(db, context!.actor, event.companyId, event.payload, reads) } };
+        }
+        if (event.type === "heartbeat.run.status" || event.type === "heartbeat.run.queued") {
+          return { ...event, payload: { ...event.payload,
+            ...await recentSubtaskParents(db, context!.actor, event.companyId, event.payload, reads) } };
         }
         return event;
       }
@@ -349,7 +355,12 @@ export function setupLiveEventsWebSocketServer(
         if (!project || !(await access.decide({ actor: context!.actor, action: "project:read",
           resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
       }
-      if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
+      if (event.type.startsWith("heartbeat.run.")) {
+        if (!runId) return null;
+        return event.type === "heartbeat.run.status" || event.type === "heartbeat.run.queued"
+          ? { ...event, payload: { ...event.payload, ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads) } }
+          : event;
+      }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       // Company-wide invalidations carry no task-derived content. Authorized
       // clients obtain details through viewer-filtered HTTP reads.
@@ -365,6 +376,7 @@ export function setupLiveEventsWebSocketServer(
           : {}),
         // The task read check above authorizes attribution, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
+        ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads),
       } };
       if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
       if (event.type === "agent.runtime_state.updated") return { ...event, payload: { agentId: payload.agentId } };

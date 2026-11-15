@@ -124,7 +124,7 @@ toolchain download and daemon compile, and the tool layer of the `production`
 stage. The failed check stops the build and cancels them. The `deps` stage
 still resolves every other manifest change inside the image. Refresh the
 lockfile in the checkout, then build again. Do not commit the result (see
-"Dependency Lockfile Policy" in `doc/DEVELOPING.md`):
+"Dependency Lockfile Policy" in `doc/ci-workflows.md`):
 
 ```sh
 pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile

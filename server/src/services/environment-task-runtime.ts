@@ -18,6 +18,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
+import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
 
 export type PluginTaskDescription = Extract<PluginEnvironmentTaskResult, { kind: "description" }>;
@@ -61,6 +62,12 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
   expectedTaskId?: string;
 }): Promise<PluginEnvironmentTaskResult> {
   const operation = environmentTaskOperationSchema.parse(input.operation);
+  if (operation.kind === "prepare" && (operation.preparationDigest !== undefined || operation.runDigest !== undefined)) {
+    const preparationDigest = runnerLaunchPreparationDigest(operation.requirements as Parameters<typeof runnerLaunchPreparationDigest>[0]);
+    if (operation.preparationDigest !== preparationDigest || operation.runDigest !== runnerLaunchRunDigest(preparationDigest, operation.requirements as Parameters<typeof runnerLaunchRunDigest>[1])) {
+      throw new Error("Plugin Runner launch digest mismatch");
+    }
+  }
   const [row] = await db.select({ lease: environmentLeases, environment: environments, run: heartbeatRuns })
     .from(environmentLeases)
     .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
@@ -534,12 +541,13 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     }
     if (freshWorkspace && parsed.kind === "description" && parsed.freshWorkspaceVersion !== 1)
       throw new Error("Plugin-provided fresh workspace preparation unavailable");
-    if (operation.kind === "prepare" && parsed.kind === "prepared" && parsed.projectAuthCheckAtSubmit) {
+    if (operation.kind === "prepare" && parsed.kind === "prepared" && (parsed.projectAuthChecked || parsed.projectAuthCheckAtSubmit)) {
       const harness = operation.requirements.provider === "acpx" ? operation.requirements.settings.acpxAgent : operation.requirements.provider;
       if (!harness) throw new Error("Plugin Runner prepared provider unavailable");
       const provider = harness === "codex" ? "openai" : harness === "claude" ? "anthropic" : harness;
       const saved = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
-        runnerTaskProjectAuthValidation: { configurationId: parsed.launch.configurationId, provider, projectIds, atSubmit: true },
+        runnerTaskProjectAuthValidation: { configurationId: parsed.launch.configurationId, provider, projectIds,
+          ...(parsed.projectAuthChecked ? {} : { atSubmit: true }) },
       })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
         eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({ id: environmentLeases.id });
       if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");

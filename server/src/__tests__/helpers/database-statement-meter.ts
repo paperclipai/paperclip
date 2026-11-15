@@ -1,7 +1,7 @@
 import net from "node:net";
 import type { Db } from "@paperclipai/db";
 
-export type MeteredStatement = { sql: string; parameters: number; rows: number; ms: number; inTransaction: boolean };
+export type MeteredStatement = { sql: string; parameters: number; rows: number; ms: number; inTransaction: boolean; stack?: string };
 
 type Method = (this: unknown, ...args: unknown[]) => unknown;
 
@@ -27,6 +27,7 @@ export function meterDatabaseStatements(db: Db, databaseUrl: string) {
   const totals = { statements: 0, transactions: 0, waits: 0, rows: 0, sqlBytes: 0 };
   let inFlight = 0;
   let log: MeteredStatement[] | null = null;
+  let captureStacks = false;
   const visited = new WeakSet<object>();
   const visit = (value: unknown, inTransaction: boolean) => {
     if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
@@ -42,7 +43,13 @@ export function meterDatabaseStatements(db: Db, databaseUrl: string) {
         if (inFlight === 0) totals.waits += 1;
         inFlight += 1;
         const pending = Reflect.apply(unsafe, this, args) as PromiseLike<{ length: number }>;
-        const entry = { sql: query, parameters: Array.isArray(args[1]) ? args[1].length : 0, rows: 0, ms: 0, inTransaction };
+        const entry: MeteredStatement = { sql: query, parameters: Array.isArray(args[1]) ? args[1].length : 0, rows: 0, ms: 0, inTransaction };
+        if (log && captureStacks) {
+          const limit = Error.stackTraceLimit;
+          Error.stackTraceLimit = 60;
+          entry.stack = new Error().stack;
+          Error.stackTraceLimit = limit;
+        }
         log?.push(entry);
         // The query starts one microtask after its first `then`, so a caller
         // can still select the result format on the returned query.
@@ -79,7 +86,7 @@ export function meterDatabaseStatements(db: Db, databaseUrl: string) {
     /** The totals since the client started. Subtract two readings to meter one request. */
     read: () => ({ ...totals, bytesReceived: bytesReceived() }),
     /** Records every statement until `stopLog`. */
-    startLog: () => { log = []; },
+    startLog: (options: { stacks?: boolean } = {}) => { log = []; captureStacks = options.stacks === true; },
     stopLog: () => {
       const recorded = log ?? [];
       log = null;

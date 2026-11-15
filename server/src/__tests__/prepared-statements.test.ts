@@ -2,7 +2,7 @@ import { eq, fillPlaceholders, sql } from "drizzle-orm";
 import { PgDialect, pgTable, timestamp, uuid } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { columnPlaceholder, preparedStatements } from "../services/prepared-statements.js";
+import { columnPlaceholder, preparedStatement, preparedStatements } from "../services/prepared-statements.js";
 
 describe("prepared statements", () => {
   it("prepares a shape one time for a client, and again for another client or shape", () => {
@@ -16,6 +16,17 @@ describe("prepared statements", () => {
     expect(statements(transaction, "first")).toEqual({ db: transaction, shape: "first" });
     expect(statements(transaction, "first")).not.toBe(first);
     expect(prepare.mock.calls).toEqual([[root, "first"], [root, "after"], [transaction, "first"]]);
+  });
+
+  it("prepares a single statement one time for each client", () => {
+    const prepare = vi.fn((db: Db) => ({ db }));
+    const statement = preparedStatement(prepare);
+    const root = {} as Db, other = {} as Db;
+    const first = statement(root);
+    expect(statement(root)).toBe(first);
+    expect(statement(other)).toEqual({ db: other });
+    expect(statement(other)).not.toBe(first);
+    expect(prepare.mock.calls).toEqual([[root], [other]]);
   });
 
   it("encodes a placeholder value with the column, as the query builder encodes a bound value", () => {

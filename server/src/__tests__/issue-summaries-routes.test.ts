@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
-  agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueReadStates, issueRelations, issues, toolApplications, toolConnections,
+  activityLog, agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueReadStates, issueRelations, issues, issueThreadInteractions, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { recentSubtaskParents } from "../realtime/recent-subtask-parents.js";
 import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("bounded issue summaries", () => {
@@ -39,6 +40,74 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     return result;
   }
   const url = (companyId: string) => `/api/companies/${companyId}/issues/summaries`;
+
+  it("matches the inbox unread predicate across participation, request, withdrawal and read histories", async () => {
+    const f = await fixture();
+    const user = f.actor.userId!;
+    const names = ["created", "read", "untouched", "assigned", "human-comment", "derived-comment", "activity",
+      "read-only-activity", "pending", "not-creator", "withdrawn", "withdrawn-read", "deleted-comment", "self-after-external"];
+    const day = (n: number) => new Date(`2026-01-0${n}`);
+    const rows = await ctx.db.insert(issues).values(names.map(title => ({
+      companyId: f.companyId, parentId: f.rows[0]!.id, title, createdAt: day(1), updatedAt: day(1),
+      createdByUserId: ["created", "read", "withdrawn", "withdrawn-read", "deleted-comment", "self-after-external"].includes(title) ? user : "other",
+      assigneeUserId: title === "assigned" ? user : null,
+    }))).returning();
+    const byName = new Map(rows.map(row => [row.title, row]));
+    const id = (name: string) => byName.get(name)!.id;
+    const noExternal = new Set(["pending", "not-creator", "withdrawn", "withdrawn-read"]);
+    await ctx.db.insert(issueComments).values(rows.filter(row => !noExternal.has(row.title)).map(row => ({
+      companyId: f.companyId, issueId: row.id, authorUserId: "other", body: "External", createdAt: day(3),
+      deletedAt: row.title === "deleted-comment" ? day(4) : null,
+    })));
+    await ctx.db.insert(issueComments).values(["human-comment", "derived-comment", "self-after-external"].map(name => ({
+      companyId: f.companyId, issueId: id(name), authorUserId: user, body: "Mine",
+      createdAt: day(name === "self-after-external" ? 4 : 2),
+      metadata: name === "derived-comment" ? { sourceChannel: "slack" } : null,
+    })));
+    await ctx.db.insert(issueReadStates).values(["read", "withdrawn-read"].map(name => ({
+      companyId: f.companyId, issueId: id(name), userId: user, lastReadAt: day(4),
+    })));
+    await ctx.db.insert(activityLog).values(["activity", "read-only-activity", "withdrawn", "withdrawn-read"].map(name => ({
+      companyId: f.companyId, entityType: "issue", entityId: id(name), actorType: "user",
+      actorId: name.startsWith("withdrawn") ? "other" : user,
+      action: name.startsWith("withdrawn") ? "issue.thread_interaction_withdrawn" : name === "activity" ? "issue.updated" : "issue.read_marked",
+      createdAt: day(3), details: name.startsWith("withdrawn") ? { handledForUserId: user, receipt: { outcome: "withdrawn", issueId: id(name) } } : null,
+    })));
+    await ctx.db.insert(issueThreadInteractions).values(["pending", "not-creator"].map(name => ({
+      companyId: f.companyId, issueId: id(name), kind: "request_confirmation", payload: {},
+      addresseeUserId: user, createdByUserId: user, createdAt: day(3),
+      effectiveResolverPolicy: name === "not-creator" ? "not_creator" as const : "anyone" as const,
+    })));
+    const oracle = await ctx.db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, f.companyId), inArray(issues.id, rows.map(row => row.id)),
+      issueServices.unreadForUserCondition(f.companyId, user),
+    ));
+    const expected = new Set(oracle.map(row => row.id));
+    expect(rows.filter(row => expected.has(row.id)).map(row => row.title).sort()).toEqual([
+      "activity", "assigned", "created", "human-comment", "pending", "withdrawn",
+    ]);
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({
+      ids: [f.rows[0]!.id, ...rows.map(row => row.id)].join(","), navigation: "true",
+    }).expect(200);
+    expect(res.body[0]).toMatchObject({ subtaskCount: rows.length, unreadSubtaskCount: expected.size });
+    for (const row of res.body.slice(1)) expect(row.isUnreadForMe, byName.get(row.title)?.title).toBe(expected.has(row.id));
+  });
+
+  it("authorizes both reparenting hints and excludes hidden, private and foreign parents", async () => {
+    const f = await fixture();
+    const foreign = await fixture();
+    const privateId = randomUUID();
+    await ctx.db.insert(issues).values({ id: privateId, companyId: f.companyId, title: "Secret", visibility: "private", createdByUserId: "other" });
+    const [child] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Child", parentId: privateId }).returning();
+    const payload = { entityType: "issue", entityId: child!.id, details: { _previous: { parentId: f.rows[0]!.id } } };
+    expect(await recentSubtaskParents(ctx.db, f.actor, f.companyId, payload)).toEqual({ recentSubtaskParentIds: [f.rows[0]!.id] });
+    await ctx.db.update(issues).set({ parentId: f.rows[1]!.id }).where(eq(issues.id, child!.id));
+    expect(new Set((await recentSubtaskParents(ctx.db, f.actor, f.companyId, payload)).recentSubtaskParentIds)).toEqual(new Set(f.rows.map(row => row.id)));
+    await ctx.db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, f.rows[0]!.id));
+    expect(await recentSubtaskParents(ctx.db, f.actor, f.companyId, {
+      ...payload, details: { parentId: foreign.rows[0]!.id, _previous: { parentId: f.rows[0]!.id } },
+    })).toEqual({ recentSubtaskParentIds: [f.rows[1]!.id] });
+  });
 
   it("counts only readable subtasks and preserves each person's unread state beyond ten children", async () => {
     const f = await fixture();

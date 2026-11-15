@@ -225,6 +225,7 @@ export function mapTerminalTurn(
       payload.error = { ...record(payload.error), providerFailure };
     }
     state.emit(eventType, payload, { turnId });
+    const terminalSourceSeq = state.sourceSequence;
     finalize(state, status);
     if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
         (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId)) {
@@ -252,6 +253,7 @@ export function mapTerminalTurn(
       state.terminal = false;
       state.dispositionOnlyRecoveryAvailable = true;
     }
+    if (state.awaitingProviderTurn) state.captureBoundary(terminalSourceSeq);
   }
 
 function replayFingerprint(state: CodexSessionState, value: unknown): string {
