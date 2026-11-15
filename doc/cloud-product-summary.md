@@ -131,7 +131,8 @@ the newest window when the next request comes.
 
 ### Runs
 
-- A run is counted by the time at which it ended.
+- A run is counted by its finish time. The time at which it was created does
+  not matter. A run with no finish time is not counted.
 - `day` covers the last 24 hours. `week` covers the last 7 days.
 - `recent` holds at most 20 runs that have a finish time, in the order of
   that time, the newest first.

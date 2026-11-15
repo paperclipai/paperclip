@@ -611,6 +611,25 @@ describe("cloudProductSummaryQuerySchema", () => {
     expect(summary.runs.recent[1]).toEqual({ outcome: "failed", failureClass: "execution_failure", endedAt: iso(HOUR) });
   });
 
+  it("counts a run that started long ago and finished after the since time", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    await createRun(companyId, agentId, ago(5 * 60 * 1000), {
+      status: "failed",
+      errorCode: "adapter_failed",
+      createdAt: ago(6 * DAY),
+      startedAt: ago(6 * DAY),
+    });
+    await createRun(companyId, agentId, ago(2 * HOUR));
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW, since: ago(HOUR) });
+
+    const counted = { succeeded: 0, failed: 1, cancelled: 0, timedOut: 0, failuresByClass: { execution_failure: 1 } };
+    expect(summary.runs.day).toEqual(counted);
+    expect(summary.runs.week).toEqual(counted);
+    expect(summary.runs.recent).toEqual([{ outcome: "failed", failureClass: "execution_failure", endedAt: iso(5 * 60 * 1000) }]);
+  });
+
   it("cancels a statement that runs past the section time limit, and reads the next sections", async () => {
     const companyId = await createCompany();
     await seedOrganization(companyId);

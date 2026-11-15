@@ -411,20 +411,18 @@ async function readRoutines(tx: Tx, context: Context): Promise<Partial<Capabilit
   };
 }
 
-const ENDED_AT = sql`coalesce(r.finished_at, r.started_at, r.created_at)`;
-
 async function readRuns(tx: Tx, context: Context): Promise<CloudProductSummary["runs"]> {
   const weekStart = windowStart(context, 7);
   const dayStart = windowStart(context, 1);
   const grouped = await rows(tx, sql`
-    select r.status, r.error_code, (${ENDED_AT} >= ${dayStart}::timestamptz) as in_day, count(*)::int as total
+    select r.status, r.error_code, (r.finished_at >= ${dayStart}::timestamptz) as in_day, count(*)::int as total
     from heartbeat_runs r
     join agents a on a.id = r.agent_id
     where r.company_id = ${context.companyId}
-      and r.created_at >= ${weekStart}::timestamptz - interval '1 day'
+      and r.finished_at is not null
+      and r.finished_at >= ${weekStart}::timestamptz
       and r.status in ${FINAL_RUN_STATUSES}
       and ${CUSTOMER_AGENT}
-      and ${ENDED_AT} >= ${weekStart}::timestamptz
     group by 1, 2, 3
   `);
   const day = emptyWindow();
