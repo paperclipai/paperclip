@@ -49,6 +49,8 @@ const scope = {
 const force = process.env.CI_FORCE_TASKS === "true" || uncacheable;
 const result = spawnSync("pnpm", ["exec", "turbo", "run", execution.target,
   "--root-turbo-json", runtimeConfig, "--summarize", force ? "--cache=" : "--cache=local:rw", "--cache-dir=.turbo/cache",
+  // CI defaults to grouped output, which is lost when a task is cancelled.
+  "--log-order=stream",
   ...(process.env.CI_TASK_DRY_RUN === "true" ? ["--dry=json"] : []),
   "--", ...execution.args], {
   stdio: "inherit",

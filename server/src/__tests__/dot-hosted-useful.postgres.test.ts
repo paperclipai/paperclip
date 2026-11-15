@@ -825,14 +825,15 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect(current).toMatchObject({companyId,agentId});
       expect(current.status).toBe("running");
     },{timeout:retryUsefulRemaining,interval:50});
+    let successorAssignments:typeof dotRunnerAssignments.$inferSelect[]=[];
     await vi.waitFor(async()=>{
-      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId))).toHaveLength(1);
+      successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
+      expect(successorAssignments).toHaveLength(1);
+      assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
+      expect(["offered","accepted"]).toContain(assignment.status);
+      const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});expect(assigned.body.result.isError,JSON.stringify(assigned.body)).toBe(false);
+      if(runId===failedRunId)expect(assignment.id).toBe(preFaultAssignments[0].id);
     },{timeout:30_000,interval:50});
-    const successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
-    assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
-    expect(["offered","accepted"]).toContain(assignment.status);
-    const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});expect(assigned.body.result.isError,JSON.stringify(assigned.body)).toBe(false);
-    if(runId===failedRunId)expect(assignment.id).toBe(preFaultAssignments[0].id);
     await operation("paperclip_dot_accept",{},runId===failedRunId?preFaultAcceptId:undefined);expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id)))[0].status).toBe("accepted");
     const writeId=randomUUID(),writeArgs={name:"write_document",arguments:{key:"report",title:"Arithmetic",body:"17 + 25 = 42.",baseRevisionId:null,idempotencyKey:writeId}};
     const written=await operation("paperclip_dot_tool",writeArgs,writeId);expect(written.receipt).toMatchObject({status:"completed",isError:false});expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");

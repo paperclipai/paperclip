@@ -20,8 +20,20 @@ export function moduleDurationMs(timing) {
   return Math.ceil(phases.reduce((sum, value) => sum + value, 0));
 }
 
+// Progress is separate from successful-file timing data consumed by refresh jobs.
+// File identities and lifecycle phases only; no test names, output, or secrets.
+function reportProgress(module, phase) {
+  if (module.project.name !== "@paperclipai/server") return;
+  const file = path.relative(process.cwd(), module.moduleId).split(path.sep).join("/");
+  if (!/^server\/(?:src|scripts)\/.+\.test\.[cm]?[jt]s$/.test(file)) return;
+  console.log("PAPERCLIP_TEST_PROGRESS " + JSON.stringify({ version: 1, file, phase }));
+}
+
 export default class TestTimingReporter {
+  onTestModuleQueued(module) { reportProgress(module, "queued"); }
+  onTestModuleStart(module) { reportProgress(module, "started"); }
   onTestModuleEnd(module) {
+    reportProgress(module, module.state());
     const record = fileTiming(module);
     if (record) console.log(timingPrefix + JSON.stringify(record));
   }
