@@ -291,8 +291,7 @@ of the same class, then the stable Runner default. The task shows a warning with
 the requested model, effective model, and CLI version. Agent and task settings
 stay unchanged. Update the image CLI to restore the requested model on later
 runs. Explicit `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH` and
-`PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` settings take precedence. See
-[execution semantics](execution-semantics.md#remote-codex-model-compatibility).
+`PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` settings take precedence.
 
 ### Sandbox ACP input delivery
 

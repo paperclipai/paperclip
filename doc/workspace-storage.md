@@ -342,7 +342,7 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+[snapshot storage contract](#experimental-remote-workspace-snapshots).
 
 ## S3-backed run evidence
 
@@ -408,3 +408,59 @@ existing protection: if the native controller check finds state the database doe
 not prove, startup refuses and the error names the run, the task and the file,
 because that file may be the only copy of the run's progress. Adopt it with the
 native controller migration first.
+
+## Experimental remote workspace snapshots
+
+Migration [0421_bright_skaar.sql](../packages/db/src/migrations/0421_bright_skaar.sql)
+adds the company-scoped `execution_workspace_snapshots` ledger. It records the
+workspace, source operation/run, parent, generation, writer epoch, encrypted
+object receipt, hashes, manifest digest, and retention state. Integrity and key
+fields remain nullable while an upload is pending. Upload attempts record their
+candidate object keys before I/O so a lost reply can be reconciled and abandoned
+objects can be reclaimed. Object existence alone is not a committed save.
+
+`execution_workspaces.metadata.remoteWorkspace`, schema
+`paperclip.remote-workspace.v1`, holds the source, epoch, committed snapshot ID,
+remote allocation/path, writer run, and dirty flag. Paths in this record belong
+to the remote allocation. Save publication checks the current writer/epoch and
+atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
+`workspace_operations` journals preparation, save, restore, and local import;
+large file bodies stay outside the database. Ledger identities deliberately
+survive source-record deletion so object cleanup can finish.
+
+Snapshots stream through authenticated encryption into S3. Portable archives
+preserve supported files, modes, empty directories, confined symlinks, and Git
+checkout/index/object state, including unpushed history. Linked worktrees and
+object alternates are normalized into standalone Git storage. The versioned
+exclusion policy omits runtime transport material and proven rebuildable
+dependencies; unsupported entries fail the save.
+
+The current snapshot and active run/restore/recovery/unfinished-operation
+references pin saved data. Unreferenced superseded versions receive a seven-day
+grace. Retention uses committed producer notifications and actual deadlines;
+pinned history and an empty queue do not cause recurring scans. Deletion fences
+new adoption, rechecks references, and removes every recorded upload candidate
+and winning object within the company/workspace prefix.
+
+When retention finds a pinned version, it records the first reference that holds
+it in `metadata.retentionPin`: the current pointer, an importing parent, an
+operation, an unfinished child, a run, or a recovery action. The candidate query
+leaves that version out while the recorded reference still holds, so execution
+notifications do not re-examine unchanged history. When the recorded reference
+releases, the next pass checks every reference again. It records the next
+reference that holds, or schedules or retires the version. The record is durable,
+so a restarted server keeps the exclusion. A version without a record, such as
+one saved before this change, is examined once. Wakes coalesce for up to one
+second.
+
+Database backups contain snapshot receipts, not S3 payloads or encryption keys.
+Disaster recovery requires the database, object store, and original master key.
+Unsaved live sandbox edits remain outside that saved-version guarantee. See
+[setup and explicit local import](workspace-storage.md#experimental-native-remote-workspace-storage).

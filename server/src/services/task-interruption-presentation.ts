@@ -46,6 +46,14 @@ const WAITING_CONTINUATION_MOVE_FORWARD_MS = 15 * 60_000;
 const NO_WORK_CONTINUATION_HANDOFF_GRACE_MS = 30_000;
 const NO_WORK_CONTINUATION_CAUSES = new Set(["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]);
 
+function awaitsExactRemoteResume(issue: Pick<typeof issues.$inferSelect, "status" | "executionRunId">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid" | "processGroupId">,
+  coordinator: Pick<typeof nativeRunFinalizations.$inferSelect, "failureDetail">): boolean {
+  const detail = coordinator.failureDetail as Record<string, unknown> | null;
+  return issue.status === "blocked" && issue.executionRunId === run.id
+    && (run.processPid !== null || run.processGroupId !== null) && detail?.recoveryMode === "exact_checkpoint_resume";
+}
+
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
@@ -598,7 +606,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         const issue = run?.nativeIssueId ? issueById.get(run.nativeIssueId) : undefined;
         const coordinator = coordinatorByRun.get(candidate.id);
         const admitted = run && issue && coordinator
-          && await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null);
+          && (awaitsExactRemoteResume(issue, run, coordinator)
+            || await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null));
         if (!admitted) candidate.nativeResumeAt = null;
       }));
     }
