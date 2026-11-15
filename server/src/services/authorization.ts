@@ -731,9 +731,9 @@ export async function issueReadSqlCondition(db: Db | DbTransaction, actor: Autho
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
-    && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
       .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
+      .limit(1).then(rows => rows.length > 0))) return sql<boolean>`true`;
   return issuePrivacyCondition(actor);
 }
 
@@ -746,7 +746,7 @@ export async function projectReadSqlCondition(db: Db | DbTransaction, actor: Aut
     actor.type === "board"
     && !actor.ignoreInstanceAdmin
     && actor.source !== "cloud_tenant"
-    && Boolean(await db
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
       .where(and(
@@ -754,7 +754,7 @@ export async function projectReadSqlCondition(db: Db | DbTransaction, actor: Aut
         eq(instanceUserRoles.role, "instance_admin"),
       ))
       .limit(1)
-      .then((rows) => rows[0] ?? null))
+      .then((rows) => rows.length > 0))
   ) return sql<boolean>`true`;
   return projectPrivacyCondition(actor);
 }

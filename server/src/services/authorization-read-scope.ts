@@ -8,7 +8,12 @@ export const authorizationReadScope: RequestHandler = (req, _res, next) => {
     next();
     return;
   }
-  reads.run(new Map(), next);
+  const memo = new Map<string, Promise<unknown>>();
+  const actor = req.actor;
+  if (actor?.type === "board" && actor.source === "session" && actor.userId && typeof actor.isInstanceAdmin === "boolean") {
+    memo.set(`admin:${actor.userId}`, Promise.resolve(actor.isInstanceAdmin));
+  }
+  reads.run(memo, next);
 };
 
 export function readOncePerRequest<T>(key: string, read: () => Promise<T>): Promise<T> {

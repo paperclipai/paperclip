@@ -42,7 +42,7 @@ describeEmbeddedPostgres("authorization reads per request", () => {
     return { ...company, issue: issue! };
   }
 
-  it("reads the instance role and the membership once each for the authorization of one issue read", async () => {
+  it("reads the instance role once per request and the membership once for the authorization of one issue read", async () => {
     const { host, port } = (ctx.db.$client as unknown as { options: { host: string[]; port: number[] } }).options;
     const meter = meterDatabaseStatements(ctx.db, `postgres://${host[0]}:${port[0]}/authorization`);
     try {
@@ -54,8 +54,14 @@ describeEmbeddedPostgres("authorization reads per request", () => {
       const log = meter.stopLog();
       const roleReads = log.filter((entry) => /from "instance_user_roles"/.test(entry.sql));
       const membershipReads = log.filter((entry) => /from "company_memberships"/.test(entry.sql));
-      expect(roleReads).toHaveLength(2);
+      expect(roleReads).toHaveLength(1);
       expect(membershipReads).toHaveLength(2);
+
+      meter.startLog();
+      await request(app).get(`/api/companies/${fixture.companyId}/issues`).expect(200);
+      await request(app).get(`/api/companies/${fixture.companyId}/issues/summaries?ids=${fixture.issue.id}`).expect(200);
+      const listLog = meter.stopLog();
+      expect(listLog.filter((entry) => /from "instance_user_roles"/.test(entry.sql))).toHaveLength(2);
     } finally {
       meter.uninstall();
     }
