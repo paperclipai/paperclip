@@ -104,6 +104,16 @@ export function readSecrets(env: NodeJS.ProcessEnv, credentialKey: string | null
   };
 }
 
+export function metricsCredential(options: Pick<Options, "metricsUrl" | "target">, secrets: Secrets): string | null {
+  if (secrets.metricsToken) return secrets.metricsToken;
+  if (!options.metricsUrl) return null;
+  try {
+    return new URL(options.metricsUrl).origin === options.target.baseUrl ? secrets.token : null;
+  } catch {
+    return null;
+  }
+}
+
 function adapterOverrides(raw: string | undefined): Record<string, unknown> {
   if (!raw) return {};
   let parsed: unknown;

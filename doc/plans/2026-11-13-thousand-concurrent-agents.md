@@ -445,12 +445,44 @@ A missing source is reported as "not measured", never as zero.
 | Lease renewals that miss their deadline | finish line | 0 | metrics endpoint |
 | Kill one server process | finish line | runs resume, no Retry | not measured by this harness |
 
-The server has no metrics endpoint today. `PAPERCLIP_SCALE_METRICS_URL` must
-answer a JSON object with any of `mainThreadCpu`, `eventLoopUtilization`
-(0 to 1, highest server process), `eventLoopDelayP99Ms`,
-`statementsPerSecond`, `poolWaitP99Ms`, `runEventLatenessP99Ms`,
-`agentApiPreHandlerP99Ms` and `leaseRenewalsMissed` (a counter). Without it,
-the four server criteria are not measured, and a run can be at best
+**Server metrics.** Each server process can serve
+`GET /api/instance/server-metrics`, a JSON snapshot of that process over the
+last 50 to 60 s (`windowMs`), with its `processId` (random per process
+start), `uptimeSec` and `buildRevision`. It is off by default: set
+`PAPERCLIP_SERVER_METRICS=true` on the stack before the run (read once at
+start; off, the path answers 404 and nothing is collected). Only an instance
+admin can read it, so the board token must belong to an instance admin.
+Point the harness at it on the target origin, and the harness sends the board
+token in its `Authorization: Bearer` header (never in the URL;
+`PAPERCLIP_SCALE_METRICS_TOKEN` overrides it, and a URL on another origin gets
+no token unless that variable is set):
+
+```sh
+export PAPERCLIP_SCALE_METRICS_URL=https://$H/api/instance/server-metrics
+```
+
+| Field | Meaning | Source |
+| --- | --- | --- |
+| `mainThreadCpu` | main-thread CPU per wall second, 0 to 1 (Linux only, else null) | `/proc/self/task/<pid>/stat` |
+| `eventLoopUtilization` | 0 to 1 | `performance.eventLoopUtilization()` |
+| `eventLoopDelayP99Ms` | highest 10 s p99 in the window | `monitorEventLoopDelay` (20 ms) |
+| `statementsPerSecond` | Drizzle statements per second (not BEGIN/COMMIT or raw driver calls) | Drizzle logger counter |
+| `runEventLatenessP99Ms` | runner `emittedAt` to committed row, p99 (null with no events) | runner event append |
+| `agentApiPreHandlerP99Ms` | agent API request arrival to the API router, p99 (null with no agent requests) | two middlewares |
+| `leaseRenewalsMissed` | counter since process start: native run leases whose deadline passed unrenewed | lease deadline timer |
+
+`processCpu`, `runEventLatenessSamples`, `agentApiPreHandlerSamples` and
+`dedicatedConnections` are extra context. `dedicatedConnections` is the
+process's dedicated-connection bound at the time of the request: `limit`,
+`inUse`, `waiting` (gauges), `peakInUse`, `queued`, `overLimit` and
+`nestedOverLimit` (counts since start); queueing there shows a restart burst. `poolWaitP99Ms` is absent: postgres.js exposes no cheap hook
+for time spent queued for a connection, so pool wait stays not measured. With
+several processes, each request reaches one of them; the harness keeps the
+highest gauge and sums the counter's growth per `processId`; a process
+whose `uptimeSec` shows it started during the run counts its whole counter.
+After an event-loop block longer than the window, `windowMs` reports the real,
+longer span so the block stays visible. Without the
+endpoint, the four server criteria are not measured, and a run can be at best
 `incomplete`. The harness does not read the database.
 
 **Proof order.** A hosted stack that is not `paperclip.staging` first
