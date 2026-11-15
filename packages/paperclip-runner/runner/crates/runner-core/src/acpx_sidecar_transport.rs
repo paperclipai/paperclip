@@ -1297,6 +1297,7 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
         "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
         "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
+        "ACPX_ADMISSION_INSTRUCTIONS" => return "admission_instructions",
         "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
@@ -1665,6 +1666,7 @@ mod tests {
             ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
             ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
             ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            ("ACPX_ADMISSION_INSTRUCTIONS", "admission_instructions"),
             (
                 "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
                 "grok_effort_acknowledgement_missing",

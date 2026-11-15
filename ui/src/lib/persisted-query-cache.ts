@@ -14,6 +14,8 @@ const MAX_LINK_PREVIEWS = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const REVISION_PREFIX = "paperclip:query-cache-revision:";
 const controllers = new WeakMap<QueryClient, { clear: () => void }>();
+/** Per client: each restored query's hash and the read time it was restored with. */
+const restoredReads = new WeakMap<QueryClient, Map<string, number>>();
 type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 type Envelope = { version: 1; userId: string; companyId: string | null; buildId: string; revision: string | null; savedAt: number; state: DehydratedState };
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" ? value as Record<string, unknown> : null;
@@ -26,12 +28,15 @@ const issueIdentity = (query: { queryKey: readonly unknown[]; state: { data: unk
 const issueRefs = (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => [query.queryKey[2], object(query.state.data)?.id, object(query.state.data)?.identifier]
   .filter((id): id is string => typeof id === "string").map(id => id.toLowerCase());
 const excludedFields = new Set(["planDocument", "legacyPlanDocument", "documentSummaries", "documents", "comments", "workProducts", "browsers", "pairingCode", "viewerUrl", "accessToken", "refreshToken", "sessionToken", "token", "password", "apiKey", "privateKey", "authorization", "access_token", "refresh_token", "id_token", "clientSecret", "client_secret", "api_key", "private_key", "credentials", "env"].map(key => key.toLowerCase()));
-function displayData(value: unknown, denied: ReadonlySet<string>): unknown {
-  if (Array.isArray(value)) return value.map(item => displayData(item, denied)).filter(item => item !== undefined);
+// A saved task's chat keeps its comments (the owner approved saving recent
+// comments on 2026-11-14); every other exclusion still applies.
+const chatExcludedFields = new Set([...excludedFields].filter(key => key !== "comments"));
+function displayData(value: unknown, denied: ReadonlySet<string>, excluded: ReadonlySet<string> = excludedFields): unknown {
+  if (Array.isArray(value)) return value.map(item => displayData(item, denied, excluded)).filter(item => item !== undefined);
   if (!value || typeof value !== "object" || value instanceof Date) return value;
   const row = value as Record<string, unknown>;
   if (typeof row.id === "string" && denied.has(row.id.toLowerCase())) return undefined;
-  return Object.fromEntries(Object.entries(row).filter(([key]) => !excludedFields.has(key.toLowerCase()))
+  return Object.fromEntries(Object.entries(row).filter(([key]) => !excluded.has(key.toLowerCase()))
     .map(([key, item]) => {
       if (key === "runtimeConfig") return [key, {}];
       if (key === "adapterConfig") {
@@ -39,7 +44,7 @@ function displayData(value: unknown, denied: ReadonlySet<string>): unknown {
         return [key, Object.fromEntries(["provider", "model", "agent", "acpxAgent", "effort", "modelReasoningEffort", "reasoningEffort", "thinking", "variant"]
           .filter(field => typeof config?.[field] === "string").map(field => [field, config![field]]).concat(typeof config?.fastMode === "boolean" ? [["fastMode", config.fastMode]] : []))];
       }
-      return [key, displayData(item, denied)];
+      return [key, displayData(item, denied, excluded)];
     }));
 }
 
@@ -50,7 +55,56 @@ function isLegacyInboxQuery(key: readonly unknown[]): boolean {
 }
 
 function queryDisplayData(key: readonly unknown[], data: unknown, denied: ReadonlySet<string>): unknown {
+  if (taskChatFirstFrameRef(key) !== null) return displayData(boundedChatData(key, data), denied, chatExcludedFields);
   return displayData(isLegacyInboxQuery(key) && Array.isArray(data) ? data.slice(0, 100) : data, denied);
+}
+
+/** Saved recent comments per task: the latest ones, enough for the first frame. */
+export const SAVED_TASK_CHAT_MAX_COMMENTS = 50;
+/** Saved chat bytes per task; a larger task opens through the bootstrap as before. */
+export const SAVED_TASK_CHAT_MAX_TASK_BYTES = 192 * 1024;
+/** Saved chat bytes per user across companies, newest tasks first. Keeps room for the rest of the cache. */
+export const SAVED_TASK_CHAT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The task ref of a read that the first chat frame of a task waits for, or
+ * null for any other key. These reads are saved only for recently opened tasks.
+ */
+export function taskChatFirstFrameRef(key: readonly unknown[]): string | null {
+  const [root, kind, ref] = key;
+  if (root !== "issues" || typeof ref !== "string" || !ref) return null;
+  const rest = key.slice(3);
+  const tail = (...values: string[]) => rest.length === values.length && values.every((value, index) => rest[index] === value);
+  switch (kind) {
+    case "comments": return tail("recent") ? ref : null;
+    case "activity":
+      if (tail("recent") || tail("comment-inputs", "batch-ids")) return ref;
+      return rest.length === 3 && rest[0] === "comment-inputs" && rest[1] === "batch" && Array.isArray(rest[2]) ? ref : null;
+    case "runs": return tail("recent-window") ? ref : null;
+    case "documents": return tail("plan") ? ref : null;
+    case "interactions": case "attachments": case "live-runs": case "active-run": case "work-products": return rest.length === 0 ? ref : null;
+    default: return null;
+  }
+}
+
+function boundedChatData(key: readonly unknown[], data: unknown): unknown {
+  const recent = object(data);
+  if (key[1] !== "comments" || !Array.isArray(recent?.comments) || recent.comments.length <= SAVED_TASK_CHAT_MAX_COMMENTS) return data;
+  // The window is chronological; keep its newest comments and say more exist.
+  const comments = recent.comments.slice(-SAVED_TASK_CHAT_MAX_COMMENTS);
+  return { ...recent, comments, hasMore: true, oldestCommentId: object(comments[0])?.id ?? null };
+}
+
+/** Task ref (lowercase) → company, from saved or cached task records. */
+function taskCompaniesOf(queries: Iterable<{ queryKey: readonly unknown[]; state: { data: unknown } }>, keep?: (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => boolean) {
+  const companies = new Map<string, string>();
+  for (const query of queries) {
+    if (!Array.isArray(query?.queryKey) || query.queryKey[0] !== "issues" || query.queryKey[1] !== "detail") continue;
+    const companyId = object(query.state?.data)?.companyId;
+    if (typeof companyId !== "string" || (keep && !keep(query))) continue;
+    for (const ref of issueRefs(query)) companies.set(ref, companyId);
+  }
+  return companies;
 }
 
 function browserStorage(): CacheStorage | null {
@@ -79,6 +133,18 @@ function removeUserRecords(storage: CacheStorage, userId: string, keepRevision?:
   if (storage.getItem(QUERY_CACHE_ACTIVE) === userId && !storage.getItem(recordKey(userId, null))) storage.removeItem(QUERY_CACHE_ACTIVE);
 }
 
+/**
+ * True while `key` holds only what this document restored from the saved read
+ * cache: no read in this document has answered it yet. Such data is shown at
+ * once, but its next read is a revalidation that may share a page bootstrap
+ * instead of always asking the server.
+ */
+export function isRestoredSavedRead(client: QueryClient, key: readonly unknown[]) {
+  const state = client.getQueryState(key);
+  if (state?.data === undefined) return false;
+  return restoredReads.get(client)?.get(hashKey(key)) === state.dataUpdatedAt;
+}
+
 export function clearPersistedQueryCache(client: QueryClient) {
   controllers.get(client)?.clear();
 }
@@ -88,8 +154,14 @@ function companyIdsFor(client: QueryClient, userId: string): string[] {
   return (result?.companies ?? []).map(company => company.id).filter(id => typeof id === "string" && id.length > 0);
 }
 
-export function persistedQueryScope(key: readonly unknown[], data: unknown, userId: string, companyIds: readonly string[]): string | null | undefined {
+export function persistedQueryScope(key: readonly unknown[], data: unknown, userId: string, companyIds: readonly string[], taskCompanies?: ReadonlyMap<string, string>): string | null | undefined {
   const [root, second, third] = key;
+  const chatRef = taskChatFirstFrameRef(key);
+  if (chatRef !== null) {
+    // A chat read belongs to the company of a saved (recent) task record.
+    const companyId = taskCompanies?.get(chatRef.toLowerCase());
+    return companyId && companyIds.includes(companyId) ? companyId : undefined;
+  }
   if (hashKey(key) === hashKey(queryKeys.auth.session)) return userIdOf(data) === userId ? null : undefined;
   if (key.length === 1 && root === "health") return null;
   if (root === "companies" && second === "list" && third === userId && key.length === 3) return null;
@@ -249,9 +321,12 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     } catch { return null; }
   };
   const fresh = (updatedAt: number) => Number.isFinite(updatedAt) && now() - updatedAt >= 0 && now() - updatedAt <= QUERY_CACHE_MAX_AGE;
-  const savedQueries = (entry: Envelope, companyIds: string[]) => entry.state.queries.filter(query => query?.state?.data !== undefined && query.state.status === "success"
-    && fresh(query.state.dataUpdatedAt) && Array.isArray(query.queryKey) && !blockedQueries.has(hashKey(query.queryKey))
-    && persistedQueryScope(query.queryKey, query.state.data, entry.userId, companyIds) === entry.companyId);
+  const savedQueries = (entry: Envelope, companyIds: string[]) => {
+    const taskCompanies = taskCompaniesOf(entry.state.queries);
+    return entry.state.queries.filter(query => query?.state?.data !== undefined && query.state.status === "success"
+      && fresh(query.state.dataUpdatedAt) && Array.isArray(query.queryKey) && !blockedQueries.has(hashKey(query.queryKey))
+      && persistedQueryScope(query.queryKey, query.state.data, entry.userId, companyIds, taskCompanies) === entry.companyId);
+  };
   const readSaved = (userId: string): Envelope[] => {
     if (!storage) return [];
     const prefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;
@@ -291,8 +366,11 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     }
     return { queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: { ...query.state, data, error: null, status: "success", fetchStatus: "idle", fetchFailureReason: null, fetchMeta: null } };
   };
-  const allowedIssue = (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => !(query.queryKey[0] === "issues" && query.queryKey[1] === "detail"
-    && issueRefs(query).some(id => deniedIssues.has(id)));
+  const allowedIssue = (query: { queryKey: readonly unknown[]; state: { data: unknown } }) => {
+    const chatRef = taskChatFirstFrameRef(query.queryKey);
+    if (chatRef !== null) return !deniedIssues.has(chatRef.toLowerCase());
+    return !(query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && issueRefs(query).some(id => deniedIssues.has(id)));
+  };
   const scrubSaved = (userId: string, entries: Envelope[]) => {
     if (!storage || ownerRevision !== revisionFor(userId)) return;
     const companies = approvedCompanies(userId, entries);
@@ -305,7 +383,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     }
   };
   const restoreState = (entry: Envelope, companyIds: string[]) => {
-    const queries = savedQueries(entry, companyIds)
+    const queries = savedQueries(entry, companyIds).filter(allowedIssue)
       .map(query => ({ queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: {
         data: queryDisplayData(query.queryKey, query.state.data, deniedIssues), dataUpdatedAt: query.state.dataUpdatedAt, dataUpdateCount: 1,
         error: null, errorUpdateCount: 0, errorUpdatedAt: 0, fetchFailureCount: 0, fetchFailureReason: null,
@@ -314,6 +392,9 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         fetchMeta: null, isInvalidated: query.queryKey[0] !== "link-preview", status: "success" as const, fetchStatus: "idle" as const,
       } }));
     hydrate(client, { mutations: [], queries });
+    let restored = restoredReads.get(client);
+    if (!restored) restoredReads.set(client, restored = new Map());
+    for (const query of queries) restored.set(query.queryHash, query.state.dataUpdatedAt);
   };
   try {
     const current = client.getQueryState(queryKeys.auth.session);
@@ -347,11 +428,12 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     if (ownerRevision !== revisionFor(userId)) { suspendAccount(); return; }
     const entries = readSaved(userId);
     const companies = approvedCompanies(userId, entries);
+    const knownTasks = taskCompaniesOf([...client.getQueryCache().getAll(), ...entries.flatMap(entry => entry.state.queries)]);
     const eligible = (query: Query) => query.state.data !== undefined
       && (query.state.status === "success" || isTransientError(query.state.error))
       && !blockedQueries.has(hashKey(query.queryKey))
       && fresh(query.state.dataUpdatedAt)
-      && persistedQueryScope(query.queryKey, query.state.data, userId, companies) !== undefined;
+      && persistedQueryScope(query.queryKey, query.state.data, userId, companies, knownTasks) !== undefined;
     // Memory GC is independent of the on-disk lifetime. Retain valid saved
     // reads, prefer newer data, and apply the same limits to the merged set.
     const merged = new Map<string, SavedQuery>();
@@ -370,20 +452,51 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     for (const query of recent) if (issueIds.size < QUERY_CACHE_MAX_ISSUES) issueIds.add(issueIdentity(query));
     const previews = new Set([...merged.values()].filter(query => query.queryKey[0] === "link-preview")
       .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt).slice(0, MAX_LINK_PREVIEWS).map(query => hashKey(query.queryKey)));
-    const queries = [...merged.values()].filter(query => allowedIssue(query)
+    // Saved chat reads follow their task: only the recent tasks kept above,
+    // newest first, within the per-task and total byte budgets.
+    const keptTasks = recent.filter(query => issueIds.has(issueIdentity(query)));
+    const taskCompanies = taskCompaniesOf(keptTasks);
+    const taskIdentity = new Map<string, string>();
+    for (const query of keptTasks) for (const ref of issueRefs(query)) taskIdentity.set(ref, issueIdentity(query));
+    const projected = [...merged.values()].filter(query => allowedIssue(query)
       && (query.queryKey[0] !== "link-preview" || previews.has(hashKey(query.queryKey)))
       && !(query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && !issueIds.has(issueIdentity(query))))
       .map(query => projectQuery(query, userId)).filter(query => query.state.data !== undefined);
+    const chatTaskOf = (query: SavedQuery) => {
+      const ref = taskChatFirstFrameRef(query.queryKey);
+      return ref === null ? null : taskIdentity.get(ref.toLowerCase()) ?? "";
+    };
+    const chatBytes = new Map<string, number>();
+    for (const query of projected) {
+      const task = chatTaskOf(query);
+      if (task) chatBytes.set(task, (chatBytes.get(task) ?? 0) + JSON.stringify(query).length);
+    }
+    const savedChatTasks = new Set<string>();
+    let chatTotal = 0;
+    for (const task of issueIds) {
+      const bytes = chatBytes.get(task);
+      if (bytes === undefined || bytes > SAVED_TASK_CHAT_MAX_TASK_BYTES || chatTotal + bytes > SAVED_TASK_CHAT_MAX_BYTES) continue;
+      chatTotal += bytes;
+      savedChatTasks.add(task);
+    }
+    const queries = projected.filter(query => {
+      const task = chatTaskOf(query);
+      return task === null || savedChatTasks.has(task);
+    });
     try {
       const expected = new Set([QUERY_CACHE_ACTIVE]);
       for (const companyId of [null, ...companies]) {
         const key = recordKey(userId, companyId);
         expected.add(key);
-        const envelope: Envelope = { version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
-          state: { mutations: [], queries: queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies) === companyId) } };
-        const serialized = JSON.stringify(envelope);
-        if (serialized.length <= MAX_RECORD_BYTES) storage.setItem(key, serialized);
-        else storage.removeItem(key);
+        const scoped = queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies, taskCompanies) === companyId);
+        const write = (records: SavedQuery[]) => {
+          const serialized = JSON.stringify({ version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
+            state: { mutations: [], queries: records } } satisfies Envelope);
+          if (serialized.length > MAX_RECORD_BYTES) return false;
+          try { storage.setItem(key, serialized); return true; } catch { return false; }
+        };
+        // Saved chat is optional: when it does not fit, keep the rest of the record.
+        if (!write(scoped) && !write(scoped.filter(query => taskChatFirstFrameRef(query.queryKey) === null))) storage.removeItem(key);
       }
       const userPrefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;
       for (const key of storageKeys(storage)) {
@@ -396,6 +509,8 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   };
   const unsubscribe = client.getQueryCache().subscribe(event => {
     if (disposed) return;
+    // Any answer or local write replaces what was restored.
+    if (event.type === "updated" && event.action.type === "success") restoredReads.get(client)?.delete(event.query.queryHash);
     const sessionEvent = hashKey(event.query.queryKey) === hashKey(queryKeys.auth.session);
     const completedRead = sessionEvent && event.type === "updated" && event.action.type === "success" && !event.action.manual
       ? sessionReads.get(event.query) : undefined;
@@ -440,6 +555,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     }
     if (event.type === "observerAdded" && event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail") visits.set(event.query.queryHash, now());
     const issueDetail = event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail";
+    const chatRef = taskChatFirstFrameRef(event.query.queryKey);
     if (event.type === "updated" && event.action.type === "success" && !event.action.manual) {
       blockedQueries.delete(hashKey(event.query.queryKey));
       if (issueDetail) for (const id of issueRefs(event.query)) deniedIssues.delete(id);
@@ -448,14 +564,28 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       blockedQueries.add(hashKey(event.query.queryKey));
       const userId = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
       const saved = userId ? readSaved(userId) : [];
-      if (issueDetail && ["auth", "forbidden", "not_found"].includes(classifyError(event.action.error))) {
-        const ids = new Set(issueRefs(event.query));
-        const matches = (query: Query) => query.queryKey[0] === "issues" && query.queryKey[1] === "detail"
-          && issueRefs(query).some(id => ids.has(id));
+      const refusal = classifyError(event.action.error);
+      const revokesTask = issueDetail
+        ? ["auth", "forbidden", "not_found"].includes(refusal)
+        : chatRef !== null && (["auth", "forbidden"].includes(refusal) || (refusal === "not_found" && event.query.queryKey[1] === "comments"));
+      if (revokesTask) {
+        // A refused task read, or a refused read of its saved chat, removes the
+        // task and its saved chat at once, from memory and from storage.
+        const ids = new Set(issueDetail ? issueRefs(event.query) : [chatRef!.toLowerCase()]);
+        const matches = (query: Query) => {
+          const ref = taskChatFirstFrameRef(query.queryKey);
+          if (ref !== null) return ids.has(ref.toLowerCase());
+          return query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && issueRefs(query).some(id => ids.has(id));
+        };
         for (const query of [...client.getQueryCache().getAll(), ...saved.flatMap(entry => entry.state.queries)].filter(query => Array.isArray(query?.queryKey) && query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && issueRefs(query).some(id => ids.has(id)))) {
           for (const id of issueRefs(query)) ids.add(id);
         }
         for (const id of ids) deniedIssues.add(id);
+        // Chat keys of the task's other refs (an id when it was read by identifier).
+        for (const query of client.getQueryCache().getAll()) {
+          const ref = taskChatFirstFrameRef(query.queryKey);
+          if (ref !== null && ids.has(ref.toLowerCase())) deniedIssues.add(ref.toLowerCase());
+        }
         void client.cancelQueries({ predicate: matches }, { revert: false, silent: true });
         for (const query of client.getQueryCache().getAll().filter(matches)) query.setState({ data: undefined, dataUpdatedAt: 0,
           error: event.action.error, status: "error", fetchStatus: "idle" });

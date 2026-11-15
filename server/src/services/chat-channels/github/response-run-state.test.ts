@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chatMessageLinks, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { chatRunSourceMessageId } from "../run-origin.js";
-import { readGitHubResponseRun, responseRunColumns } from "./response-run-state.js";
+import { readGitHubResponseRun, readGitHubResponseRuns, responseRunColumns } from "./response-run-state.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -193,6 +193,18 @@ suite("GitHub response run state", () => {
     expect(before.filter(result => !result.latestRun).length).toBeGreaterThan(20);
     expect(new Set(before.flatMap(result => result.latestRun ? [result.latestRun.nativeIssueId ? "native" : "legacy"] : [])))
       .toEqual(new Set(["native", "legacy"]));
+  }, 120_000);
+
+  it("reads a page of requests in one latest-run statement with the state each single read returns", async () => {
+    const all = inputs();
+    const single = [];
+    for (const input of all) single.push(await readGitHubResponseRun(db, input));
+    const statements: string[] = [], prior = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => { statements.push(query); };
+    let batch;
+    try { batch = await readGitHubResponseRuns(db, all); } finally { db.$client.options.debug = prior; }
+    expect(batch).toEqual(single);
+    expect(statements.filter(query => /from "heartbeat_runs"|join "heartbeat_runs"/.test(query))).toHaveLength(1);
   }, 120_000);
 
   it("reads a few runs of the issue, not the agent's whole run history", async () => {

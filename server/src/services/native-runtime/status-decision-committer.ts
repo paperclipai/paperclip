@@ -1,4 +1,5 @@
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { forbidden, HttpError } from "../../errors.js";
 import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_DELIVERY_DENIED, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
@@ -795,7 +796,7 @@ async function materializeDecisionEffect(input: {
     if (
       effect.idempotencyKey.startsWith(
         `connection-intent:tools:${input.runId}:`,
-      )
+      ) || effect.idempotencyKey === toolCallLoopContinuationKey(input.runId)
     ) {
       const [refresh] = await input.tx
         .select({ id: agentWakeupRequests.id })
@@ -1917,6 +1918,10 @@ export async function commitNativeStatusDecision(input: {
           issue.executionRunId === input.runId || issue.checkoutRunId === input.runId ||
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
           input.decision.effects.length !== 0) throw new NativeStatusRaceError();
+    }
+    if (reasonCode === "monitor_wait_authority_lost" && issue.executionRunId !== input.runId &&
+        issue.checkoutRunId !== input.runId && await readNativeMonitorDelivery(tx as unknown as Db, input)) {
+      throw new NativeStatusRaceError();
     }
     if (reasonCode === "scheduled_monitor_superseded") {
       const expected = input.requireSupersededMonitorWait;

@@ -1,5 +1,6 @@
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { notifyInstructionCopyStopEvidence } from "./instruction-collection-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql, type SQL } from "drizzle-orm";
@@ -277,6 +278,7 @@ export async function settleAbsentSandbox(db: Db, lease: typeof environmentLease
   const now = new Date();
   const changed = await db.transaction(async tx => {
     await notifyRetainedNativeSessionCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
+    await notifyInstructionCopyStopEvidence(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId! });
     return tx.update(environmentLeases).set({
       status: "released", cleanupStatus: "success", failureReason: "workspace_source_unavailable", releasedAt: now, updatedAt: now,
       metadata: sql`(${environmentLeases.metadata} - 'sandboxStopAndRetain' - 'nativeWorkspaceExportResume' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
