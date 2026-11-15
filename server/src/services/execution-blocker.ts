@@ -247,6 +247,27 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
             and lease.metadata#>>'{remoteExecutionTermination,state}' in ('stopped', 'destroyed'))), false)))`;
 }
 
+export function legacyHoldReleasedForNewOwnerPredicate() {
+  const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
+  return sql`coalesce((${and(
+    sql`${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation'`,
+    sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery' is null`,
+    sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') = ''`,
+    sql`exists (select 1 from ${heartbeatRuns} stopped
+      join ${issues} task on task.company_id = stopped.company_id and task.id = ${issueRecoveryActions.sourceIssueId}
+      where stopped.company_id = ${issueRecoveryActions.companyId}
+        and stopped.id::text = ${sourceRunId}
+        and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
+        and stopped.finished_at is not null
+        and (task.assignee_agent_id is not null or task.assignee_user_id is not null)
+        and task.assignee_agent_id is distinct from stopped.agent_id
+        and not coalesce(task.status = 'in_review'
+          and task.execution_state->>'status' = 'pending'
+          and task.execution_state->'currentParticipant'->>'type' = 'agent'
+          and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))`,
+  )}), false)`;
+}
+
 /**
  * A file-preservation hold binds a newer task owner only until automatic
  * recovery saved the stopped run's files. That owner's turn is a fresh
@@ -339,6 +360,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
+    not(legacyHoldReleasedForNewOwnerPredicate()),
     restoreHoldPredicate(),
   )).orderBy(desc(issueRecoveryActions.updatedAt)).limit(1);
   // A persisted user /new is an ordered context command, not a retry of uncertain work.
@@ -363,6 +385,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
+    not(legacyHoldReleasedForNewOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
     options?.resumingNativeRunId ? not(ownNativeResumePredicate(options.resumingNativeRunId)) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
