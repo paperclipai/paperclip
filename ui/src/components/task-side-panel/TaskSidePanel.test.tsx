@@ -363,7 +363,6 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Properties content");
     expect(onPropertiesOpened).toHaveBeenCalledExactlyOnceWith(1);
 
-    // The same request never reopens a tab the user later closed.
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.click());
     await render(panel({ propertiesOpenRequestId: 1, onPropertiesOpened }));
     expect(container.querySelector('[data-side-panel-tab-target="properties"]')).toBeNull();
@@ -422,6 +421,15 @@ describe("TaskSidePanel", () => {
     window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
     await render(panel({ fileTabsEnabled: true, openAttachment: { id: "file-1", title: "notes.txt", requestId: 1 } }));
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("notes.txt");
+    expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
+  });
+
+  it("clears the workspace-file route when the user asks to show properties", async () => {
+    routeFixture.location.search = "?file=README.md&workspace=project";
+    window.history.replaceState(null, "", `${routeFixture.location.pathname}${routeFixture.location.search}`);
+    await render(panel({ fileTabsEnabled: true }));
+    await render(panel({ fileTabsEnabled: true, propertiesOpenRequestId: 1 }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("properties");
     expect(routeFixture.navigate).toHaveBeenCalledWith(expect.objectContaining({ search: "" }), expect.anything());
   });
 

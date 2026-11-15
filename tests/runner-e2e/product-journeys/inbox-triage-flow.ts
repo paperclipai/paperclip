@@ -68,9 +68,6 @@ export async function inboxTriage(context: JourneyContext, session: TargetSessio
   await inboxStep("inbox_unread_projection_failed", () => expect.poll(async () => (await read()).isUnreadForMe).toBe(true));
   await openPersonalInbox(context, "unread");
   await inboxStep("inbox_unread_row_missing", () => expect(row).toBeVisible());
-  // Compact layouts show a per-row unread control. Desktop task rows show
-  // unread state only as a bold title; there the user hovers the row and
-  // presses the documented "r" (Mark as read) shortcut.
   await inboxStep("inbox_mark_read_failed", async () => {
     const markRead = row.getByRole("button", { name: "Mark as read", exact: true });
     if (await markRead.isVisible()) return await markRead.click();

@@ -128,7 +128,6 @@ export interface TaskSidePanelProps {
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
-  /** The user asked to show properties; open and select that tab once per request. */
   propertiesOpenRequestId?: number;
   onPropertiesOpened?: (requestId: number) => void;
   onRequestClose?: () => void;
@@ -532,6 +531,7 @@ function TaskSidePanelForScope({
     if (coordinatorWorkspaceEnabled) userInteractedRef.current = true;
     setLauncherOpen(false);
     controller.openTab(taskPanelPropertiesTab());
+    if (viewer.state || viewer.browse) viewer.close();
     onPropertiesOpened?.(propertiesOpenRequestId);
   }, [propertiesOpenRequestId, controller.openTab, onPropertiesOpened, coordinatorWorkspaceEnabled]);
 

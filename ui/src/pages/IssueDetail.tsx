@@ -4213,7 +4213,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       requestId: (previous?.requestId ?? 0) + 1,
     }));
   }, [issue?.id]);
-  // "Show properties" must land on Properties, not an empty tab launcher.
   const requestPropertiesTab = useCallback(() => {
     if (!issue?.id) return;
     setPropertiesOpenRequest((previous) => ({

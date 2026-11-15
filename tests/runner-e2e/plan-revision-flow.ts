@@ -19,7 +19,6 @@ export function isPendingPlanConfirmation(interaction: PlanInteraction) {
     && typeof interaction.payload.target.revisionId === "string";
 }
 export function normalizePlanMarkdown(body: string | null | undefined) { return (body ?? "").replaceAll("\\_", "_"); }
-/** The Coordinator chip opens the Plan in the task sidebar and says so; the revision must still match exactly. */
 export function planPreviewLabel(revision: number): RegExp {
   return new RegExp(`^Open Plan revision ${revision}(?: in task sidebar)?$`);
 }
