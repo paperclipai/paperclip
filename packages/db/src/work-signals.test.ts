@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
+import { workSignalDebug } from "./work-signal-debug.js";
 import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -15,6 +16,20 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.execute(sql`create table work_signal_test (id text primary key)`);
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
+
+  it("does not touch the debug attribution log on the signal path when the flag is off", async () => {
+    const signal = vi.spyOn(workSignalDebug, "signal");
+    const event = vi.spyOn(workSignalDebug, "event");
+    try {
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, "debug-off", "{\"companyId\":\"c\"}");
+        await tx.execute(sql`insert into work_signal_test values ('debug-off')`);
+      });
+      publishDatabaseWorkSettled(db, "debug-off");
+      expect(signal).not.toHaveBeenCalled();
+      expect(event).not.toHaveBeenCalled();
+    } finally { signal.mockRestore(); event.mockRestore(); }
+  });
 
   it("defers nested savepoint notifications until the outer commit and preserves return values", async () => {
     const events: string[] = [];

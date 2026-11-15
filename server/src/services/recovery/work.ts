@@ -3,13 +3,14 @@ import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from 
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
-import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
+import { decodeIssueRecoveryHint, ISSUE_RECOVERY_BACKSTOP_MS, issueRecoveryBackstopHint, issueRecoveryScopeMatches, resolveIssueGraph, type IssueRecoveryScope }
   from "../issue-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { workSignalDebug } from "@paperclipai/db/work-signal-debug";
 import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
 
-type Entry = { id: string; companyId: string; dueAt: number };
-type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
+type Entry = { id: string; companyId: string; dueAt: number; fromDeadline?: true };
+type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number, detail?: { unchanged: boolean }) => void };
 const PAGE_SIZE = 100;
 
 export const resolvedDependencyCandidate = sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
@@ -70,6 +71,7 @@ export function registerIssueRecoveryWork(
     scope.wholeCompany = ids === null;
   }
   async function toCompany(scope: IssueRecoveryScope | undefined, worker: { invalidate(hint?: string): void }) {
+    if (scope && isGraph(scope)) worker.invalidate(issueRecoveryBackstopHint(scope.companyId));
     await resolveGraph(scope);
     if (!scope?.wholeCompany) return false;
     worker.invalidate(JSON.stringify({ companyId: scope.companyId }));
@@ -88,6 +90,7 @@ export function registerIssueRecoveryWork(
       matches: issueRecoveryScopeMatches,
       load: async scope => {
         const key = scopeKey(scope);
+        if (workSignalDebug.enabled) workSignalDebug.event(queue, "load", { scope: key });
         if (!enabled) { cursors.delete(key); return []; }
         if (await toCompany(scope, worker)) return { rows: null, complete: true };
         const cursor = cursors.get(key);
@@ -109,10 +112,12 @@ export function registerIssueRecoveryWork(
       },
       check: async entry => {
         if (!enabled) return null;
+        if (workSignalDebug.enabled) workSignalDebug.event(queue, "check", { issueId: entry.id, companyId: entry.companyId,
+          wake: entry.fromDeadline ? "deadline" : "load", dueAt: entry.dueAt });
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-        return next === null ? null : { ...entry, dueAt: next };
+        return next === null ? null : { ...entry, dueAt: next, ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
     return worker;
@@ -121,7 +126,7 @@ export function registerIssueRecoveryWork(
    * company dirty; checks schedule their own grace and back-off deadlines.
    * Newest-updated tasks are checked first, a small batch per pass. */
   function registerAssignedWork(sweep: NonNullable<typeof owner.assignedWork>) {
-    type Suspect = Entry & { updatedAt: number };
+    type Suspect = Entry & { updatedAt: number; unchanged?: true; fromBackstop?: true };
     const cursors = new Map<string, string>();
     const passes = fullPasses();
     let enabled = false;
@@ -134,7 +139,8 @@ export function registerIssueRecoveryWork(
       decodeScope: decodeIssueRecoveryHint,
       matches: issueRecoveryScopeMatches,
       priority: entry => entry.updatedAt,
-      mergeEntry: (pending, loaded) => ({ ...loaded, dueAt: Math.max(pending.dueAt, loaded.dueAt) }),
+      mergeEntry: (pending, loaded) => pending.unchanged && !loaded.fromBackstop ? loaded
+        : { ...loaded, dueAt: Math.max(pending.dueAt, loaded.dueAt), ...(pending.unchanged ? { unchanged: true as const } : {}) },
       load: async scope => {
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
@@ -144,14 +150,16 @@ export function registerIssueRecoveryWork(
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         passes.loaded(scope, complete);
-        return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now() })), complete };
+        return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now(),
+          ...(scope?.backstop ? { fromBackstop: true as const } : {}) })), complete };
       },
       check: async entry => {
         if (!enabled) return null;
-        let next: number | null = null;
+        let next: number | null = null, unchanged = false;
         await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
-          onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-        return next === null ? null : { ...entry, dueAt: next };
+          onDeferredDeadline: (at, detail) => { next = next === null ? at : Math.min(next, at); unchanged ||= detail?.unchanged === true; } });
+        const { unchanged: _previous, fromBackstop: _source, ...rest } = entry;
+        return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}) };
       },
     }, canRun);
     return worker;
@@ -219,7 +227,16 @@ export function registerIssueRecoveryWork(
   }, canRun);
   const workers = [assignments, orphanBlockers, recoveryActions, dependencies, locks, watchdogs,
     ...(assignedWork ? [assignedWork] : [])];
+  const queues: string[] = [DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions,
+    DELIVERY_QUEUES.resolvedDependencies, DELIVERY_QUEUES.staleIssueLocks, DELIVERY_QUEUES.taskWatchdogs,
+    ...(assignedWork ? [DELIVERY_QUEUES.assignedWorkInvariant] : [])];
   return { watchdogs, assignments, assignedWork, ready: Promise.all(workers.map(worker => worker.ready)),
-    wake() { for (const worker of workers) worker.invalidate(); },
+    wake: function wake() {
+      if (workSignalDebug.enabled) {
+        const topic = queues.find(queue => workSignalDebug.allows(queue));
+        if (topic) workSignalDebug.event(topic, "direct_wake", { queues: queues.join(",") }, "always", wake);
+      }
+      for (const worker of workers) worker.invalidate();
+    },
     async stop() { await Promise.all(workers.map(worker => worker.stop())); } };
 }

@@ -10,6 +10,7 @@ import { hasPendingNativeReplacements, nextNativeOwnershipProofDeadlineAt } from
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
+import { continuationDeliveryDue } from "./recovery/continuation-delivery-attempt.js";
 
 export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -94,11 +95,16 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async continuation() {
-      const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+      const pending = and(
         eq(issueRecoveryActions.status, "resolved"),
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-      )).limit(1);
-      return rows.length || await hasPendingPauseResume(db) || await hasPendingBudgetResume(db) ? retry() : null;
+      );
+      const rows = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(and(pending, continuationDeliveryDue(new Date()))).limit(1);
+      if (rows.length || await hasPendingPauseResume(db) || await hasPendingBudgetResume(db)) return retry();
+      const [waiting] = await db.select({ at: sql<string | null>`min((${issueRecoveryActions.evidence}->>'continuationDeliveryRetryAt')::timestamptz)` })
+        .from(issueRecoveryActions).where(pending);
+      return deadline([waiting?.at ? new Date(waiting.at) : null]);
     },
     async status() {
       const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

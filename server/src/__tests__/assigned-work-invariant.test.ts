@@ -446,7 +446,7 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(deadlines).toHaveLength(1);
     // Too soon: spaced, not repaired and not reported as fine.
     clock = new Date(clock.getTime() + 60_000);
-    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "waiting_unchanged", verdict: { kind: "violation" } });
     // After the spacing it is admitted; the queue later declines the claim
     // (for example behind the old run's pending cleanup) and the wake is skipped.
     admit = true;

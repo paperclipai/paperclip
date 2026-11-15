@@ -327,10 +327,16 @@ function pickPrimaryWorkspace(
 }
 
 /** Batch-load workspace refs for a set of projects. */
-async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+async function attachWorkspaces(
+  db: Db,
+  rows: ProjectWithGoals[],
+  options: { workspaceProvider?: boolean } = {},
+): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
-  const providerCatalog = await listProjectWorkspaceProviders(db, rows[0]!.companyId);
+  const providerCatalog = options.workspaceProvider === false
+    ? null
+    : await listProjectWorkspaceProviders(db, rows[0]!.companyId);
   const projectIds = rows.map((r) => r.id);
   const workspaceRows = await db
     .select()
@@ -413,8 +419,10 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       workspaces,
       primaryWorkspace,
       managedByPlugin: managedByProjectId.get(row.id) ?? null,
-      workspaceProvider: resolveProjectWorkspaceProvider(row.executionWorkspacePolicy, providerCatalog,
-        workspaces.some(workspace => Boolean(workspace.repoUrl))),
+      ...(providerCatalog ? {
+        workspaceProvider: resolveProjectWorkspaceProvider(row.executionWorkspacePolicy, providerCatalog,
+          workspaces.some(workspace => Boolean(workspace.repoUrl))),
+      } : {}),
     };
   });
 }
@@ -709,7 +717,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     });
   };
 
-  const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+  const getProjectById = async (
+    id: string,
+    options: { workspaceProvider?: boolean } = {},
+  ): Promise<ProjectWithGoals | null> => {
     const row = await db
       .select()
       .from(projects)
@@ -718,7 +729,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     if (!row) return null;
     const [withGoals] = await attachGoals(db, [row]);
     if (!withGoals) return null;
-    const [enriched] = await attachWorkspaces(db, [withGoals]);
+    const [enriched] = await attachWorkspaces(db, [withGoals], options);
     return enriched ?? null;
   };
 
