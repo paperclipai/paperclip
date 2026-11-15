@@ -1,5 +1,6 @@
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { instancePublicOrigin, mayContainInventedHostLink, relativizeInventedHostLinks } from "./agent-invented-host-links.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
@@ -13676,7 +13677,17 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      // An agent's link on a made-up host (https://paperclip.local/...) does
+      // not open; its board or API route does. The run-presentation check above
+      // still compares the text the agent wrote.
+      const linkedBody = actor.agentId && mayContainInventedHostLink(body)
+        ? relativizeInventedHostLinks(body, {
+          companyPrefix: await dbOrTx.select({ issuePrefix: companies.issuePrefix }).from(companies)
+            .where(eq(companies.id, issue.companyId)).then((rows: Array<{ issuePrefix: string }>) => rows[0]?.issuePrefix ?? null),
+          ownOrigin: instancePublicOrigin(),
+        })
+        : body;
+      const redactedBody = redactCurrentUserText(linkedBody, currentUserRedactionOptions);
       if (actor.userId && options?.clientRequestId) {
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
           eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
