@@ -67,6 +67,8 @@ describe("deferred chat wake sweep", () => {
       eq(issues.id, String(action.payload.issueId)))).for("update");
     if (!issue || issue.assigneeAgentId !== action.payload.agentId || ["backlog", "done", "cancelled"].includes(issue.status))
       throw chatWakeAuthorityDenied("task_assignment");
+    const [comment] = await tx.select().from(issueComments).where(eq(issueComments.id, String(action.payload.commentId)));
+    if (!comment || comment.deletedAt) throw chatWakeAuthorityDenied("source_comment");
     const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, action.endpointId));
     if (endpoint.status === "paused") throw chatWakeAuthorityDenied("runtime_fence");
     const [conversation] = await tx.select().from(chatConversations).where(eq(chatConversations.id, action.conversationId!));
@@ -232,6 +234,25 @@ describe("deferred chat wake sweep", () => {
     await settle();
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, c.companyId),
       sql`${heartbeatRuns.wakeupRequestId} is not null`))).toHaveLength(1);
+  });
+
+  it("answers a recent saved message alone when a newer message of the same task lost its source", async () => {
+    const c = await company();
+    const valid = await wake(c, { status: "done", ageMs: 10 * 60_000 });
+    const removed = await wake(c, { status: "done", ageMs: 5 * 60_000, on: valid });
+    await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, removed.payloadCommentId));
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+    await waitForReal(async () => {
+      const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, c.companyId),
+        sql`${heartbeatRuns.wakeupRequestId} is not null`));
+      expect(runs).toHaveLength(1);
+      expect(runs[0].wakeupRequestId).toBe(valid.requestId);
+      expect(runs[0].contextSnapshot?.wakeCommentIds ?? []).not.toContain(removed.payloadCommentId);
+      const left = await receipt(removed.requestId);
+      expect(left.runId).toBeNull();
+      expect(["skipped", "deferred_issue_execution"]).toContain(left.status);
+      if (left.status === "skipped") expect(left.error).toBe("authority_source_comment");
+    });
   });
 
   it("keeps a refused follow-up in the saved pause wait without retrying, then starts it when the pause lifts", async () => {
