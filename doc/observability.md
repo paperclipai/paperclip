@@ -419,11 +419,13 @@ Sentry, so a crash or network outage can lose events. `all` selects failures; it
 does not promise delivery or export complete transcripts. Detailed output stays
 in the instance behind the existing authenticated APIs, with its normal retention.
 
-In `unexpected` mode, failures that the task already shows to its owner stay in
-the run log and the task's blocked state instead of reporting: known
-missing-secret configuration blockers, typed provider `quota_exhausted` and
-`rate_limit` failures, recognized external connection failures, and
-non-repository workspaces that ask for a Git worktree. `all` mode reports them.
+In `unexpected` mode, some failures that the task already shows to its owner
+stay in the run log and the task's blocked state instead of reporting. Examples
+include known missing-secret configuration blockers, some provider quota and
+rate-limit failures, recognized external connection failures, and a scheduled
+Codex capacity retry. Most exclusions have conditions, so read
+`server/src/services/run-failure-report.ts` for the full policy. `all` mode
+reports these failures.
 Other run failures attach bounded diagnostic contexts. Their fields are defined
 in `server/src/sentry.ts` and pass through the existing secret redaction and size
 limits. They can include selected provider error titles and details, but not raw
