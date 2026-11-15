@@ -1,0 +1,27 @@
+{
+  "schema": "paperclip.server-metrics.v1",
+  "processId": "a1b2c3d4e5f60718",
+  "buildRevision": "0123456789abcdef0123456789abcdef01234567",
+  "uptimeSec": 160,
+  "sampledAt": "2026-11-14T12:01:00.000Z",
+  "windowMs": 50000,
+  "mainThreadCpu": 0.42,
+  "processCpu": 0.55,
+  "eventLoopUtilization": 0.42,
+  "eventLoopDelayP99Ms": 0,
+  "statementsPerSecond": 180,
+  "runEventLatenessP99Ms": 120.063,
+  "runEventLatenessSamples": 50,
+  "agentApiPreHandlerP99Ms": 15.007,
+  "agentApiPreHandlerSamples": 50,
+  "leaseRenewalsMissed": 1,
+  "dedicatedConnections": {
+    "limit": 24,
+    "inUse": 3,
+    "peakInUse": 9,
+    "waiting": 1,
+    "queued": 12,
+    "overLimit": 0,
+    "nestedOverLimit": 0
+  }
+}

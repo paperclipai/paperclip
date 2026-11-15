@@ -228,6 +228,7 @@ export type ReleaseRecoveryImmediateFacts = {
   isConfigurationIncompleteFailedRun: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
   automaticRecoveryAlreadyFailed: boolean;
+  automaticRecoveryRetryableBeforeProviderWork?: boolean;
   /** Exact admitted-chat lineage or a non-retryable failure forbids generic continuation. */
   sourceRequiresExplicitRecovery?: boolean;
 };
@@ -419,7 +420,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
     !shared.recoveryAgentPresent ||
     immediate.isWorkspaceValidationFailedRun ||
     immediate.isConfigurationIncompleteFailedRun ||
-    immediate.automaticRecoveryAlreadyFailed;
+    (immediate.automaticRecoveryAlreadyFailed && immediate.automaticRecoveryRetryableBeforeProviderWork !== true);
   if (shouldBlockImmediately) {
     const notice: ReleaseRecoveryBlockedNoticeKind = immediate.isWorkspaceValidationFailedRun
       ? "workspace_validation"
@@ -428,6 +429,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
         : "immediate_execution_path";
     return { kind: "blocked", notice };
   }
+  if (immediate.automaticRecoveryAlreadyFailed) return { kind: "released" };
 
   return { kind: "queue_recovery" };
 }

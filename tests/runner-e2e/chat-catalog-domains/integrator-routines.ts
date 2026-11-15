@@ -1,13 +1,13 @@
 import type { RoutineDetail, RoutineListItem, RoutineRevision, RoutineRunSummary } from "../../../packages/shared/src/types/routine.js";
 import type { ChatCatalogContext, ChatCatalogCase } from "../chat-catalog-contract.js";
 import { checks, hasLink, project, observation, type Entity, type InternalObservation } from "./internal-support.js";
-import { runIssueId } from "./run-roles.js";
+import { chatCompletionFollowUp, runIssueId } from "./run-roles.js";
 import { parseCron } from "../../../server/src/services/cron.js";
 import { fixtureWorker } from "./internal-definition.js";
-import { integratorDefinition, groundedStatement, inspectResult, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
 interface RoutinesObservation extends InternalObservation {
   routines: RoutineDetail[]; histories: Record<string, RoutineRunSummary[]>; routineRevisions: Record<string, RoutineRevision[]>;
-  browserTimezone: string;
+  browserTimezone: string; sourceId?: string;
 }
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
 async function observeRoutines(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<RoutinesObservation> {
@@ -16,7 +16,7 @@ async function observeRoutines(ctx: ChatCatalogContext, state: Record<string, un
   const routines = await Promise.all(listed.map(row => api.get<RoutineDetail>(`/api/routines/${row.id}`)));
   const histories = Object.fromEntries(await Promise.all(routines.map(async row => [row.id, await api.get<RoutineRunSummary[]>(`/api/routines/${row.id}/runs`)])));
   const routineRevisions = Object.fromEntries(await Promise.all(routines.map(async row => [row.id, await api.get<RoutineRevision[]>(`/api/routines/${row.id}/revisions`)])));
-  return { ...base, routines, histories, routineRevisions, browserTimezone: await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone) };
+  return { ...base, routines, histories, routineRevisions, browserTimezone: await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone), sourceId: ctx.issue()?.id };
 }
 function routineObservation(value: unknown): RoutinesObservation | undefined {
   const o = value as RoutinesObservation;
@@ -59,9 +59,10 @@ export function gradeIntegratorRoutines(value: unknown) {
       && /^0\s+9\s+\*\s+\*\s+(?:1-5|MON-FRI|1,2,3,4,5)$/i.test(schedule[0]?.cronExpression ?? "") && schedule[0]?.timezone === "America/Chicago", "One enabled 09:00 weekday schedule uses the genuine browser person's Chicago timezone, never UTC.");
     c.add("saved-agent-revision", !!routine && !!o.routineRevisions[routine.id]?.some(row => row.id === routine.latestRevisionId && row.createdByAgentId === o.leadId
       && row.createdByRunId != null && o.runs.some(run => run.id === row.createdByRunId)), "The current saved revision is independently attributed to a measured agent run.");
-    c.add("schedule-and-work-location-explained", groundedStatement(o.reply, /\b(?:weekday|monday|mon.fri)\b/i, /\b(?:9|nine|09:00)\b/i, /\b(?:9|nine|09:00)\s*(?:a\.?m\.?\s*)?UTC\b/i)
-      && /(?:America\/Chicago|Chicago|Central (?:time|timezone))/i.test(o.reply) && /\b(?:task|routine|work)\b/i.test(o.reply)
-      && !/\b(?:summary (?:is )?(?:complete|ready)|already summarized|all future summaries (?:are )?(?:complete|ready))\b/i.test(o.reply), "The response describes the real saved local schedule and resulting work without claiming future summaries already ran.");
+    c.add("schedule-and-work-location-explained", !!routine && o.links.some(href => linksTo(o, href, "routines", [routine.id]) || linksTo(o, href, "projects", [p?.id, (p as Entity | undefined)?.urlKey]))
+      && !/\b(?:0?9(?::00)?|nine)\s*(?:a\.?m\.?\s*)?UTC\b/i.test(o.reply)
+      && !/\b(?:summary (?:is )?(?:complete|ready)|already summarized|all future summaries (?:are )?(?:complete|ready))\b/i.test(o.reply),
+    "The saved schedule is graded above; the reply links the saved routine or the Launch project where its work lands, never states nine as UTC, and does not claim future summaries already ran.");
   } else if (o.scenarioId === "routines.manage-other-owner") {
     const before = o.state.routine as RoutineDetail; const current = o.routines.find(row => row.id === before?.id); const worker = o.state.worker as Entity;
     const route = ownerRoute(o, worker);
@@ -81,7 +82,17 @@ export function gradeIntegratorRoutines(value: unknown) {
     c.add("ownership-boundary-explained", route.valid && (route.delegated.length === 1 ? hasLink(o, "issues", route.delegated[0]!)
       : o.links.some(href => linksTo(o, href, "routines", [before?.id]) || linksTo(o, href, "agents", [worker?.id, worker?.urlKey]))),
       "The change is routed structurally: one task assigned to owner Morgan, created by the CEO and linked in the reply, with at most one Morgan run bound to it; or a reply link to the routine or Morgan's page where an authorized person acts. The reply's wording is left to a human reader.");
-    c.add("no-ceo-management-mutation", !o.activity.some(event => event.agentId === o.leadId && /^routine\.(?:created|updated|trigger_|revision_created)/.test(event.action ?? "")), "No responding-agent routine mutation bypasses the self-assigned management rule.");
+    const followUps = route.delegated.length === 1 && route.ownerRun && o.sourceId ? o.runs.filter(run => chatCompletionFollowUp(run, { leadId: o.leadId, sourceId: o.sourceId!, taskId: route.delegated[0]!.id })) : [];
+    c.add("declared-run-roles", followUps.length <= 1 && o.runs.length <= 2 + followUps.length,
+      "At most two runs, plus only the CEO's one completion follow-up on the source chat after the single owner task it routed to Morgan finished.");
+    const setupActivityIds = Array.isArray(o.state.setupActivityIds) ? new Set(o.state.setupActivityIds as string[]) : undefined;
+    const ownerRunWrite = (agentId: unknown, runId: unknown) => agentId === worker?.id && !!route.ownerRun && runId === route.ownerRun.id;
+    const turnWrites = o.activity.filter(event => routineWrite(event, before?.id) && !setupActivityIds?.has(event.id) && !ownerRunWrite(event.agentId, (event as Activity).runId));
+    const originalRevisionIds = new Set(((o.state.originalRevisions as RoutineRevision[] | undefined) ?? []).map(row => row.id));
+    const turnRevisions = (o.routineRevisions[before?.id ?? ""] ?? []).filter(row => !originalRevisionIds.has(row.id) && !ownerRunWrite(row.createdByAgentId, row.createdByRunId));
+    c.add("no-ceo-management-mutation", !!setupActivityIds && turnWrites.length === 0 && turnRevisions.length === 0
+      && !o.activity.some(event => event.agentId === o.leadId && /^routine\.(?:created|updated|trigger_|revision_created)/.test(event.action ?? "")),
+      "No change reaches Morgan's routine during the turn except the harness's own setup writes and Morgan's own run on the routed task, whatever identity a change is attributed to, and the responding agent makes no routine mutation.");
   } else c.add("owned-routine-oracle", false, "No independent oracle exists for this routine scenario.");
   return c.result();
 }
@@ -92,12 +103,14 @@ async function verifyRoutine(ctx: ChatCatalogContext, _state: Record<string, unk
 }
 const define = (id: string, setup: ChatCatalogCase["setup"], extra: Partial<ChatCatalogCase> = {}) => integratorDefinition("routines", id, setup, observeRoutines, gradeIntegratorRoutines, verifyRoutine, extra);
 export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
-  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago" }),
+  define("routines.create-daily-brief", async ctx => ({ project: await project(ctx, "Launch") }), { browserTimezone: "America/Chicago", oracleVersion: "paperclip.chat-catalog.integrator.create-daily-brief.v2" }),
   define("routines.manage-other-owner", async ctx => {
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
     await ctx.input.api.post(`/api/routines/${created.id}/triggers`, { kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
-    return { project: p, worker, routine: await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions: await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`) };
-  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v5", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
+    const routine = await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions = await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`);
+    const setupActivityIds = (await ctx.input.api.getRunObservation<Entity[]>(`${root(ctx)}/activity?limit=1000`)).map(row => row.id);
+    return { project: p, worker, routine, originalRevisions, setupActivityIds };
+  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v7", expectedRunCount: 3, minimumRunCount: 1, attemptTimeoutMs: 480_000,
     sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "../../server/src/services/cron.ts", "chat-scenarios/routines.yaml"] }),
 ];

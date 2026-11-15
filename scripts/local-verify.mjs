@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { existsSync, realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { comparison, localEnvironment, protocolVersion, requestKey, snapshot } from "./local-verify/inputs.mjs";
@@ -16,12 +17,31 @@ function describe(plan, cached) {
   console.log("[verify] Local Vitest coverage does not replace required CI, typecheck/build, browser, release, or platform-specific checks.");
 }
 
+// A change to packages/shared/src, the plugin SDK source, or an SDK build input must
+// refresh the committed SDK public input pins, or every SDK-dependent Runner suite
+// fails in CI. The check reads only the working tree, so report it before selection.
+const sdkPublicInputs = "tests/runner-e2e/source-sdk-public-inputs.mjs";
+async function staleSdkPublicInputPins(root, changed) {
+  const module = path.join(root, sdkPublicInputs);
+  if (!existsSync(module)) return null;
+  const { isSdkPublicInput, staleSdkPublicInputsInWorkingTree, staleSdkPublicInputsMessage } = await import(pathToFileURL(module).href);
+  const pins = ["tests/runner-e2e/source-sdk-public-inputs.json", "tests/runner-e2e/report-lock.json"];
+  if (!changed.some(file => isSdkPublicInput(file) || pins.includes(file))) return null;
+  const stale = await staleSdkPublicInputsInWorkingTree(root);
+  return stale.length ? staleSdkPublicInputsMessage(stale) : null;
+}
+
 export async function verify({ root = process.cwd(), base, full = false, explain = false, noCache = false, env = localEnvironment() } = {}) {
   root = realpathSync(root);
   const before = snapshot(root, env), diff = comparison(root, base), key = requestKey(before, diff, full);
   const canReuse = !noCache && before.cacheable && mayReuseAttempt(root, key);
   const cached = canReuse ? readPass(root, key) : null;
   console.log(`[verify] Base ${diff.base.slice(0, 12)}; ${diff.changed.length} changed paths, including local edits`);
+  const staleSdkPins = await staleSdkPublicInputPins(root, diff.changed);
+  if (staleSdkPins) {
+    console.error(`[verify] ${staleSdkPins}`);
+    return 1;
+  }
   if (cached) {
     if (snapshot(root, env).hash !== before.hash) throw new Error("Inputs changed during cache lookup. Run verification again.");
     describe(cached.plan, true);

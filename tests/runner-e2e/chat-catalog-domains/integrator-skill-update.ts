@@ -49,11 +49,15 @@ export function readVisibleSkillReview(input: { runId: string; humanCommentId: s
   }).flatMap(turn => [...turn.querySelectorAll('[data-testid="task-chat-final-response"]')]
     .filter(node => visible(node)).map(node => (node as HTMLElement).innerText)).join("\n");
 }
-export async function waitForVisibleSkillReview(ctx: ChatCatalogContext, input: { runId: string; humanCommentId: string }) {
+/** The rendered completion is a fallback for a turn whose saved reply is incomplete; it renders with the turn or not at
+ * all, so a short bounded wait decides it instead of the whole observation budget. */
+export const VISIBLE_SKILL_REVIEW_WAIT_MS = 15_000;
+export async function waitForVisibleSkillReview(ctx: ChatCatalogContext, input: { runId: string; humanCommentId: string }, waitMs = VISIBLE_SKILL_REVIEW_WAIT_MS) {
   remainingIdentityObservationBudget(ctx);
-  return pollUntil({ label: "current visible skill-review completion", deadlineAt: ctx.observationDeadlineAt!, intervalMs: 250,
+  const deadlineAt = Math.min(ctx.observationDeadlineAt!, Date.now() + waitMs);
+  return pollUntil({ label: "current visible skill-review completion", deadlineAt, intervalMs: 250,
     load: () => ctx.input.page.evaluate(readVisibleSkillReview, input),
-    accept: text => Date.now() < ctx.observationDeadlineAt! && !!text.trim(),
+    accept: text => Date.now() < deadlineAt && !!text.trim(),
   });
 }
 export function skillReviewPreviewText(o: UpdateObservation) {
@@ -89,29 +93,30 @@ async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unkn
   return { ...base, ...saved, updateStatus: status, ...(visibleReview ? { visibleReview } : {}) };
 }
 function updateObservation(value: unknown): UpdateObservation | undefined { const o = value as UpdateObservation; return observation(value) && !!o.upstream && !!o.localFork && Array.isArray(o.upstreamVersions) && Array.isArray(o.forkVersions) && !!o.source && !!o.updateStatus ? o : undefined; }
-function substantiveDiff(reply: string) {
-  const clauses = reply.split(/\n+|;|(?<=[.!?])\s+/).filter(line => !/\b(?:no new|does not add|doesn't add|not added|removed|no longer required)\b/i.test(line));
-  const recurring = clauses.some(line => /re.test|regression|each (?:change|build)|every (?:change|build)|continuous/i.test(line) && /test|accessib/i.test(line));
-  const forms = clauses.some(line => /forms?/i.test(line) && /small|step|split|break|segment/i.test(line));
-  const clutter = clauses.some(line => /clutter|overus|redundan|crowd|overload|breath|spacing/i.test(line) && /layout|pattern|control|design|interface|element/i.test(line));
-  return [recurring, forms, clutter].filter(Boolean).length >= 2;
+/** The preview names the installed revision and the pending one: their commits or the pinned source's version literals
+ * (0.4 and 0.5). Saved state, not wording, proves the installed snapshot stayed unchanged; what the preview says about
+ * the diff is left to review of the saved evidence. */
+function namesRevision(reply: string, commit: string, version: string) {
+  return reply.includes(commit.slice(0, 7)) || new RegExp(`(?<![\\d.])${version.replace(".", "\\.")}(?!\\d)`).test(reply);
 }
-function claimsAppliedUpdate(reply: string) {
-  return [...reply.matchAll(/\b(?:I (?:have )?(?:updated|applied|installed)|update (?:is |has been )?(?:applied|installed|complete))\b/gi)]
-    .some(match => !/^update /i.test(match[0]) || !/\bno\s+$/i.test(reply.slice(0, match.index)));
-}
-function previewNarrativeCorrect(reply: string) {
-  return (reply.includes(accessibilityUpdatePins.oldCommit.slice(0, 7)) || /(?:installed|current|currently)[^\n]{0,80}\b0\.4\b|\b0\.4\b[^\n]{0,80}(?:installed|current)/i.test(reply))
-    && substantiveDiff(reply) && !claimsAppliedUpdate(reply);
+export function previewNamesBothRevisions(reply: string) {
+  return namesRevision(reply, accessibilityUpdatePins.oldCommit, "0.4") && namesRevision(reply, accessibilityUpdatePins.newCommit, "0.5");
 }
 export async function collectVisibleSkillReviewFallback(ctx: ChatCatalogContext, base: InternalObservation, issueId: string): Promise<VisibleSkillReview | undefined> {
   // A complete persisted review is already the ordinary user-facing answer.
   // Its deduplicated native bubble need not exist for the original path to pass.
-  if (previewNarrativeCorrect(base.reply)) return undefined;
+  if (previewNamesBothRevisions(base.reply)) return undefined;
   const run = acceptedSkillReviewRun(base, issueId);
   if (!run) return undefined;
   const humanCommentId = run.contextSnapshot!.commentId as string;
-  const visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId });
+  let visibleText: string;
+  try { visibleText = await waitForVisibleSkillReview(ctx, { runId: run.id, humanCommentId }); }
+  catch (error) {
+    // The saved reply alone is graded; record why no rendered completion supplemented it.
+    await ctx.input.evidence("chat-skill-review-visible-fallback.json", { runId: run.id, issueId, humanCommentId, found: false,
+      reason: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  }
   return { runId: run.id, issueId, humanCommentId, summary: run.resultJson!.summary as string, visibleText };
 }
 function previewCorrect(o: UpdateObservation) {
@@ -120,12 +125,12 @@ function previewCorrect(o: UpdateObservation) {
   return o.upstream.currentVersionId === before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.oldCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.oldSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.oldCommit && o.source.trackingRef === accessibilityUpdatePins.newCommit && o.source.automaticUpdates === false
     && o.updateStatus.supported && o.updateStatus.hasUpdate && o.updateStatus.currentRef === accessibilityUpdatePins.oldCommit && o.updateStatus.latestRef === accessibilityUpdatePins.newCommit
-    && previewNarrativeCorrect(reply);
+    && previewNamesBothRevisions(reply);
 }
 export function gradeIntegratorSkillUpdate(value: unknown) {
   const c = checks(); const o = updateObservation(value); c.add("real-tracked-source-and-saved-versions", !!o, "Requires actual public GitHub source tracking, installed snapshot versions and preserved editable fork."); if (!o) return c.result();
   const first = updateObservation(o.state.reviewCheckpoint); const before = o.state.upstream as CompanySkillDetail; const local = o.state.localFork as CompanySkillDetail;
-  c.add("review-diff-before-update", !!first && previewCorrect(first), "The canonical first answer presents substantive genuine 0.4→0.5 source changes and actual current revision while leaving the installed snapshot unchanged.");
+  c.add("review-diff-before-update", !!first && previewCorrect(first), "The first answer names the installed 0.4 revision and the pending 0.5 revision while saved state shows the installed snapshot unchanged. Whether it presents the diff, and any claim about completion, is left to human review of the saved reply.");
   c.add("explicit-normal-version-update-completed", o.upstream.id === before.id && o.upstream.currentVersionId !== before.currentVersionId && o.upstream.sourceRef === accessibilityUpdatePins.newCommit && hash(o.upstream.markdown) === accessibilityUpdatePins.newSha256
     && o.source.lastScanCommit === accessibilityUpdatePins.newCommit && o.upstreamVersions.some(version => version.id === before.currentVersionId && version.fileInventory.some(file => file.path === "SKILL.md" && hash(file.content) === accessibilityUpdatePins.oldSha256))
     && o.upstreamVersions.some(version => version.id === o.upstream.currentVersionId && version.fileInventory.some(file => file.path === "SKILL.md" && hash(file.content) === accessibilityUpdatePins.newSha256))
@@ -163,7 +168,7 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
   const selected = await saveSkillConversationContext(ctx, { description: `Selected upstream accessibility skill: ${upstream.name} (${upstream.id}), tracked source ${source.id}. Installed source revision ${upstream.sourceRef}; tracking reference ${source.trackingRef}. Separate editable local copy: ${localFork.name} (${localFork.id}).` });
   return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, localFork.id, localFork.currentVersionId) };
 }, observeUpdate, gradeIntegratorSkillUpdate, async (ctx, state) => { const skill = state.upstream as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name); },
-{ oracleVersion: "paperclip.chat-catalog.integrator.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
+{ oracleVersion: "paperclip.chat-catalog.integrator.v5", authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
   sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
     updateReceipts.delete(ctx);

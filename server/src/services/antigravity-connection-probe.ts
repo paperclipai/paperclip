@@ -21,7 +21,7 @@ export function antigravityConnectionProbeFailure(companyId: string, error: unkn
   const command = asRecord(asRecord(error)?.runnerCommandResult);
   const result = command?.commandType === "session.open" && command.status === "failed" ? asRecord(command.result) : null;
   const admission = result?.code === "command_execution_failed" && typeof result.message === "string" && result.message.length <= 2_048
-    ? /^failed to start ACPX provider: ACPX sidecar command (?:initialize|session\.open) was rejected \(retryable=(true|false), classification=(admission_(?:binding|installation|sandbox|credential|configuration|skills|command|tool_bridge|runtime|identity))\)$/.exec(result.message)
+    ? /^failed to start ACPX provider: ACPX sidecar command (?:initialize|session\.open) was rejected \(retryable=(true|false), classification=(admission_(?:binding|installation|sandbox|credential|configuration|skills|command|tool_bridge|runtime|identity|instructions))\)$/.exec(result.message)
     : null;
   const installation = admission?.[2] === "admission_installation";
   const code = installation ? "antigravity_installation_check_failed" : "antigravity_admission_failed";

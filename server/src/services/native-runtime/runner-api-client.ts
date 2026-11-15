@@ -36,9 +36,12 @@ export interface RunnerApiContext {
   runId: string;
   workMode: string;
 }
+export const RUNNER_API_CALL_HEADER = "X-Paperclip-Runner-Call";
+
 export interface RunnerApiIo {
   apiUrl: string;
   token: string;
+  callKey?: string;
   fetch?: typeof fetch;
   /** Server-owned page size for the dedicated saved-result reader. */
   responseTextPageBytes?: number;
@@ -74,7 +77,8 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   if (input.body !== undefined && !input.files?.length) {
     const requestSchema = operation.requestBody?.content?.[contentType]?.schema as { type?: string } | undefined;
     if (contentType.includes("json") && requestSchema?.type === "object" && (!input.body || typeof input.body !== "object" || Array.isArray(input.body))) {
-      throw badRequest("This operation requires body to be a JSON object. Pass the object directly, not a JSON-encoded string.");
+      throw badRequest("This operation requires body to be a JSON object. Pass the object directly, not a JSON-encoded string. "
+        + `For example: ${runnerApiCallExample(operation, input.pathParams)}`);
     }
     if (contentType.includes("json") && requestSchema?.type === "array" && !Array.isArray(input.body)) {
       throw badRequest("This operation requires body to be a JSON array. Pass the array directly, not a JSON-encoded string.");
@@ -88,15 +92,94 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
  * older accepted call with validateRunnerApiCall, so these rules stay out of it.
  * Callers that reserve a mutation receipt must run this before the reservation.
  */
-export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
-  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
-    // A PATCH without a body changes nothing but still returns success, which
-    // reads as a completed update. Name the missing argument instead.
-    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${[...receivedKeys].sort().join(", ")}.`);
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, received: Readonly<Record<string, unknown>>): void {
+  assertBodyPresent(operation, input, Object.keys(received));
+  if (operation.method !== "GET" && setsResponseWindow(received.responseText)) {
+    throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
   }
 }
 
-function patchFieldHint(operation: RunnerApiOperation): string {
+function setsResponseWindow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, setting]) => setting !== undefined && !(key === "offsetBytes" && setting === 0));
+}
+
+function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
+  // A PATCH without a body succeeds as a no-op that reads like a completed
+  // update. A POST or PUT without a body whose schema names required fields
+  // can only fail at the route. Name the missing argument before sending.
+  const schema = operation.requestBody.content?.["application/json"]?.schema as { required?: unknown } | undefined;
+  const requiresFields = Array.isArray(schema?.required) && schema.required.length > 0;
+  if (!(operation.method === "PATCH" || ((operation.method === "POST" || operation.method === "PUT") && requiresFields))) return;
+  const received = [...receivedKeys].sort();
+  const misplaced = received.filter(key => ["query", "responseText", "saveResponse"].includes(key));
+  throw badRequest(`This request was not sent: ${operation.operationId} requires body, a JSON object with the request fields${requestFieldHint(operation)}. `
+    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument holding the fields you mean to change, for example: ${runnerApiCallExample(operation, input.pathParams)}`
+    + (misplaced.length ? ` ${misplaced.join(", ")} never carr${misplaced.length === 1 ? "ies" : "y"} request fields.` : ""));
+}
+
+/**
+ * A call a model can copy: the path parameters it already sent and a body that
+ * satisfies the operation's request schema. Free-text values and ids it must
+ * look up appear as <field> placeholders.
+ */
+export function runnerApiCallExample(operation: RunnerApiOperation, pathParams?: Readonly<Record<string, string>>): string {
+  const params = Object.fromEntries([...operation.path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => name)
+    .filter(name => name !== "companyId" || pathParams?.companyId).map(name => [name, pathParams?.[name] || `<${name}>`]));
+  const schema = operation.requestBody?.content?.["application/json"]?.schema as JsonSchema | undefined;
+  return JSON.stringify({ operationId: operation.operationId, ...(Object.keys(params).length ? { pathParams: params } : {}), body: exampleBody(schema) });
+}
+
+type JsonSchema = { type?: string; enum?: unknown[]; format?: string; pattern?: string; minLength?: number; maxLength?: number;
+  minimum?: number; exclusiveMinimum?: number | boolean; minItems?: number; items?: JsonSchema; properties?: Record<string, JsonSchema>; required?: string[];
+  oneOf?: JsonSchema[]; anyOf?: JsonSchema[]; allOf?: JsonSchema[] };
+
+function exampleBody(schema: JsonSchema | undefined): unknown {
+  if (!schema) return {};
+  const variant = schema.oneOf?.[0] ?? schema.anyOf?.[0];
+  if (variant && !schema.type && !schema.properties) return exampleBody(variant);
+  if (schema.type && schema.type !== "object") return exampleValue("body", schema, 0);
+  const properties = schema.properties ?? {};
+  const required = (schema.required ?? []).filter(name => properties[name]);
+  // With no required field, show one field that takes free text: any value of
+  // its type is valid, and the model replaces it with what it meant to send.
+  const names = required.length ? required
+    : [Object.keys(properties).find(name => isFreeText(properties[name]!)) ?? Object.keys(properties)[0]].filter(Boolean) as string[];
+  return Object.fromEntries(names.map(name => [name, exampleValue(name, properties[name]!, 0)]));
+}
+
+function isFreeText(schema: JsonSchema): boolean {
+  return schema.type === "string" && !schema.enum && !schema.format && !schema.pattern && (schema.maxLength ?? Infinity) >= 3;
+}
+
+function exampleValue(name: string, schema: JsonSchema, depth: number): unknown {
+  const variant = schema.oneOf?.[0] ?? schema.anyOf?.[0] ?? schema.allOf?.[0];
+  if (variant && !schema.type) return exampleValue(name, variant, depth);
+  if (schema.enum?.length) return schema.enum[0];
+  switch (schema.type) {
+    case "string": {
+      if (schema.format === "date-time") return "2026-01-01T00:00:00.000Z";
+      if (schema.format === "date") return "2026-01-01";
+      const text = `<${name}>`;
+      return schema.maxLength !== undefined && text.length > schema.maxLength ? "x".repeat(Math.max(schema.minLength ?? 1, 1)) : text;
+    }
+    case "integer": case "number": {
+      if (typeof schema.exclusiveMinimum === "number") return schema.exclusiveMinimum + 1;
+      return schema.exclusiveMinimum === true ? (schema.minimum ?? 0) + 1 : schema.minimum ?? 0;
+    }
+    case "boolean": return true;
+    case "array": return schema.minItems && schema.items && depth < 4 ? [exampleValue(name, schema.items, depth + 1)] : [];
+    case "object": {
+      if (depth >= 4) return {};
+      const properties = schema.properties ?? {};
+      return Object.fromEntries((schema.required ?? []).filter(key => properties[key]).map(key => [key, exampleValue(key, properties[key]!, depth + 1)]));
+    }
+    default: return `<${name}>`;
+  }
+}
+
+function requestFieldHint(operation: RunnerApiOperation): string {
   const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
   const fields = Object.keys(schema?.properties ?? {});
   if (!fields.length) return "";
@@ -184,12 +267,13 @@ export function runnerApiPagination(headers: Headers) {
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
-  assertRunnerApiDispatchable(operation, validated, Object.keys(input));
+  assertRunnerApiDispatchable(operation, validated, input);
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
   if (!io.token) throw new Error("Paperclip run authentication is unavailable");
   const headers = new Headers({ Authorization: `Bearer ${io.token}`, "X-Paperclip-Run-Id": context.runId });
+  if (io.callKey && !["GET", "HEAD", "OPTIONS"].includes(operation.method)) headers.set(RUNNER_API_CALL_HEADER, io.callKey);
   const textOffset = input.responseText?.offsetBytes ?? 0;
   const textLimit = input.responseText?.limitBytes
     ?? (input.responseText ? io.responseTextPageBytes : undefined) ?? RUNNER_API_INLINE_BYTES;

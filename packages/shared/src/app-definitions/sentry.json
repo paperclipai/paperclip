@@ -42,6 +42,46 @@
         "project",
         "environment"
       ]
+    },
+    {
+      "key": "mcp-user-token",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a user auth token when an unattended agent needs Sentry access that does not expire with a browser sign-in grant.",
+      "defaults": {
+        "serverUrl": "https://mcp.sentry.dev/mcp"
+      },
+      "guidanceMd": "Connect with a Sentry user auth token for unattended agents. Browser sign-in grants expire and need the owner to sign in again; a user auth token lasts until you revoke it.",
+      "riskTier": "S2",
+      "label": "Use a user auth token",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Sentry user auth token",
+          "type": "password",
+          "required": true,
+          "placeholder": "sntryu_...",
+          "secret": true,
+          "helperMd": "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator; Paperclip cannot increase an existing token's permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Sentry-Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://sentry.io/settings/account/api/auth-tokens/",
+        "docs": "https://github.com/getsentry/sentry-mcp#remote-server"
+      },
+      "requiredResourceFilters": [
+        "organization",
+        "project",
+        "environment"
+      ]
     }
   ],
   "docsUrl": "https://mcp.sentry.dev/.well-known/oauth-authorization-server",

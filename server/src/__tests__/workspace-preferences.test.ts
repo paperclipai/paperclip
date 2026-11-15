@@ -40,7 +40,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
 
   it("defaults to Coordinator without creating a row", async () => {
     const userId = randomUUID();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, updatedAt: null });
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, timeZone: null, updatedAt: null });
     expect(await db.select().from(userWorkspacePreferences).where(eq(userWorkspacePreferences.userId, userId))).toHaveLength(0);
   });
 
@@ -80,6 +80,24 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
     expect((await workspacePreferenceService(db).get(userId)).coordinatorWorkspaceEnabled).toBe(true);
   });
 
+  it("saves the browser time zone without changing the workspace choice, and keeps it when the workspace changes", async () => {
+    const companyId = await company(), userId = randomUUID();
+    await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: false }).expect(200);
+    const saved = await request(app(actor(companyId, userId))).put(url(companyId)).send({ timeZone: "America/Chicago" }).expect(200);
+    expect(saved.body).toMatchObject({ userId, coordinatorWorkspaceEnabled: false, timeZone: "America/Chicago" });
+    await request(app(actor(companyId, userId))).put(url(companyId)).send({ coordinatorWorkspaceEnabled: true }).expect(200);
+    expect(await workspacePreferenceService(db).get(userId)).toMatchObject({ coordinatorWorkspaceEnabled: true, timeZone: "America/Chicago" });
+    const newUser = randomUUID();
+    await request(app(actor(companyId, newUser))).put(url(companyId)).send({ timeZone: "Asia/Kolkata" }).expect(200);
+    expect(await workspacePreferenceService(db).get(newUser)).toMatchObject({ coordinatorWorkspaceEnabled: true, timeZone: "Asia/Kolkata" });
+    for (const body of [{ timeZone: "Mars/Olympus_Mons" }, { timeZone: "" }, { timeZone: "x".repeat(65) }, { timeZone: 5 }, {}]) {
+      await request(app(actor(companyId, userId))).put(url(companyId)).send(body).expect(400);
+    }
+    expect((await workspacePreferenceService(db).get(userId)).timeZone).toBe("America/Chicago");
+    const events = await db.select().from(activityLog).where(and(eq(activityLog.actorId, userId), eq(activityLog.action, "workspace_preferences.updated")));
+    expect(events).toHaveLength(3);
+  });
+
   it("uses the explicit local board principal without creating a signed-in user's setting", async () => {
     const companyId = await company();
     const local: Express.Request["actor"] = { type: "board", source: "local_implicit", userId: "local-board", isInstanceAdmin: true };
@@ -90,7 +108,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
 
   it("rolls the preference back when the audit cannot be persisted", async () => {
     const userId = randomUUID();
-    await expect(workspacePreferenceService(db).set(randomUUID(), userId, true)).rejects.toThrow();
-    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, updatedAt: null });
+    await expect(workspacePreferenceService(db).set(randomUUID(), userId, { coordinatorWorkspaceEnabled: true })).rejects.toThrow();
+    expect(await workspacePreferenceService(db).get(userId)).toEqual({ userId, coordinatorWorkspaceEnabled: true, timeZone: null, updatedAt: null });
   });
 });

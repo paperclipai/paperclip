@@ -492,6 +492,20 @@ describe("native backend factory", () => {
         });
     });
 
+    it("carries the transport's proof that a Runner exited before answering session.open", async () => {
+      const { snapshot } = statelessRecovery(execution());
+      const exited = new FakeCodexTransport();
+      exited.rejectMethods.set("initialize", new Error("runnerd exited while waiting for session.open"));
+      Object.assign(exited, { runnerExitConfirmed: () => true });
+      const proven = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => exited,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      await expect(proven.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ recovered: false, reason: expect.stringContaining("runnerd exited while waiting for session.open"),
+          runnerExitConfirmed: true });
+    });
+
     it.each([
       ["an active turn", { activeTurnId: "turn-in-flight" }],
       ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
@@ -752,7 +766,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "acpx_runtime",
-      version: "0.13.1",
+      version: "0.22.0",
       capabilities: {
         resume: true,
         interruption: true,
@@ -776,7 +790,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
         capabilities: {
           steering: false,
           resume: true,
@@ -802,7 +816,7 @@ describe("native backend factory", () => {
     const backend = createNativeSessionBackend(input, {
       codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
     });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["claude" as const])(
@@ -814,7 +828,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
       });
     },
   );
@@ -825,7 +839,7 @@ describe("native backend factory", () => {
     const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
     Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
     const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {

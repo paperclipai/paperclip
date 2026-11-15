@@ -23,6 +23,13 @@ export const requestApprovalRevisionSchema = z.object({
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;
 
+/** Withdraw an open approval because it is out of date. Never an approval. */
+export const cancelApprovalSchema = z.object({
+  reason: z.string().trim().max(4000).optional().nullable(),
+}).strict();
+
+export type CancelApproval = z.infer<typeof cancelApprovalSchema>;
+
 export const resubmitApprovalSchema = z.object({
   payload: z.record(z.string(), z.unknown()).optional(),
 });

@@ -16,6 +16,16 @@ export const companies = pgTable(
     spendMonthUtc: text("spend_month_utc"),
     spentMonthlyCents: numeric("spent_monthly_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     defaultResponsibleUserId: text("default_responsible_user_id"),
+    // PAP-749 task 1d-lite: the company's default decision owner. When set,
+    // ownerless "Needs You" cards route to this user's "For you" list instead of
+    // the claimable Unassigned pool. Attribution (`defaultResponsibleUserId`) is
+    // deliberately NOT reused for this — the plan forbids routing by
+    // responsibility, so decision ownership is its own setting.
+    defaultDecisionOwnerUserId: text("default_decision_owner_user_id"),
+    // PAP-749 task 1d: the budget owner. A budget hard stop also goes to this
+    // user's "For you" list (Raise limit / Keep paused) while the Company view
+    // keeps showing it. Placement only; it grants no authority.
+    budgetOwnerUserId: text("budget_owner_user_id"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),

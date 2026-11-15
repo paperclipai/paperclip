@@ -2,12 +2,6 @@
  * R6 for `--env daytona`: reconcile the Daytona sandboxes this wave created
  * against the instance's environment leases and report leaks.
  *
- * The Daytona org is shared with the live Cloud fleet, so this module NEVER
- * changes a sandbox. Its client exposes only `list`; stop, archive and delete
- * do not exist here. Cleanup goes only through Paperclip: deleting the wave's
- * own environment, which acts on the leases in the wave's isolated database.
- * Leaks are reported for a person, and expire through the environment's ttl.
- *
  * Wave ownership comes from the labels the Daytona plugin puts on every
  * sandbox it creates. Each wave's isolated instance mints a fresh company and
  * environment UUID, and a row is selected only when both labels equal them.
@@ -129,7 +123,6 @@ const CLEANUP_SWEEP_SLACK_MS = 90_000;
 /** R6 waits this long for leases and sandboxes to settle before calling them leaks. */
 export const R6_SETTLE_MS = Math.min(8 * 60_000, PENDING_CLEANUP_RETRY_MS + CLEANUP_SWEEP_SLACK_MS);
 
-/** The only Daytona operation the harness may perform. */
 export interface ReadOnlyDaytona { list(query: { labels: Record<string, string> }): AsyncIterable<DaytonaSandboxRow> }
 
 /**
@@ -142,20 +135,32 @@ export function readOnlyDaytona(client: { list(query?: { labels?: Record<string,
   return Object.freeze({ list: (query: { labels: Record<string, string> }) => client.list(query) });
 }
 
-/** Fleet sandboxes the harness must never act on, even if their labels matched. */
 export function isProtectedSandbox(sandbox: Pick<DaytonaSandboxRow, "name" | "snapshot">): boolean {
-  return (sandbox.name ?? "").startsWith("paperclip-create-") || (sandbox.snapshot ?? "").startsWith("fleet-sbx-");
+  return (sandbox.snapshot ?? "").startsWith("fleet-sbx-");
 }
 
-/**
- * Hard guard for any future mutating path. It refuses `paperclip-create-*`
- * names and `fleet-sbx-*` snapshots outright, and anything not carrying both
- * of the wave's UUID labels. Every plugin-created sandbox is
- * `paperclip-create-*`, so the harness can never mutate one directly.
- */
 export function assertHarnessMayMutate(sandbox: DaytonaSandboxRow, wave: { companyId: string; environmentId: string }): void {
   if (isProtectedSandbox(sandbox)) throw new Error(`Refusing to change protected Daytona sandbox ${sandbox.id} (${sandbox.name ?? sandbox.snapshot})`);
   if (selectWaveSandboxes([sandbox], wave).length !== 1) throw new Error(`Refusing to change Daytona sandbox ${sandbox.id}: it is not labelled for this wave`);
+}
+
+export type SandboxRemove = (sandboxId: string, signal: AbortSignal) => Promise<void>;
+export type WaveSandboxDelete = (sandbox: DaytonaSandboxRow, signal: AbortSignal) => Promise<void>;
+
+export const SANDBOX_DELETE_MIN_TIMEOUT_MS = 5_000;
+
+export function waveSandboxDeleter(wave: { companyId: string; environmentId: string }, remove: SandboxRemove): WaveSandboxDelete {
+  return Object.freeze(async (sandbox: DaytonaSandboxRow, signal: AbortSignal) => {
+    assertHarnessMayMutate(sandbox, wave);
+    await remove(sandbox.id, signal);
+  });
+}
+
+export function daytonaRestDelete(apiKey: string, apiUrl = "https://app.daytona.io/api", request: typeof fetch = fetch): SandboxRemove {
+  return async (sandboxId, signal) => {
+    const response = await request(`${apiUrl}/sandbox/${encodeURIComponent(sandboxId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${apiKey}` }, signal });
+    if (!response.ok && response.status !== 404) throw new Error(`DELETE sandbox ${sandboxId} returned ${response.status}`);
+  };
 }
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
@@ -169,7 +174,12 @@ export function selectWaveSandboxes(rows: readonly DaytonaSandboxRow[], wave: { 
 
 export class DaytonaWaveSweeper {
   private client: ReadOnlyDaytona | null = null;
-  constructor(private readonly input: { apiKey: string; companyId: string; environmentId: string; api: ChaosApi }) {}
+  private readonly deleteSandbox: WaveSandboxDelete;
+  constructor(private readonly input: { apiKey: string; companyId: string; environmentId: string; api: ChaosApi;
+    removeSandbox?: SandboxRemove }) {
+    this.deleteSandbox = waveSandboxDeleter({ companyId: input.companyId, environmentId: input.environmentId },
+      input.removeSandbox ?? daytonaRestDelete(input.apiKey));
+  }
 
   private async daytona(): Promise<ReadOnlyDaytona> {
     this.client ??= readOnlyDaytona(await createRemoteFixtureClient(this.input.apiKey) as unknown as Parameters<typeof readOnlyDaytona>[0]);
@@ -205,13 +215,7 @@ export class DaytonaWaveSweeper {
     }
   }
 
-  /**
-   * Cleanup through Paperclip only: delete the wave's own environment (with its
-   * reusable leases). Then list, read-only, what is still not destroyed or
-   * archived, for the report. No sandbox is changed by the harness itself.
-   */
-  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<{ environmentDeleted: boolean; environmentDeleteBlocked: string | null;
-    remainingSandboxes: string[]; errors: string[] }> {
+  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<WaveCleanup> {
     const errors: string[] = [];
     let environmentDeleted = false;
     let environmentDeleteBlocked: string | null = null;
@@ -226,14 +230,16 @@ export class DaytonaWaveSweeper {
       else errors.push(`environment delete: ${message}`);
     }
     let remainingSandboxes: string[] = [];
+    let archivedSandboxes: string[] = [];
     // Provider teardown is asynchronous; give it a bounded settle before reporting.
     const deadline = Date.now() + settleMs;
     for (;;) {
       try {
-        remainingSandboxes = (await this.listWaveSandboxes())
-          .filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase())
-            && !ARCHIVED_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()))
+        const listed = await this.listWaveSandboxes();
+        const state = (sandbox: DaytonaSandboxRow) => String(sandbox.state ?? "").toLowerCase();
+        remainingSandboxes = listed.filter(sandbox => !GONE_SANDBOX_STATES.has(state(sandbox)) && !ARCHIVED_SANDBOX_STATES.has(state(sandbox)))
           .map(sandbox => `${sandbox.id}:${sandbox.state}`);
+        archivedSandboxes = listed.filter(sandbox => ARCHIVED_SANDBOX_STATES.has(state(sandbox))).map(sandbox => `${sandbox.id}:${sandbox.state}`);
       } catch (error) {
         errors.push(`sandbox listing: ${error instanceof Error ? error.message : String(error)}`);
         break;
@@ -241,6 +247,46 @@ export class DaytonaWaveSweeper {
       if (!remainingSandboxes.length || Date.now() >= deadline) break;
       await delay(10_000);
     }
-    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, errors };
+    const removal = await this.deleteWaveSandboxes(settleMs, errors);
+    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, archivedSandboxes, ...removal, errors };
+  }
+
+  private async deleteWaveSandboxes(settleMs: number, errors: string[]): Promise<Pick<WaveCleanup, "deletedSandboxes" | "undeletedSandboxes">> {
+    const deleted = new Set<string>();
+    const failures = new Map<string, string>();
+    let undeleted: DaytonaSandboxRow[] = [];
+    const deadline = Date.now() + settleMs;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        undeleted = (await this.listWaveSandboxes()).filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()));
+      } catch (error) {
+        errors.push(`sandbox listing for deletion: ${error instanceof Error ? error.message : String(error)}`);
+        return { deletedSandboxes: [...deleted], undeletedSandboxes: ["unlisted"] };
+      }
+      if (!undeleted.length || (attempt > 0 && Date.now() >= deadline)) break;
+      const pass = AbortSignal.timeout(Math.max(SANDBOX_DELETE_MIN_TIMEOUT_MS, deadline - Date.now()));
+      for (const sandbox of undeleted) {
+        try {
+          await this.deleteSandbox(sandbox, pass);
+          deleted.add(`${sandbox.id}:${sandbox.state}`);
+          failures.delete(sandbox.id);
+        } catch (error) {
+          failures.set(sandbox.id, error instanceof Error ? error.message : String(error));
+        }
+      }
+      await delay(Math.min(10_000, Math.max(0, deadline - Date.now())));
+    }
+    for (const [id, message] of failures) if (undeleted.some(sandbox => sandbox.id === id)) errors.push(`sandbox delete ${id}: ${message}`);
+    return { deletedSandboxes: [...deleted], undeletedSandboxes: undeleted.map(sandbox => `${sandbox.id}:${sandbox.state}`) };
   }
 }
+
+export type WaveCleanup = {
+  environmentDeleted: boolean;
+  environmentDeleteBlocked: string | null;
+  remainingSandboxes: string[];
+  archivedSandboxes: string[];
+  deletedSandboxes: string[];
+  undeletedSandboxes: string[];
+  errors: string[];
+};

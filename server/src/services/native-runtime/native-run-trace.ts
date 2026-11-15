@@ -210,6 +210,7 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
   "anchor",
   "bytesTransferred",
+  "check",
   "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
@@ -228,6 +229,11 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "strategy",
   "target",
 ]);
+
+export function nativeRunFailureCheck(error: unknown): string | undefined {
+  const check = (error as { failureCheck?: unknown } | null)?.failureCheck;
+  return typeof check === "string" && /^[A-Za-z0-9_.:,@/-]{1,120}$/.test(check) ? check : undefined;
+}
 
 function finiteMs(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -630,6 +636,8 @@ export function createNativeRunTrace(input: {
       return await run(scope, fn);
     } catch (error) {
       outcome = "failed";
+      const check = nativeRunFailureCheck(error);
+      if (check) annotate(scope, { check });
       throw error;
     } finally {
       await end(scope, { outcome });
@@ -787,9 +795,9 @@ export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace
   } catch { /* Diagnostics cannot replace the work's result. */ }
 }
 
-/** One local runner startup sub-step measured by the runner transport. */
+/** One runner startup sub-step measured by the runner transport. */
 export interface NativeRunnerStartupStep {
-  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  name: "runner.control_plane.open" | "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
   mode: "bootstrap" | "resume";
   startedAtMs: number;
   endedAtMs: number;
@@ -802,14 +810,22 @@ export interface NativeRunnerStartupStep {
  * Telemetry. Detached: the run-log write never delays `turn.start`; the
  * trace settles it at finish.
  */
-export function recordNativeRunnerStartupStep(trace: NativeRunTrace | undefined, step: NativeRunnerStartupStep): void {
+export function recordNativeRunnerStartupStep(
+  trace: NativeRunTrace | undefined,
+  step: NativeRunnerStartupStep,
+  target: "local" | "remote" = "local",
+): void {
+  const name = target === "local" ? step.name
+    : step.name === "runner.runtime.stage" ? "runner.launch.prepare"
+      : step.name === "runner.control_plane.open" ? step.name : null;
+  if (!name) return;
   trace?.defer(() => trace.record({
-    name: step.name,
+    name,
     parentName: "runner.session.startup",
     startedAtMs: step.startedAtMs,
     endedAtMs: step.endedAtMs,
     outcome: step.outcome,
-    attributes: { mode: step.mode, target: "local" },
+    attributes: { mode: step.mode, target },
   }));
 }
 

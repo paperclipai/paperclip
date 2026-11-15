@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getConnectableAppDefinition } from "../../../packages/shared/src/app-definitions.js";
 import {
   gradeProviderChoice,
+  NOTION_SIGN_IN_CONTROL,
   notionSetupChoices,
   truthfulNotionChoices,
   publicChoiceMessages,
@@ -255,5 +256,16 @@ describe("actual source attribution and supported choice lanes", () => {
           "mcp-oauth",
         ),
       ).toBe(false);
+  });
+});
+
+// Full cohort 4: the agent created the draft first, so the resumed setup page labelled its sign-in button
+// "Finish with Notion" (ConnectionSetupFlow's resuming label) and the old locator never found it.
+describe("Notion sign-in control locator", () => {
+  it("accepts the new-draft, resumed-draft and generic sign-in labels", () => {
+    for (const label of ["Continue to Notion", "Finish with Notion", "Continue to sign in", "Sign in to Notion"]) expect(NOTION_SIGN_IN_CONTROL.test(label), label).toBe(true);
+  });
+  it("rejects controls that do not start sign-in", () => {
+    for (const label of ["Try again", "Back", "Preparing…", "Opening Notion…", "Finish with Slack", "Open sign-in in a new tab"]) expect(NOTION_SIGN_IN_CONTROL.test(label), label).toBe(false);
   });
 });

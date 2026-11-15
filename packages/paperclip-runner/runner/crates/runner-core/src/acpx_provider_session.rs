@@ -24,6 +24,8 @@ use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE
 
 #[path = "acpx_provider_generation.rs"]
 mod generation;
+#[path = "acpx_provider_turn.rs"]
+mod provider_turn;
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
@@ -361,6 +363,11 @@ pub struct AcpxProviderSession {
     runtime_retired: bool,
     cancelled_turn_id: Option<String>,
     completed_turn_observed: bool,
+    quiet_turn_observed: bool,
+    continues_in_process: bool,
+    turn_start_replaced_provider: bool,
+    provider_turn_offer: Option<String>,
+    run_result_reported: Option<String>,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
@@ -423,6 +430,11 @@ impl AcpxProviderSession {
             runtime_retired: false,
             cancelled_turn_id: None,
             completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            provider_turn_offer: None,
+            run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,
@@ -668,13 +680,25 @@ impl AcpxProviderSession {
         // provider turn originated a late HTTP callback. Reap the old sidecar
         // and provider before releasing its call-ID tombstones, then resume
         // the same verified persistent session in a fresh process generation.
-        let restart_now = self.generation_has_run_turn;
+        // A quiet Claude generation that the turn-end path kept continues in
+        // place instead: its tool calls are bound to their announcing turn and
+        // its tombstones are retained below.
+        let continue_in_process = self.continues_in_process
+            && !rotate_turn_identity_ledger
+            && !self.tool_bridge.replay_history_blocks_admission()
+            && !self.reserved_tool_bridge.replay_history_blocks_admission()
+            && self.background_work_is_quiet();
+        self.continues_in_process = false;
+        self.quiet_turn_observed = false;
+        self.provider_turn_offer = None;
+        let restart_now = self.generation_has_run_turn && !continue_in_process;
         if restart_now {
             if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
         let provider_restarted = restart_now || self.restarted_after_turn_from.is_some();
+        self.turn_start_replaced_provider = provider_restarted;
         if rotate_turn_identity_ledger {
             if let Err(error) = self
                 .state
@@ -840,7 +864,16 @@ impl AcpxProviderSession {
         timeout: Duration,
     ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
         Ok(self
-            .poll_output(timeout, false, None)?
+            .poll_output(timeout, false, None, false)?
+            .map(|(events, _)| events))
+    }
+
+    pub fn poll_awaited_event(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
+        Ok(self
+            .poll_output(timeout, false, None, true)?
             .map(|(events, _)| events))
     }
 
@@ -849,6 +882,7 @@ impl AcpxProviderSession {
         timeout: Duration,
         disconnected: bool,
         last_goal_revision: Option<u64>,
+        awaited: bool,
     ) -> Result<Option<(Vec<AcpxProviderStateEvent>, Option<Value>)>, LocalRunnerError> {
         self.ensure_open()?;
         let event = match self.transport.poll_event(timeout) {
@@ -856,6 +890,11 @@ impl AcpxProviderSession {
             Err(error) => return Err(self.fail_closed(error)),
         };
         let Some(mut event) = event else {
+            if awaited {
+                if let Some(error) = self.transport.exited_error("provider turn wait") {
+                    return Err(self.fail_closed(error));
+                }
+            }
             return Ok(None);
         };
         let mut terminal_goal = None;
@@ -904,6 +943,18 @@ impl AcpxProviderSession {
                 payload.insert("origin".to_owned(), origin);
             }
         }
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnStarted {
+            return match self.admit_provider_turn(&event, awaited) {
+                Ok(started) => Ok(Some((vec![started], terminal_goal))),
+                Err(error) => Err(self.fail_closed(error)),
+            };
+        }
+        let terminal_quiet = event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal
+            && generation::reports_no_live_background_tasks(&event.payload);
+        let terminal_live = (event.event_type
+            == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal)
+            .then(|| provider_turn::reported_live_background_tasks(&event.payload))
+            .flatten();
         let mut next_state = self.state.clone();
         let events = match next_state.accept_event(&event) {
             Ok(events) => events,
@@ -956,6 +1007,9 @@ impl AcpxProviderSession {
                     if is_reserved_terminal_result(result) {
                         if let Err(error) = validate_reserved_terminal_result(&next_state, result) {
                             return Err(self.fail_closed(error));
+                        }
+                        if result.ok {
+                            self.record_run_result();
                         }
                         if let Err(error) =
                             next_reserved_bridge.apply_result(crate::provider_bridge::ToolResult {
@@ -1057,11 +1111,23 @@ impl AcpxProviderSession {
                 self.completed_turn_observed = *status
                     == crate::acpx_event_payload::AcpxTurnStatus::Completed
                     && self.state.active_turn_id() == Some(turn_id.as_str());
+                self.quiet_turn_observed = self.completed_turn_observed
+                    && terminal_quiet
+                    && self.config.agent == "claude"
+                    && self.cancelled_turn_id.as_deref() != Some(turn_id.as_str());
             }
         }
+        let terminal_completed = self.completed_turn_observed;
+        let terminal_turn = reconciled_events.iter().find_map(|event| match event {
+            AcpxProviderStateEvent::TurnTerminal { turn_id, .. } => Some(turn_id.clone()),
+            _ => None,
+        });
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
+        if let Some(turn_id) = terminal_turn {
+            self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
+        }
         Ok(Some((reconciled_events, terminal_goal)))
     }
 
@@ -1080,12 +1146,17 @@ impl AcpxProviderSession {
         };
         let duplicate = bridge.has_completed_call(&result.call_id);
         let detached = bridge.turn_closed();
+        let reported_run_result =
+            is_reserved_terminal_operation(&result.operation_id) && !result.is_error;
         bridge.apply_result(result.clone()).map_err(|error| {
             LocalRunnerError::invalid(format!(
                 "ACPX tool result for call {} operation {} is invalid: {error}",
                 result.call_id, result.operation_id
             ))
         })?;
+        if reported_run_result {
+            self.record_run_result();
+        }
         if duplicate {
             return Ok(());
         }
@@ -1381,6 +1452,9 @@ impl AcpxProviderSession {
         self.turn_controls = turn_controls;
         self.transport_terminated = false;
         self.generation_has_run_turn = false;
+        self.quiet_turn_observed = false;
+        self.continues_in_process = false;
+        self.provider_turn_offer = None;
         Ok(())
     }
 
@@ -2286,6 +2360,11 @@ mod mode_tests {
             runtime_retired: false,
             cancelled_turn_id: None,
             completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            provider_turn_offer: None,
+            run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,
