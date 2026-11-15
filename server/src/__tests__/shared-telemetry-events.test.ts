@@ -28,7 +28,7 @@ describe("shared telemetry agent events", () => {
     const client = createClient();
     const organizationRef = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    trackCloudOrganizationIdentified(client, { organizationRef });
+    trackCloudOrganizationIdentified(client, { organization_ref: organizationRef });
 
     expect(client.hashPrivateRef).not.toHaveBeenCalled();
     expect(client.track).toHaveBeenCalledWith("cloud.organization_identified", { organization_ref: organizationRef });

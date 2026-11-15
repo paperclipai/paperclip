@@ -69,7 +69,7 @@ describe("TelemetryClient runtime event gate", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client, stateFactory } = makeClient();
 
-    trackCloudOrganizationIdentified(client, { organizationRef: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" });
+    trackCloudOrganizationIdentified(client, { organization_ref: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" });
     await client.flush();
 
     expect(stateFactory).not.toHaveBeenCalled();

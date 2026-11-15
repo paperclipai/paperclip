@@ -38,12 +38,12 @@ export function trackCompanyImported(
 
 export function trackCloudOrganizationIdentified(
   client: TelemetryClient,
-  dims: { organizationRef: string },
+  dims: { organization_ref: string },
 ): void {
   client.track(
     // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/18271): link a Cloud installation to its organization for retention analysis
     "cloud.organization_identified",
-    { organization_ref: dims.organizationRef },
+    dims,
   );
 }
 

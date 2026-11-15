@@ -22,9 +22,13 @@ describe("server telemetry startup", () => {
   beforeEach(() => {
     vi.resetModules();
     stateFactory.mockClear();
-    for (const key of ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI", "PAPERCLIP_TELEMETRY_DISABLED", "DO_NOT_TRACK"]) {
+    for (const key of [
+      "CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI", "PAPERCLIP_TELEMETRY_DISABLED", "DO_NOT_TRACK",
+      "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID", "PAPERCLIP_CLOUD_TELEMETRY_ORGANIZATION_REF",
+    ]) {
       vi.stubEnv(key, "");
     }
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     vi.stubEnv("PAPERCLIP_TELEMETRY_ENDPOINT", "http://localhost:9999/ingest");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
   });

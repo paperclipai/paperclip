@@ -29,7 +29,7 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
     );
     trackServerStarted(pendingClient, { os_platform: process.platform });
     const organizationRef = cloudTelemetryOrganizationRef();
-    if (organizationRef) trackCloudOrganizationIdentified(pendingClient, { organizationRef });
+    if (organizationRef) trackCloudOrganizationIdentified(pendingClient, { organization_ref: organizationRef });
     pendingClient.startPeriodicFlush(60_000);
     client = pendingClient;
     return client;
