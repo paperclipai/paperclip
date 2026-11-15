@@ -13,6 +13,7 @@ export const CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW = 100;
 export const CLOUD_PRODUCT_SUMMARY_ACTIVITY_WINDOW = 20_000;
 export const CLOUD_PRODUCT_SUMMARY_SECTION_TIMEOUT_MS = 2_000;
 export const CLOUD_PRODUCT_SUMMARY_BUDGET_MS = 6_000;
+export const CLOUD_PRODUCT_SUMMARY_SECTION_GRACE_MS = 250;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SETUP_LIST_CAP = 50;
@@ -227,19 +228,32 @@ function taskWindow(context: Context, end: WindowEnd, columns: SQL): SQL {
   `;
 }
 
+function earliest(values: Array<string | null>): string | null {
+  const present = values.filter((value): value is string => value !== null);
+  return present.length > 0 ? present.reduce((first, value) => (Date.parse(value) < Date.parse(first) ? value : first)) : null;
+}
+
 async function readTaskWindows<K extends CloudProductCapability>(
   tx: Tx,
   context: Context,
   keys: readonly K[],
   query: (end: WindowEnd) => SQL,
 ): Promise<Partial<Capabilities>> {
+  const [total] = await rows(tx, sql`
+    select count(*)::int as total from (
+      select 1 from issues where company_id = ${context.companyId}
+      limit ${CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2 + 1}
+    ) x
+  `);
+  const tasks = count(total?.total);
   const [oldest] = await rows(tx, query("oldest"));
-  const complete = count(oldest?.scanned) < CLOUD_PRODUCT_SUMMARY_TASK_WINDOW;
   let newest: Row | undefined;
-  if (!complete && keys.some((key) => !text(oldest?.[key]))) [newest] = await rows(tx, query("newest"));
+  const oldestIsAll = tasks <= CLOUD_PRODUCT_SUMMARY_TASK_WINDOW;
+  if (!oldestIsAll && keys.some((key) => !text(oldest?.[key]))) [newest] = await rows(tx, query("newest"));
+  const complete = oldestIsAll || (newest !== undefined && tasks <= CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2);
   const result: Partial<Capabilities> = {};
   for (const key of keys) {
-    const first = text(oldest?.[key]) ?? text(newest?.[key]);
+    const first = earliest([text(oldest?.[key]), text(newest?.[key])]);
     result[key] = first || complete ? capability(first, context.since) : unknownCapability();
   }
   return result;
@@ -280,7 +294,7 @@ async function readAgents(tx: Tx, context: Context): Promise<Partial<Capabilitie
 async function readPlans(tx: Tx, context: Context): Promise<Partial<Capabilities>> {
   return readTaskWindows(tx, context, ["planCreated", "planApproved"], (end) => sql`
     with w as (${taskWindow(context, end, sql`i.id`)})
-    select (select count(*)::int from w) as scanned,
+    select
       (
         select ${iso(sql`min(d.created_at)`)}
         from w join issue_documents d on d.company_id = ${context.companyId} and d.issue_id = w.id and d.key = 'plan'
@@ -327,7 +341,7 @@ async function readTasks(tx: Tx, context: Context): Promise<Partial<Capabilities
         )) as customer_routine
       from w
     )
-    select count(*)::int as scanned,
+    select
       ${iso(sql`min(f.completed_at) filter (
         where f.done and not f.onboarding and f.origin_kind = 'manual' and f.parent_id is null
       )`)} as "ownTaskCompleted",
@@ -340,7 +354,7 @@ async function readTasks(tx: Tx, context: Context): Promise<Partial<Capabilities
 async function readArtifacts(tx: Tx, context: Context): Promise<Partial<Capabilities>> {
   return readTaskWindows(tx, context, ["artifactCreated"], (end) => sql`
     with w as (${taskWindow(context, end, sql`i.id`)})
-    select (select count(*)::int from w) as scanned, ${iso(sql`least(
+    select ${iso(sql`least(
       (select min(p.created_at) from w join issue_work_products p on p.company_id = ${context.companyId} and p.issue_id = w.id),
       (select min(a.created_at) from w join issue_attachments a on a.company_id = ${context.companyId} and a.issue_id = w.id),
       (
@@ -368,22 +382,29 @@ async function readRoutines(tx: Tx, context: Context): Promise<Partial<Capabilit
     limit ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW}
   )`;
   const [run] = await rows(tx, sql`
-    select ${iso(sql`min(x.first_at)`)} as first_at,
+    select ${iso(sql`min(x.first_at) filter (where r.position <= ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW})`)} as first_at,
       count(*)::int as routines,
-      coalesce(bool_or(x.scanned >= ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW * 2}), false) as partial
+      coalesce(bool_or(x.total > ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW * 2}), false) as partial
     from (
-      select r.id from routines r
+      select r.id, row_number() over (order by r.created_at asc, r.id asc) as position from routines r
       where r.company_id = ${context.companyId} and ${CUSTOMER_ROUTINE}
-      order by r.created_at asc
-      limit ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW}
+      order by r.created_at asc, r.id asc
+      limit ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW + 1}
     ) r
     cross join lateral (
-      select min(y.triggered_at) filter (where y.status in ${COUNTED_ROUTINE_RUN}) as first_at, count(*)::int as scanned
+      select min(y.triggered_at) filter (where y.status in ${COUNTED_ROUTINE_RUN}) as first_at,
+        (
+          select count(*)::int from (
+            select 1 from routine_runs t
+            where t.company_id = ${context.companyId} and t.routine_id = r.id
+            limit ${CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW * 2 + 1}
+          ) z
+        ) as total
       from (${runWindow(sql`asc`)} union ${runWindow(sql`desc`)}) y
     ) x
   `);
   const first = text(run?.first_at);
-  const complete = run?.partial !== true && count(run?.routines) < CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW;
+  const complete = run?.partial !== true && count(run?.routines) <= CLOUD_PRODUCT_SUMMARY_ROUTINE_WINDOW;
   return {
     routineCreated: capability(created, context.since),
     routineRun: first || complete ? capability(first, context.since) : unknownCapability(),
@@ -418,19 +439,18 @@ async function readRuns(tx: Tx, context: Context): Promise<CloudProductSummary["
   const latest = await rows(tx, sql`
     select x.status, x.error_code, ${iso(sql`x.ended_at`)} as ended_at
     from (
-      select r.status, r.error_code, ${ENDED_AT} as ended_at
+      select r.status, r.error_code, r.finished_at as ended_at
       from heartbeat_runs r
       join agents a on a.id = r.agent_id
       where r.company_id = ${context.companyId}
-        and r.created_at >= ${weekStart}::timestamptz - interval '1 day'
+        and r.finished_at is not null
+        and r.finished_at >= ${weekStart}::timestamptz
         and r.status in ${FINAL_RUN_STATUSES}
         and ${CUSTOMER_AGENT}
-      order by r.created_at desc
-      limit ${CLOUD_PRODUCT_SUMMARY_RECENT_RUNS * 5}
+      order by r.finished_at desc
+      limit ${CLOUD_PRODUCT_SUMMARY_RECENT_RUNS}
     ) x
-    where x.ended_at >= ${weekStart}::timestamptz
     order by x.ended_at desc
-    limit ${CLOUD_PRODUCT_SUMMARY_RECENT_RUNS}
   `);
   const recent: CloudProductRecentRun[] = [];
   for (const row of latest) {
@@ -448,10 +468,11 @@ async function readWaiting(tx: Tx, context: Context): Promise<CloudProductSummar
     from (
       select blocked_transition_at from issues
       where company_id = ${context.companyId} and status = 'blocked'
-      limit ${CLOUD_PRODUCT_SUMMARY_COUNT_CAP}
+      limit ${CLOUD_PRODUCT_SUMMARY_COUNT_CAP + 1}
     ) x
   `);
-  const oldest = text(blocked?.oldest_at);
+  const sampled = Number(blocked?.total) > CLOUD_PRODUCT_SUMMARY_COUNT_CAP;
+  const oldest = sampled ? null : text(blocked?.oldest_at);
   const visible = oldest && context.since && Date.parse(oldest) < context.since.getTime() ? null : oldest;
   return { state: "ok", blockedTasks: count(blocked?.total), oldestBlockedAt: visible };
 }
@@ -551,14 +572,25 @@ export async function buildCloudProductSummary(db: Db, options: CloudProductSumm
   async function section<T>(name: string, read: (tx: Tx, context: Context) => Promise<T>): Promise<T | null> {
     if (clock() >= deadline) return null;
     const sectionDeadline = Math.min(deadline, clock() + sectionTimeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await db.transaction(async (tx) => {
+      const work = db.transaction(async (tx) => {
         sectionDeadlines.set(tx, { at: sectionDeadline, clock });
         return read(tx, context);
       }, { accessMode: "read only" });
+      work.catch(() => {});
+      const late = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new CloudProductSummaryDeadlineError()),
+          Math.max(0, sectionDeadline - clock()) + CLOUD_PRODUCT_SUMMARY_SECTION_GRACE_MS,
+        );
+      });
+      return await Promise.race([work, late]);
     } catch (err) {
       logger.warn({ section: name, reason: err instanceof Error ? err.name : "unknown" }, "cloud product summary section did not finish");
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

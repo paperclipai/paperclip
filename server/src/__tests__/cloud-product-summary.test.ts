@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -471,34 +471,91 @@ describe("cloudProductSummaryQuerySchema", () => {
     expect(summary.setup).toEqual({ state: "ok", modelProviders: [], connectors: [] });
   });
 
-  it("reads only the oldest and the newest tasks of a large organization, and reports unknown for what it did not find", async () => {
-    const companyId = await createCompany();
-    const filler = Array.from({ length: CLOUD_PRODUCT_SUMMARY_TASK_WINDOW + 50 }, (_, index) => ({
+  async function createTasks(companyId: string, total: number, overrides: Partial<typeof issues.$inferInsert> = {}) {
+    const tasks = Array.from({ length: total }, (_, index) => ({
       id: randomUUID(),
       companyId,
       title: "Private task title",
       status: "todo",
       originKind: "manual",
       createdAt: new Date(ago(60 * DAY).getTime() + index * 1000),
+      ...overrides,
     }));
-    for (let start = 0; start < filler.length; start += 500) {
-      await db.insert(issues).values(filler.slice(start, start + 500));
+    for (let start = 0; start < tasks.length; start += 500) {
+      await db.insert(issues).values(tasks.slice(start, start + 500));
     }
-    const middleIssueId = filler[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW + 10]!.id;
+    return tasks;
+  }
+
+  it("reads only the oldest and the newest tasks of a large organization, and reports unknown for what it did not find", async () => {
+    const companyId = await createCompany();
+    const filler = await createTasks(companyId, CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2 + 50);
     await createDocument(companyId, filler[0]!.id, "notes", ago(50 * DAY));
-    await createDocument(companyId, middleIssueId, "plan", ago(49 * DAY));
-    await createIssue(companyId, { status: "done", originKind: "manual", createdAt: ago(DAY), completedAt: ago(HOUR) });
+    await createDocument(companyId, filler[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW + 10]!.id, "plan", ago(55 * DAY));
+    await createDocument(companyId, filler[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2 + 10]!.id, "plan", ago(49 * DAY));
+    await db.update(issues).set({ status: "done", completedAt: ago(2 * HOUR) }).where(eq(issues.id, filler[3]!.id));
+    await createIssue(companyId, { status: "done", originKind: "manual", createdAt: ago(10 * DAY), completedAt: ago(5 * DAY) });
 
     const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
 
     const unknown = { state: "unknown", firstAt: null, beforeSince: false };
-    expect(summary.capabilities.ownTaskCompleted).toEqual({ state: "yes", firstAt: iso(HOUR), beforeSince: false });
+    expect(summary.capabilities.ownTaskCompleted).toEqual({ state: "yes", firstAt: iso(5 * DAY), beforeSince: false });
     expect(summary.capabilities.artifactCreated).toEqual({ state: "yes", firstAt: iso(50 * DAY), beforeSince: false });
     expect(summary.capabilities.planCreated).toEqual({ state: "yes", firstAt: iso(49 * DAY), beforeSince: false });
     expect(summary.capabilities.planApproved).toEqual(unknown);
     expect(summary.capabilities.routineTaskCompleted).toEqual(unknown);
     expect(summary.capabilities.onboardingTaskCompleted).toEqual({ state: "no", firstAt: null, beforeSince: false });
-    expect(summary.activity.tasksCompletedWeek).toBe(1);
+    expect(summary.activity.tasksCompletedWeek).toBe(2);
+  });
+
+  it("gives an exact no when the two task windows cover each task", async () => {
+    const no = { state: "no", firstAt: null, beforeSince: false };
+    const oneWindow = await createCompany();
+    await createTasks(oneWindow, CLOUD_PRODUCT_SUMMARY_TASK_WINDOW);
+    const twoWindows = await createCompany();
+    await createTasks(twoWindows, CLOUD_PRODUCT_SUMMARY_TASK_WINDOW * 2);
+
+    for (const companyId of [oneWindow, twoWindows]) {
+      const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+      expect(summary.capabilities.ownTaskCompleted).toEqual(no);
+      expect(summary.capabilities.routineTaskCompleted).toEqual(no);
+      expect(summary.capabilities.planCreated).toEqual(no);
+      expect(summary.capabilities.planApproved).toEqual(no);
+      expect(summary.capabilities.artifactCreated).toEqual(no);
+    }
+  });
+
+  it("returns no oldest blocked time when more tasks are blocked than the count cap", async () => {
+    const companyId = await createCompany();
+    await createTasks(companyId, CLOUD_PRODUCT_SUMMARY_COUNT_CAP + 1, { status: "blocked", blockedTransitionAt: ago(3 * DAY) });
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+
+    expect(summary.waiting).toEqual({ state: "ok", blockedTasks: CLOUD_PRODUCT_SUMMARY_COUNT_CAP, oldestBlockedAt: null });
+  });
+
+  it("reports unknown for a section that cannot get a database connection in time, and reads the next sections", async () => {
+    const companyId = await createCompany();
+    await seedOrganization(companyId);
+    let transactions = 0;
+    const busy = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return (run: Parameters<typeof db.transaction>[0], config: Parameters<typeof db.transaction>[1]) => {
+          transactions += 1;
+          return transactions === 4 ? new Promise(() => {}) : target.transaction(run, config);
+        };
+      },
+    }) as typeof db;
+    const startedAt = Date.now();
+
+    const summary = await buildCloudProductSummary(busy, { companyId, now: NOW, sectionTimeoutMs: 200 });
+
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(transactions).toBe(10);
+    expect(summary.runs.state).toBe("unknown");
+    expect(summary.waiting.state).toBe("ok");
+    expect(summary.capabilities.ownTaskCompleted.state).toBe("yes");
   });
 
   it("stops each run count at the cap, and keeps the day and the week apart", async () => {
@@ -518,6 +575,11 @@ describe("cloudProductSummaryQuerySchema", () => {
     }
     await createRun(companyId, agentId, ago(3 * DAY), { status: "failed", errorCode: "adapter_failed" });
     await createRun(companyId, agentId, ago(HOUR), { status: "failed", errorCode: "adapter_failed" });
+    await createRun(companyId, agentId, ago(5 * 60 * 1000), {
+      status: "timed_out",
+      createdAt: ago(6 * DAY),
+      startedAt: ago(6 * DAY),
+    });
 
     const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
 
@@ -526,7 +588,10 @@ describe("cloudProductSummaryQuerySchema", () => {
     expect(summary.runs.week.succeeded).toBe(CLOUD_PRODUCT_SUMMARY_COUNT_CAP);
     expect(summary.runs.day.failed).toBe(1);
     expect(summary.runs.week.failed).toBe(2);
+    expect(summary.runs.day.timedOut).toBe(1);
     expect(summary.runs.recent).toHaveLength(20);
+    expect(summary.runs.recent[0]).toEqual({ outcome: "timed_out", failureClass: "other", endedAt: iso(5 * 60 * 1000) });
+    expect(summary.runs.recent[1]).toEqual({ outcome: "failed", failureClass: "execution_failure", endedAt: iso(HOUR) });
   });
 
   it("cancels a statement that runs past the section time limit, and reads the next sections", async () => {

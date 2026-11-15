@@ -116,15 +116,15 @@ The capabilities for plans, tasks, and artifacts read the 2,000 oldest tasks
 of the organization. If a capability is not found there and the organization
 has more tasks, the instance reads the 2,000 newest tasks also.
 
-- An organization with 2,000 tasks or fewer gets an exact `yes` or `no`.
+- An organization with 4,000 tasks or fewer gets an exact `yes` or `no`.
 - For a larger organization, `yes` is exact. `firstAt` is the earliest date in
   the tasks that were read. A capability that is in neither window has the
   state `unknown`.
 - `onboardingTaskCompleted` does not use the windows. It is exact.
 
-`routineRun` reads the 100 oldest and the 100 newest runs of each of the first
-100 customer routines. If no run is found and a routine has more runs, the
-state is `unknown`.
+`routineRun` reads the 100 oldest and the 100 newest runs of each of the 100
+oldest customer routines. If no run is found and the organization has more
+routines, or a routine has more than 200 runs, the state is `unknown`.
 
 Paperclip Cloud reads the summary many times each day. A new capability is in
 the newest window when the next request comes.
@@ -133,7 +133,8 @@ the newest window when the next request comes.
 
 - A run is counted by the time at which it ended.
 - `day` covers the last 24 hours. `week` covers the last 7 days.
-- `recent` holds at most 20 runs, the newest first.
+- `recent` holds at most 20 runs that have a finish time, in the order of
+  that time, the newest first.
 - A run of a built-in agent is not counted. A run that has not ended is not
   counted.
 - An interrupted run is counted as `cancelled`.
@@ -144,6 +145,8 @@ the newest window when the next request comes.
 ### Waiting, activity, and setup
 
 - `blockedTasks` is the number of tasks with the status `blocked`.
+- `oldestBlockedAt` is `null` when more than 10,000 tasks are blocked, because
+  the instance does not read each of them.
 - `lastPersonActivityAt` is the time of the last activity record whose actor
   is a person. The instance reads the 20,000 newest activity records of the
   last 90 days. `null` means that no such record is in them.
@@ -173,8 +176,9 @@ the newest window when the next request comes.
   `unknown` is not `no` and is not zero.
 - The request has a time budget of 6 seconds. A section that would start after
   the budget is used has the state `unknown`. A section that starts late gets
-  only the time that is left. The budget does not include the wait for a
-  database connection.
+  only the time that is left.
+- A section that cannot get a database connection before its time limit has
+  the state `unknown`. The request does not wait for that connection.
 - The sections that read small tables run first. A slow section cannot take
   the budget from them.
 - Two requests for the same summary at the same time share one computation.
