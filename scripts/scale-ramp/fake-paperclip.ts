@@ -25,7 +25,11 @@ export interface FakeConfig {
   runDurationMs: number;
   capacity: number;
   failWhenRunningAbove: number;
+  failRun: (startIndex: number) => boolean;
   retryOnFailure: boolean;
+  recoverFailedRunAfterMs: number | null;
+  terminationDelayMs: number;
+  leaseLingerMs: number;
   costPerRunUsd: number;
   boardLatencyMs: (running: number) => number;
   failRequest: (method: string, path: string, count: number) => { status: number; body: string } | null;
@@ -42,6 +46,7 @@ interface FakeRun {
   startedAt: number | null;
   finishedAt: number | null;
   willFail: boolean;
+  recovery: boolean;
 }
 
 export interface RequestLog {
@@ -66,6 +71,7 @@ export class FakePaperclip {
   readonly environmentId = "00000000-0000-4000-8000-0000000000e1";
   private seq = 0;
   private agentsCreated = 0;
+  private runsStarted = 0;
   private counts = new Map<string, number>();
 
   readonly clock: VirtualClock;
@@ -82,7 +88,11 @@ export class FakePaperclip {
       runDurationMs: 60_000,
       capacity: Number.POSITIVE_INFINITY,
       failWhenRunningAbove: Number.POSITIVE_INFINITY,
+      failRun: () => false,
       retryOnFailure: false,
+      recoverFailedRunAfterMs: null,
+      terminationDelayMs: 0,
+      leaseLingerMs: 0,
       costPerRunUsd: 0.01,
       boardLatencyMs: () => 40,
       failRequest: () => null,
@@ -108,7 +118,7 @@ export class FakePaperclip {
     for (let index = 0; index < count; index += 1) {
       const id = this.id();
       this.runs.set(id, { id, agentId: "noise-agent", issueId: "noise-issue", status: "succeeded", createdAt: this.clock.now() + 1e10 + index,
-        startedAt: null, finishedAt: null, willFail: false });
+        startedAt: null, finishedAt: null, willFail: false, recovery: false });
     }
   }
 
@@ -128,6 +138,7 @@ export class FakePaperclip {
   advance(): void {
     const now = this.clock.now();
     for (const agent of this.agents.values()) {
+      if (agent.lifecycleState === "terminating" && now >= agent.terminatingSince + this.config.terminationDelayMs) agent.lifecycleState = "terminated";
       const delay = typeof this.config.agentReadyDelayMs === "function" ? this.config.agentReadyDelayMs(agent.index) : this.config.agentReadyDelayMs;
       if (!["preparing", "verifying"].includes(agent.lifecycleState) || now < agent.createdAt + delay) continue;
       if (this.config.agentSetupError) {
@@ -145,9 +156,17 @@ export class FakePaperclip {
         if (run.willFail) {
           run.status = "failed";
           issue.interruption = this.config.retryOnFailure ? { state: "failed", canRetry: true, retryWait: false } : null;
+          if (this.config.recoverFailedRunAfterMs !== null) {
+            const retryAt = run.finishedAt + this.config.recoverFailedRunAfterMs;
+            issue.interruption = { state: "retry_scheduled", canRetry: true, nextRetryAt: new Date(retryAt).toISOString() };
+            const id = this.id();
+            this.runs.set(id, { id, agentId: run.agentId, issueId: run.issueId, status: "queued", createdAt: retryAt, startedAt: null, finishedAt: null,
+              willFail: false, recovery: true });
+          }
         } else {
           run.status = "succeeded";
           issue.status = "done";
+          issue.interruption = null;
         }
       }
     }
@@ -156,7 +175,8 @@ export class FakePaperclip {
       if (this.running() >= this.config.capacity) break;
       run.status = "running";
       run.startedAt = Math.max(run.createdAt + this.config.startDelayMs, now - 1_000);
-      run.willFail = this.running() > this.config.failWhenRunningAbove;
+      this.runsStarted += 1;
+      run.willFail = !run.recovery && (this.running() > this.config.failWhenRunningAbove || this.config.failRun(this.runsStarted));
       this.issues.get(run.issueId)!.status = "in_progress";
     }
   }
@@ -165,8 +185,7 @@ export class FakePaperclip {
     const iso = (value: number | null) => value === null ? null : new Date(value).toISOString();
     return {
       id: run.id, agentId: run.agentId, issueId: run.issueId, status: run.status, createdAt: iso(run.createdAt), startedAt: iso(run.startedAt),
-      finishedAt: iso(run.finishedAt), costUsd: run.status === "succeeded" || run.status === "failed" ? this.config.costPerRunUsd : null,
-      error: null, errorCode: null,
+      finishedAt: iso(run.finishedAt), costUsd: null, error: null, errorCode: null,
     };
   }
 
@@ -227,8 +246,16 @@ export class FakePaperclip {
         this.projects.set(id, { id, companyId, name: body.name, archivedAt: null });
         return json(201, this.projects.get(id));
       }
+      if (c === "costs" && parts[3] === "by-agent" && method === "GET") {
+        const cents = new Map<string, number>();
+        for (const run of this.runs.values()) {
+          if (run.status !== "succeeded" && run.status !== "failed") continue;
+          cents.set(run.agentId, (cents.get(run.agentId) ?? 0) + this.config.costPerRunUsd * 100);
+        }
+        return json(200, [...cents].map(([agentId, costCents]) => ({ agentId, costCents })));
+      }
       if (c === "agents") {
-        if (method === "GET") return json(200, [...this.agents.values()].filter(agent => agent.companyId === companyId));
+        if (method === "GET") return json(200, [...this.agents.values()].filter(agent => agent.companyId === companyId && agent.status !== "terminated"));
         const id = this.id();
         this.agents.set(id, { id, companyId, name: body.name, status: "paused", lifecycleState: "preparing", lifecycleHolds: [], lifecycleError: null,
           pauseReason: null, createdAt: now, index: this.agentsCreated++, payload: body });
@@ -242,7 +269,8 @@ export class FakePaperclip {
           const agent = this.agents.get(body.assigneeAgentId);
           if (agent && agent.status !== "terminated") {
             const runId = this.id();
-            this.runs.set(runId, { id: runId, agentId: body.assigneeAgentId, issueId: id, status: "queued", createdAt: now, startedAt: null, finishedAt: null, willFail: false });
+            this.runs.set(runId, { id: runId, agentId: body.assigneeAgentId, issueId: id, status: "queued", createdAt: now, startedAt: null, finishedAt: null,
+              willFail: false, recovery: false });
           }
           return json(201, this.issues.get(id));
         }
@@ -267,16 +295,19 @@ export class FakePaperclip {
     if (a === "agents" && b) {
       const agent = this.agents.get(b);
       if (!agent) return json(404, { error: "Agent not found" });
+      if (method === "GET" && !c) return json(200, agent);
       if (method === "PATCH") {
         Object.assign(agent, body);
         return json(200, agent);
       }
       if (method === "POST" && c === "terminate") {
         agent.status = "terminated";
-        agent.lifecycleState = "terminated";
+        agent.lifecycleState = this.config.terminationDelayMs > 0 ? "terminating" : "terminated";
+        agent.terminatingSince = now;
         return json(200, agent);
       }
       if (method === "DELETE") {
+        if (agent.lifecycleState !== "terminated") return json(409, { error: "Complete termination before deleting the agent" });
         this.agents.delete(b);
         return json(200, { ok: true });
       }
@@ -324,7 +355,10 @@ export class FakePaperclip {
       return json(200, project);
     }
     if (a === "environments" && b === this.environmentId && c === "leases") {
-      return json(200, this.liveRuns().map(run => ({ id: run.id, issueId: run.issueId, status: "active" })));
+      const held = [...this.runs.values()].filter(run => ["queued", "running"].includes(run.status)
+        || (run.finishedAt !== null && now < run.finishedAt + this.config.leaseLingerMs));
+      return json(200, held.map(run => ({ id: `lease-${run.id}`, issueId: run.issueId, heartbeatRunId: run.id, status: "active",
+        acquiredAt: new Date(run.createdAt).toISOString(), metadata: { agentId: run.agentId } })));
     }
     return json(404, { error: `fake: no route for ${method} ${route}` });
   }

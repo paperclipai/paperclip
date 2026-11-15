@@ -199,9 +199,10 @@ describe("criteria", () => {
   const empty = distribution([]);
   const metrics = (patch: Partial<StepMetrics> = {}): StepMetrics => ({
     step: { index: 0, concurrency: 10, holdMs: 60_000 }, startedAt: 0, endedAt: 1, tasksCreated: 10, tasksStarted: 10, tasksFinished: 10,
-    tasksFailed: 0, tasksNeedingRetry: 0, runsFailed: 0, runsInterrupted: 0, runsCancelled: 0, peakRunning: 10, meanRunning: 9,
+    tasksFailed: 0, tasksNeedingRetry: 0, runsEnded: 10, runsFailed: 0, runsFailedRecovered: 0, runsFailedUnrecovered: 0, runsFailedPending: 0,
+    runsInterrupted: 0, runsCancelled: 0, peakRunning: 10, meanRunning: 9,
     queueWaitMs: distribution([1_000, 2_000]), taskToStartMs: empty, ttftMs: empty, firstActivityMs: distribution([4_000]), runDurationMs: empty,
-    board: { requests: 10, failures: 0, ms: distribution([100, 120, 130, 140]) },
+    board: { requests: 10, failures: 0, ms: distribution([100, 120, 130, 140]), byRoute: {} },
     server: { mainThreadCpuMax: null, eventLoopUtilizationMax: null, eventLoopDelayP99MsMax: null, statementsPerSecondMax: null, poolWaitP99MsMax: null,
       runEventLatenessP99MsMax: null, agentApiPreHandlerP99MsMax: null, leaseRenewalsMissed: null, samples: 0 },
     recordedSpendUsd: 0, ...patch,
@@ -217,22 +218,32 @@ describe("criteria", () => {
     assert.equal(results.lease_renewals_missed_zero, "not_measured");
     assert.equal(results.run_event_lateness_p99, "not_measured");
     assert.equal(results.kill_one_process_resumes, "not_measured");
-    assert.equal(byId(evaluate(metrics({ board: { requests: 0, failures: 0, ms: empty } }), thresholds)).board_api_p90, "not_measured");
+    assert.equal(byId(evaluate(metrics({ board: { requests: 0, failures: 0, ms: empty, byRoute: {} } }), thresholds)).board_api_p90, "not_measured");
   });
 
   it("fails each finish-line threshold it can measure", () => {
     const server = { mainThreadCpuMax: 0.7, eventLoopUtilizationMax: 0.5, eventLoopDelayP99MsMax: 10, statementsPerSecondMax: 1, poolWaitP99MsMax: 1,
       runEventLatenessP99MsMax: 1_500, agentApiPreHandlerP99MsMax: 100, leaseRenewalsMissed: 2, samples: 3 };
-    const results = byId(evaluate(metrics({ tasksNeedingRetry: 1, peakRunning: 8, board: { requests: 4, failures: 1, ms: distribution([100, 600, 700]) }, server }), thresholds));
+    const results = byId(evaluate(metrics({ tasksNeedingRetry: 1, peakRunning: 8, runsFailed: 1, runsFailedUnrecovered: 1,
+      board: { requests: 4, failures: 1, ms: distribution([100, 600, 700]), byRoute: {} }, server }), thresholds));
     assert.deepEqual(results, {
-      retry_needed_zero: "fail", failed_runs_zero: "pass", tasks_rested_not_done_zero: "pass", concurrency_reached: "fail", board_api_p90: "fail", board_api_errors_zero: "fail",
+      retry_needed_zero: "fail", failed_runs_unrecovered_zero: "fail", failed_run_rate: "fail", tasks_rested_not_done_zero: "pass", concurrency_reached: "fail",
+      board_api_p90: "fail", board_api_errors_zero: "fail",
       queue_wait_p95: "pass", first_activity_p95: "pass", main_thread_cpu: "fail", run_event_lateness_p99: "fail", agent_api_pre_handler_p99: "fail",
       lease_renewals_missed_zero: "fail", kill_one_process_resumes: "not_measured",
     });
   });
 
-  it("only evaluates retry and failed runs as immediate stops", () => {
-    assert.deepEqual(evaluate(metrics(), thresholds, true).map(result => result.id), ["retry_needed_zero", "failed_runs_zero"]);
+  it("only evaluates retry and unrecovered failed runs as immediate stops", () => {
+    assert.deepEqual(evaluate(metrics(), thresholds, true).map(result => result.id), ["retry_needed_zero", "failed_runs_unrecovered_zero"]);
+  });
+
+  it("passes a step whose failed runs all recovered while their share of ended runs stays under the limit", () => {
+    const recovered = byId(evaluate(metrics({ runsEnded: 106, runsFailed: 1, runsFailedRecovered: 1 }), thresholds));
+    assert.equal(recovered.failed_runs_unrecovered_zero, "pass");
+    assert.equal(recovered.failed_run_rate, "pass");
+    assert.equal(byId(evaluate(metrics({ runsEnded: 20, runsFailed: 1, runsFailedRecovered: 1 }), thresholds)).failed_run_rate, "fail");
+    assert.equal(byId(evaluate(metrics({ runsEnded: 0 }), thresholds)).failed_run_rate, "not_measured");
   });
 
   it("reads first token and first activity from run spans, with an event fallback", () => {
@@ -404,7 +415,7 @@ describe("ramp against the fake API", () => {
       mutate: (issue, run, now) => { issue.status = "cancelled"; run.status = "cancelled"; run.finishedAt = now; } },
     { name: "blocked", criterion: "run_started", reason: /ended before any run started.*is blocked.*is queued/,
       mutate: issue => { issue.status = "blocked"; } },
-    { name: "failed before it started", criterion: "failed_runs_zero", reason: /failed_runs_zero failed/,
+    { name: "failed before it started", criterion: "run_started", reason: /ended before any run started.*is failed/,
       mutate: (_issue, run, now) => { run.status = "failed"; run.finishedAt = now; } },
   ];
   for (const preflight of preflightCases) {
@@ -450,11 +461,11 @@ describe("ramp against the fake API", () => {
     const out = await tempDir();
     const h = harness({ failWhenRunningAbove: 0, runDurationMs: 3 * 60_000, agentReadyDelayMs: index => index === 0 ? 3_000 : 10 * 60_000 });
     const started = h.clock.now();
-    const code = await main(baseArgs(out, ["--steps", "1,3", "--min-concurrency-ratio", "0.5"]), h.deps);
+    const code = await main(baseArgs(out, ["--steps", "1,3", "--min-concurrency-ratio", "0.5", "--recovery-grace-minutes", "1"]), h.deps);
     const result = await readResult(out);
     assert.equal(code, EXIT.fail);
     assert.equal(result.stop!.stepIndex, 1);
-    assert.equal(result.stop!.criterion, "failed_runs_zero");
+    assert.equal(result.stop!.criterion, "failed_runs_unrecovered_zero");
     assert.equal(result.steps[0]!.metrics.runsFailed, 1);
     assert.ok(h.clock.now() - started < 6 * 60_000, "the failure is seen during the agent wait, not after it");
     assertCleanedUp(h.fake);
@@ -540,7 +551,7 @@ describe("ramp against the fake API", () => {
     assert.equal(code, EXIT.fail);
     assert.equal(result.verdict, "fail");
     assert.equal(result.stop!.stepIndex, 1);
-    assert.equal(result.stop!.criterion, "failed_runs_zero");
+    assert.equal(result.stop!.criterion, "failed_run_rate");
     assert.equal(result.steps.length, 2);
     const agents = h.fake.requests.filter(request => request.method === "POST" && new URL(request.url).pathname.endsWith("/agents"));
     assert.equal(agents.length, 4, "the 8-agent step never created agents");
@@ -554,7 +565,7 @@ describe("ramp against the fake API", () => {
     const result = await readResult(out);
     assert.equal(result.verdict, "fail");
     assert.equal(result.stop!.stepIndex, 0);
-    assert.ok(["retry_needed_zero", "failed_runs_zero"].includes(result.stop!.criterion!));
+    assert.ok(["retry_needed_zero", "failed_runs_unrecovered_zero"].includes(result.stop!.criterion!));
     assert.ok(result.steps[0]!.metrics.tasksNeedingRetry + result.steps[0]!.metrics.runsFailed > 0);
   });
 
@@ -623,6 +634,106 @@ describe("ramp against the fake API", () => {
     assert.ok(result.steps[0]!.metrics.tasksFinished >= 2);
     assert.ok(result.recordedSpendUsd! > 0);
     assert.ok(result.drained, "finished runs are not left counted as running");
+  });
+
+  it("keeps ramping when Paperclip recovers a failed run by itself, counts it, and grades the failed-run rate at the step end", async () => {
+    const out = await tempDir();
+    const h = harness({ failRun: index => index === 2, recoverFailedRunAfterMs: 30_000, runDurationMs: 20_000 });
+    await main(baseArgs(out, ["--steps", "2", "--hold-minutes", "4"]), h.deps);
+    const result = await readResult(out);
+    const metrics = result.steps[0]!.metrics;
+    assert.equal(metrics.runsFailed, 1);
+    assert.equal(metrics.runsFailedRecovered, 1);
+    assert.equal(metrics.runsFailedUnrecovered, 0);
+    assert.equal(metrics.tasksNeedingRetry, 0, "a scheduled automatic retry is not a task that needs Retry");
+    assert.equal(result.stop!.criterion, "failed_run_rate");
+    assert.match(result.stop!.reason, /at the end of the step/);
+    assert.ok(metrics.tasksFinished >= 3, "the step kept creating work after the failure");
+    const tolerant = await tempDir();
+    const h2 = harness({ failRun: index => index === 2, recoverFailedRunAfterMs: 30_000, runDurationMs: 20_000 });
+    await main(baseArgs(tolerant, ["--steps", "2", "--hold-minutes", "4", "--max-failed-run-percent", "50", "--min-concurrency-ratio", "0.5"]), h2.deps);
+    const passed = await readResult(tolerant);
+    assert.equal(passed.stop, null);
+    assert.ok(passed.steps[0]!.criteriaFinal.filter(c => c.id.startsWith("failed_run")).every(c => c.status === "pass"));
+  });
+
+  it("stops when a failed run's task has not finished within the recovery grace", async () => {
+    const out = await tempDir();
+    const h = harness({ failRun: index => index === 2 });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "2", "--hold-minutes", "20", "--recovery-grace-minutes", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "failed_runs_unrecovered_zero");
+    assert.equal(result.steps[0]!.metrics.runsFailedUnrecovered, 1);
+    assert.ok(h.clock.now() - started < 10 * 60_000, "it stops once the grace runs out, not at the end of the hold");
+  });
+
+  it("records model spend from Paperclip's cost records, which the run list does not carry", async () => {
+    const out = await tempDir();
+    const h = harness({ costPerRunUsd: 0.25 });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    const finished = [...h.fake.runs.values()].filter(run => run.status === "succeeded").length;
+    assert.ok(finished > 0);
+    assert.equal(result.recordedSpendUsd, Math.round(finished * 25) / 100);
+    assert.equal(result.steps[0]!.metrics.recordedSpendUsd, result.recordedSpendUsd);
+    const capped = await tempDir();
+    const h2 = harness({ costPerRunUsd: 3 });
+    await main(baseArgs(capped, ["--steps", "2", "--hold-minutes", "20"]), h2.deps);
+    assert.equal((await readResult(capped)).stop!.criterion, "spend_cap");
+  });
+
+  it("reports board latency per route", async () => {
+    const out = await tempDir();
+    const h = harness({ boardLatencyMs: () => 300 });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const byRoute = (await readResult(out)).steps[0]!.metrics.board.byRoute;
+    assert.deepEqual(Object.keys(byRoute).sort(), ["agents", "dashboard", "issues", "live-runs", "sidebar-badges"]);
+    assert.equal(byRoute.dashboard!.p50, 300);
+    assert.ok(byRoute.issues!.n > 0);
+    const summary = await readFile(path.join(out, "scale-test-run", "SUMMARY.md"), "utf8");
+    assert.match(summary, /  - dashboard p50 \/ p90 \/ p99: 300 ms/);
+  });
+
+  it("deletes an agent only after Paperclip completes its termination", async () => {
+    const out = await tempDir();
+    const h = harness({ terminationDelayMs: 2 * 60_000 });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.deepEqual(result.cleanup!.errors, []);
+    assert.deepEqual(result.cleanup!.agentsStillTerminating, []);
+    assert.equal(result.cleanup!.agentsDeleted, 2);
+    assertCleanedUp(h.fake);
+  });
+
+  it("names the agents still terminating and the sandbox leases still active, and finishes them with --cleanup-only later", async () => {
+    const out = await tempDir();
+    const h = harness({ terminationDelayMs: 20 * 60_000, leaseLingerMs: 20 * 60_000 });
+    const code = await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.incomplete);
+    assert.equal(result.cleanup!.agentsStillTerminating.length, 2);
+    assert.equal(result.cleanup!.agentsDeleted, 0);
+    assert.ok(result.cleanup!.activeSandboxLeases! > 0);
+    assert.equal(result.cleanup!.activeSandboxLeaseIds.length, result.cleanup!.activeSandboxLeases);
+    assert.ok(result.cleanup!.errors.some(error => /had not completed termination/.test(error)));
+    assert.ok(result.cleanup!.errors.some(error => /still active after 5 min: lease-/.test(error)));
+    assert.ok(!result.cleanup!.errors.some(error => /409/.test(error)), "no delete is sent before termination completes");
+    await h.clock.sleep(20 * 60_000);
+    const later = await main(["--base-url", ORIGIN, "--target-kind", "test-stack", "--out", out, "--cleanup-only", "scale-test-run", "--yes"], h.deps);
+    assert.equal(later, EXIT.pass);
+    assertCleanedUp(h.fake);
+  });
+
+  it("counts sandbox leases that release while the cleanup waits", async () => {
+    const out = await tempDir();
+    const h = harness({ leaseLingerMs: 2 * 60_000 });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const cleanup = (await readResult(out)).cleanup!;
+    assert.equal(cleanup.activeSandboxLeases, 0);
+    assert.ok(cleanup.sandboxLeasesReleasedDuringWait > 0);
+    assert.deepEqual(cleanup.errors, []);
   });
 
   it("cleans up after a crash in the middle of the ramp", async () => {

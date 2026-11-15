@@ -102,7 +102,8 @@ export function buildResult(input: {
     recordedSpendUsd: outcome ? outcome.recordedSpendUsd : null,
     sources: {
       runsAndTasks: outcome?.runsListTruncated ? "API (company run list was full; open tasks without a listed run were read one by one)" : "API",
-      boardLatency: "harness GET mix (dashboard, issues, agents, live runs, sidebar badges)",
+      boardLatency: "harness GET mix (dashboard, issues, agents, live runs, sidebar badges), with a distribution per route",
+      modelSpend: "costs by agent for the run's agents (Paperclip's recorded cost events)",
       firstTokenAndActivity: `run events of up to ${options.eventSamplePerStep} succeeded runs per step`,
       serverMetrics: outcome?.metricsSource === "endpoint" ? "PAPERCLIP_SCALE_METRICS_URL"
         : outcome?.metricsSource === "unavailable" ? "PAPERCLIP_SCALE_METRICS_URL gave no readable sample: not measured" : "not provided: not measured",
@@ -138,13 +139,15 @@ export function summaryLines(result: RampResult): string[] {
       `## Step ${step.index + 1}: ${step.concurrency} agents, ${step.holdMs / 60_000} min`,
       "",
       `- Tasks created / started / finished / failed / needed Retry: ${m.tasksCreated} / ${m.tasksStarted} / ${m.tasksFinished} / ${m.tasksFailed} / ${m.tasksNeedingRetry}`,
-      `- Runs failed / interrupted / cancelled: ${m.runsFailed} / ${m.runsInterrupted} / ${m.runsCancelled}`,
+      `- Runs ended / failed / interrupted / cancelled: ${m.runsEnded} / ${m.runsFailed} / ${m.runsInterrupted} / ${m.runsCancelled}`,
+      `- Failed runs whose task finished by itself / did not / still pending: ${m.runsFailedRecovered} / ${m.runsFailedUnrecovered} / ${m.runsFailedPending}`,
       `- Running agents peak / mean: ${m.peakRunning} / ${m.meanRunning ?? "not measured"}`,
       `- Queue wait p50 / p95 / p99: ${dist(m.queueWaitMs, seconds)}`,
       `- Time to first token p50 / p95 / p99: ${dist(m.ttftMs, seconds)}`,
       `- First activity p50 / p95 / p99: ${dist(m.firstActivityMs, seconds)}`,
       `- Run duration p50 / p95 / p99: ${dist(m.runDurationMs, seconds)}`,
       `- Board API p50 / p95 / p99: ${dist(m.board.ms, millis)}; failed ${m.board.failures} of ${m.board.requests}`,
+      ...Object.entries(m.board.byRoute).map(([route, d]) => `  - ${route} p50 / p90 / p99: ${millis(d.p50)} / ${millis(d.p90)} / ${millis(d.p99)} (n=${d.n})`),
       `- Event-loop utilization max: ${m.server.eventLoopUtilizationMax ?? "not measured"}; delay p99 max: ${millis(m.server.eventLoopDelayP99MsMax)}; statements/s max: ${m.server.statementsPerSecondMax ?? "not measured"}; pool wait p99 max: ${millis(m.server.poolWaitP99MsMax)}`,
       "- Criteria (final):",
       ...step.criteriaFinal.map(criterionLine),
@@ -157,7 +160,9 @@ export function summaryLines(result: RampResult): string[] {
   if (result.cleanup) {
     const c = result.cleanup;
     lines.push(`Cleanup in ${seconds(c.durationMs)}: ${c.runsCancelled} runs cancelled, ${c.tasksArchived} tasks archived, ${c.agentsDeleted} agents deleted`
-      + ` (${c.agentsKeptForCostHistory} kept terminated for cost history), sandbox leases still active: ${c.activeSandboxLeases ?? "not readable"}, errors: ${c.errors.length}.`);
+      + ` (${c.agentsKeptForCostHistory} kept terminated for cost history, ${c.agentsStillTerminating.length} still terminating),`
+      + ` sandbox leases still active: ${c.activeSandboxLeases ?? "not readable"} (${c.sandboxLeasesReleasedDuringWait} released while the cleanup waited), errors: ${c.errors.length}.`);
+    for (const error of c.errors) lines.push(`- ${error}`);
   }
   if (result.error) lines.push(`Error: ${result.error}`);
   return lines;
