@@ -46,23 +46,27 @@ export function registerIssueRecoveryWork(
   const fullBackstopMs = options.fullBackstopMs ?? options.backstopMs ?? ISSUE_RECOVERY_FULL_BACKSTOP_MS;
   function fullPasses() {
     const completedAt = new Map<string, number>(), changedAt = new Map<string, number>();
-    const scans = new Map<string, Date | null>();
+    const scans = new Map<string, { since: Date | null; startedAt: number }>();
     const lastFull = (companyId: string) => Math.max(completedAt.get("*") ?? 0, completedAt.get(companyId) ?? 0);
     const lastLook = (companyId: string) => Math.max(lastFull(companyId), changedAt.get(companyId) ?? 0);
     return {
       backstop: (scope: IssueRecoveryScope | undefined) => scope?.backstop ? lastLook(scope.companyId) + backstopMs : null,
       changedSince(scope: IssueRecoveryScope | undefined, key: string, firstPage: boolean): Date | null {
-        if (!scope?.backstop) return null;
-        if (firstPage || !scans.has(key)) scans.set(key, Date.now() - lastFull(scope.companyId) >= fullBackstopMs ? null
-          : new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS));
-        return scans.get(key) ?? null;
+        if (firstPage || !scans.has(key)) scans.set(key, { startedAt: Date.now(),
+          since: !scope?.backstop || Date.now() - lastFull(scope.companyId) >= fullBackstopMs ? null
+            : new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS) });
+        return scans.get(key)!.since;
       },
       loaded(scope: IssueRecoveryScope | undefined, key: string, complete: boolean) {
         if (!complete) return;
-        const changed = scans.get(key) ?? null;
+        const scan = scans.get(key);
         scans.delete(key);
-        if (changed && scope) changedAt.set(scope.companyId, Date.now());
-        else if (!scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) completedAt.set(scope?.companyId ?? "*", Date.now());
+        const startedAt = scan?.startedAt ?? Date.now();
+        if (scan?.since && scope) changedAt.set(scope.companyId, Math.max(changedAt.get(scope.companyId) ?? 0, startedAt));
+        else if (!scope?.issueId && (!isGraph(scope) || scope?.wholeCompany)) {
+          const companyKey = scope?.companyId ?? "*";
+          completedAt.set(companyKey, Math.max(completedAt.get(companyKey) ?? 0, startedAt));
+        }
       },
     };
   }
@@ -124,9 +128,10 @@ export function registerIssueRecoveryWork(
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         passes.loaded(scope, key, complete);
+        const keepUnseen = changedSince ? { keepUnseen: true as const } : {};
         const origin = !workSignalDebug.enabled ? undefined : !scope ? "reload" as const : scope.backstop ? "backstop" as const
           : scope.issueId || isGraph(scope) ? "hint" as const : "company" as const;
-        return { rows: rows.map(row => ({ ...row, dueAt: Date.now(), ...(origin ? { origin } : {}) })), complete };
+        return { rows: rows.map(row => ({ ...row, dueAt: Date.now(), ...(origin ? { origin } : {}) })), complete, ...keepUnseen };
       },
       check: async entry => {
         if (!enabled) return null;
@@ -170,7 +175,7 @@ export function registerIssueRecoveryWork(
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         passes.loaded(scope, key, complete);
         return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now(),
-          ...(scope?.backstop ? { fromBackstop: true as const } : {}) })), complete };
+          ...(scope?.backstop ? { fromBackstop: true as const } : {}) })), complete, ...(changedSince ? { keepUnseen: true as const } : {}) };
       },
       check: async entry => {
         if (!enabled) return null;
