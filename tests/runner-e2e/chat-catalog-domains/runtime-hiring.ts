@@ -85,6 +85,7 @@ export function gradeGovernedHire(value: unknown) {
  */
 async function openApprovalFromReply(ctx: ChatCatalogContext, state: Record<string, unknown>, runIds: string[], approval: HireApproval, name: string): Promise<OpenedApprovalLink> {
   const page = ctx.input.page; const prefix = ctx.input.fixtures.company.issuePrefix;
+  if (typeof prefix !== "string" || !prefix) throw new Error("Approval link inspection requires the actual company prefix");
   const replyIds = async () => (await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`))
     .filter(row => runIds.includes(String(row.createdByRunId)) && row.authorAgentId === ctx.input.fixtures.agent.id).map(row => row.id);
   // The reply can settle before its links render in the thread; wait briefly for them.
