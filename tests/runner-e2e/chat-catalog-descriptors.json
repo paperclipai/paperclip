@@ -685,7 +685,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-hiring.v3",
+    "oracleVersion": "paperclip.chat-catalog.runtime-hiring.v4",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
