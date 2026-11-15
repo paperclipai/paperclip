@@ -17,6 +17,11 @@ import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acp
 import { PAPERCLIP_RUNTIME_MCP_NAMES } from "../services/heartbeat/mcp-server-names.js";
 
 describe("adapter session codecs", () => {
+  it("uses identifier-safe names for the runtime MCP servers (#20492)", () => {
+    for (const name of Object.values(PAPERCLIP_RUNTIME_MCP_NAMES)) {
+      expect(name).toMatch(/^[a-zA-Z_][a-zA-Z0-9_]*$/);
+    }
+  });
   it.each([claudeSessionCodec.serialize, claudeSessionCodec.deserialize])("keeps only normalized Claude remote identity and valid conversation references", transform => {
     const params = {
       sessionId: "11111111-1111-4111-8111-111111111111",
