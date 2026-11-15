@@ -8,7 +8,7 @@ export type PreparedQueryStats = {
   unprepared: number;
   demoted: number;
   retried: number;
-  retriedTransactions: number;
+  restartedTransactions: number;
 };
 
 export type PreparedQueryState = {
@@ -19,7 +19,8 @@ export type PreparedQueryState = {
   stats: Omit<PreparedQueryStats, "texts">;
 };
 
-type Scope = { retry: "statement" | "first" | "none"; statements: number; firstFailure?: unknown };
+type Counts = { created: number; executed: number; setup: string[] };
+type Scope = { retry: "statement" | "restart" | "none"; begin?: string; counts: Counts };
 
 type PendingQuery = {
   options: Record<string, unknown>;
@@ -38,7 +39,7 @@ export function createPreparedQueryState(options: { limit?: number; maxLength?: 
     maxLength: options.maxLength ?? PREPARED_QUERY_TEXT_MAX_LENGTH,
     texts: new Set(),
     demoted: new Set(),
-    stats: { unprepared: 0, demoted: 0, retried: 0, retriedTransactions: 0 },
+    stats: { unprepared: 0, demoted: 0, retried: 0, restartedTransactions: 0 },
   };
 }
 
@@ -71,10 +72,37 @@ function demote(state: PreparedQueryState, text: string): void {
   state.stats.demoted++;
 }
 
+const TRANSACTION_SETUP = /^\s*set\s+transaction\b/i;
+
+function scope(retry: Scope["retry"], begin?: string, counts: Counts = { created: 0, executed: 0, setup: [] }): Scope {
+  return { retry, begin, counts };
+}
+
+function track(query: PendingQuery, current: Counts, text: string | undefined, decide: () => unknown) {
+  current.created++;
+  let explicit: unknown = "prepare" in query.options ? query.options.prepare : undefined;
+  const execution = { started: false, first: false };
+  Object.defineProperty(query.options, "prepare", {
+    enumerable: true,
+    configurable: true,
+    get: () => {
+      if (!execution.started) {
+        execution.started = true;
+        execution.first = current.executed === current.setup.length;
+        current.executed++;
+        if (execution.first && text !== undefined && query.options.simple && TRANSACTION_SETUP.test(text)) current.setup.push(text);
+      }
+      return explicit ?? decide();
+    },
+    set: (value: unknown) => { explicit = value; },
+  });
+  return { execution, explicit: () => explicit };
+}
+
 export function installPreparedQueries(client: unknown, state: PreparedQueryState = createPreparedQueryState()): void {
   const visited = new WeakSet<object>();
 
-  function visit(value: unknown, scope: Scope): void {
+  function visit(value: unknown, current: Scope): void {
     if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
     if (visited.has(value)) return;
     visited.add(value);
@@ -92,65 +120,71 @@ export function installPreparedQueries(client: unknown, state: PreparedQueryStat
         args[index] = { prepare: true, ...options };
         if (typeof text !== "string") return Reflect.apply(unsafe, this, args);
         const query = Reflect.apply(unsafe, this, args) as PendingQuery;
-        let explicit: unknown = (options !== undefined && "prepare" in options) || query.options.simple
-          ? query.options.prepare : undefined;
-        let position: number | undefined;
-        Object.defineProperty(query.options, "prepare", {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            position ??= ++scope.statements;
-            return explicit ?? shouldPrepare(state, text);
-          },
-          set: (value: unknown) => { explicit = value; },
-        });
+        const caller = (options !== undefined && "prepare" in options) || query.options.simple;
+        if (!caller) delete query.options.prepare;
+        const tracked = track(query, current.counts, text, () => shouldPrepare(state, text));
         const reject = query.reject;
         query.reject = (error: unknown) => {
-          if (explicit !== undefined || !isPreparedStatementFailure(error)) return reject(error);
+          if (tracked.explicit() !== undefined || !isPreparedStatementFailure(error)) return reject(error);
           demote(state, text);
-          if (scope.retry === "first" && position === 1) scope.firstFailure = error;
-          if (scope.retry !== "statement" || query.cursorFn || query.forEachFn || query.onlyDescribe || options?.onexecute) {
-            return reject(error);
+          if (query.cursorFn || query.forEachFn || query.onlyDescribe || options?.onexecute) return reject(error);
+          const params = index === 2 ? args[1] : [];
+          const unprepared = { ...options, prepare: false };
+          if (current.retry === "statement") {
+            state.stats.retried++;
+            const retry = Reflect.apply(unsafe, this, [text, params, unprepared]) as PendingQuery;
+            retry.isRaw = query.isRaw;
+            retry.then(query.resolve, reject);
+            return;
           }
-          state.stats.retried++;
-          const retry = Reflect.apply(unsafe, this, [text, index === 2 ? args[1] : [], { ...options, prepare: false }]) as PendingQuery;
+          if (current.retry !== "restart" || !tracked.execution.first || current.counts.created !== current.counts.executed) return reject(error);
+          state.stats.restartedTransactions++;
+          const run = (sql: string, ...rest: unknown[]) => Reflect.apply(unsafe, this, [sql, ...rest]) as PendingQuery;
+          const steps = [run("rollback"), run(`begin ${current.begin ?? ""}`.trim()), ...current.counts.setup.map(setup => run(setup))];
+          const retry = run(text, params, unprepared);
           retry.isRaw = query.isRaw;
-          retry.then(query.resolve, reject);
+          Promise.all([...steps, retry]).then(results => query.resolve(results[results.length - 1]), reject);
         };
         return query;
       } satisfies Method;
     }
-    for (const method of ["begin", "savepoint"]) {
+    for (const method of ["begin", "savepoint"] as const) {
       const original = target[method];
       if (typeof original !== "function") continue;
       target[method] = function (this: unknown, ...args: unknown[]) {
-        const attempt = (retried: boolean): Promise<unknown> => {
-          const inner: Scope = { retry: "first", statements: 0 };
-          const wrapped = args.map(arg => typeof arg !== "function" ? arg : function (this: unknown, ...params: unknown[]) {
-            visit(params[0], inner);
-            return Reflect.apply(arg, this, params);
-          });
-          return Promise.resolve(Reflect.apply(original, this, wrapped)).catch((error: unknown) => {
-            const failure = inner.firstFailure;
-            if (retried || failure === undefined
-              || (error !== failure && (error as { cause?: unknown } | null)?.cause !== failure)) throw error;
-            state.stats.retriedTransactions++;
-            return attempt(true);
-          });
-        };
-        return attempt(false);
+        const begin = method === "begin" && typeof args[0] === "string" ? args[0].replace(/[^a-z ]/ig, "") : undefined;
+        const inner = method === "begin" ? scope("restart", begin) : scope("none", undefined, current.counts);
+        const wrapped = args.map(arg => typeof arg !== "function" ? arg : function (this: unknown, ...params: unknown[]) {
+          visit(params[0], inner);
+          return Reflect.apply(arg, this, [counted(params[0], inner), ...params.slice(1)]);
+        });
+        return Reflect.apply(original, this, wrapped);
       } satisfies Method;
     }
     const reserve = target.reserve;
     if (typeof reserve === "function") {
       target.reserve = function (this: unknown, ...args: unknown[]) {
         return Promise.resolve(Reflect.apply(reserve, this, args)).then(reserved => {
-          visit(reserved, { retry: "none", statements: 0 });
+          visit(reserved, scope("none"));
           return reserved;
         });
       } satisfies Method;
     }
   }
 
-  visit(client, { retry: "statement", statements: 0 });
+  function counted(sql: unknown, current: Scope): unknown {
+    if (typeof sql !== "function") return sql;
+    return new Proxy(sql, {
+      apply(target, self, args) {
+        const result = Reflect.apply(target, self, args) as unknown;
+        const strings = args[0] as { raw?: unknown } | undefined;
+        if (Array.isArray(strings?.raw) && result instanceof Promise && "options" in result) {
+          track(result as unknown as PendingQuery, current.counts, undefined, () => true);
+        }
+        return result;
+      },
+    });
+  }
+
+  visit(client, scope("statement"));
 }
