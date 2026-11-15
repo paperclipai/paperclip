@@ -3,7 +3,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
+import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
+import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import { recoverToolCallback, TOOL_CALLBACK_INTERRUPTED_CODE } from "../control-plane/orphaned-tool-callback.js";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
@@ -12,7 +13,7 @@ const taskTool = { name: "get_task_context", description: "Read current task", i
 
 type SavedCommand = { commandId: string; type: string; status: string; payload: Record<string, unknown> };
 
-it("settles an earlier generation's in-flight tool call at attach even when that attach never finishes startup", async () => {
+it.each(["dispatched to its handler", "still before dispatch"] as const)("settles an earlier generation's in-flight tool call at attach even when that attach never finishes startup (%s at detach)", async stage => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-orphaned-tool-at-attach-"));
   const controlPlaneStatePath = join(stateDirectory, "control-plane", "control-plane-state.json");
   const server = createServer();
@@ -55,8 +56,28 @@ it("settles an earlier generation's in-flight tool call at attach even when that
   const recovered = vi.fn(async (call: { operationId: string; callId: string; input: unknown; admission?: "this_controller" | "earlier_controller" }) =>
     recoverToolCallback({ runId: identity.runId, call: { tool: call.operationId, callId: call.callId, arguments: call.input },
       admission: call.admission, recover: async () => null }));
+  let reached!: () => void;
+  const callReached = new Promise<void>(resolveReached => { reached = resolveReached; });
+  let releaseDispatch!: () => void;
+  const dispatchGate = new Promise<void>(resolveGate => { releaseDispatch = resolveGate; });
+  let gatedOutcome: Promise<unknown> | null = null;
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (coreOptions) {
+    const dispatch = coreOptions.onSemanticToolInput;
+    if (stage === "still before dispatch" && dispatch && !gatedOutcome) {
+      coreOptions = { ...coreOptions, onSemanticToolInput: call => {
+        reached();
+        gatedOutcome = dispatchGate.then(() => dispatch(call));
+        return gatedOutcome as ReturnType<typeof dispatch>;
+      } };
+    }
+    return new OriginalCore(coreOptions);
+  });
   const first = createCapabilityRunnerdCodexTransport(options);
-  first.transport.setServerRequestHandler(() => new Promise<Record<string, unknown>>(() => undefined));
+  first.transport.setServerRequestHandler(() => {
+    reached();
+    return new Promise<Record<string, unknown>>(() => undefined);
+  });
   const generations: Array<ReturnType<typeof createCapabilityRunnerdCodexTransport>> = [];
   let runnerPid: number | null = null;
   const savedToolResults = async () => (JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { commands: SavedCommand[] })
@@ -66,11 +87,11 @@ it("settles an earlier generation's in-flight tool call at attach even when that
     runnerPid = first.evidence().runnerPid;
     const runnerStartedAt = first.transport.processInfo!().startedAt;
     await first.transport.request("turn/start", { input: [{ type: "text", text: "Read current task" }] });
-    await vi.waitFor(async () => {
-      const saved = JSON.parse(await readFile(controlPlaneStatePath, "utf8")) as { committedEvents: Array<{ eventType: string }> };
-      expect(saved.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
-    }, { timeout: 10_000 });
+    await callReached;
     await first.detachControllerForRestart();
+    releaseDispatch();
+    await (gatedOutcome as Promise<unknown> | null)?.catch(() => undefined);
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
     expect(await savedToolResults()).toEqual([]);
 
     const adopt = (graceMs?: number) => {
@@ -110,6 +131,8 @@ it("settles an earlier generation's in-flight tool call at attach even when that
     }, { timeout: 10_000 });
     expect(recovered).toHaveBeenCalledTimes(1);
   } finally {
+    releaseDispatch();
+    coreSpy.mockRestore();
     for (const generation of generations.reverse()) await generation.transport.close().catch(() => undefined);
     await first.transport.close().catch(() => undefined);
     if (runnerPid) {
