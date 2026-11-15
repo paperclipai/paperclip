@@ -1,7 +1,7 @@
 import { readPhotonIdleIncomingProof } from "../../services/chat-channels/imessage-photon/idle-incoming.js";
 import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
 import { parseIdleCapabilities, type VerifiedIdleCapabilities } from "../../services/idle-incoming-wake-capability.js";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import { createChatSdkRuntime, type CreateChatSdkEndpointRuntimeOptions } from "
 import { ChatRuntime, createChatRuntime } from "../../services/chat-runtime.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { PhotonChatAdapter } from "../../services/photon/adapter.js";
+import { PhotonChatAdapter, photonThreadId } from "../../services/photon/adapter.js";
 import { PhotonReceiver } from "../../services/photon/receiver.js";
 import { credentialFingerprint } from "../../services/chat-channels/credential-fingerprint.js";
 import { createPhotonExternalRuntimeOwner } from "../../services/chat-channels/imessage-photon/external-runtime.js";
@@ -401,7 +401,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     await expect(service.configure(endpointId, { action: "remove" }, currentAdmin, authority)).rejects.toMatchObject({ status: 409 });
   });
 
-  async function managedConfiguration(useNormalRegistry = false) {
+  async function managedConfiguration(useNormalRegistry = false, lineId = "line", phoneNumber = "+15555550100") {
     const createRegistry = useNormalRegistry ? createChatRuntime : createChatSdkRuntime;
     // The real connector object/composition is retained; only the provider RPC
     // port is controlled here. This is not managed distribution/auth proof.
@@ -419,7 +419,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       expect(url.origin).toBe("https://spectrum.photon.codes");
       if (url.pathname === "/projects/project/" && init?.method === "GET") return Response.json({ succeed: true, data: { id: "project", name: "Controlled Photon" } });
       if (url.pathname === "/projects/project/imessage/tokens" && init?.method === "POST") return Response.json({ succeed: true,
-        data: { type: "dedicated", auth: { line: "controlled-line-token" }, numbers: { line: "+15555550100" }, expiresIn: 300 } });
+        data: { type: "dedicated", auth: { [lineId]: "controlled-line-token" }, numbers: { [lineId]: phoneNumber }, expiresIn: 300 } });
       throw new Error("unexpected controlled Spectrum request");
     };
     let runtime = createRegistry(); runtimes.push(runtime);
@@ -428,7 +428,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     const endpoint = await service.create(f.companyId, { provider: "imessage-photon", assignedAgentId: f.agentId }, f.userId);
     if (!endpoint) throw new Error("normal Photon endpoint creation failed");
     await service.configure(endpoint.id, { action: "configure", credentials: { projectSecret: "controlled-project-secret" },
-      photon: { allocation: "dedicated", projectId: "project", lineId: "line" } }, f.userId);
+      photon: { allocation: "dedicated", projectId: "project", lineId } }, f.userId);
     const [configured] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
     if (!configured) throw new Error("normal configured endpoint absent");
     // Explicit controlled already-enrolled history, not an SDK enrollment/close
@@ -441,7 +441,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       runtimeGeneration: Number(Reflect.get(configured.setup, "runtimeGeneration") ?? 0), credentialReferences: credentialFingerprint(connection.credentialSecretRefs), subject: f.userId };
     const fingerprint = "b".repeat(64);
     const binding = { version: 1, instanceId: "instance", environment: "test", companyId: f.companyId, endpointId: endpoint.id, connectionId: connection.id,
-      runtimeGeneration: identity.runtimeGeneration, projectId: "project", lineId: "line", phoneNumber: "+15555550100", allocation: "dedicated", credentialFingerprint: fingerprint,
+      runtimeGeneration: identity.runtimeGeneration, projectId: "project", lineId, phoneNumber, allocation: "dedicated", credentialFingerprint: fingerprint,
       bindingId: "photon-receiver:" + photonHash(["instance", f.companyId, endpoint.id, connection.id, identity.runtimeGeneration, fingerprint]),
       intakeAfter: "2099-01-01T00:00:00.000Z", maxFrameBytes: 1024 };
     const retained = photonExternalStateSchema.parse({ version: 1, identity, binding, handoffId: randomUUID(), localResourceId: null, phase: "external",
@@ -537,13 +537,14 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
         expect(control.chat.isArchived).toBe(false);
         const [currentEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
         expect(currentEndpoint?.allowDirectMessages).toBe(true); // Policy unchanged.
+        const threadId = photonThreadId({ lineId, chatGuid: control.chat.guid, isGroup: control.chat.isGroup });
         const [resource] = await db.insert(chatEndpointResources).values({ companyId: f.companyId,
-          endpointId: endpoint.id, type: "direct_message", providerResourceId: control.threadId,
+          endpointId: endpoint.id, type: "direct_message", providerResourceId: threadId,
           label: "Controlled Photon direct conversation", availability: "available", enabled: true }).returning();
         if (!resource) throw new Error("existing Photon direct-message resource fixture absent");
         const [conversation] = await db.insert(chatConversations).values({ companyId: f.companyId,
-          endpointId: endpoint.id, resourceId: resource.id, issueId: f.issueId, externalConversationId: control.threadId,
-          externalThreadId: control.threadId, externalLabel: "Controlled Photon direct conversation", isDirectMessage: true }).returning();
+          endpointId: endpoint.id, resourceId: resource.id, issueId: f.issueId, externalConversationId: threadId,
+          externalThreadId: threadId, externalLabel: "Controlled Photon direct conversation", isDirectMessage: true }).returning();
         if (!conversation) throw new Error("normal outbound conversation fixture absent");
         const published = await service.publishBoardMessage(endpoint.id, conversation.id,
           "Controlled ordinary sender bootstrap", randomUUID(), f.userId);
@@ -1399,6 +1400,72 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledTimes(allocations);
     } finally { await db.update(toolConnections).set({ credentialSecretRefs: original.credentialSecretRefs }).where(eq(toolConnections.id, c.connection.id)); }
   });
+
+  it("Photon idle SQL proof includes two distinct external connections and refuses a changed or removed retained member", async () => {
+    const first = await managedConfiguration(), firstControl = photonFixture();
+    await first.reconstructExternal(firstControl);
+    const firstRuntime = first.runtime.get(first.endpoint.id);
+    if (!firstRuntime) throw new Error("first normal Photon sender absent");
+    const firstAdapter = firstRuntime.getProviderAdapter();
+    if (!(firstAdapter instanceof PhotonChatAdapter)) throw new Error("first normal Photon adapter absent");
+    await firstAdapter.drainUsefulClient();
+    await first.service.shutdown(); // Exact prior sender is really joined, not a fabricated closed descriptor.
+
+    const second = await managedConfiguration(false, "line-two", "+15555550101"), secondControl = photonFixture();
+    await second.reconstructExternal(secondControl);
+    const secondRuntime = second.runtime.get(second.endpoint.id);
+    if (!secondRuntime) throw new Error("second normal Photon sender absent");
+    const secondAdapter = secondRuntime.getProviderAdapter();
+    if (!(secondAdapter instanceof PhotonChatAdapter)) throw new Error("second normal Photon adapter absent");
+    await secondAdapter.drainUsefulClient();
+    await second.runtime.removeEndpoint(second.endpoint.id); // Normal Runtime shutdown joins its exact sender-close CAS.
+    const states = await Promise.all([first.state.read(PHOTON_EXTERNAL_STATE), second.state.read(PHOTON_EXTERNAL_STATE)]);
+    const parsed = states.map(readPhotonExternalState);
+    const one = parsed[0], two = parsed[1];
+    if (!one || !two) throw new Error("both normal retained external handoffs required");
+    expect(one.senderResource?.closed).toBe(true);
+    expect(two.senderResource?.closed).toBe(true);
+    expect(one.identity.connectionId).not.toBe(two.identity.connectionId);
+    expect(one.binding.lineId).not.toBe(two.binding.lineId);
+    const generation = "d".repeat(64), ownerId = randomUUID();
+    const broker = { version: 1 as const, instanceId: one.binding.instanceId, generation, count: 2,
+      bindingsFingerprint: photonCoverageFingerprint([one, two].map(state => ({ binding: state.binding,
+        handoffId: state.handoffId, subject: state.identity.subject, deliveredThrough: state.acceptedSequence }))) };
+    const capabilities = parseIdleCapabilities({ incomingWake: { version: 1, ownerId, generation,
+      routes: ["photon-broker-events-v1"], photonBroker: broker } }) as VerifiedIdleCapabilities;
+    const budgets: number[] = [];
+    const proof = () => db.transaction(async tx => {
+      const started = Date.now(); let queries = 0;
+      const remaining = () => { const ms = 2000 - (Date.now() - started); if (ms <= 0) throw new Error("normal shared time budget"); return ms; };
+      const result = await readPhotonIdleIncomingProof(tx, { capabilities,
+        identity: { instanceId: one.binding.instanceId, environment: one.binding.environment }, receiverOwner: db,
+        receiverBound: true, inspectionNow: Date.now(), remaining,
+        beforeRead: async () => { queries += 2; if (queries > 64) throw new Error("normal shared query budget");
+          await tx.execute(sql`select set_config('statement_timeout', ${`${remaining()}ms`}, true)`); } });
+      budgets.push(queries); return result;
+    });
+    const ordered = [one, two].sort((a, b) => a.identity.endpointId.localeCompare(b.identity.endpointId));
+    const expected = { endpointIds: ordered.map(state => state.identity.endpointId), connectionIds: ordered.map(state => state.identity.connectionId) };
+    const allocations = vi.mocked(photonClients.createOwnedPhotonClient).mock.calls.length;
+    expect(await proof()).toEqual(expected);
+    try {
+      await second.state.update(PHOTON_EXTERNAL_STATE, () => ({ ...two, acceptedSequence: (two.acceptedSequence ?? 0) + 1 }));
+      expect(await proof()).toBeUndefined(); // Exact old aggregate cannot cover one changed member.
+    } finally { await second.state.update(PHOTON_EXTERNAL_STATE, () => states[1]); }
+    expect(await proof()).toEqual(expected);
+    const key = `photon:${createHash("sha256").update(PHOTON_EXTERNAL_STATE).digest("hex")}`;
+    const removed = await db.delete(chatSdkState).where(and(eq(chatSdkState.companyId, f.companyId),
+      eq(chatSdkState.endpointId, first.endpoint.id), eq(chatSdkState.stateKey, key))).returning();
+    expect(removed).toHaveLength(1);
+    try { expect(await proof()).toBeUndefined(); }
+    finally { await first.state.update(PHOTON_EXTERNAL_STATE, () => states[0]); }
+    expect(await proof()).toEqual(expected);
+    expect(await first.state.read(PHOTON_EXTERNAL_STATE)).toEqual(states[0]);
+    expect(await second.state.read(PHOTON_EXTERNAL_STATE)).toEqual(states[1]);
+    expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledTimes(allocations);
+    expect(budgets).toHaveLength(5);
+    for (const queries of budgets) { expect(queries).toBeGreaterThan(0); expect(queries).toBeLessThanOrEqual(64); }
+  }, 25_000);
 
   it("normal Photon service shutdown waits for every admitted handoff even when an earlier handoff rejects", async () => {
     const originalFailure = new Error("controlled original Photon endpoint discovery refusal");
