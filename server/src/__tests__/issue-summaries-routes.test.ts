@@ -12,6 +12,7 @@ import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { recentSubtaskParents } from "../realtime/recent-subtask-parents.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("bounded issue summaries", () => {
@@ -107,6 +108,25 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     expect(await recentSubtaskParents(ctx.db, f.actor, f.companyId, {
       ...payload, details: { parentId: foreign.rows[0]!.id, _previous: { parentId: f.rows[0]!.id } },
     })).toEqual({ recentSubtaskParentIds: [f.rows[1]!.id] });
+  });
+
+  it("publishes a parent event when an uncached child is deleted", async () => {
+    const f = await fixture();
+    const parentId = f.rows[0]!.id;
+    const [child] = await ctx.db.insert(issues).values({ companyId: f.companyId, parentId, title: "Uncached child" }).returning();
+    const events: Array<Record<string, unknown>> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => { if (event.type === "activity.logged") events.push(event.payload); });
+    try {
+      await request(app(f.actor)).delete(`/api/issues/${child!.id}`).expect(200);
+      const deleted = events.find(event => event.action === "issue.deleted")!;
+      expect(deleted.details).toMatchObject({ parentId });
+      expect(await recentSubtaskParents(ctx.db, f.actor, f.companyId, deleted)).toEqual({ recentSubtaskParentIds: [parentId] });
+      // The deleted task no longer passes live read authorization. Its
+      // independently authorized parent still receives a content-free update.
+      expect(events).toContainEqual(expect.objectContaining({ action: "issue.child_deleted", entityType: "issue", entityId: parentId }));
+      const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: parentId, navigation: "true" }).expect(200);
+      expect(res.body[0]).toMatchObject({ subtaskCount: 0, unreadSubtaskCount: 0 });
+    } finally { unsubscribe(); }
   });
 
   it("counts only readable subtasks and preserves each person's unread state beyond ten children", async () => {
@@ -211,7 +231,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const f = await fixture();
     const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Chat", role: "general", adapterType: "process" }).returning();
     const issue = f.rows[0]!;
-    await ctx.db.update(issues).set({ status: "in_review", assigneeAgentId: agent!.id }).where(eq(issues.id, issue.id));
+    await ctx.db.update(issues).set({ status: "in_review", assigneeAgentId: agent!.id, parentId: f.rows[1]!.id }).where(eq(issues.id, issue.id));
     const [application] = await ctx.db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "chat" }).returning();
     const connectionId = randomUUID();
     await ctx.db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId: application!.id, uid: connectionId, name: "Slack", transport: "chat_sdk", connectionPurpose: "channel" });
@@ -221,6 +241,12 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const read = () => request(app(f.actor)).get(url(f.companyId)).query({ ids: issue.id }).expect(200);
     const waiting = (await read()).body[0];
     expect(waiting.externalConversationState).toBe("waiting");
+    const children = await request(app(f.actor)).get(`/api/companies/${f.companyId}/issues`).query({
+      parentId: f.rows[1]!.id, view: "rows", includeRoutineExecutions: "true", includeReadState: "true",
+    }).expect(200);
+    expect(children.body.map((row: { id: string }) => row.id)).toEqual([issue.id]);
+    const count = await request(app(f.actor)).get(url(f.companyId)).query({ ids: f.rows[1]!.id, navigation: "true" }).expect(200);
+    expect(count.body[0].subtaskCount).toBe(children.body.length);
     expect((await issueServices.issueService(ctx.db).getById(issue.id))?.externalConversationState).toBe("waiting");
     await ctx.db.update(chatConversations).set({ state: "active" }).where(eq(chatConversations.id, conversation!.id));
     const active = (await read()).body[0];

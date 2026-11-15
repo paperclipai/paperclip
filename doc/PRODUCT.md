@@ -100,7 +100,8 @@ groups omit tasks already shown in the other sections and disappear when empty.
 
 Sidebar Recents shows readable direct subtasks below a recent parent. Each group
 can fold independently, starts with at most ten children, and loads more on
-request. A selected child beyond the first ten replaces the last preview row.
+request. Waiting external chat children remain visible in explicit child lists.
+A selected child beyond the first ten replaces the last preview row.
 Children already in recent history appear once under their recent root parent.
 Orphans remain in the main list. Standard Recents and Classic Recent Tasks use
 the same groups; Classic keeps its existing parent action menus. Child reads stop

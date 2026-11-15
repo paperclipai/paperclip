@@ -67,6 +67,8 @@ it('measures visibility, paging and real live-event invalidation fanout',async()
     expect(report.newChildBeyondPreview.requestsByParent).toEqual({'parent-7':1});
     report.reparent=await refresh('new-child', ['parent-6','parent-7']);
     expect(report.reparent.requestsByParent).toEqual({'parent-6':1,'parent-7':1});
+    report.uncachedDeletion=await refresh('parent-7', [], 'issue.child_deleted');
+    expect(report.uncachedDeletion.requestsByParent).toEqual({'parent-7':1});
     report.ownRead=await refresh('parent-7:0', ['parent-7'], 'issue.read_marked', user);
     expect(report.ownRead.requestsByParent).toEqual({'parent-7':1});
     report.otherRead=await refresh('parent-7:0', ['parent-7'], 'issue.read_marked', 'other-user');

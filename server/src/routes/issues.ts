@@ -17457,6 +17457,22 @@ export function issueRoutes(
       action: "issue.deleted",
       entityType: "issue",
       entityId: issue.id,
+      details: { parentId: issue.parentId },
+    });
+
+    // The removed child can no longer pass live read authorization. Notify
+    // its parent separately; delivery authorizes that parent and exposes no
+    // deleted-child identity or content to people who can only read the parent.
+    if (issue.parentId) await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.child_deleted",
+      entityType: "issue",
+      entityId: issue.parentId,
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
