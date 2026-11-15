@@ -275,6 +275,28 @@ describeEmbeddedPostgres("activity service", () => {
     expect(rows.map((row) => row.action)).not.toContain("private.changed");
   });
 
+  it("reports the queued messages a run's own first turn took, not a predecessor's", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const runId = randomUUID(), retryRunId = randomUUID(), taken = [randomUUID(), randomUUID()];
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "running",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "First turn", status: "in_progress",
+      priority: "medium", assigneeAgentId: agentId });
+    const receipt = { schema: "paperclip.first-turn-queued-input.v1", runId, wakeupRequestIds: [],
+      commentIds: taken, claimedAt: "2026-11-15T00:00:00.000Z" };
+    // A retry copies its predecessor's context; that receipt is not its own.
+    await db.insert(heartbeatRuns).values([runId, retryRunId].map((id, index) => ({
+      id, companyId, agentId, scopeKind: "issue", issueId, invocationSource: "assignment",
+      status: index ? "running" : "failed", createdAt: new Date(Date.now() - (2 - index) * 1000),
+      contextSnapshot: { issueId, firstTurnQueuedInput: receipt },
+    })));
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+    expect(runs.find(run => run.runId === runId)?.firstTurnCommentIds).toEqual(taken);
+    expect(runs.find(run => run.runId === retryRunId)?.firstTurnCommentIds ?? null).toBeNull();
+  });
+
   it.each([null, "native_provider_model_rejected", "adapter_failed"])("returns compact issue runs with bounded model rejection details: %s", async (errorCode) => {
     const companyId = randomUUID();
     const agentId = randomUUID();

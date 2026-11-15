@@ -549,6 +549,12 @@ export function activityService(db: Db) {
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
           wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          // Queued messages this run's first turn took. A retry copies its
+          // predecessor's context, so only a receipt naming this run counts.
+          firstTurnCommentIds: sql<string[] | null>`case
+            when ${heartbeatRuns.contextSnapshot} #>> '{firstTurnQueuedInput,runId}' = ${heartbeatRuns.id}::text
+              and jsonb_typeof(${heartbeatRuns.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}') = 'array'
+            then ${heartbeatRuns.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}' end`,
           queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
