@@ -51,6 +51,7 @@ import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import { isObjectJournalBusyError } from "./object-byte-journal.js";
 import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { invalidateInstanceSettingsCache } from "./instance-settings-cache.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -2161,6 +2162,6 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           persistedSharingPreference,
           sharingEnabled: sharedWithLabs,
         };
-      }),
+      }).finally(invalidateInstanceSettingsCache),
   };
 }

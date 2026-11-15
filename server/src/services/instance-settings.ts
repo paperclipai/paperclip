@@ -59,6 +59,7 @@ import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
 import { forbidden } from "../errors.js";
+import { invalidateInstanceSettingsCache, readThroughInstanceSettings } from "./instance-settings-cache.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -552,8 +553,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     throw new Error("Failed to initialize instance settings row");
   }
 
+  function getCachedRow(runner: InstanceSettingsWriteDb = db) {
+    return readThroughInstanceSettings(runner, () => getOrCreateRow(runner));
+  }
+
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getCachedRow()),
 
     update: async (
       patch: PatchInstanceSettings,
@@ -576,13 +581,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      invalidateInstanceSettingsCache();
       return toInstanceSettings(updated ?? current);
     },
 
     getGeneral: async (
       readOptions?: { db?: InstanceSettingsWriteDb },
     ): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow(readOptions?.db);
+      const row = await getCachedRow(readOptions?.db);
       return toGeneralView(row.general);
     },
 
@@ -593,7 +599,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
-      const row = await getOrCreateRow();
+      const row = await getCachedRow();
       return toExperimentalView(row.experimental);
     },
 
@@ -617,6 +623,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      invalidateInstanceSettingsCache();
       return toInstanceSettings(updated ?? current);
     },
 
@@ -695,6 +702,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           .where(eq(instanceSettings.id, current.id))
           .returning();
       });
+      invalidateInstanceSettingsCache();
       return toInstanceSettings(updated ?? current);
     },
 
