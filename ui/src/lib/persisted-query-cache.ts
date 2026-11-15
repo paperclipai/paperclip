@@ -565,9 +565,6 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       const userId = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
       const saved = userId ? readSaved(userId) : [];
       const refusal = classifyError(event.action.error);
-      // A missing plan (404) is a normal answer, and a 404 on a run or
-      // document read does not say the task is gone; only the task record and
-      // its comments speak for the task itself.
       const revokesTask = issueDetail
         ? ["auth", "forbidden", "not_found"].includes(refusal)
         : chatRef !== null && (["auth", "forbidden"].includes(refusal) || (refusal === "not_found" && event.query.queryKey[1] === "comments"));
