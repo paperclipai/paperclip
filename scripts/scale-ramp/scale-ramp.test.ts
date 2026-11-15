@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
+import { cleanupRun } from "./cleanup.ts";
 import { PaperclipClient, Redactor } from "./client.ts";
 import { metricsCredential, parseOptions, QUALIFIED_OPENCODE_MODEL, readSecrets } from "./config.ts";
 import { evaluate, type StepMetrics } from "./criteria.ts";
@@ -15,7 +16,7 @@ import { Ramp, serverMetrics } from "./ramp.ts";
 import { verdictOf, type RampResult } from "./report.ts";
 import { ensureAgents, prepareCompany } from "./setup.ts";
 import { distribution } from "./stats.ts";
-import { emptyState, fileStateStore, mapLimit, type RunState } from "./state.ts";
+import { agentName, emptyState, fileStateStore, mapLimit, type RunState } from "./state.ts";
 import { runTiming } from "./workload.ts";
 
 const TOKEN = "board-token-SECRET-4f2a9c";
@@ -244,6 +245,15 @@ describe("criteria", () => {
     assert.equal(recovered.failed_run_rate, "pass");
     assert.equal(byId(evaluate(metrics({ runsEnded: 20, runsFailed: 1, runsFailedRecovered: 1 }), thresholds)).failed_run_rate, "fail");
     assert.equal(byId(evaluate(metrics({ runsEnded: 0 }), thresholds)).failed_run_rate, "not_measured");
+  });
+
+  it("compares the unrounded failed-run share with the limit", () => {
+    const justOver = evaluate(metrics({ runsEnded: 49, runsFailed: 1, runsFailedRecovered: 1 }), thresholds).find(result => result.id === "failed_run_rate")!;
+    assert.equal(justOver.status, "fail");
+    assert.equal(justOver.observed, 2);
+    const zero = parseOptions(["--base-url", ORIGIN, "--target-kind", "test-stack", "--max-failed-run-percent", "0"], {}, 0).thresholds;
+    assert.equal(byId(evaluate(metrics({ runsEnded: 2_500, runsFailed: 1, runsFailedRecovered: 1 }), zero)).failed_run_rate, "fail");
+    assert.equal(byId(evaluate(metrics({ runsEnded: 50, runsFailed: 1, runsFailedRecovered: 1 }), thresholds)).failed_run_rate, "pass");
   });
 
   it("reads first token and first activity from run spans, with an event fallback", () => {
@@ -672,7 +682,7 @@ describe("ramp against the fake API", () => {
   it("records model spend from Paperclip's cost records, which the run list does not carry", async () => {
     const out = await tempDir();
     const h = harness({ costPerRunUsd: 0.25 });
-    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    await main(baseArgs(out, ["--steps", "2", "--drain-minutes", "0"]), h.deps);
     const result = await readResult(out);
     const finished = [...h.fake.runs.values()].filter(run => run.status === "succeeded").length;
     assert.ok(finished > 0);
@@ -682,6 +692,78 @@ describe("ramp against the fake API", () => {
     const h2 = harness({ costPerRunUsd: 3 });
     await main(baseArgs(capped, ["--steps", "2", "--hold-minutes", "20"]), h2.deps);
     assert.equal((await readResult(capped)).stop!.criterion, "spend_cap");
+  });
+
+  it("keeps the spend of a ramp that crosses a month boundary", async () => {
+    const out = await tempDir();
+    const h = harness({ costPerRunUsd: 0.25 });
+    h.clock.t = Date.parse("2026-11-30T23:58:00.000Z");
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    const finished = [...h.fake.runs.values()].filter(run => run.status === "succeeded");
+    assert.ok(finished.some(run => new Date(run.finishedAt!).getUTCMonth() === 10), "some spend is in the earlier month");
+    assert.ok(finished.some(run => new Date(run.finishedAt!).getUTCMonth() === 11), "some spend is in the later month");
+    assert.equal(result.recordedSpendUsd, Math.round(finished.length * 25) / 100);
+  });
+
+  it("stops when recorded spend cannot be read, and reports spend as not measured", async () => {
+    const out = await tempDir();
+    const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/costs/by-agent") && count > 2
+      ? { status: 503, body: "{\"error\":\"unavailable\"}" } : null });
+    const code = await main(baseArgs(out, ["--steps", "2", "--hold-minutes", "20"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "spend_unreadable");
+    assert.match(result.stop!.reason, /could not be read 3 times in a row/);
+    assert.equal(result.recordedSpendUsd, null);
+    assert.match(result.sources.modelSpend!, /not measured/);
+  });
+
+  it("counts a run that Paperclip retries on the same run id once, as recovered, with a share of at most 100%", async () => {
+    const out = await tempDir();
+    const h = harness({ failRun: index => index === 2, retrySameRunAfterMs: 30_000, runDurationMs: 20_000 });
+    await main(baseArgs(out, ["--steps", "2", "--hold-minutes", "4", "--max-failed-run-percent", "50", "--min-concurrency-ratio", "0.5"]), h.deps);
+    const result = await readResult(out);
+    const metrics = result.steps[0]!.metrics;
+    const retried = [...h.fake.runs.values()].find(run => run.recovery)!;
+    assert.equal(retried.status, "succeeded", "the failed run itself finished on its retry");
+    assert.equal(metrics.runsFailed, 1);
+    assert.equal(metrics.runsFailedRecovered, 1);
+    assert.equal(metrics.tasksNeedingRetry, 0);
+    assert.ok(metrics.runsEnded >= metrics.runsFailed);
+    const rate = result.steps[0]!.criteriaFinal.find(criterion => criterion.id === "failed_run_rate")!;
+    assert.equal(rate.observed, Math.round(1_000 / metrics.runsEnded) / 10);
+    assert.equal(rate.status, "pass");
+  });
+
+  it("keeps a failed run in the ended runs while Paperclip retries it on the same run id", async () => {
+    const out = await tempDir();
+    const h = harness({ failRun: index => index === 2, retrySameRunAfterMs: 30_000, sameRunRetryDurationMs: 60 * 60_000, runDurationMs: 20_000 });
+    await main(baseArgs(out, ["--steps", "2", "--hold-minutes", "4", "--drain-minutes", "0", "--max-failed-run-percent", "50",
+      "--min-concurrency-ratio", "0.5"]), h.deps);
+    const metrics = (await readResult(out)).steps[0]!.metrics;
+    const succeeded = [...h.fake.runs.values()].filter(run => run.status === "succeeded").length;
+    assert.equal(metrics.runsFailed, 1);
+    assert.equal(metrics.runsFailedPending, 1, "the retry is still running");
+    assert.equal(metrics.runsEnded, succeeded + 1, "the retrying run still counts as ended once");
+  });
+
+  it("keeps the termination wait to a bounded number of reads for a large run", async () => {
+    const out = await tempDir();
+    const h = harness({ terminationDelayMs: 60 * 60_000 });
+    const options = parseOptions(baseArgs(out, ["--steps", "2"]), h.deps.env, h.clock.now());
+    const api = new PaperclipClient(options.target, TOKEN, h.deps.fetcher, h.clock, new Redactor([TOKEN]));
+    const state: RunState = emptyState(options.label, options.target.baseUrl, h.clock.now());
+    await prepareCompany({ api, options, state, store: fileStateStore(options.outDir), credential: PROVIDER_KEY, log: () => {} });
+    for (let index = 0; index < 1_000; index += 1) {
+      const agent = await api.post<{ id: string }>(`/api/companies/${state.companyId}/agents`, { name: agentName(options.label, index) });
+      state.agentIds.push(agent.id);
+    }
+    const before = h.fake.requests.length;
+    const report = await cleanupRun({ api, clock: h.clock, label: options.label, state });
+    const reads = h.fake.requests.slice(before).filter(request => request.method === "GET" && /\/api\/agents\/[0-9a-f-]+$/.test(new URL(request.url).pathname)).length;
+    assert.equal(report.agentsStillTerminating.length, 1_000);
+    assert.ok(reads <= 5_000, `termination reads: ${reads}`);
   });
 
   it("reports board latency per route", async () => {

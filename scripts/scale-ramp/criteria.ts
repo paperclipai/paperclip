@@ -83,7 +83,7 @@ export const CRITERIA: readonly Criterion[] = [
     description: "Failed or timed-out runs as a share of ended runs, recovered ones included (%)",
     threshold: t => `<= ${Math.round(t.maxFailedRunRatio * 1_000) / 10}%`,
     evaluate: (m, t) => m.runsEnded === 0 ? { status: "not_measured", observed: null }
-      : below(Math.round((m.runsFailed / m.runsEnded) * 1_000) / 10, t.maxFailedRunRatio * 100, false),
+      : { status: m.runsFailed / m.runsEnded <= t.maxFailedRunRatio ? "pass" : "fail", observed: Math.round((m.runsFailed / m.runsEnded) * 1_000) / 10 },
   },
   {
     id: "tasks_rested_not_done_zero", source: "harness", immediate: false,

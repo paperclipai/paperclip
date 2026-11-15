@@ -53,6 +53,7 @@ export function incompleteReasons(outcome: RampOutcome | null): string[] {
   const missing = notMeasured(outcome);
   if (missing.length) reasons.push(`criteria not measured: ${missing.join(", ")}`);
   if (outcome.taskCapReached) reasons.push("the task cap was reached, so a step may have run below its concurrency");
+  if (outcome.recordedSpendUsd === null) reasons.push("recorded model spend could not be read at the end of the run");
   if (outcome.openTasksAtEnd > 0) reasons.push(`${outcome.openTasksAtEnd} tasks were still open when the drain ended`);
   return reasons;
 }
@@ -103,7 +104,8 @@ export function buildResult(input: {
     sources: {
       runsAndTasks: outcome?.runsListTruncated ? "API (company run list was full; open tasks without a listed run were read one by one)" : "API",
       boardLatency: "harness GET mix (dashboard, issues, agents, live runs, sidebar badges), with a distribution per route",
-      modelSpend: "costs by agent for the run's agents (Paperclip's recorded cost events)",
+      modelSpend: outcome?.spendReadError ? `not measured: the last read of costs by agent failed (${outcome.spendReadError})`
+        : "costs by agent for the run's agents over all time (Paperclip's recorded cost events)",
       firstTokenAndActivity: `run events of up to ${options.eventSamplePerStep} succeeded runs per step`,
       serverMetrics: outcome?.metricsSource === "endpoint" ? "PAPERCLIP_SCALE_METRICS_URL"
         : outcome?.metricsSource === "unavailable" ? "PAPERCLIP_SCALE_METRICS_URL gave no readable sample: not measured" : "not provided: not measured",

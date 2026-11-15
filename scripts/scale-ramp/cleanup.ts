@@ -24,6 +24,9 @@ export interface CleanupReport {
 export const LIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 const PARALLELISM = 8;
 const TERMINATED = new Set(["terminated", "rejected"]);
+const TERMINATION_READS_PER_POLL = 200;
+const TERMINATION_POLL_MS_PER_AGENT = 30;
+const TERMINATION_POLL_MAX_MS = 30_000;
 
 export interface CleanupInput {
   api: PaperclipClient;
@@ -141,14 +144,21 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
   });
   const pending = new Set(agentIds);
   const waitMs = input.terminateWaitMs ?? 300_000;
-  for (const until = clock.now() + waitMs; pending.size;) {
-    await mapLimit([...pending], PARALLELISM, async id => {
-      const agent = await readAgent(id);
-      if (!agent || TERMINATED.has(String(agent.lifecycleState))) pending.delete(id);
-    });
-    if (!pending.size || clock.now() >= until) break;
-    await clock.sleep(pollMs);
+  const readPending = async (ids: string[]) => mapLimit(ids, PARALLELISM, async id => {
+    const agent = await readAgent(id);
+    if (!agent || TERMINATED.has(String(agent.lifecycleState))) pending.delete(id);
+  });
+  let cursor = 0;
+  for (const until = clock.now() + waitMs; pending.size && clock.now() < until;) {
+    const ids = [...pending];
+    const start = cursor % ids.length;
+    const batch = [...ids.slice(start), ...ids.slice(0, start)].slice(0, TERMINATION_READS_PER_POLL);
+    cursor = start + batch.length;
+    await readPending(batch);
+    if (!pending.size) break;
+    await clock.sleep(Math.min(TERMINATION_POLL_MAX_MS, Math.max(pollMs, pending.size * TERMINATION_POLL_MS_PER_AGENT)));
   }
+  if (pending.size) await readPending([...pending]);
   report.agentsStillTerminating = [...pending];
   if (pending.size) {
     report.errors.push(`${pending.size} agents had not completed termination after ${Math.round(waitMs / 60_000)} min, so they were not deleted: `

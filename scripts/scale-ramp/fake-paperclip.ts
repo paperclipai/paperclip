@@ -28,6 +28,8 @@ export interface FakeConfig {
   failRun: (startIndex: number) => boolean;
   retryOnFailure: boolean;
   recoverFailedRunAfterMs: number | null;
+  retrySameRunAfterMs: number | null;
+  sameRunRetryDurationMs: number | null;
   terminationDelayMs: number;
   leaseLingerMs: number;
   costPerRunUsd: number;
@@ -47,6 +49,7 @@ interface FakeRun {
   finishedAt: number | null;
   willFail: boolean;
   recovery: boolean;
+  retryAt?: number | null;
 }
 
 export interface RequestLog {
@@ -91,6 +94,8 @@ export class FakePaperclip {
       failRun: () => false,
       retryOnFailure: false,
       recoverFailedRunAfterMs: null,
+      retrySameRunAfterMs: null,
+      sameRunRetryDurationMs: null,
       terminationDelayMs: 0,
       leaseLingerMs: 0,
       costPerRunUsd: 0.01,
@@ -149,13 +154,27 @@ export class FakePaperclip {
         agent.status = "idle";
       }
     }
+    for (const run of this.runs.values()) {
+      if (run.status !== "failed" || !run.retryAt || now < run.retryAt) continue;
+      run.status = "running";
+      run.startedAt = run.retryAt;
+      run.finishedAt = null;
+      run.retryAt = null;
+      run.willFail = false;
+      run.recovery = true;
+    }
     for (const run of [...this.runs.values()].sort((a, b) => a.createdAt - b.createdAt)) {
-      if (run.status === "running" && run.startedAt !== null && now >= run.startedAt + this.config.runDurationMs) {
-        run.finishedAt = run.startedAt + this.config.runDurationMs;
+      const duration = run.recovery && this.config.sameRunRetryDurationMs !== null ? this.config.sameRunRetryDurationMs : this.config.runDurationMs;
+      if (run.status === "running" && run.startedAt !== null && now >= run.startedAt + duration) {
+        run.finishedAt = run.startedAt + duration;
         const issue = this.issues.get(run.issueId)!;
         if (run.willFail) {
           run.status = "failed";
           issue.interruption = this.config.retryOnFailure ? { state: "failed", canRetry: true, retryWait: false } : null;
+          if (this.config.retrySameRunAfterMs !== null) {
+            run.retryAt = run.finishedAt + this.config.retrySameRunAfterMs;
+            issue.interruption = { state: "retry_scheduled", canRetry: true, nextRetryAt: new Date(run.retryAt).toISOString() };
+          }
           if (this.config.recoverFailedRunAfterMs !== null) {
             const retryAt = run.finishedAt + this.config.recoverFailedRunAfterMs;
             issue.interruption = { state: "retry_scheduled", canRetry: true, nextRetryAt: new Date(retryAt).toISOString() };
@@ -248,8 +267,10 @@ export class FakePaperclip {
       }
       if (c === "costs" && parts[3] === "by-agent" && method === "GET") {
         const cents = new Map<string, number>();
+        const month = new Date(now).toISOString().slice(0, 7);
         for (const run of this.runs.values()) {
           if (run.status !== "succeeded" && run.status !== "failed") continue;
+          if (query.get("period") !== "all" && new Date(run.finishedAt!).toISOString().slice(0, 7) !== month) continue;
           cents.set(run.agentId, (cents.get(run.agentId) ?? 0) + this.config.costPerRunUsd * 100);
         }
         return json(200, [...cents].map(([agentId, costCents]) => ({ agentId, costCents })));

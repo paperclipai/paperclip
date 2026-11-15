@@ -27,6 +27,7 @@ const RETRY_RECHECK_MS = 30_000;
 const EVENT_FETCHES_PER_TICK = 10;
 const EVENT_PAGES = 4;
 const SINGLE_READS_PER_TICK = 50;
+const SPEND_READ_FAILURES_TO_STOP = 3;
 const AGENT_RUN_PAGE = 20;
 const AGENT_RUN_READ_PARALLELISM = 8;
 
@@ -51,6 +52,7 @@ interface RunRecord {
   startedAt: number | null;
   finishedAt: number | null;
   everFailed: boolean;
+  everEnded: boolean;
   sampled: boolean;
   error: string | null;
   errorCode: string | null;
@@ -96,6 +98,7 @@ export interface RampOutcome {
   tasksCreated: number;
   taskCapReached: boolean;
   recordedSpendUsd: number | null;
+  spendReadError: string | null;
   runsListTruncated: boolean;
   metricsSource: "endpoint" | "not provided" | "unavailable";
 }
@@ -195,6 +198,8 @@ export class Ramp {
   private nextPollAt = 0;
   private taskCapReached = false;
   private spendUsd: number | null = null;
+  private spendReadFailures = 0;
+  private spendReadError: string | null = null;
   private fallbackCursor = 0;
   private runsListTruncated = false;
   private metricsSource: RampOutcome["metricsSource"];
@@ -252,13 +257,14 @@ export class Ramp {
       const last = this.current();
       last.endedAt = clock.now();
     }
+    const finalSpendRead = await this.readSpend();
     for (const result of results) {
       result.metrics = this.metrics(result.index);
       result.criteriaFinal = evaluate(result.metrics, options.thresholds);
     }
     return {
       steps: results, stop, drained, openTasksAtEnd: this.openTasks().length, tasksCreated: this.tasks.size, taskCapReached: this.taskCapReached,
-      recordedSpendUsd: this.spendUsd, runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
+      recordedSpendUsd: finalSpendRead ? this.spendUsd : null, spendReadError: finalSpendRead ? null : this.spendReadError, runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
     };
   }
 
@@ -380,6 +386,10 @@ export class Ramp {
     if ((this.spendUsd ?? 0) > this.deps.spendCapUsd) {
       return { stepIndex, reason: `recorded model spend $${this.spendUsd!.toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
     }
+    if (this.spendReadFailures >= SPEND_READ_FAILURES_TO_STOP) {
+      return { stepIndex, reason: `recorded model spend could not be read ${this.spendReadFailures} times in a row, so the spend cap cannot be enforced: ${this.spendReadError}`,
+        criterion: "spend_unreadable" };
+    }
     for (const accumulator of this.accumulators) {
       const failed = firstFailure(evaluate(this.metrics(accumulator.step.index), this.deps.options.thresholds, true));
       if (failed) return { stepIndex, reason: `${failed.id} failed (observed ${failed.observed}, needs ${failed.threshold})`, criterion: failed.id };
@@ -391,14 +401,24 @@ export class Ramp {
     return [...this.tasks.values()].filter(task => task.outcome === "open");
   }
 
-  private async readSpend(): Promise<void> {
+  private async readSpend(): Promise<boolean> {
     const agentIds = new Set(this.deps.state.agentIds);
-    if (!agentIds.size) return;
-    const rows = await this.deps.api.get<Json[]>(`/api/companies/${this.companyId}/costs/by-agent`).catch(() => null);
-    if (!Array.isArray(rows)) return;
+    if (!agentIds.size) return this.spendReadFailures === 0;
+    let rows: unknown;
+    try {
+      rows = await this.deps.api.get<unknown>(`/api/companies/${this.companyId}/costs/by-agent?period=all`);
+      if (!Array.isArray(rows)) throw new Error("costs by agent did not return a list");
+    } catch (error) {
+      this.spendReadFailures += 1;
+      this.spendReadError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+    this.spendReadFailures = 0;
+    this.spendReadError = null;
     let cents = 0;
     for (const row of rows) if (agentIds.has(String(row.agentId))) cents += num(row.costCents) ?? 0;
     this.spendUsd = Math.round(cents) / 100;
+    return true;
   }
 
   private async topUp(concurrency: number, stepIndex: number, until: number): Promise<void> {
@@ -474,7 +494,8 @@ export class Ramp {
     const status = String(row.status);
     this.runs.set(id, {
       id, taskId, agentId: String(row.agentId), status, createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
-      finishedAt: ms(row.finishedAt), everFailed: (previous?.everFailed ?? false) || FAILED_RUN.has(status), sampled: previous?.sampled ?? false,
+      finishedAt: ms(row.finishedAt), everFailed: (previous?.everFailed ?? false) || FAILED_RUN.has(status),
+      everEnded: (previous?.everEnded ?? false) || ENDED_RUN.has(status), sampled: previous?.sampled ?? false,
       error: typeof row.error === "string" && row.error ? row.error : null,
       errorCode: typeof row.errorCode === "string" && row.errorCode ? row.errorCode : null,
       liveness: typeof row.livenessReason === "string" && row.livenessReason ? row.livenessReason : null,
@@ -606,7 +627,7 @@ export class Ramp {
       tasksFinished: tasks.filter(task => task.outcome === "done").length,
       tasksFailed: tasks.filter(task => task.outcome === "failed").length,
       tasksNeedingRetry: tasks.filter(task => task.neededRetry).length,
-      runsEnded: runs.filter(run => ENDED_RUN.has(run.status)).length,
+      runsEnded: runs.filter(run => run.everEnded).length,
       runsFailed: failed.recovered + failed.unrecovered + failed.pending,
       runsFailedRecovered: failed.recovered,
       runsFailedUnrecovered: failed.unrecovered,
