@@ -141,15 +141,40 @@ DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; def
 the main pool (application name `paperclip-workspace-finalization-lock`). Each
 `createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
 single-connection clients idle for reuse; they follow the same idle timeout and
-max lifetime as the main pool. This is not an admission limit: callers hold
-advisory locks and nest dedicated actions, so an action that finds no idle
-client opens one and closes it on release when four are already retained. A
-connection whose action throws is closed, never reused. Actions must keep
+max lifetime as the main pool. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+(default 24) dedicated clients are in use at once per owner. A caller that
+finds the limit reached waits in a first-in, first-out queue. A caller that
+already holds a dedicated client, or runs inside an open transaction of the
+same process, is admitted at once, because its wait could deadlock with the
+holder that it blocks. A caller that holds another bounded resource that a
+holder can need passes `{ admitWithoutWaiting: true }` for the same reason; the
+skill package store does this while it holds one of its package I/O permits
+(at most 2 storage and 2 response permits). Such callers can take the in-use
+count above the limit.
+A caller that waits longer than `DATABASE_DEDICATED_CONNECTION_WAIT_MS`
+(default 30000) is admitted over the limit, so a lock cycle that the database
+cannot see ends in a delay, not a hang. A connection whose action throws is
+closed, never reused. Actions must keep
 session state transaction-scoped (`pg_advisory_xact_lock`,
 `set_config(..., true)`). Like the main pool, a retained session sees an
 `ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
 that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
 and ending the owner client close the idle set.
+
+Connections per server process, at most (`databaseConnectionBudget` in
+`packages/db/src/client.ts` computes this, and a test keeps it equal to the
+pool settings):
+
+| Source | Connections |
+| --- | --- |
+| Main pool | `DATABASE_POOL_MAX` (driver default 10) |
+| Private pools: controller lease 2, legacy controller lease 1, controller-instance lease 1, runner checkpoint 3, file storage 2 | 9 |
+| Notification listeners: plugin lifecycle 1, deployment notifications 1 | 2 |
+| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 52 with the default limit |
+| Total with defaults | 73 |
+
+A separate `DATABASE_MIGRATION_URL` adds a second owner with its own pools.
+Admission over the limit after the wait bound can exceed this total.
 
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
