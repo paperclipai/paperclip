@@ -1,3 +1,4 @@
+import { readOncePerRequest } from "./authorization-read-scope.js";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentInteractionDenial, type AgentInteractionDenial, type AgentInteractionOperation } from "./agent-interaction-policy.js";
@@ -928,7 +929,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
-    return batchRead(`admin:${userId}`, async () => {
+    return batchRead(`admin:${userId}`, () => readOncePerRequest(`admin:${userId}`, async () => {
       if (
         await db
           .select({ id: instanceUserRoles.id })
@@ -939,7 +940,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return true;
       }
       return false;
-    });
+    }));
   }
 
   async function getActiveMembership(
@@ -947,7 +948,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     principalType: PrincipalType,
     principalId: string,
   ) {
-    return batchRead(`membership:${companyId}:${principalType}:${principalId}`, async () => {
+    const key = `membership:${companyId}:${principalType}:${principalId}`;
+    return batchRead(key, () => readOncePerRequest(key, async () => {
       return db
         .select()
         .from(companyMemberships)
@@ -960,7 +962,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           ),
         )
         .then((rows) => rows[0] ?? null);
-    });
+    }));
   }
 
   async function loadResponsibleUserSnapshot(companyId: string, userId: string): Promise<ResponsibleUserSnapshot> {
