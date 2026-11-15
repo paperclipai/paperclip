@@ -827,7 +827,7 @@ export async function settleUnrecoverableExecutions(
             companyId: run.companyId, issueId: task.id, runId: run.id,
           }).limit(1).for("update") : [];
           if (!hold) return void await continueNativeInterruption(tx as unknown as Db, { action, run, coordinator, now });
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
             resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
@@ -962,7 +962,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })

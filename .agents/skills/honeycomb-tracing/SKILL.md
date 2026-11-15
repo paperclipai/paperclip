@@ -22,11 +22,12 @@ replaying tasks, changing credentials, or deploying instrumentation.
 | What is a page's real-user load time or SLO on a hosted instance? | Browser `page.load` spans in [browser performance tracing](../../../doc/browser-performance-tracing.md) |
 | Which CI jobs or test files delay the whole suite? | [CI profiling](references/ci.md) |
 | How should a trace be organized so a person can understand it? | Human-readable waterfall guidance below and [trace design](references/trace-design.md) |
-| Where should a new span go? | Instrumentation guidance below and [Observability contract](../../../doc/observability.md) |
+| Where should a new span go? | Instrumentation guidance below and the code that opens the nearest existing span |
 
-Repository-relative paths and commands assume the checkout root. The maintained
-contracts are `doc/observability.md` and `doc/ci-profiling.md`; recheck them and
-the owning code when a deployed version differs.
+Repository-relative paths and commands assume the checkout root. Span names and
+attributes are defined in the code that opens each span; `doc/observability.md`
+covers only operator setup and Sentry. `doc/ci-profiling.md` covers CI traces.
+Recheck the owning code when a deployed version differs.
 
 Keep the repository's three paths distinct:
 
@@ -178,7 +179,7 @@ explain one slow scan.
 Observability must not retry the operation, replace its return/error, change
 authorization/locks, or break execution when the tracer fails. Preserve root
 sampling and the explicit endpoint gate even if another library registers an
-OTel provider. Update `doc/observability.md` when the trace contract changes.
+OTel provider. Update `doc/observability.md` only when operator setup changes.
 Run focused tests for endpoint-off behavior, parentage/concurrent-run isolation,
 failure handling, and the changed seam. Use real exported evidence to claim that
 new spans appear in Honeycomb; a unit-test tracer alone does not prove ingestion.
