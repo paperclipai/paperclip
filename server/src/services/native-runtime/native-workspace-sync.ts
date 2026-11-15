@@ -707,6 +707,7 @@ async function writeRemoteStamp(input: {
       "-c",
       `umask 077; mkdir -p ${shellQuote(runtimeDir)} && printf %s ${shellQuote(encoded)} | base64 -d > ${shellQuote(tempPath)} && mv ${shellQuote(tempPath)} ${shellQuote(stampPath)}`,
     ],
+    cwd: "/",
     timeoutMs: 15_000,
     bypassSession: true,
   });
@@ -753,6 +754,7 @@ async function remoteStampMatches(input: {
       "-c",
       [...gitChecks, `test -f ${shellQuote(stampPath)}`, `cat ${shellQuote(stampPath)}`].join(" && "),
     ],
+    cwd: "/",
     timeoutMs: 15_000,
     bypassSession: true,
   });

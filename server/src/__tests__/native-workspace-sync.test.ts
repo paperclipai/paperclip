@@ -353,10 +353,11 @@ describe("native workspace sync durable metadata", () => {
     const execute = vi.fn(async (request: {
       command: string; args?: string[]; cwd?: string; timeoutMs?: number; bypassSession?: boolean;
     }) => {
-      // Match the normal confined provider: omitted cwd uses its owned root;
-      // an explicit foreign cwd is refused before executing the real shell.
+      // The normal container provider accepts literal root as a stable cwd;
+      // other foreign paths and aliases to root remain refused.
       const cwd = await realpath(request.cwd ?? remoteRoot);
-      if (cwd !== remoteRoot && !cwd.startsWith(remoteRoot + path.sep)) throw new Error("foreign_command_cwd");
+      const literalContainerRoot = request.cwd === "/" && cwd === "/";
+      if (!literalContainerRoot && cwd !== remoteRoot && !cwd.startsWith(remoteRoot + path.sep)) throw new Error("foreign_command_cwd");
       expect(request.timeoutMs).toBe(15_000);
       expect(request.bypassSession).toBe(true);
       try {
@@ -391,7 +392,7 @@ describe("native workspace sync durable metadata", () => {
     ).resolves.toBe(true);
 
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls.map(([request]) => request.cwd)).toEqual([undefined, undefined]);
+    expect(execute.mock.calls.map(([request]) => request.cwd)).toEqual(["/", "/"]);
     const remoteStamp = JSON.parse(await readFile(path.join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "workspace-sync-v1.json"), "utf8"));
     expect(remoteStamp).toMatchObject({ hostSha256: finalHostSha256, finalizedRunId: descriptor.binding.runId });
     expect(persistedLeaseMetadata).toMatchObject({

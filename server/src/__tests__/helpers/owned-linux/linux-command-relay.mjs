@@ -28,7 +28,10 @@ try {
       || request.args.some(value => typeof value !== "string" || value.length > 131072)) throw fail("invalid_command_request");
   witnessStage="resolve_cwd";
   const cwd = await realpath(request.cwd ?? root);
-  if (cwd !== root && !cwd.startsWith(root + "/")) throw fail("foreign_command_cwd");
+  // Public execute permits the literal container root as a stable command cwd.
+  // A different request path that resolves to root does not gain this exception.
+  const literalContainerRoot = request.cwd === "/" && cwd === "/";
+  if (!literalContainerRoot && cwd !== root && !cwd.startsWith(root + "/")) throw fail("foreign_command_cwd");
   witnessStage="validate_budget";
   const deadline = request.timeoutMs;
   if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > 90000) throw fail("command_budget_invalid");
