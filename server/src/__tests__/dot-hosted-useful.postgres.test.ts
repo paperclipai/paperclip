@@ -852,13 +852,16 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       : undefined;
     const readTextHash=(value:unknown)=>typeof value==="string"&&readText(value)!==value
       ? createHash("sha256").update(value).digest("hex") : undefined;
-    let lastReadAttempt:Record<string,unknown>|undefined;
+    let lastReadAttempt:Record<string,unknown>|undefined,lastAdmittedReadAttempt:Record<string,unknown>|undefined;
+    let publicReadRetryAfterError:unknown;
     let successorAssignments:typeof dotRunnerAssignments.$inferSelect[]=[];
     await vi.waitFor(async()=>{
+      if(publicReadRetryAfterError!==undefined)throw publicReadRetryAfterError;
       successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
       expect(successorAssignments).toHaveLength(1);
       assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
       expect(["offered","accepted"]).toContain(assignment.status);
+      const admittedReadsBefore=publicReadGate.read;
       const previousPhase=observingPhase,previousStart=tokenObservationStart;
       observingPhase="public-read";tokenObservationStart=performance.now();publicReadGate.attempts++;
       let assigned:Awaited<ReturnType<typeof tool>>;
@@ -893,10 +896,19 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         errorDataCode:data.success?readText(data.data.code)??(typeof data.data.code==="number"?data.data.code:undefined):undefined,
         resultPresent:Object.hasOwn(body,"result"),isError:result.success&&typeof result.data.isError==="boolean"?result.data.isError:undefined,
         errorContentText:texts};
-      expect(result.success,JSON.stringify(lastReadAttempt)).toBe(true);
-      expect(result.success?result.data.isError:undefined,JSON.stringify(lastReadAttempt)).toBe(false);
+      if(publicReadGate.read>admittedReadsBefore&&lastPublicReadGate?.kind==="read")lastAdmittedReadAttempt=lastReadAttempt;
+      try{
+        expect(result.success,JSON.stringify({lastReadAttempt,lastAdmittedReadAttempt})).toBe(true);
+        expect(result.success?result.data.isError:undefined,JSON.stringify({lastReadAttempt,lastAdmittedReadAttempt})).toBe(false);
+        expect(assigned.status,JSON.stringify({lastReadAttempt,lastAdmittedReadAttempt})).not.toBe(503);
+      }catch(error){
+        // Retry-After:30 cannot mature inside the remaining original 30s poll.
+        // Re-throw this same safe assertion at the top; a fulfilled callback would pass.
+        if(assigned.status===503)publicReadRetryAfterError=error;
+        throw error;
+      }
       if(runId===failedRunId)expect(assignment.id).toBe(preFaultAssignments[0].id);
-    },{timeout:30_000,interval:50});
+    },{timeout:30_000,interval:2_000});
     await operation("paperclip_dot_accept",{},runId===failedRunId?preFaultAcceptId:undefined);expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id)))[0].status).toBe("accepted");
     const writeId=randomUUID(),writeArgs={name:"write_document",arguments:{key:"report",title:"Arithmetic",body:"17 + 25 = 42.",baseRevisionId:null,idempotencyKey:writeId}};
     const written=await operation("paperclip_dot_tool",writeArgs,writeId);expect(written.receipt).toMatchObject({status:"completed",isError:false});expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");
