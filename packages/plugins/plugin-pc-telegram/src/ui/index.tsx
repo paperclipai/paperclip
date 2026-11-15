@@ -6,7 +6,6 @@ import {
   useHostNavigation,
   usePluginAction,
   usePluginData,
-  usePluginStream,
   type PluginCompanySettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
@@ -191,7 +190,25 @@ const RU: Record<string, string> = {
   "Paused": "На паузе",
   "Incoming mode: dialog = task": "Входящие: диалог = задача",
   "Answering agent": "Отвечающий агент",
-  "No answering agent": "Без отвечающего агента",
+  "No agent": "Агента нет",
+  "Search agents": "Найти агента",
+  "No agents": "Агентов нет",
+  "Local cache": "Локальный кеш",
+  "Dialogs and avatars are stored on this server and shown before Telegram answers.":
+    "Диалоги и аватары лежат на этом сервере и показываются до ответа Telegram.",
+  "Cache is on": "Кеш включён",
+  "Cache is off": "Кеш выключен",
+  "Turn cache off": "Выключить кеш",
+  "Turn cache on": "Включить кеш",
+  "Loading cache…": "Загрузка кеша…",
+  Used: "Занято",
+  Dialogs: "Диалоги",
+  Avatars: "Аватары",
+  Limit: "Лимит",
+  "Clear avatars": "Очистить аватары",
+  "Clear dialogs": "Очистить диалоги",
+  "Clear cache": "Очистить кеш",
+  "Unknown cache scope.": "Неизвестная область кеша.",
   "Resume inbound": "Возобновить входящие",
   "Pause inbound": "Поставить входящие на паузу",
   "Something went wrong.": "Что-то пошло не так.",
@@ -277,6 +294,110 @@ function errorMessage(error: unknown): string {
     return uiText(error.message);
   }
   return error instanceof Error ? uiText(error.message) : uiText("Something went wrong.");
+}
+
+type CacheStatus = {
+  enabled: boolean;
+  bytes: number;
+  dialogs: number;
+  avatars: number;
+  maxBytes: number;
+  updatedAt: string | null;
+};
+
+const CACHE_LIMITS = [16, 64, 256] as const;
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 10) return `${mb.toFixed(0)} MB`;
+  if (mb >= 0.1) return `${mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function CacheSettings({ companyId }: { companyId: string | null }) {
+  const cache = usePluginData<CacheStatus>("cache-status", companyId ? { companyId } : undefined);
+  const saveCache = usePluginAction("cache-save");
+  const clearCache = usePluginAction("cache-clear");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const status = cache.data;
+
+  async function run(task: () => Promise<unknown>) {
+    if (!companyId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await task();
+      cache.refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={card}>
+      <strong>{uiText("Local cache")}</strong>
+      <p style={muted}>
+        {uiText("Dialogs and avatars are stored on this server and shown before Telegram answers.")}
+      </p>
+      {cache.loading && !status ? <p style={muted}>{uiText("Loading cache…")}</p> : null}
+      {cache.error ? <p role="alert">{errorMessage(cache.error)}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
+      {status ? (
+        <>
+          <div style={muted}>
+            {status.enabled ? uiText("Cache is on") : uiText("Cache is off")}
+            {" · "}
+            {uiText("Used")} {formatBytes(status.bytes)} / {formatBytes(status.maxBytes)}
+            {" · "}
+            {uiText("Dialogs")} {status.dialogs}
+            {" · "}
+            {uiText("Avatars")} {status.avatars}
+          </div>
+          <div style={row}>
+            <button
+              type="button"
+              style={status.enabled ? button : primaryButton}
+              disabled={busy}
+              onClick={() => void run(() => saveCache({ companyId, enabled: !status.enabled }))}
+            >
+              {status.enabled ? uiText("Turn cache off") : uiText("Turn cache on")}
+            </button>
+            <span style={muted}>{uiText("Limit")}</span>
+            {CACHE_LIMITS.map((mb) => {
+              const maxBytes = mb * 1024 * 1024;
+              const selected = status.maxBytes === maxBytes;
+              return (
+                <button
+                  key={mb}
+                  type="button"
+                  style={selected ? primaryButton : button}
+                  disabled={busy || selected}
+                  onClick={() => void run(() => saveCache({ companyId, maxBytes }))}
+                >
+                  {mb} MB
+                </button>
+              );
+            })}
+          </div>
+          <div style={row}>
+            <button type="button" style={button} disabled={busy} onClick={() => void run(() => clearCache({ companyId, scope: "avatars" }))}>
+              {uiText("Clear avatars")}
+            </button>
+            <button type="button" style={button} disabled={busy} onClick={() => void run(() => clearCache({ companyId, scope: "dialogs" }))}>
+              {uiText("Clear dialogs")}
+            </button>
+            <button type="button" style={button} disabled={busy} onClick={() => void run(() => clearCache({ companyId, scope: "all" }))}>
+              {uiText("Clear cache")}
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps) {
@@ -466,6 +587,8 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
           />
         ))}
       </div>
+
+      <CacheSettings companyId={companyId} />
     </section>
   );
 }
@@ -498,7 +621,10 @@ function ConnectionCard({
           companyId={companyId}
           value={assigneeValue}
           includeUsers={false}
-          noneLabel={uiText("No answering agent")}
+          placeholder={uiText("No agent")}
+          noneLabel={uiText("No agent")}
+          searchPlaceholder={uiText("Search agents")}
+          emptyMessage={uiText("No agents")}
           onChange={(_value, selection) => {
             void onChange({ assignedAgentId: selection.assigneeAgentId });
           }}
@@ -618,6 +744,7 @@ type ChatThreadData = {
   label?: string;
   issueId?: string;
   identifier?: string | null;
+  peerId?: string | null;
   photo?: string | null;
   presence?: PresenceView;
   messages?: ChatBubbleView[];
@@ -676,6 +803,7 @@ type InboxStreamEvent = {
   companyId?: string;
   kind?: string;
   issueRef?: string;
+  peerId?: string;
   bubble?: ChatBubbleView;
   messageIds?: string[];
   preview?: string;
@@ -683,6 +811,9 @@ type InboxStreamEvent = {
   activityAt?: string;
   photo?: string | null;
 };
+
+/** Worker parks inbox-wait for 12s. The abort sits past that plus a slow-link RTT, under the 30s host RPC cap. */
+const INBOX_ABORT_MS = 28_000;
 
 type RowPatch = {
   preview?: string | null;
@@ -775,12 +906,30 @@ const TG_CSS = `
   border-right: 0;
 }
 .tg-thread {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: #0e0e0e;
+}
+.tg-jump {
+  position: absolute;
+  right: 16px;
+  bottom: 76px;
+  z-index: 4;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 18px;
+  background: #212121;
+  color: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 .tg-search { flex: 0 0 auto; padding: 8px 10px; }
 .tg-search-field { position: relative; display: block; height: 36px; }
@@ -1532,10 +1681,6 @@ export function TelegramInboxPage({
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const issueRef = issueRefFromPath(prefix, location.pathname);
-  const inboxStream = usePluginStream<InboxStreamEvent>(
-    "telegram-inbox",
-    companyId ? { companyId } : undefined,
-  );
   const [shell, setShell] = useState<HTMLDivElement | null>(null);
   const [feed, setFeed] = useState<HTMLDivElement | null>(null);
   const shellWidth = useObservedWidth(shell);
@@ -1596,7 +1741,10 @@ export function TelegramInboxPage({
   const feedRangeRef = useRef(feedRange);
   const requestOlderRef = useRef(() => {});
   const hiddenIds = useRef(new Set<string>());
-  const seenStream = useRef<InboxStreamEvent | null>(null);
+  const openPeer = useRef("");
+  const belowRef = useRef(0);
+  const [below, setBelow] = useState(0);
+  belowRef.current = below;
   transcriptRef.current = transcript;
   olderBeforeRef.current = olderBefore;
   feedNode.current = feed;
@@ -1623,21 +1771,21 @@ export function TelegramInboxPage({
   messagesRef.current = messages;
   const ru = isRuLocale();
   const now = new Date();
-  const streamConnected = inboxStream.connected;
-
-  useEffect(() => {
-    const event = inboxStream.lastEvent;
-    if (!event || event === seenStream.current) return;
-    seenStream.current = event;
+  const applyInboxRef = useRef<(event: InboxStreamEvent) => void>(() => {});
+  applyInboxRef.current = (event) => {
     if (event.companyId && companyId && event.companyId !== companyId) return;
     if (event.kind === "gap") {
       refreshThread.current();
       refreshChats.current();
       return;
     }
+    if (event.kind === "refresh-thread") {
+      if (event.peerId && event.peerId === openPeer.current) refreshThread.current();
+      return;
+    }
     const ref = event.issueRef ?? "";
-    if (!ref) return;
-    if (event.preview != null || event.activityAt || event.photo !== undefined || typeof event.unread === "number") {
+    const forOpen = Boolean(event.peerId && event.peerId === openPeer.current);
+    if (ref && (event.preview != null || event.activityAt || event.photo !== undefined || typeof event.unread === "number")) {
       setRowPatches((current) => ({
         ...current,
         [ref]: {
@@ -1649,7 +1797,7 @@ export function TelegramInboxPage({
         },
       }));
     }
-    const key = companyId ? `${companyId}:${ref}` : "";
+    const key = ref && companyId ? `${companyId}:${ref}` : forOpen ? cacheKey : "";
     if (!key) return;
     if (event.kind === "delete" && event.messageIds?.length) {
       const drop = new Set(event.messageIds);
@@ -1667,6 +1815,7 @@ export function TelegramInboxPage({
         queueStreamBubble(key, event.bubble);
         return;
       }
+      const fresh = !base.messages.some((item) => item.id === event.bubble?.id);
       const next = {
         ...base,
         messages: absorbStreamAhead(key, mergeThreadMessages(base.messages, [event.bubble])).filter((item) => !hiddenIds.current.has(item.id)),
@@ -1674,25 +1823,80 @@ export function TelegramInboxPage({
       storeThread(key, next);
       if (key === cacheKey) {
         setTranscript(next);
-        if (stickRef.current) setFeedRange(tailFeedRange(next.messages.length));
+        if (stickRef.current) {
+          setFeedRange(tailFeedRange(next.messages.length));
+          setBelow(0);
+        } else if (fresh) {
+          setBelow((count) => count + 1);
+        }
       }
     }
-  }, [inboxStream.lastEvent, companyId, cacheKey]);
-
-  useEffect(() => {
-    if (!companyId || !issueRef || streamConnected) return undefined;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) refreshThread.current();
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [companyId, issueRef, streamConnected]);
+  };
 
   useEffect(() => {
     if (!companyId) return undefined;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) refreshChats.current();
-    }, 20000);
-    return () => window.clearInterval(timer);
+    let stopped = false;
+    let since = 0;
+    let failures = 0;
+    let control: AbortController | null = null;
+    let hiddenWait: (() => void) | null = null;
+    const waitVisible = () => {
+      if (!document.hidden) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const done = () => {
+          document.removeEventListener("visibilitychange", done);
+          hiddenWait = null;
+          resolve();
+        };
+        hiddenWait = done;
+        document.addEventListener("visibilitychange", done);
+      });
+    };
+    const run = async () => {
+      while (!stopped) {
+        await waitVisible();
+        if (stopped) return;
+        control = new AbortController();
+        const timer = window.setTimeout(() => control?.abort(), INBOX_ABORT_MS);
+        try {
+          const response = await fetch("/api/plugins/andhash.plugin-pc-telegram/data/inbox-wait", {
+            method: "POST",
+            credentials: "include",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ companyId, params: { companyId, since } }),
+            signal: control.signal,
+          });
+          window.clearTimeout(timer);
+          if (!response.ok) throw new Error(String(response.status));
+          const payload = await response.json() as { data?: { seq?: number; reset?: boolean; events?: InboxStreamEvent[] } };
+          const data = payload.data ?? {};
+          if (typeof data.seq === "number") since = data.seq;
+          if (data.reset) {
+            refreshThread.current();
+            refreshChats.current();
+          }
+          for (const event of data.events ?? []) applyInboxRef.current(event);
+          failures = 0;
+        } catch {
+          window.clearTimeout(timer);
+          if (stopped) return;
+          failures += 1;
+          const delay = Math.min(8000, 1000 * 2 ** Math.min(failures, 3));
+          await new Promise((resolve) => window.setTimeout(resolve, delay));
+        }
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+      control?.abort();
+      const pending = hiddenWait;
+      hiddenWait = null;
+      if (pending) {
+        document.removeEventListener("visibilitychange", pending);
+        pending();
+      }
+    };
   }, [companyId]);
 
   useEffect(() => {
@@ -1747,10 +1951,12 @@ export function TelegramInboxPage({
     setSelected([]);
     setReactions({});
     setPinned([]);
+    setBelow(0);
   }, [cacheKey]);
 
   useEffect(() => {
     if (!cacheKey) return;
+    if (typeof thread.data?.peerId === "string") openPeer.current = thread.data.peerId;
     if (thread.loading) {
       sawLoading.current = true;
       return;
@@ -1777,7 +1983,7 @@ export function TelegramInboxPage({
     const incomingHasMore = typeof thread.data.hasMore === "boolean" ? thread.data.hasMore : incoming.length >= 40;
     const cached = threadCache.get(cacheKey);
     const ahead = streamAhead.get(cacheKey) ?? [];
-    if (!streamConnected && cached && ahead.length === 0 && sameThreadTop(cached.messages, incoming)) {
+    if (cached && ahead.length === 0 && sameThreadTop(cached.messages, incoming)) {
       const next: ThreadView = {
         ...cached,
         live: thread.data.live !== false,
@@ -1807,7 +2013,7 @@ export function TelegramInboxPage({
     storeThread(cacheKey, next);
     setTranscript(next);
     setReadyKey(cacheKey);
-  }, [cacheKey, thread.loading, thread.data, streamConnected]);
+  }, [cacheKey, thread.loading, thread.data]);
 
   useEffect(() => {
     if (!olderBefore || !cacheKey) return;
@@ -1846,6 +2052,7 @@ export function TelegramInboxPage({
       stickRef.current = nearBottom;
       const list = messagesRef.current;
       if (nearBottom) {
+        if (belowRef.current > 0) setBelow(0);
         const tail = tailFeedRange(list.length);
         const range = feedRangeRef.current;
         if (tail && range && (range.end < list.length || range.start !== tail.start)) {
@@ -2182,6 +2389,21 @@ export function TelegramInboxPage({
                 <div className="tg-offline">
                   {uiText("The Telegram account is offline. Showing messages already saved on the task.")}
                 </div>
+              ) : null}
+              {below > 0 ? (
+                <button
+                  type="button"
+                  className="tg-jump"
+                  onClick={() => {
+                    stickRef.current = true;
+                    setBelow(0);
+                    const element = feedNode.current;
+                    setFeedRange(tailFeedRange(messagesRef.current.length));
+                    if (element) element.scrollTop = element.scrollHeight;
+                  }}
+                >
+                  {below}
+                </button>
               ) : null}
               <div className={feedIsCompact(feedWidth) ? "tg-feed is-compact" : "tg-feed"} ref={setFeed}>
                 {olderBefore ? <div className="tg-history" aria-hidden="true"><i /></div> : null}

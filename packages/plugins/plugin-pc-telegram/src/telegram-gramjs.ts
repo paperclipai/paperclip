@@ -3,6 +3,7 @@ import {
   hasProfilePhoto,
   inlineProfilePhoto,
   photoDataUrl,
+  profilePhotoId,
   presenceFromStatus,
   previewFromMessage,
   publicAbout,
@@ -721,6 +722,7 @@ export function createGramJsClientFactory(): TelegramClientFactory {
               preview: previewFromMessage(record.message),
               unread: unreadCount(record.unreadCount),
               photo,
+              photoId: profilePhotoId(record.entity),
               presence: presenceFromStatus(entity?.status),
               activityAt: mapped?.at ?? "",
             });
@@ -734,7 +736,9 @@ export function createGramJsClientFactory(): TelegramClientFactory {
                 const photo = await cachedPhoto(job.entity, job.id, false);
                 const ready = photos.get(job.id)?.small?.ready === true;
                 photosLeft = remainingPhotoBudget(photosLeft, photo, ready);
-                if (photo && photo !== before) notifyInbox({ type: "photo", peerId: job.id, photo });
+                if (photo && photo !== before) {
+                  notifyInbox({ type: "photo", peerId: job.id, photo, photoId: profilePhotoId(job.entity) });
+                }
               }
             })();
           }

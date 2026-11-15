@@ -9,6 +9,7 @@ export type PeerSummary = {
   preview: string;
   unread: number;
   photo: string | null;
+  photoId?: string;
   presence: PeerPresence | null;
   activityAt?: string;
 };
@@ -201,6 +202,16 @@ export function hasProfilePhoto(entity: unknown): boolean {
   const thumb = photo.strippedThumb;
   if (thumb instanceof Uint8Array && thumb.length >= 3 && thumb[0] === 1) return true;
   return photoIdPresent(photo.photoId) || photoIdPresent(photo.id);
+}
+
+export function profilePhotoId(entity: unknown): string {
+  const photo = photoRecord(entity);
+  if (!photo) return "";
+  const raw = photoIdPresent(photo.photoId) ? photo.photoId : photoIdPresent(photo.id) ? photo.id : null;
+  if (typeof raw === "bigint") return raw > 0n ? raw.toString() : "";
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return String(Math.trunc(raw));
+  if (typeof raw === "string" && /^[0-9]{1,24}$/.test(raw)) return raw;
+  return "";
 }
 
 export function expandStrippedThumb(stripped: Uint8Array): Uint8Array | null {
