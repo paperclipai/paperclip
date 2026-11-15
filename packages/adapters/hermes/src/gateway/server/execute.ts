@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -56,6 +57,7 @@ type ExecutionState = {
   outputChunks: string[];
   lastEventName: string | null;
   terminal: TerminalState | null;
+  lastActivityAt: number;
   resolveTerminal: (state: TerminalState) => void;
   terminalPromise: Promise<TerminalState>;
 };
@@ -144,6 +146,7 @@ const PAPERCLIP_SESSION_KEY_PATTERN =
   /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
 
 const TERMINAL_STATUSES = new Set([
+  "lost",
   "completed",
   "failed",
   "error",
@@ -245,6 +248,53 @@ function sanitizeSensitiveText(value: string): string {
     .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
     .replace(HERMES_SESSION_KEY_HEADER_PATTERN, "$1[redacted]")
     .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]");
+}
+
+const PAPERCLIP_SESSION_KEY_TEST = new RegExp(PAPERCLIP_SESSION_KEY_PATTERN.source, "i");
+
+/** Stable, non-secret session identifier: gateway-provided id when safe, else a hash of the key. */
+function publicSessionId(id: string | null, sessionKey: string | null): string | null {
+  if (!id) return null;
+  if (id !== sessionKey && !PAPERCLIP_SESSION_KEY_TEST.test(id)) return id;
+  return `hsess-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Run stop + final-status cleanup under a hard deadline. On expiry the shared
+ * AbortSignal cancels any in-flight request and no further requests are issued.
+ */
+async function cleanupRun(input: {
+  ctx: AdapterExecutionContext;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+  redactText?: TextRedactor;
+  deadlineMs: number;
+}): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const expired = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(null);
+    }, input.deadlineMs);
+  });
+  const work = (async () => {
+    await stopRun({ ...input, signal: controller.signal });
+    return fetchFinalStatus({
+      baseUrl: input.baseUrl,
+      headers: input.headers,
+      runId: input.runId,
+      deadlineMs: STOP_GRACE_MS,
+      signal: controller.signal,
+    });
+  })().catch(() => null);
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    controller.abort();
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -525,6 +575,7 @@ function createExecutionState(runId: string): ExecutionState {
     outputChunks: [],
     lastEventName: null,
     terminal: null,
+    lastActivityAt: Date.now(),
     resolveTerminal,
     terminalPromise,
   };
@@ -565,6 +616,7 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  state.lastActivityAt = Date.now();
   const delta = asString(record?.delta, "") || asString(record?.text_delta, "");
   const sanitizedDelta = eventName === "message.delta" && delta ? redactText(delta) : null;
   const redacted = redactForLog(parsed, [], 0, redactText);
@@ -636,6 +688,18 @@ async function pollStatus(input: {
       }
     } catch (err) {
       if (input.signal.aborted) return;
+      // The gateway answered but no longer knows this run (e.g. it restarted and
+      // lost in-memory runs): that is a lost run, not just a dropped stream.
+      if ((err as HermesHttpError).status === 404) {
+        await input.ctx.onLog("stderr", `[hermes-gateway] run ${input.state.runId} not found on gateway (restart?); marking lost\n`);
+        markTerminal(input.state, {
+          runId: input.state.runId,
+          status: "lost",
+          payload: { status: "lost", reason: "run_not_found" },
+          output: null,
+        });
+        return;
+      }
       await input.ctx.onLog("stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err, input.redactText)}\n`);
     }
   }
@@ -721,11 +785,6 @@ function parseCostUsd(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function extractSessionId(value: unknown): string | null {
-  const record = asRecord(value);
-  return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
-}
-
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
@@ -740,6 +799,7 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
   if (status === "completed") return { exitCode: 0, signal: null, errorCode: null };
   if (FAILURE_STATUSES.has(status)) return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_failed" };
   if (CANCELLED_STATUSES.has(status)) return { exitCode: 1, signal: "SIGTERM", errorCode: "hermes_gateway_cancelled" };
+  if (status === "lost") return { exitCode: 1, signal: null, errorCode: "hermes_gateway_run_lost" };
   return { exitCode: 1, signal: null, errorCode: "hermes_gateway_protocol_error" };
 }
 
@@ -755,8 +815,9 @@ export function mapFinalResultForTest(input: {
   const output = redactText(
     input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
   );
-  const sessionId = extractSessionId(payload) ?? input.sessionKey;
-  const sessionDisplayId = sessionId ? redactText(sessionId) : null;
+  // One public id per run, independent of when/whether the gateway reports one.
+  const sessionId = publicSessionId(input.sessionKey, input.sessionKey);
+  const sessionDisplayId = sessionId;
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
@@ -777,13 +838,15 @@ export function mapFinalResultForTest(input: {
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
-      ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
+      ...(sessionId ? { hermesSessionId: sessionId } : {}),
+      externalRunId: input.terminal.runId,
       strategy: input.strategy,
     },
     sessionDisplayId,
     resultJson: {
       run_id: input.terminal.runId,
       status: input.terminal.status,
+      external_run_id: input.terminal.runId,
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",
@@ -799,12 +862,15 @@ async function stopRun(input: {
   headers: Record<string, string>;
   runId: string;
   redactText?: TextRedactor;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown> | null> {
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: input.signal,
     });
+    if (input.signal?.aborted) return null;
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
@@ -818,13 +884,15 @@ async function fetchFinalStatus(input: {
   headers: Record<string, string>;
   runId: string;
   deadlineMs: number;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown> | null> {
   const deadline = Date.now() + input.deadlineMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !input.signal?.aborted) {
     try {
       const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
         method: "GET",
         headers: input.headers,
+        signal: input.signal,
       });
       const record = asRecord(status);
       const normalized = extractStatus(status);
@@ -832,7 +900,8 @@ async function fetchFinalStatus(input: {
     } catch {
       return null;
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (input.signal) await delay(500, input.signal);
+    else await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return null;
 }
@@ -938,6 +1007,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
+  const idleTimeoutSec = parseNonNegativeNumber(ctx.config.idleTimeoutSec, 0);
+  const idleTimeoutMs = idleTimeoutSec > 0 ? Math.ceil(idleTimeoutSec * 1000) : 0;
   const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
   const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
   const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
@@ -980,6 +1051,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context: {
       runId: ctx.runId,
       timeoutSec,
+      idleTimeoutSec,
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
@@ -989,12 +1061,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
+  let created: unknown = null;
   try {
     // This adapter has no local child process, so crossing into the first
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
+    created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: JSON.stringify(body),
@@ -1013,8 +1086,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } catch (err) {
     return errorResult(err, baseUrl, redactText);
   }
-
-  await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -1037,19 +1108,85 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     redactText,
   }).catch(() => undefined);
 
+  // Post-creation callbacks write to the database; they must neither block
+  // monitoring/timeouts nor abandon an accepted remote run if they fail or stall.
+  const createdSessionId = publicSessionId(sessionKey, sessionKey);
+  const announced = (async () => {
+    try {
+      await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+      await ctx.onMeta?.({
+        adapterType: ADAPTER_TYPE,
+        command: "POST /v1/runs",
+        commandArgs: [createRunUrl],
+        context: { runId: ctx.runId, externalRunId: runId, sessionKeyStrategy: strategy },
+      });
+      await ctx.onEvent?.({
+        eventType: "hermes_gateway.run_created",
+        stream: "system",
+        level: "info",
+        message: `Hermes run created: ${runId}`,
+        payload: { externalRunId: runId, sessionId: createdSessionId },
+      });
+    } catch {
+      // best-effort: observability failures must not affect the run
+    }
+  })();
+
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const idlePromise = new Promise<"idle">((resolve) => {
+    if (idleTimeoutMs <= 0) return;
+    const check = () => {
+      const remaining = idleTimeoutMs - (Date.now() - state.lastActivityAt);
+      if (remaining <= 0) resolve("idle");
+      else idleTimer = setTimeout(check, remaining);
+    };
+    idleTimer = setTimeout(check, idleTimeoutMs);
+  });
+
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, idlePromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (idleTimer) clearTimeout(idleTimer);
   controller.abort();
+  let announceTimer: ReturnType<typeof setTimeout> | null = null;
+  await Promise.race([announced, new Promise((r) => { announceTimer = setTimeout(r, 2_000); })]);
+  if (announceTimer) clearTimeout(announceTimer);
+
+  if (outcome === "idle") {
+    const finalStatus = await cleanupRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText, deadlineMs: STOP_GRACE_MS * 2 });
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: true,
+      errorCode: "hermes_gateway_idle_timeout",
+      errorMessage: `Hermes gateway run produced no events for ${idleTimeoutSec}s (idle timeout).`,
+      provider: "hermes_gateway",
+      resultJson: {
+        run_id: runId,
+        external_run_id: runId,
+        status: extractStatus(finalStatus) ?? "idle_timeout",
+        session_id: createdSessionId,
+        last_event: state.lastEventName,
+        final_status: redactForLog(finalStatus, [], 0, redactText),
+      },
+      sessionId: createdSessionId,
+      sessionParams: {
+        hermesRunId: runId,
+        ...(createdSessionId ? { hermesSessionId: createdSessionId } : {}),
+        externalRunId: runId,
+        strategy,
+      },
+      sessionDisplayId: createdSessionId,
+    };
+  }
 
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const finalStatus = await cleanupRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText, deadlineMs: STOP_GRACE_MS * 2 });
     return {
       exitCode: 1,
       signal: null,
@@ -1059,15 +1196,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       provider: "hermes_gateway",
       resultJson: {
         run_id: runId,
+        external_run_id: runId,
         status: extractStatus(finalStatus) ?? "timeout",
+        session_id: createdSessionId,
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
+      sessionId: createdSessionId,
       sessionParams: {
         hermesRunId: runId,
+        ...(createdSessionId ? { hermesSessionId: createdSessionId } : {}),
+        externalRunId: runId,
         strategy,
       },
-      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+      sessionDisplayId: createdSessionId,
     };
   }
 
