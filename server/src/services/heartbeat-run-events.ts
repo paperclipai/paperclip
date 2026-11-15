@@ -4,12 +4,13 @@ import { readNativeEventEvidenceOutcome } from "./native-runtime/evidence-classi
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { isSafeNativeChatProgressEventType } from "./safe-native-chat-progress.js";
-import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
+import { chatNativeProgressCommitNotification, notifyChatNativeProgress, publishChatNativeProgressSettled } from "./chat-native-progress-notifications.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { and, asc, eq, getTableColumns, is, sql } from "drizzle-orm";
-import { PgTransaction } from "drizzle-orm/pg-core";
+import { PgDialect, PgTransaction } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns, primeDatabaseWorkTransactionId } from "@paperclipai/db";
+import { DATABASE_WORK_CHANNEL } from "@paperclipai/db/work-signals";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isUniqueViolation } from "../db-errors.js";
 
@@ -142,9 +143,11 @@ export async function appendHeartbeatRunEvent(
     if (!appended) throw new Error("heartbeat_run_event_binding_mismatch");
     return { row: decodeRunEventRow(appended), disposition: "committed", highestContiguousSourceSeq: 0 };
   }
-  if (input.nativeSource && !input.runUpdate && !input.retryExhaustion && !Object.values(wakes).some(Boolean) && !is(db, PgTransaction)) {
+  const progressOnly = wakes.progress && !wakes.recovery && !wakes.reassessment && !wakes.response && !wakes.retention;
+  if (input.nativeSource && !input.runUpdate && !input.retryExhaustion && (progressOnly || !Object.values(wakes).some(Boolean))
+    && !is(db, PgTransaction)) {
     input.assertWritable?.();
-    const receipts = await appendNewNativeSourceEvents(db, [input as NativeSourceEventInput]);
+    const receipts = await appendNewNativeSourceEvents(db, [input as NativeSourceEventInput], progressOnly);
     if (receipts) {
       input.assertWritable?.();
       return receipts[0]!;
@@ -289,9 +292,52 @@ const APPEND_NEW_NATIVE_SOURCE_EVENTS_SQL = `
   order by event.ordinal
   returning *`;
 
+const BOUND_RUN_ISSUE_ID_SQL = (() => {
+  const rendered = new PgDialect().sqlToQuery(boundRunIssueIdSql());
+  if (rendered.params.length > 0) throw new Error("bound_run_issue_id_sql_has_parameters");
+  return rendered.sql;
+})();
+
+const APPEND_NEW_NATIVE_SOURCE_EVENTS_WITH_PROGRESS_SQL = `
+  with snapshot_run as (
+    select next_event_seq from heartbeat_runs where id = $1::uuid
+  ), allocated as (
+    update heartbeat_runs
+    set next_event_seq = next_event_seq + $6::integer,
+        updated_at = $7::timestamptz,
+        native_source_cursors = jsonb_set(coalesce(native_source_cursors, '{}'::jsonb),
+          array[$4::text], to_jsonb($5::bigint + $6::integer - 1))
+    where id = $1::uuid and company_id = $2::uuid and agent_id = $3::uuid
+      and coalesce((native_source_cursors ->> $4::text)::bigint, 0) = $5::bigint - 1
+      and next_event_seq = (select next_event_seq from snapshot_run)
+      and not exists (select 1 from heartbeat_run_events where run_id = $1::uuid and (
+        source_event_id = any(array(select jsonb_array_elements_text($8::jsonb)))
+        or (source_instance_id = $4::text and source_seq >= $5::bigint)))
+    returning next_event_seq - $6::integer as first_seq, runtime_mode as wake_runtime_mode,
+      ${BOUND_RUN_ISSUE_ID_SQL} as wake_issue_id
+  ), inserted as (
+    insert into heartbeat_run_events
+      (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload,
+        source_instance_id, source_event_id, source_seq, source_payload_sha256, protocol_schema_version)
+    select $2::uuid, $1::uuid, $3::uuid, allocated.first_seq + event.ordinal - 1,
+      event.value ->> 'eventType', event.value ->> 'stream', event.value ->> 'level', event.value ->> 'color',
+      event.value ->> 'message', (event.value ->> 'payload')::jsonb,
+      $4::text, event.value ->> 'sourceEventId', $5::bigint - 1 + event.ordinal,
+      event.value ->> 'sourcePayloadSha256', (event.value ->> 'protocolSchemaVersion')::integer
+    from allocated cross join jsonb_array_elements($9::jsonb) with ordinality as event(value, ordinal)
+    order by event.ordinal
+    returning *
+  ), notified as (
+    select pg_notify($11::text, $10::text) from allocated
+    where $10::text is not null and allocated.wake_runtime_mode = 'native' and allocated.wake_issue_id is not null
+  )
+  select inserted.*, allocated.wake_runtime_mode, allocated.wake_issue_id, (select count(*) from notified) as wake_notified
+  from inserted cross join allocated`;
+
 async function appendNewNativeSourceEvents(
   db: Db,
   inputs: readonly NativeSourceEventInput[],
+  progressWake = false,
 ): Promise<AppendHeartbeatRunEventResult[] | null> {
   const first = inputs[0]!;
   const source = first.nativeSource;
@@ -307,16 +353,24 @@ async function appendNewNativeSourceEvents(
     sourcePayloadSha256: nativeSha256(input.nativeSource.canonicalPayload),
     protocolSchemaVersion: input.nativeSource.protocolSchemaVersion,
   })));
+  const parameters = [first.runId, first.companyId, first.agentId, source.sourceInstanceId, String(firstSeq), String(inputs.length),
+    new Date().toISOString(), eventIds, rows];
   let inserted: Record<string, unknown>[];
   try {
-    inserted = await db.$client.unsafe<Record<string, unknown>[]>(APPEND_NEW_NATIVE_SOURCE_EVENTS_SQL, [first.runId, first.companyId,
-      first.agentId, source.sourceInstanceId, String(firstSeq), String(inputs.length), new Date().toISOString(), eventIds, rows]);
+    inserted = progressWake
+      ? await db.$client.unsafe<Record<string, unknown>[]>(APPEND_NEW_NATIVE_SOURCE_EVENTS_WITH_PROGRESS_SQL, [...parameters,
+        chatNativeProgressCommitNotification(db), DATABASE_WORK_CHANNEL])
+      : await db.$client.unsafe<Record<string, unknown>[]>(APPEND_NEW_NATIVE_SOURCE_EVENTS_SQL, parameters);
   } catch (error) {
     if (isUniqueViolation(error)) return null;
     throw error;
   }
   if (inserted.length === 0) return null;
   if (inserted.length !== inputs.length) throw new Error("heartbeat_run_event_not_persisted");
+  const woken = inserted[0]!;
+  if (progressWake && woken.wake_runtime_mode === "native" && typeof woken.wake_issue_id === "string") {
+    publishChatNativeProgressSettled(db, { companyId: first.companyId, issueId: woken.wake_issue_id });
+  }
   const bySourceSeq = new Map(inserted.map(raw => [Number(raw.source_seq), decodeRunEventRow(raw)]));
   return inputs.map(input => ({
     row: bySourceSeq.get(input.nativeSource.sourceSeq)!,

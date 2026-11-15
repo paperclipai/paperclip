@@ -1884,7 +1884,6 @@ function runtimePort(
       },
       drop: () => cycles.drop(),
       cancel: () => cycles.cancel(),
-      undecided: () => cycles.undecided(),
       decisionFor: (toolCallId) => cycles.decisionFor(toolCallId),
     };
   }

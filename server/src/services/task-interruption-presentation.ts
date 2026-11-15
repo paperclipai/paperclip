@@ -605,6 +605,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   }
   // A queued-message Interrupt records its queue on the stopped run. Newer
   // input can hide that wake from the latest-wait read, so load it by id.
+  // The click's recorded intent is the authority, not the wake's requester:
+  // a user's message can join an earlier automatic wake.
   const interruptQueueId = (run: typeof runs[number]) => {
     const id = run.status === "cancelled" ? run.resultJson?.queuedCommentInterruptQueueId : null;
     return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? id : null;
@@ -614,7 +616,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     requestedAt: agentWakeupRequests.requestedAt,
     queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40) })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, interruptQueueIds),
-      eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user"))) : [];
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      sql`${agentWakeupRequests.payload}#>>'{queuedCommentInterrupt,actorId}' is not null`)) : [];
   const interruptWaitById = new Map(interruptWaits.map(wait => [wait.id, wait]));
   const runIds = runs.map(run => run.id);
   const actions = runIds.length ? await db.selectDistinctOn([issueRecoveryActions.sourceIssueId]).from(issueRecoveryActions).where(and(

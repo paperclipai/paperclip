@@ -5,10 +5,8 @@ import { chatActions, chatConversations, chatEndpointLeases, chatEndpointResourc
   chatPublications, fastResponseRequests, chatEndpoints, chatMessageLinks, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
-import type { ChatResponseScope } from "../../chat-response-availability.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
-
-type Scope = ChatResponseScope & { endpointId?: string; repositoryId?: string; number?: number };
+import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string | null; conversationId: string | null; repositoryId: string | null; number: number | null; dueAt: number };
 type FastResponse = { status: string; expiresAt: string; publicationState: string | null };
@@ -83,6 +81,7 @@ export function registerGitHubAcknowledgementWork(
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.chatGitHubAcknowledgements,
+    reconstructionIntervalMs: githubResponseReconstructionIntervalMs,
     decodeScope: (hint: string): Scope | undefined => hint === "*" ? undefined : JSON.parse(hint),
     matches: (value: Entry, scope?: Scope) => !scope || (value.companyId === scope.companyId &&
       (!scope.issueId || value.issueId === scope.issueId) && (!scope.deliveryId || value.deliveryId === scope.deliveryId) &&

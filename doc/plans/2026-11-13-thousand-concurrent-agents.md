@@ -129,6 +129,104 @@ What it shows:
 - Lease renewal is under 1 statement/s at 400 agents (15/s at 50 before).
 - The model does not measure server memory, so it does not show change 1h.
 
+## Load model at recorded rates
+
+The rates above were assumptions. Recorded hosted native runs show a much
+lighter and different load, so the model's default changed on 2026-11-14.
+
+Source: 40 recent native runs on one hosted workspace (median 26 minutes).
+Events stored per run: 0.69/s at the median, 1.5/s at p90. Text deltas: 0.18/s
+on average, 1.6–2.7/s in a run's busiest minute; a run streams text for about
+8% of its life. Rows by event type: `run.performance.span` 10,030,
+`item.delta` 9,502, `tool.execution.progressed` 6,951, `item.completed` 4,705,
+`tool.execution.started` and `tool.execution.completed` about 2,150 each.
+Controller checkpoint rows: about 1.4 per running run per second.
+
+| Profile (`PROFILE`) | Deltas/s per agent | Other events/s per agent | Use |
+| --- | --- | --- | --- |
+| `recorded` (default) | 0.2 | 0.5 | median of the recorded runs |
+| `burst` | 2.5 | 3 | a run's busiest minute |
+| `stress` | 20 | 1 | the earlier assumption, kept for comparison |
+
+API requests stay at 0.3/s per agent in every profile. Other events follow the
+recorded mix (`EVENT_MIX`), and each type takes the server path it takes in
+production:
+
+| Event type | Share | Server path |
+| --- | --- | --- |
+| `run.performance.span` | 39% | written by the server's own run trace: one ordinary append, no wake, no checkpoint |
+| `tool.execution.progressed` | 27% | runner event with a chat-progress wake: a transaction, then a controller checkpoint save |
+| `item.completed` | 18% | the same (a final reply also wakes response presentation) |
+| `tool.execution.started`, `tool.execution.completed` | 8% each | the same |
+
+The model's delta batching now also follows #21520: deltas that arrive while a
+batch commits go into one next batch, until the run's next runner event.
+
+Measured 2026-11-14 on master (after #21511, #21520 and #21528), 60 s window,
+main pool of 10 connections, embedded PostgreSQL on the same machine. Each run
+started only when the machine's 1-minute load average was below 15; the load
+average at the start and the end is shown. The machine is shared, and the
+500-agent recorded run had other work start during its window (marked busy).
+
+| Agents | Profile | Load avg start / end | Event-loop utilization | Statements/s | Per agent per second | Checkpoint pool statements/s | Other events done / offered | Other event lateness p50 / p99 | Delta lateness p50 / p99 | API p50 / p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 500 | recorded, busy | 14.9 / 22.2 | 0.66 | 1,979 | 4.0 | 688 | 14,774 / 15,000 | 3 ms / 5.2 s | 2 ms / 5.7 s | 3 ms / 7.1 s |
+| 1,000 | recorded | 14.0 / 13.5 | 0.61 | 4,351 | 4.4 | 1,525 | 30,000 / 30,000 | 1 ms / 10 ms | 1 ms / 252 ms | 2 ms / 9 ms |
+| 2,000 | recorded | 13.4 / 15.9 | 0.85 | 8,701 | 4.4 | 3,049 | 60,000 / 60,000 | 2 ms / 2.1 s | 1 ms / 2.2 s | 3 ms / 3.0 s |
+| 250 | burst | 12.3 / 16.6 | 0.70 | 6,102 | 24.4 | 2,287 | 45,000 / 45,000 | 1 ms / 122 ms | 2 ms / 281 ms | 2 ms / 199 ms |
+| 500 | burst | 13.8 / 11.7 | 0.95 | 12,114 | 24.2 | 4,488 | 90,000 / 90,000 | 4 ms / 171 ms | 9 ms / 318 ms | 5 ms / 268 ms |
+
+No run had a failed operation, a failed checkpoint save or a lost lease.
+
+What it shows:
+
+- At recorded rates one process costs about 4.4 statements per agent per
+  second, and about 35% of them are on the 3-connection checkpoint pool. The
+  non-delta runner events and their checkpoint saves are most of the cost; text
+  deltas are now a small share.
+- On loopback PostgreSQL one process carries 2,000 agents at recorded rates
+  (event-loop utilization 0.85, p99 lateness about 2 s), and 500 agents all in
+  their busiest minute at the same time (0.95, p99 under 0.4 s).
+- The 3-connection checkpoint pool kept up locally: about 4,500 statements/s,
+  or 1,100 saves/s, at 500 agents in a busy minute. Since #21528 a save is 4
+  statements (BEGIN, the owner lock with the transaction id, the write,
+  COMMIT), and 5 where commit-time notifications are on (a `pg_notify` before
+  COMMIT). Each save holds a connection for those round trips, so with a hosted
+  round trip of about 1 ms the same 3 connections allow about 600–750 saves/s,
+  which is about 330–400 agents in a busy minute. That is a per-process limit
+  on a hosted database (change 1g sizes this pool); it is computed here, not
+  measured.
+- Earlier runs on 2026-11-14 at load averages of 20–55 showed one process
+  falling behind at 500 agents in a busy minute and at 2,000 at recorded rates.
+  With the machine quieter and the model's event order corrected, both kept up,
+  so those earlier results described the machine, not the server code.
+- The model saves a checkpoint without blocking the agent's next event. The
+  controller acknowledges a runner event only after its checkpoint save, so in
+  production a slow checkpoint pool also delays the run's next events. The
+  model therefore understates the effect of that pool.
+- On the hosted instance a CPU profile of the main thread (2026-11-14, with
+  these fixes) shows building SQL text in Drizzle costing about as much
+  main-thread time as postgres.js result parsing (each about a fifth). A
+  statement with fixed SQL text, as in #21511, therefore saves more CPU there
+  than its statement count suggests; the next changes should be judged by CPU
+  per operation, not only by statements.
+
+## Considered and not done
+
+- **Stop writing `run.performance.span` rows.** These spans are the largest
+  event type by rows, but each is one statement with no wake and no
+  checkpoint. Recorded runs have about 190–250 span rows per run over a median
+  of 26 minutes, about 0.12–0.16 rows per run per second: about 3% of the
+  statements per agent. The top names are `tool.request.input_stream` (median
+  56 per run), `tool.execute` (25), `execution.plugin_dispatch` (11) and
+  `authorization.base` (7). Run forensics, the restart-chaos speed scripts and
+  exports read these rows, so they stay.
+- **Save a controller checkpoint only for critical runner events.** After the
+  routine checkpoint save becomes one statement, this would save about 0.3
+  statements per agent per second at recorded rates. It would change the
+  acknowledgement order and the restore cursor of the runner's control plane,
+  which is recovery-critical. Not now; revisit with the writer-thread work.
+
 ## Why more servers do not help today
 
 | Assumption | Where | Effect with two steady processes |
@@ -178,6 +276,23 @@ turn, so memory per session counts for idle agents too.
 | 1g | Size the shared limiters (log uploads, checkpoint pool, recovery pass) from the active run count | no fixed slot count below the run count |
 | 1h | Keep one frozen, parsed tool catalog per catalog hash and company, shared by the sessions that use it, in place of two private copies per session (`assigned-mcp-tools.ts:146`) | server memory per live or warm session from about 5–11 MB (measured at 400–800 tools) to near zero; at 1,000 agents that is 5–11 GB |
 
+### Background recovery sweeps
+
+Run events used to send a company recovery hint, so the stranded-assignment
+and assigned-work queues re-checked every open task of the company on each
+run event (#21552). Local fixture: 1,500 open tasks, 60 agents, process agents
+that fail at once, 180-second window that includes one 5-minute backstop pass.
+
+| Build | Runs created (/s) | Stranded checks per window | Assigned-work checks per window | `agent_task_sessions` reads (/s) | Statements (/s) |
+| --- | --- | --- | --- | --- | --- |
+| Before #21552 (54c3616ad9) | 1.09 | 4,327 | 245 | 26.5 | 1,431 |
+| #21552 at dcd170e29f | 1.00 | 702 | 276 | 7.2 | 1,060 |
+| master at 340157d1d6 | 0.24 | 330 | 72 | 2.5 | 409 |
+
+The master row has much less run churn than the earlier rows, so compare the
+per-window totals with care. In that window the one backstop pass loaded 260
+tasks into the stranded queue; run events loaded 147.
+
 ### Phase 2: several controller processes (target: 1,000)
 
 | # | Change |
@@ -212,8 +327,9 @@ turn, so memory per session counts for idle agents too.
 
 - The load model runs on loopback PostgreSQL on a developer machine. It
   measures the modelled sources only and has no hosted round-trip time.
-- The per-agent rates (20 deltas/s, 1 other event/s, 0.3 API requests/s) are
-  assumptions, not a recorded workload. Phase 0 step 2 replaces them.
+- The first tables used assumed rates (20 deltas/s, 1 other event/s). The
+  "Load model at recorded rates" section uses rates from recorded hosted runs;
+  the API rate (0.3/s) is still an assumption.
 - Staging's pool size and run-log storage mode were not read.
 - Tool-gateway calls, recovery sweeps, and browser fan-out are not in the
   model.

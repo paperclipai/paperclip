@@ -235,7 +235,8 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       observedRunId: otherRunId });
   });
 
-  it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
+  // A user's message can join an earlier automatic wake that keeps its system requester.
+  it.each(["user", "system"] as const)("shows a queued-message Interrupt as handing off, not as a failed attempt (queue started by %s)", async (queueStartedBy) => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
     await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Researcher", adapterType: "paperclip_runner" });
@@ -243,7 +244,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       status: "todo", assigneeAgentId: agentId }).returning();
     // The message was queued well before the user clicked Interrupt.
     const [wake] = await db.insert(agentWakeupRequests).values({
-      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: queueStartedBy,
       requestedAt: new Date(Date.now() - 60_000), payload: { issueId: issue.id },
     }).returning();
     const interrupt = async (requestedAt: Date) => {

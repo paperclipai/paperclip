@@ -127,7 +127,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
-import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueRecoveryActionService, SOURCE_TERMINAL_RESOLUTION } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
@@ -176,6 +176,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
+  withoutRetryInstruction,
   buildNoRunningExecutionNoticeSeed,
   RETRY_FROM_SAVED_WORK_NEXT_ACTION,
   type StrandedRecoveryNoticeSeed,
@@ -185,6 +186,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
@@ -2830,7 +2832,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
     return database.transaction(async (tx) => {
-      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -3427,7 +3429,7 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
-            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({
@@ -3668,7 +3670,8 @@ export function recoveryService(
           actionId: action.id,
           status: "resolved",
           outcome: "restored",
-          resolutionNote: "source_terminal",
+          resolutionNote: SOURCE_TERMINAL_RESOLUTION,
+          sourceTerminal: true,
         });
         if (resolved) {
           result.resolved += 1;
@@ -4251,6 +4254,13 @@ export function recoveryService(
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     }, tx);
+    const executionBlocker = await getExecutionBlocker(tx as unknown as Db, input.issue.companyId, input.issue.id);
+    const retryOffered = !(executionBlocker && executionBlocker.canRetry === false);
+    if (!retryOffered && /\bretry\b/i.test(recoveryAction.nextAction ?? "")) {
+      recoveryAction.nextAction = withoutRetryInstruction(recoveryAction.nextAction!);
+      await tx.update(issueRecoveryActions).set({ nextAction: recoveryAction.nextAction })
+        .where(and(eq(issueRecoveryActions.companyId, input.issue.companyId), eq(issueRecoveryActions.id, recoveryAction.id)));
+    }
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4334,6 +4344,7 @@ export function recoveryService(
       fallbackBody: input.comment,
       recoveryCause,
       recoveryActionId: recoveryAction.id,
+      retryOffered,
       continuesAutomatically: Boolean(input.latestRun) && recoveryAction.kind === STRANDED_KIND
         && recoveryAction.ownerType === "board" && input.latestRun?.agentId === input.issue.assigneeAgentId
         && strandedRunCauseIsTemporary({

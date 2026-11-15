@@ -1,6 +1,8 @@
 export {
   createDb,
   withDedicatedDbConnection,
+  closeDedicatedDbConnections,
+  DEDICATED_CONNECTION_IDLE_MAX,
   createOwnedDatabaseListener,
   type OwnedDatabaseListener,
   livenessDb,

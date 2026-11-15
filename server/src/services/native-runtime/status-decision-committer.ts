@@ -1918,6 +1918,10 @@ export async function commitNativeStatusDecision(input: {
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
           input.decision.effects.length !== 0) throw new NativeStatusRaceError();
     }
+    if (reasonCode === "monitor_wait_authority_lost" && issue.executionRunId !== input.runId &&
+        issue.checkoutRunId !== input.runId && await readNativeMonitorDelivery(tx as unknown as Db, input)) {
+      throw new NativeStatusRaceError();
+    }
     if (reasonCode === "scheduled_monitor_superseded") {
       const expected = input.requireSupersededMonitorWait;
       let actual: Awaited<ReturnType<typeof readNativeSupersededMonitorWait>> = null;

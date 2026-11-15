@@ -153,6 +153,8 @@ such as `Waiting for maintenance`, agent setup, or another open task of the same
 routine, visible during admission. Admission normally starts a run within seconds,
 so this startup feedback lasts at most 30 seconds: a turn still queued after that
 with no named hold says `Waiting to start`, without spinner or shimmer.
+A queued turn's hold is named once, in the turn header; the turn body adds no
+second line for it.
 A run that waits for one of its agent's concurrency slots is a hold too: show
 `Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
 `AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the
