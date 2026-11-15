@@ -31,7 +31,7 @@ import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
-import { nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
+import { nativeProviderStartedTurns, nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -301,7 +301,7 @@ import {
   remoteRecoveryProbeReason, runnerStateRequestsFreshBootstrap,
 } from "./remote-runner-recovery-diagnostics.js";
 import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -8273,6 +8273,15 @@ async function restoreDurableHarnessForExecution(db: Db, execution: NativeExecut
     downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
 }
 
+async function recordedSessionProviderArtifacts(db: Db, execution: NativeExecutionInput,
+  runId: string): Promise<NativeProviderArtifactReceipt | undefined> {
+  const [run] = await db.select({ runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, execution.binding.companyId),
+    eq(heartbeatRuns.agentId, execution.binding.agentId), eq(heartbeatRuns.nativeSessionId, nativeSessionKey(execution)))).limit(1);
+  const receipt = run?.runnerProfileJson?.nativeProviderArtifacts as NativeProviderArtifactReceipt | undefined;
+  return receipt?.schema === "paperclip.native-provider-artifacts.v1" ? receipt : undefined;
+}
+
 function harnessBackupCandidates(root: string): string[] {
   const backupRoot = harnessBackupRoot(root);
   return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
@@ -11041,6 +11050,11 @@ async function executePaperclipNativeSessionAttempt(
           .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, input.execution.binding.runId));
         throw new Error(describeOwnFailedAttachment(finalization?.recoveryHistory));
       }
+      await waitForLiveWarmSessionOwner({ db: input.db, execution: input.execution, priorRunId: identity.runId,
+        checkpointedAt: async () => {
+          const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: identity.runnerInstanceId });
+          return backup && runnerdAuthorityLifecycle(backup.root, identity) === "suspended" ? new Date(backup.manifest.completedAt) : null;
+        } });
       await logPostTerminalEvents(root, input.onLog);
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId &&
@@ -12412,7 +12426,7 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
-        const providerTurnWait = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"
+        const providerTurnWait = nativeProviderStartedTurns(input.execution.provider)
           ? await nativeProviderTurnWaitOptions(input.db, input.execution.binding) : undefined;
         const runExecution = () =>
           executeNativeSession({
@@ -16724,6 +16738,7 @@ async function createRunnerdBackendWithinSessionClaim(
           grokEffort: "grokEffort" in provider ? provider.grokEffort : undefined,
           grokDisableWebSearch: "grokDisableWebSearch" in provider ? provider.grokDisableWebSearch : undefined,
           acpxPermissionModePinned: true } : {}),
+        ...(nativeProviderStartedTurns(provider) ? { providerStartedTurns: true } : {}),
         ...(provider.kind === "opencode" ? { opencodePermissionMode: provider.permissionMode } : {}),
         runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS, runnerProcessReconnectGraceMs: null,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
@@ -16821,6 +16836,10 @@ async function createRunnerdBackendWithinSessionClaim(
     runnerInstanceId: input.runnerInstanceId }) : null;
   let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
     ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
+  if (artifactStorage && !providerArtifacts && durableBinding !== null && !liveProviderRecovery
+      && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+    providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+  }
   let legacyProviderContinuity = durableBinding !== null && !providerArtifacts;
   if (providerArtifacts && artifactStorage && !liveProviderRecovery) await restoreNativeProviderArtifacts({ db: input.db, storage: artifactStorage,
     companyId: input.execution.binding.companyId, receipt: providerArtifacts,
@@ -18481,6 +18500,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   ),
             }
           : {}),
+        ...(nativeProviderStartedTurns(input.execution.provider) ? { providerStartedTurns: true } : {}),
         ...(input.execution.provider.kind === "cursor_cloud" ? { cursorCloud: input.execution.provider.cursorCloud } : {}),
         ...(input.execution.provider.kind === "opencode"
           ? {

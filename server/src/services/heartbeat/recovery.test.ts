@@ -33,6 +33,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasNativeLocalProcessStop, PROCESS_START_REQUESTED, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { runBoundedShutdownStep } from "../../shutdown.js";
+import { registerRunStartHandover } from "../run-start-handover.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -692,6 +693,26 @@ describePostgres("heartbeat recovery module ownership", () => {
       } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
     },
   );
+
+  it("an outgoing server does not claim a same-run retry once it leaves run starts", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "own_turn");
+    registerRunStartHandover({ isYielding: () => true, subscribe: () => () => {} } as never);
+    try {
+      native.claims.mockClear();
+      const deferred = vi.fn();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id, onDeferredDeadline: deferred });
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+      expect(deferred).toHaveBeenCalledWith(expect.any(Number));
+      registerRunStartHandover(null);
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id });
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(true);
+    } finally {
+      registerRunStartHandover(null);
+      try { await f.cleanupAll(); } finally { await child.stop(); }
+    }
+  });
 
   it("routes a due plugin-task retry through its existing remote lease", async () => {
     const child = await ownedProcess();
