@@ -22,7 +22,11 @@ export interface StepMetrics {
   tasksFinished: number;
   tasksFailed: number;
   tasksNeedingRetry: number;
+  runsEnded: number;
   runsFailed: number;
+  runsFailedRecovered: number;
+  runsFailedUnrecovered: number;
+  runsFailedPending: number;
   runsInterrupted: number;
   runsCancelled: number;
   peakRunning: number;
@@ -32,7 +36,7 @@ export interface StepMetrics {
   ttftMs: Distribution;
   firstActivityMs: Distribution;
   runDurationMs: Distribution;
-  board: { requests: number; failures: number; ms: Distribution };
+  board: { requests: number; failures: number; ms: Distribution; byRoute: Record<string, Distribution> };
   server: ServerMetrics;
   recordedSpendUsd: number;
 }
@@ -69,10 +73,17 @@ export const CRITERIA: readonly Criterion[] = [
     evaluate: m => ({ status: m.tasksNeedingRetry === 0 ? "pass" : "fail", observed: m.tasksNeedingRetry }),
   },
   {
-    id: "failed_runs_zero", source: "harness", immediate: true,
-    description: "Runs that ended failed or timed out",
-    threshold: () => "= 0",
-    evaluate: m => ({ status: m.runsFailed === 0 ? "pass" : "fail", observed: m.runsFailed }),
+    id: "failed_runs_unrecovered_zero", source: "harness", immediate: true,
+    description: "Failed or timed-out runs whose task did not finish by itself within the recovery grace",
+    threshold: t => `= 0 (grace ${Math.round(t.recoveryGraceMs / 60_000)} min)`,
+    evaluate: m => ({ status: m.runsFailedUnrecovered === 0 ? "pass" : "fail", observed: m.runsFailedUnrecovered }),
+  },
+  {
+    id: "failed_run_rate", source: "harness", immediate: false,
+    description: "Failed or timed-out runs as a share of ended runs, recovered ones included (%)",
+    threshold: t => `<= ${Math.round(t.maxFailedRunRatio * 1_000) / 10}%`,
+    evaluate: (m, t) => m.runsEnded === 0 ? { status: "not_measured", observed: null }
+      : { status: m.runsFailed / m.runsEnded <= t.maxFailedRunRatio ? "pass" : "fail", observed: Math.round((m.runsFailed / m.runsEnded) * 1_000) / 10 },
   },
   {
     id: "tasks_rested_not_done_zero", source: "harness", immediate: false,

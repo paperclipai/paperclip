@@ -62,7 +62,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controlle
 import {
   ENVIRONMENT_CLEANUP_RETRY_MS,
   pendingCleanupDeadlineSql,
-  recoveredOrphanFirstAttemptSql,
+  recoveredCleanupFirstAttemptSql,
 } from "../environment-cleanup-state.js";
 import { settleEnvironmentLoginProbeLease } from "../environment-login-probe-lease-settlement.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
@@ -515,7 +515,7 @@ function pendingCleanupKind(): OwnableKind {
   // by the settle; a row from before that is due since its last write).
   // Built per listing: the deadline reader bounds saved deadlines relative to
   // the current time, so it must not be frozen at module load.
-  const dueMs = () => sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
+  const dueMs = () => sql<string>`case when ${recoveredCleanupFirstAttemptSql()}
       then coalesce(case when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRecoveredAtMs') = 'number'
         then (${environmentLeases.metadata}->>'pendingCleanupRecoveredAtMs')::numeric end,
         extract(epoch from ${environmentLeases.updatedAt}) * 1000)

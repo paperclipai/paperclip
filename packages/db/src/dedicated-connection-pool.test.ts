@@ -73,8 +73,9 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
     expect(seen.size).toBeLessThanOrEqual(DEDICATED_CONNECTION_IDLE_MAX);
   });
 
-  it("gives concurrent callers exclusive sessions and keeps at most the cap open afterwards", async () => {
-    const db = owner();
+  it("gives concurrent callers exclusive sessions, reuses them for the next burst and closes them once idle", async () => {
+    const db = createDb(temporary.connectionString, { maxConnections: 2, idleTimeoutSeconds: 1 });
+    owners.push(db);
     const concurrency = DEDICATED_CONNECTION_IDLE_MAX + 3;
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -94,12 +95,16 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
     release();
     const sessions = await Promise.all(held);
     expect(new Set(sessions.map(key)).size).toBe(concurrency);
-    expect((await eventually(openDedicatedSessions, open => open.length <= DEDICATED_CONNECTION_IDLE_MAX)).length)
-      .toBeLessThanOrEqual(DEDICATED_CONNECTION_IDLE_MAX);
     const retained = new Set(sessions.map(key));
-    for (let i = 0; i < 20; i++) {
-      expect(retained.has(key(await withDedicatedDbConnection(db, session)))).toBe(true);
-    }
+    const nextBurst = await Promise.all(Array.from({ length: concurrency }, () =>
+      withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+        const mine = await session(tx);
+        await tx.execute(sql`select pg_sleep(0.05)`);
+        return mine;
+      }))));
+    expect(nextBurst.every(value => retained.has(key(value)))).toBe(true);
+    expect(await eventually(openDedicatedSessions, open => open.length === 0)).toEqual([]);
+    expect(retained.has(key(await withDedicatedDbConnection(db, session)))).toBe(false);
   });
 
   it("discards a connection whose action failed mid-transaction", async () => {

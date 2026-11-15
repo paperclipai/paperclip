@@ -21,7 +21,7 @@ import {
   pendingCleanupAttemptsSql,
   pendingCleanupDeadlineSql,
   pendingCleanupMetadataObjectSql,
-  recoveredOrphanFirstAttemptSql,
+  recoveredCleanupFirstAttemptSql,
 } from "../environment-cleanup-state.js";
 import { currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -1872,7 +1872,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
           opts?.environmentRetry ? eq(environmentLeases.environmentId, opts.environmentRetry.environmentId) : undefined,
           pendingCleanupRetryDueSql(manualRetry),
-          backoffMs > 0 ? or(lte(environmentLeases.updatedAt, cutoff), recoveredOrphanFirstAttemptSql()) : undefined,
+          backoffMs > 0 ? or(lte(environmentLeases.updatedAt, cutoff), recoveredCleanupFirstAttemptSql()) : undefined,
         ),
       )
       .orderBy(asc(environmentLeases.updatedAt))

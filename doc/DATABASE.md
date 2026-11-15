@@ -139,9 +139,12 @@ DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; def
 
 `withDedicatedDbConnection` gives an action exclusive use of one session outside
 the main pool (application name `paperclip-workspace-finalization-lock`). Each
-`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
-single-connection clients idle for reuse; they follow the same idle timeout and
-max lifetime as the main pool. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+`createDb` owner keeps released single-connection clients idle for reuse: always
+up to `DEDICATED_CONNECTION_IDLE_MAX` (4), and more while idle plus in-use
+clients stay within `DATABASE_DEDICATED_CONNECTION_MAX`, so a recurring burst
+reuses the sessions the previous burst opened instead of reconnecting. They
+follow the same idle timeout and max lifetime as the main pool, so a retained
+client closes its session after `DATABASE_IDLE_TIMEOUT_SECONDS` without use. At most `DATABASE_DEDICATED_CONNECTION_MAX`
 (default 24) dedicated clients are in use at once per owner. A caller that
 finds the limit reached waits in a first-in, first-out queue. A caller that
 already holds a dedicated client, or runs inside an open transaction of the
