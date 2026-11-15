@@ -58,6 +58,79 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("shows every task once in a four-level recent chain", async () => {
+    fixture.recentTasks = ["a", "b", "c", "d"].map((id, index) => ({
+      id, companyId: "company", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo", recordedAt: index,
+      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
+    }));
+    fixture.projectTasks.mockImplementation(async (_company, filters) => fixture.recentTasks.filter(task => task.parentId === filters.parentId));
+    await renderSidebar();
+    const region = container.querySelector('[aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(4);
+    for (const id of ["a", "b", "c", "d"]) expect(region.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
+  });
+  it("nests recent children once, limits the first page to ten, and keeps folding separate from read state", async () => {
+    fixture.recentTasks = [
+      { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: false },
+      { id: "child-00", companyId: "company", identifier: "TASK-2", title: "Child 0", status: "todo", recordedAt: 2, parentId: "parent", isUnreadForMe: true },
+    ];
+    fixture.projectTasks.mockImplementation(async (_company, filters) => Array.from({ length: filters.afterId ? 4 : 10 }, (_, index) => ({
+      id: `child-${String(index + (filters.afterId ? 10 : 0)).padStart(2, "0")}`, companyId: "company", parentId: "parent",
+      identifier: `CHILD-${index + (filters.afterId ? 10 : 0)}`, title: `Child ${index + (filters.afterId ? 10 : 0)}`, status: "todo", isUnreadForMe: true,
+    })));
+    await renderSidebar();
+    const region = () => container.querySelector('[aria-label="Recents"]')!;
+    expect(region().querySelectorAll("a")).toHaveLength(11);
+    expect(region().textContent?.match(/Child 0/g)).toHaveLength(1);
+    const collapse = region().querySelector<HTMLButtonElement>('[aria-label="Collapse subtasks of Parent"]')!;
+    await act(async () => collapse.click());
+    expect(region().querySelectorAll("a")).toHaveLength(1);
+    expect(region().textContent).toContain("12 unread");
+    await act(async () => region().querySelector<HTMLButtonElement>('[aria-label="Expand subtasks of Parent"]')!.click());
+    await act(async () => Array.from(region().querySelectorAll("button")).find(button => button.textContent?.includes("Show more"))!.click());
+    await flush();
+    expect(region().querySelectorAll("a")).toHaveLength(15);
+    expect(region().textContent).toContain("Show less");
+    expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ parentId: "parent", limit: 10, afterId: "child-09", includeReadState: true }), expect.anything());
+  });
+  it("keeps the selected child beyond ten visible within the ten-row preview", async () => {
+    fixture.pathname = "/COO/issues/TASK-12";
+    fixture.recentTasks = [
+      { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 14 },
+      { id: "child-12", companyId: "company", identifier: "TASK-12", title: "Selected child", status: "todo", recordedAt: 2, parentId: "parent", isUnreadForMe: true },
+    ];
+    fixture.projectTasks.mockResolvedValue(Array.from({ length: 10 }, (_, index) => ({
+      id: `child-${index}`, companyId: "company", parentId: "parent", identifier: `PAGE-${index}`, title: `Page child ${index}`, status: "todo",
+    })));
+    await renderSidebar();
+    expect(container.querySelectorAll('[role="group"][aria-label="Subtasks of Parent"] a')).toHaveLength(10);
+    expect(container.querySelector('a[href="/issues/TASK-12"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/TASK-12"] [aria-label="Unread"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/TASK-1"] [aria-label="Unread"]')).toBeNull();
+  });
+  it("keeps the parent link on a failed child read and retries without navigation", async () => {
+    fixture.recentTasks = [{ id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 }];
+    fixture.projectTasks.mockRejectedValueOnce(new Error("Unavailable")).mockResolvedValueOnce([
+      { id: "child", companyId: "company", parentId: "parent", identifier: "CHILD", title: "Recovered child", status: "todo" },
+    ]);
+    await renderSidebar();
+    expect(container.querySelector('a[href="/issues/TASK-1"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+    await flush();
+    expect(container.textContent).toContain("Recovered child");
+    expect(fixture.pathname).toBe("/COO/issues");
+  });
+  it("keeps cached children visible during a temporary refetch failure", async () => {
+    fixture.recentTasks = [{ id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 }];
+    fixture.projectTasks.mockResolvedValue([{ id: "child", companyId: "company", parentId: "parent", identifier: "CHILD", title: "Cached child", status: "todo" }]);
+    await renderSidebar();
+    fixture.projectTasks.mockRejectedValue(Object.assign(new Error("Gateway unavailable"), { status: 503 }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["issues", "company", "recent-subtasks"] }); });
+    expect(container.textContent).toContain("Cached child");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('a[href="/issues/CHILD"]')).not.toBeNull();
+  });
   it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
     fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
       id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,

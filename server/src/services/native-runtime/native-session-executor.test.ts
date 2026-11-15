@@ -434,6 +434,8 @@ import {
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
   closeIdleWarmNativeSessionsForRestart,
+  WARM_IDLE_CLOSE_MAX_RETRIES,
+  WARM_IDLE_CLOSE_RETRY_MS,
   readNativeSessionIdleWork,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
@@ -11614,10 +11616,12 @@ describe("native warm session supervision", () => {
   });
 
   it.each([
-    { lease: "pending_cleanup", forgotten: true },
-    { lease: "released", forgotten: true },
+    { lease: "stopped-receipt", forgotten: true },
+    { lease: "destroyed-receipt", forgotten: true },
+    { lease: "pending_cleanup", forgotten: false },
+    { lease: "released", forgotten: false },
     { lease: "retained", forgotten: false },
-  ])("forgets a warm owner whose idle close failed only once the host gave up its sandbox: $lease", async ({ lease, forgotten }) => {
+  ])("forgets a warm owner whose idle close failed only once its sandbox has a stop or destroy receipt: $lease", async ({ lease, forgotten }) => {
     const identity = `warm-idle-close-sandbox-${lease}`;
     const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
       session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 50 } },
@@ -11632,7 +11636,7 @@ describe("native warm session supervision", () => {
     });
     const copy = (runId: string) => ({ runId, root: `/tmp/${identity}`, preparationKey: "same", hasChanges: async () => false,
       collectStopped: async () => undefined, retirementFailed: async () => undefined });
-    let leaseRows: Array<{ status: string }> = [];
+    let leaseRows: Array<Record<string, unknown>> = [];
     const base = leaseDb(warmExecution);
     const db = { ...base, select: (fields?: unknown) => ({ from: (table: unknown) => table === environmentLeases
       ? { where: async () => leaseRows } : base.select(fields as never).from(table as never) }) } as unknown as Db;
@@ -11641,7 +11645,14 @@ describe("native warm session supervision", () => {
         runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}`,
           sandboxLeaseAcquisition: { providerLeaseId: `${identity}-sandbox` } } as never,
         instructionWorkingCopy: copy(identity) });
-      leaseRows = [{ status: lease }];
+      const receipt = lease.endsWith("-receipt") ? lease.slice(0, -"-receipt".length) : null;
+      leaseRows = [{ id: `${identity}-lease`, companyId: warmExecution.binding.companyId, environmentId: identity,
+        heartbeatRunId: identity, provider: "daytona", providerLeaseId: `${identity}-sandbox`,
+        status: receipt ? "released" : lease, releasedAt: lease === "retained" ? null : new Date(),
+        cleanupStatus: receipt || lease === "released" ? "success" : "failed", leasePolicy: "reuse_by_environment",
+        metadata: receipt ? { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+          companyId: warmExecution.binding.companyId, runId: identity, leaseId: `${identity}-lease`, provider: "daytona",
+          providerLeaseId: `${identity}-sandbox`, state: receipt, confirmedAt: new Date().toISOString() } } : {} }];
       await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
       const followUpRunId = `${identity}-follow-up`;
       const adopt = vi.fn(async () => null);
@@ -12195,6 +12206,79 @@ describe("native warm session supervision", () => {
     close.mockResolvedValue(undefined);
     expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
     expect(collectStopped).toHaveBeenCalledOnce();
+  });
+
+  it("an idle warm session whose close fails with runner_remote_process_identity_unavailable and whose Runner is proven gone is released at controller restart", async () => {
+    const name = "warm-close-runner-gone";
+    const current = { ...execution,
+      binding: { ...execution.binding, runId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const close = vi.fn<() => Promise<void>>(async () => {
+      throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
+    });
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name }))
+      .resolves.toMatchObject({ exitCode: 0 });
+    expect(close).not.toHaveBeenCalled();
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+    expect(close).toHaveBeenCalledOnce();
+    expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
+  });
+
+  it("names the Runner check in a warm close failure and keeps an unproven owner registered at controller restart", async () => {
+    const name = "warm-close-marker-missing";
+    const current = { ...execution,
+      binding: { ...execution.binding, runId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    } as NativeExecutionInputV1;
+    const close = vi.fn<() => Promise<void>>(async () => {
+      throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "marker_missing" });
+    });
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name });
+    expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 0, failed: 1, failures: [{ runId: name,
+      reason: "close failed: runner_remote_process_identity_unavailable: runner_remote_process_identity_unavailable [process_verification/marker_missing]" }] });
+    close.mockResolvedValue(undefined);
+    expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 1, failed: 0 });
+  });
+
+  it("retries a failed idle warm close a bounded number of times", async () => {
+    const name = "warm-idle-close-retry";
+    const current = { ...execution,
+      binding: { ...execution.binding, runId: name, executionWorkspaceId: name },
+      session: { ...execution.session, normalizedSessionId: name, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 } },
+    } as NativeExecutionInputV1;
+    const close = vi.fn<() => Promise<void>>(async () => { throw new Error("native_runner_checkpoint_owner_lost"); });
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: name, normalizedSessionId: name, providerSessionId: name, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: name });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(close).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(WARM_IDLE_CLOSE_RETRY_MS);
+      expect(close).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(WARM_IDLE_CLOSE_RETRY_MS * 10);
+      expect(close).toHaveBeenCalledTimes(1 + WARM_IDLE_CLOSE_MAX_RETRIES);
+      expect(readNativeSessionIdleWork()).toBe("present");
+    } finally { vi.useRealTimers(); }
+    close.mockResolvedValue(undefined);
+    expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 1, failed: 0 });
   });
 
   it.each(["failed", "cancelled"] as const)("retires a %s session even if its warm checkpoint rejects", async (runTerminalState) => {
@@ -13244,6 +13328,48 @@ describe("native warm session supervision", () => {
         }
       },
     );
+
+    it.each([
+      { lease: "released-stop-receipt", closed: 1 },
+      { lease: "pending_cleanup", closed: 0 },
+      { lease: "released-without-receipt", closed: 0 },
+      { lease: "stop-receipt-for-another-run", closed: 0 },
+    ] as const)("reads the warm owner's own lease rows at controller restart: $lease", async ({ lease: kind, closed }) => {
+      const { base } = fixture(`restart-lease-${kind}`);
+      const environmentId = `restart-lease-env-${kind}`, providerLeaseId = `restart-lease-sandbox-${kind}`;
+      const close = vi.fn(async (): Promise<void> => { throw new Error("owned close not yet confirmed"); });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      });
+      const leaseRunId = kind === "stop-receipt-for-another-run" ? "earlier-run" : base.binding.runId;
+      const terminal = kind !== "pending_cleanup";
+      const row = { id: `lease-${kind}`, companyId: base.binding.companyId, environmentId, heartbeatRunId: leaseRunId,
+        provider: "daytona", providerLeaseId, status: terminal ? "released" : "pending_cleanup", releasedAt: new Date(),
+        cleanupStatus: terminal ? "success" : "failed", leasePolicy: "reuse_by_environment",
+        metadata: kind === "released-stop-receipt" || kind === "stop-receipt-for-another-run"
+          ? { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: base.binding.companyId,
+            runId: leaseRunId, leaseId: `lease-${kind}`, provider: "daytona", providerLeaseId, state: "stopped",
+            confirmedAt: new Date().toISOString() } }
+          : { failureReason: "sandbox_stop_pending" } };
+      let leaseRows: unknown[] = [];
+      const ownerDb = leaseDb(base), select = ownerDb.select.bind(ownerDb);
+      ownerDb.select = ((fields?: Record<string, unknown>) => ({ from: (table: unknown) => {
+        if (table !== environmentLeases) return select(fields as never).from(table as never);
+        const query = { then: (...args: Parameters<Promise<unknown[]>["then"]>) => Promise.resolve(leaseRows).then(...args),
+          where: () => query, limit: () => query };
+        return query;
+      } })) as unknown as Db["select"];
+      try {
+        await executePaperclipNativeSession({ db: ownerDb, execution: base, runnerInstanceId: "runner",
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
+            sandboxLeaseAcquisition: { outcome: "created", providerLeaseId } } });
+        leaseRows = [row];
+        expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed, failed: 1 - closed });
+      } finally {
+        close.mockResolvedValue(undefined);
+        await closeIdleWarmNativeSessionsForRestart();
+      }
+    });
 
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
