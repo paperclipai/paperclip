@@ -261,6 +261,27 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
     expect(() => parseCommand(["--env", "local", "--daytona-reuse-lease"])).toThrow(/only to --env daytona/);
   });
+  it("starts sandboxes from a pack-mismatched image while the controller keeps the matched pack", () => {
+    const older = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"b".repeat(64)}`;
+    expect(parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", older]))
+      .toMatchObject({ mode: "wave", options: { daytonaImage: image, daytonaSandboxImage: older } });
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", image])).toThrow(/different image/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", "ghcr.io/x/y:old"])).toThrow(/immutable image/);
+    expect(() => parseCommand(["--env", "local", "--daytona-pack-mismatch", older])).toThrow(/only to --env daytona/);
+  });
+  it("counts every task's sandbox against the budget when warm sandboxes outlive their task", () => {
+    const wave = (...extra: string[]) => parseCommand(["--env", "daytona", "--daytona-image", image, "--tasks", "20", "--concurrency", "4", ...extra]);
+    expect(() => wave("--daytona-warm")).toThrow(/--daytona-warm keeps each task's sandbox.*20 tasks/);
+    expect(() => wave("--daytona-inherit", "--lifecycle", "warm")).toThrow(/--daytona-inherit with --lifecycle warm keeps each task's sandbox/);
+    // --lifecycle default leaves the lifecycle unset everywhere; Daytona keeps reusable leases, so the run defaults to warm.
+    expect(() => wave("--daytona-inherit", "--lifecycle", "default")).toThrow(/--daytona-inherit with --lifecycle default keeps each task's sandbox/);
+    // The catalog agents pin per-turn, so an inheriting environment alone releases each sandbox after its turn.
+    expect(wave("--daytona-inherit")).toMatchObject({ mode: "wave", options: { daytonaInherit: true, tasks: 20 } });
+    expect(wave("--daytona-inherit", "--lifecycle", "per_turn")).toMatchObject({ mode: "wave" });
+    expect(() => wave("--daytona-warm", "--daytona-inherit")).toThrow(/cannot be combined/);
+    expect(() => parseCommand(["--env", "local", "--daytona-warm"])).toThrow(/only to --env daytona/);
+    expect(() => parseCommand(["--env", "local", "--daytona-inherit"])).toThrow(/only to --env daytona/);
+  });
   it("keeps reusable Daytona leases only when asked", () => {
     const reuse = parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-reuse-lease"]);
     expect(reuse).toMatchObject({ mode: "wave", options: { daytonaReuseLease: true } });

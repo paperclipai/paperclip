@@ -27,6 +27,23 @@ describe("Cloud connector enrollment return path", () => {
     );
   });
 
+  it.each(["APP", "QA / Apps"])("returns Tailscale enrollment to the verified company once: %s", (prefix) => {
+    expect(cloudConnectorEnrollmentReturnPath(prefix, "/apps/tailscale")).toBe(
+      `/${encodeURIComponent(prefix)}/apps/tailscale?cloud_connector=enrolled`,
+    );
+  });
+
+  it.each([
+    "https://evil.example/apps/tailscale",
+    "//evil.example/apps/tailscale",
+    "/OTHER/apps/tailscale",
+    "/apps/tailscale/unknown",
+  ])("rejects an untrusted Tailscale enrollment destination: %s", (returnTo) => {
+    expect(cloudConnectorEnrollmentReturnPath("APP", returnTo)).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+  });
+
   it("rejects external and unrelated enrollment return paths", () => {
     expect(cloudConnectorEnrollmentReturnPath("APP", "https://evil.example/apps/connect")).toBe(
       "/APP/apps/connections?cloud_connector=enrolled",

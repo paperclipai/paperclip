@@ -410,6 +410,21 @@ describe("runBoundedShutdownStep", () => {
     }
   });
 
+  it("aborts the signal of a step that outlives its bound, and only that step", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 250, log: stubLogger() });
+      await budget.run("delivery_work_stop", async abort => { signals.push(abort); });
+      const pending = budget.run("hot_restart_prepare", abort => { signals.push(abort); return new Promise<void>(() => undefined); });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(signals.map(signal => signal.aborted)).toEqual([false, true]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("logs a step that rejects and does not reject the shutdown", async () => {
     const log = stubLogger();
     const error = new Error("skill sync stop failed");

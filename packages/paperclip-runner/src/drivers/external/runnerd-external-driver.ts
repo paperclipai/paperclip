@@ -232,7 +232,7 @@ class RunnerdExternalSession implements HarnessSession {
       const ticket = core.issueBootstrapTicket(60_000);
       await core.flushCheckpoint();
       this.#process = spawnRunner({
-        processLauncher: o.runnerProcessLauncher, connectUrl: registration?.connectUrl ?? (registration?.connection ? undefined : core.connectUrl),
+        processLauncher: o.runnerProcessLauncher, isRunnerConnected: () => core.activeRunnerConnectionCount() > 0, connectUrl: registration?.connectUrl ?? (registration?.connection ? undefined : core.connectUrl),
         connection: registration?.connection, stateDirectory: runnerState, identity: o.identity,
         ticket, runnerBinaryPath: binary,
         runnerVersion: artifact.version, runnerDigest: artifact.digest,

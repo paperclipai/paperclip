@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act as reactAct, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
@@ -395,6 +395,58 @@ describe("Agents", () => {
     vi.clearAllMocks();
   });
 
+  it("shares harness filters across views while keeping dimmed chart cards navigable and stationary", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "alpha", name: "Alpha", adapterType: "codex_local" }),
+      makeAgent({ id: "beta", name: "Beta", adapterType: "claude_local" }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      { id: "alpha", name: "Alpha", role: "engineer", status: "active", reports: [
+        { id: "beta", name: "Beta", role: "engineer", status: "active", reports: [] },
+      ] },
+    ]);
+    root = createRoot(container);
+    await reactAct(async () => renderAgentsView(root, queryClient));
+    await flushReact();
+    await flushReact();
+    const filterButton = container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!;
+    expect(filterButton.closest('[aria-label="Agents controls"]')).not.toBeNull();
+    expect(container.querySelector("thead")?.textContent).toContain("2 agents");
+    await reactAct(() => filterButton.click());
+    await flushReact();
+    const harnessOption = document.querySelector<HTMLSelectElement>('select[aria-label="Harness"]')!;
+    await reactAct(() => { harnessOption.value = "codex_local"; harnessOption.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(container.querySelector("thead")?.textContent).toContain("1 agent");
+    await reactAct(() => filterButton.click());
+    await reactAct(() => container.querySelector<HTMLButtonElement>('[aria-label="Org chart view"]')!.click());
+    await flushReact();
+    await flushReact();
+    const cards = [...container.querySelectorAll<HTMLElement>("[data-org-card]")];
+    expect(cards).toHaveLength(2);
+    const alpha = cards.find(card => card.textContent?.includes("Alpha"))!;
+    const beta = cards.find(card => card.textContent?.includes("Beta"))!;
+    expect(alpha.dataset.filterMatch).toBe("true");
+    expect(beta.dataset.filterMatch).toBe("false");
+    const position = beta.style.cssText;
+    const transform = container.querySelector<HTMLElement>('[data-testid="org-chart-card-layer"]')!.style.transform;
+    await reactAct(() => beta.click());
+    expect(mockRouterState.navigate).toHaveBeenCalled();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    await reactAct(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "no match");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.querySelectorAll('[data-org-card][data-filter-match="false"]')).toHaveLength(2);
+    expect(beta.style.cssText).toBe(position);
+    expect(container.querySelector<HTMLElement>('[data-testid="org-chart-card-layer"]')!.style.transform).toBe(transform);
+    await reactAct(() => container.querySelector<HTMLButtonElement>('[aria-label="Clear search"]')!.click());
+    await reactAct(() => filterButton.click());
+    await flushReact();
+    await reactAct(() => [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Agent filter choices"] button')].find(button => button.textContent === "Clear filters")!.click());
+    expect(container.querySelectorAll('[data-org-card][data-filter-match="false"]')).toHaveLength(0);
+  });
+
   it("filters the rendered roster and clears search without changing its status route", async () => {
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "alpha", name: "Alpha", role: "engineer" }),
@@ -451,7 +503,7 @@ describe("Agents", () => {
     expect(container.querySelector("tbody")?.textContent).not.toContain("Manager");
     expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 hidden by filters");
     expect(container.querySelector('[aria-label="Filter agents"]')?.textContent).toBe("4");
-    expect(container.querySelector('[aria-label="Agent filters"]')?.textContent).toContain("1 agent");
+    expect(container.querySelector(AgentList === Agents ? "thead" : '[aria-label="Agent filters"]')?.textContent).toContain("1 agent");
     await act(() => { queryClient.setQueryData(queryKeys.agents.list("company-1"), agents.map(agent => agent.id === "alpha" ? { ...agent, adapterConfig: { model: "new-model" } } : agent)); });
     await flushReact();
     expect(document.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.selectedOptions[0].textContent).toBe("Previously selected model");
@@ -468,10 +520,16 @@ describe("Agents", () => {
     await flushReact();
     expect(container.textContent).toContain("Alpha");
     expect(container.textContent).toContain("Manager");
-    expect(container.textContent).not.toContain("Beta");
+    if (AgentList === Agents) {
+      const beta = [...container.querySelectorAll<HTMLElement>("[data-org-card]")].find(card => card.textContent?.includes("Beta"))!;
+      expect(beta.dataset.filterMatch).toBe("false");
+    } else {
+      expect(container.textContent).not.toContain("Beta");
+    }
     await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Filter agents"]')!.click());
     await select("Status", "paused");
-    expect(container.textContent).toContain("No agents match");
+    if (AgentList === Agents) expect(container.querySelectorAll('[data-org-card][data-filter-match="true"]')).toHaveLength(0);
+    else expect(container.textContent).toContain("No agents match");
     const clear = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Clear filters")!;
     await act(() => clear.click());
     expect(container.textContent).toContain("Beta");
@@ -580,12 +638,24 @@ describe("Agents", () => {
     const orgViewport = container.querySelector('[data-testid="org-chart-viewport"]');
     expect(orgViewport).not.toBeNull();
     expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);
-    expect(orgViewport?.parentElement?.classList.contains("md:min-h-0")).toBe(true);
+    expect(orgViewport?.parentElement?.classList.contains("min-h-0")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("h-(--sz-calc-38)")).toBe(false);
     expect(orgViewport?.parentElement?.parentElement?.classList.contains("min-h-0")).toBe(true);
     expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Fit chart to screen"]')).not.toBeNull();
+    const controlsSlot = container.querySelector('[data-org-toolbar-controls]')!;
+    expect(controlsSlot.getAttribute("data-visible")).toBe("true");
+    expect(controlsSlot.hasAttribute("inert")).toBe(false);
+    expect(controlsSlot.querySelector('[aria-label="Chart camera"]')).not.toBeNull();
+    const cameraLayer = container.querySelector<HTMLElement>('[data-testid="org-chart-card-layer"]')!;
+    const initialCamera = cameraLayer.style.transform;
+    await act(async () => controlsSlot.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!.click());
+    expect(cameraLayer.style.transform).not.toBe(initialCamera);
+    await act(async () => controlsSlot.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]')!.click());
+    expect(controlsSlot.textContent).not.toContain("Tasks");
+    expect(controlsSlot.nextElementSibling?.textContent).toContain("New Agent");
+    expect(orgViewport?.querySelector('[aria-label="Org chart controls"]')).toBeNull();
 
     await act(async () => {
       listToggle?.click();
@@ -593,6 +663,16 @@ describe("Agents", () => {
     await flushReact();
     expect(container.querySelector('[data-testid="org-chart-viewport"]')).toBeNull();
     expect(container.textContent).toContain("gpt-5.4");
+    expect(container.querySelector('[data-org-toolbar-controls]')).toBe(controlsSlot);
+    expect(controlsSlot.getAttribute("data-visible")).toBe("false");
+    expect(controlsSlot.getAttribute("aria-hidden")).toBe("true");
+    expect(controlsSlot.hasAttribute("inert")).toBe(true);
+    await act(async () => orgToggle?.click());
+    await flushReact();
+    expect(container.querySelector('[data-org-toolbar-controls]')).toBe(controlsSlot);
+    expect(controlsSlot.getAttribute("data-visible")).toBe("true");
+    expect(controlsSlot.getAttribute("aria-hidden")).toBe("false");
+    expect(controlsSlot.hasAttribute("inert")).toBe(false);
   });
 
   it("gives mobile agent names the full row width after the leading status indicator", async () => {
@@ -1001,7 +1081,7 @@ describe("Agents", () => {
     expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
     expect(document.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("Edit connection & model");
     expect(mockRouterState.navigate).not.toHaveBeenCalled();
-    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Chat", "Status", "Harness", "Connection", "Default model"]);
+    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "1 agent", "Chat", "Status", "Harness", "Default model", "Connection"]);
   });
 
   it.each([

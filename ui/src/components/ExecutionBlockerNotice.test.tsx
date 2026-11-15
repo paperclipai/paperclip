@@ -66,6 +66,26 @@ describe("ordinary task interruption", () => {
   it.each(["working", "resolved"] as const)("does not duplicate the thread indicator for %s", async state => {
     await render({ ...failed, state }); expect(container.textContent).toBe("");
   });
+  it("offers to move a waiting continuation forward in plain words, without reporting a failure", async () => {
+    await render({ ...failed, state: "working", retryAction: "move_forward" });
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.textContent).not.toMatch(/Couldn’t finish|failed|continuation|queue|run\b/i);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-execution-move-forward"]');
+    expect(button?.textContent).toBe("Move it forward now");
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    await act(async () => button!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("shows a waiting continuation without the button to a read-only user, or once the move was requested", async () => {
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", retryAction: "move_forward" }}
+      canRetry={false} onRetry={retry} />));
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.querySelector("button")).toBeNull();
+    await render({ ...failed, state: "working", canRetry: false });
+    expect(container.textContent).toBe("");
+  });
+
   it("names the admission hold a task that has not started waits for", async () => {
     await render({ ...failed, state: "working", canRetry: false, sourceRunIds: [], observedRunId: null,
       retryWait: { reason: "budget.blocked", message: "Waiting for the budget to allow new work. The task starts automatically when it does." } });
@@ -149,6 +169,18 @@ describe("ordinary task interruption", () => {
     expect(retry).toHaveBeenCalledOnce();
     await render({ ...failed, workspaceFailure, state: "working" });
     expect(container.textContent).toBe("");
+  });
+  it("names a failed workspace setup command and what to change, keeping Retry", async () => {
+    const setupFailure = { step: "workspace_provision" as const, command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+      output: "bash: ./scripts/provision-worktree.sh: No such file or directory",
+      message: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127: bash: ./scripts/provision-worktree.sh: No such file or directory" };
+    await render({ ...failed, setupFailure });
+    expect(container.textContent).toContain("Couldn’t set up the task workspace.");
+    expect(container.textContent).toContain(setupFailure.message);
+    expect(container.textContent).toContain("Fix the command in the project’s workspace settings");
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(retry).toHaveBeenCalledOnce();
   });
   it("shows why an accepted Retry is waiting and keeps another attempt available", async () => {
     const retryWait = { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." };

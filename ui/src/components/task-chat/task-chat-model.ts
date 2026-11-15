@@ -146,6 +146,8 @@ export interface TaskChatMessageItem {
   optimistic?: "pending" | "queued";
   /** Live run this queued message is waiting behind. */
   queueTargetRunId?: string | null;
+  /** Run that wrote this agent reply; its MCP Apps views show with the reply. */
+  sourceRunId?: string;
   /** Non-blocking verification limitations attached to the run's durable reply. */
   verificationCaveats?: Array<{
     commandOrCheck: string;
@@ -224,6 +226,8 @@ export interface TaskChatToolItem {
   name: string;
   /** Raw ACP tool name pre-collapse ("mcp__server__tool") for taxonomy lookup. */
   rawName?: string;
+  /** The app tool a wrapper call runs (`paperclip_call_assigned_tool`'s `name`), for its progress. */
+  appToolName?: string;
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;

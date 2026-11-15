@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, afterEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentFileRoots, agentInstructionWorkingCopies, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
+import { agentFileRoots, agentInstructionWorkingCopies, agents, companies, companySkills, companySkillVersions, environments, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
 import { initializeDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -84,4 +84,73 @@ it("keeps an unsettled local instruction copy visible after its canonical files 
     receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } }).where(eq(agentInstructionWorkingCopies.runId, run.id));
   expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
     .not.toContain("local_instruction_copies_require_settlement");
+});
+
+it("recognizes a Runner workspace owned by its selected plugin environment", async () => {
+  vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
+  const owner = { agentId, environmentId, pluginKey: "fixture.task-storage", driverKey: "tasks" };
+  await db.insert(companies).values({ id: companyId, name: "Provider-owned workspace", issuePrefix: "PROV" });
+  await db.insert(environments).values({ id: environmentId, name: `Task provider ${environmentId}`,
+    driver: "plugin", config: { pluginKey: owner.pluginKey, driverKey: owner.driverKey } });
+  await db.insert(agents).values({ id: agentId, companyId, name: "Provider Runner", adapterType: "paperclip_runner" });
+  await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
+  const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Provider task",
+    mode: "shared_workspace", strategyType: "project_primary", providerType: "adapter_managed",
+    cwd: `/workspaces/provider-only-${randomUUID()}`, metadata: { runnerTaskWorkspaceOwner: owner } }).returning();
+  try {
+    expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
+      .not.toContain("workspaces_require_migration");
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)))[0]).toEqual(workspace);
+  } finally {
+    await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+  }
+});
+
+it("keeps local workspaces and invalid provider ownership as migration blockers", async () => {
+  vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), foreignCompanyId = randomUUID(), agentId = randomUUID(), foreignAgentId = randomUUID();
+  const localAgentId = randomUUID(), environmentId = randomUUID(), localEnvironmentId = randomUUID(), emptyEnvironmentId = randomUUID();
+  const owner = { agentId, environmentId, pluginKey: "fixture.task-storage", driverKey: "tasks" };
+  await db.insert(companies).values([{ id: companyId, name: "Workspace guards", issuePrefix: "OWNR" },
+    { id: foreignCompanyId, name: "Foreign owner", issuePrefix: "OTHR" }]);
+  await db.insert(environments).values([
+    { id: environmentId, name: `Provider ${environmentId}`, driver: "plugin", config: { pluginKey: owner.pluginKey, driverKey: owner.driverKey } },
+    { id: localEnvironmentId, name: `Sandbox ${localEnvironmentId}`, driver: "sandbox", config: { pluginKey: owner.pluginKey, driverKey: owner.driverKey } },
+    { id: emptyEnvironmentId, name: `Empty ${emptyEnvironmentId}`, driver: "plugin", config: { pluginKey: "", driverKey: "" } },
+  ]);
+  await db.insert(agents).values([
+    { id: agentId, companyId, name: "Runner owner", adapterType: "paperclip_runner" },
+    { id: foreignAgentId, companyId: foreignCompanyId, name: "Foreign Runner", adapterType: "paperclip_runner" },
+    { id: localAgentId, companyId, name: "Local process", adapterType: "process" },
+  ]);
+  for (const agent of [{ id: agentId, companyId }, { id: foreignAgentId, companyId: foreignCompanyId }, { id: localAgentId, companyId }]) {
+    await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, agent));
+  }
+  const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Retained local dependency",
+    mode: "shared_workspace", strategyType: "project_primary", providerType: "adapter_managed",
+    cwd: `/workspaces/provider-only-${randomUUID()}` }).returning();
+  const invalidOwners: { name: string; providerType?: string; owner: unknown }[] = [
+    { name: "ordinary local storage", providerType: "local_fs", owner },
+    { name: "unmarked adapter storage", owner: undefined },
+    { name: "empty marker", owner: {} },
+    { name: "array marker", owner: [owner] },
+    { name: "foreign company", owner: { ...owner, agentId: foreignAgentId } },
+    { name: "local adapter", owner: { ...owner, agentId: localAgentId } },
+    { name: "non-plugin environment", owner: { ...owner, environmentId: localEnvironmentId } },
+    { name: "missing environment", owner: { ...owner, environmentId: "not-a-uuid" } },
+    { name: "different plugin", owner: { ...owner, pluginKey: "fixture.other-storage" } },
+    { name: "different driver", owner: { ...owner, driverKey: "other" } },
+    { name: "empty provider binding", owner: { ...owner, environmentId: emptyEnvironmentId, pluginKey: "", driverKey: "" } },
+  ];
+  try {
+    for (const invalid of invalidOwners) {
+      await db.update(executionWorkspaces).set({ providerType: invalid.providerType ?? "adapter_managed",
+        metadata: invalid.owner === undefined ? {} : { runnerTaskWorkspaceOwner: invalid.owner } }).where(eq(executionWorkspaces.id, workspace.id));
+      expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers, invalid.name)
+        .toContain("workspaces_require_migration");
+    }
+  } finally {
+    await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+  }
 });

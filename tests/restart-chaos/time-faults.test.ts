@@ -109,6 +109,20 @@ describe("aging", () => {
       + "where \"created_at\" is not null or \"context_snapshot\" is not null");
   });
 
+  it("keeps process start identity: a real sleep never changes when a process started", () => {
+    const statements = agingStatements([
+      { table: "heartbeat_runs", column: "started_at", kind: "timestamp" },
+      { table: "heartbeat_runs", column: "process_started_at", kind: "timestamp" },
+      { table: "native_run_finalizations", column: "controller_process_started_at", kind: "timestamp" },
+    ], HOUR, window);
+    expect(statements.map(statement => [statement.table, statement.columns])).toEqual([["heartbeat_runs", ["started_at"]]]);
+    const shifts = [{ faultId: "f01", ageMs: HOUR, appliedAt: Date.parse("2026-11-09T12:00:00Z"),
+      waveStartedAt: Date.parse("2026-11-09T11:00:00Z") }];
+    const aged = new Date(Date.parse("2026-11-09T11:30:00Z") - HOUR).toISOString();
+    expect(unshiftJson({ processStartedAt: aged, leaseHolder: { process_started_at: aged }, at: aged }, shifts))
+      .toEqual({ processStartedAt: aged, leaseHolder: { process_started_at: aged }, at: "2026-11-09T11:30:00.000Z" });
+  });
+
   it("takes whole seconds only, so fractional digits never change", () => {
     expect(() => agingStatements([], 0, window)).toThrow(/positive/);
     expect(() => agingStatements([], 1_500, window)).toThrow(/whole number of seconds/);

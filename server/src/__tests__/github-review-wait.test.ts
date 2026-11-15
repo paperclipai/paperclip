@@ -6,7 +6,41 @@ import { agents, chatActions, chatConversations, chatEndpointResources, chatEndp
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { captureReviewWaitQueries, seedGitHubReviewWait, setGitHubReviewAssessment,
   type CapturedReviewWaitQuery } from "./helpers/github-review-wait.js";
-import { readInheritedGitHubReviewWait } from "../services/chat-channels/github/review-wait.js";
+import { readInheritedGitHubReviewWait, readInheritedGitHubReviewWaits } from "../services/chat-channels/github/review-wait.js";
+
+const reviewWaitChanges = ["disabled", "inactive", "review_state", "review_agent", "repository", "repository_id",
+  "thread", "publication", "identity", "endpoint_agent", "company"] as const;
+
+async function applyReviewWaitChange(db: Db, f: Awaited<ReturnType<typeof seedGitHubReviewWait>>,
+  change: typeof reviewWaitChanges[number]) {
+  if (change === "disabled") await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connectionId));
+  if (change === "inactive") await db.update(toolConnections).set({ status: "disabled" }).where(eq(toolConnections.id, f.connectionId));
+  if (change === "review_state") await db.update(chatGitHubReviews).set({ state: "queued" }).where(eq(chatGitHubReviews.id, f.reviewId));
+  if (change === "review_agent" || change === "endpoint_agent") {
+    const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
+    if (change === "review_agent") await db.update(heartbeatRuns).set({ agentId: other!.id }).where(eq(heartbeatRuns.id, f.reviewRunId));
+    else await db.update(chatEndpoints).set({ assignedAgentId: other!.id }).where(eq(chatEndpoints.id, f.endpointId));
+  }
+  if (change === "repository") await db.update(chatEndpointResources).set({ providerResourceId: "other/repository" }).where(eq(chatEndpointResources.id, f.resourceId));
+  if (change === "repository_id") await db.update(chatEndpointResources).set({ metadata: { providerRepositoryId: "43" } }).where(eq(chatEndpointResources.id, f.resourceId));
+  if (change === "thread") await db.update(chatConversations).set({ externalThreadId: "github:synthetic/repository:8" }).where(eq(chatConversations.id, f.conversationId));
+  if (change === "publication") await db.update(chatActions).set({ status: "received" }).where(eq(chatActions.id, f.publicationId));
+  if (change === "identity") await db.update(runIdentityContexts).set({ status: "rejected" }).where(eq(runIdentityContexts.id, f.activeIdentityContextId!));
+  if (change === "company") {
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: otherCompanyId });
+    f.run = { ...f.run, companyId: otherCompanyId };
+  }
+}
+
+/** Record the SQL text of every statement that the client sends. */
+async function withStatements<T>(db: Db, read: () => Promise<T>) {
+  const client = db.$client as unknown as { unsafe: (query: string, ...rest: unknown[]) => unknown };
+  const unsafe = client.unsafe;
+  const sql: string[] = [];
+  client.unsafe = (query: string, ...rest: unknown[]) => { sql.push(query); return unsafe.call(client, query, ...rest); };
+  try { return { result: await read(), sql }; } finally { client.unsafe = unsafe; }
+}
 
 describe("inherited GitHub review wait projection", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -54,31 +88,68 @@ describe("inherited GitHub review wait projection", () => {
     expect(await readInheritedGitHubReviewWait(db, f.run)).toEqual({ kind: "revoked" });
   });
 
-  it.each(["disabled", "inactive", "review_state", "review_agent", "repository", "repository_id", "thread", "publication", "identity", "endpoint_agent", "company"] as const)(
+  it.each(reviewWaitChanges)(
     "continues to reject a changed %s binding", async change => {
       const f = await seedGitHubReviewWait(db);
       expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
-      if (change === "disabled") await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connectionId));
-      if (change === "inactive") await db.update(toolConnections).set({ status: "disabled" }).where(eq(toolConnections.id, f.connectionId));
-      if (change === "review_state") await db.update(chatGitHubReviews).set({ state: "queued" }).where(eq(chatGitHubReviews.id, f.reviewId));
-      if (change === "review_agent" || change === "endpoint_agent") {
-        const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
-        if (change === "review_agent") await db.update(heartbeatRuns).set({ agentId: other!.id }).where(eq(heartbeatRuns.id, f.reviewRunId));
-        else await db.update(chatEndpoints).set({ assignedAgentId: other!.id }).where(eq(chatEndpoints.id, f.endpointId));
-      }
-      if (change === "repository") await db.update(chatEndpointResources).set({ providerResourceId: "other/repository" }).where(eq(chatEndpointResources.id, f.resourceId));
-      if (change === "repository_id") await db.update(chatEndpointResources).set({ metadata: { providerRepositoryId: "43" } }).where(eq(chatEndpointResources.id, f.resourceId));
-      if (change === "thread") await db.update(chatConversations).set({ externalThreadId: "github:synthetic/repository:8" }).where(eq(chatConversations.id, f.conversationId));
-      if (change === "publication") await db.update(chatActions).set({ status: "received" }).where(eq(chatActions.id, f.publicationId));
-      if (change === "identity") await db.update(runIdentityContexts).set({ status: "rejected" }).where(eq(runIdentityContexts.id, f.activeIdentityContextId!));
-      if (change === "company") {
-        const otherCompanyId = randomUUID();
-        await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: otherCompanyId });
-        f.run = { ...f.run, companyId: otherCompanyId };
-      }
+      await applyReviewWaitChange(db, f, change);
       expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).not.toBe("published");
+      expect((await readInheritedGitHubReviewWaits(db, [f.run]))[0]?.kind).not.toBe("published");
     },
   );
+
+  it("reads the waits of many runs with one review read and the same results", async () => {
+    const [companyId, agentId] = [randomUUID(), randomUUID()];
+    await db.insert(companies).values({ id: companyId, name: "Batch", issuePrefix: companyId });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "process" });
+    const fixtures: Array<Awaited<ReturnType<typeof seedGitHubReviewWait>>> = [];
+    for (const change of [null, ...reviewWaitChanges, "newer_head", "no_identity", "no_issue", null] as const) {
+      const f = await seedGitHubReviewWait(db, change === "company" ? undefined : { companyId, agentId });
+      if (change === "newer_head") {
+        const [review] = await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.reviewId));
+        await db.insert(chatGitHubReviews).values({ ...review!, id: randomUUID(), deliveryId: randomUUID(),
+          headSha: "2".repeat(40), state: "queued", createdAt: new Date(review!.createdAt.getTime() + 1_000) });
+      } else if (change === "no_identity") f.run = { ...f.run, activeIdentityContextId: null };
+      else if (change === "no_issue") f.run = { ...f.run, nativeIssueId: null };
+      else if (change) await applyReviewWaitChange(db, f, change);
+      fixtures.push(f);
+    }
+    // A run can be read twice in one pass.
+    const [first] = fixtures;
+    // The "company" wait moved its run to a third company; its own company
+    // also has one published wait.
+    const otherCompany = await seedGitHubReviewWait(db);
+    const runs = [...fixtures.map(f => f.run), first!.run, otherCompany.run];
+    const single = [];
+    for (const run of runs) single.push(await readInheritedGitHubReviewWait(db, run));
+    expect(single.filter(wait => wait?.kind === "published")).toHaveLength(4);
+    // No identity, no task, and an endpoint of another agent have no inherited wait.
+    expect(single.filter(wait => wait === null)).toHaveLength(3);
+    expect(single.filter(wait => wait?.kind === "revoked")).toHaveLength(runs.length - 7);
+
+    const { result, sql } = await withStatements(db, () => readInheritedGitHubReviewWaits(db, runs));
+    expect(result).toEqual(single);
+    // One review read and one publication read for each company with a source
+    // comment, not one of each for every run.
+    expect(sql.filter(text => /join "chat_github_reviews"/i.test(text))).toHaveLength(2);
+    expect(sql.filter(text => /from "chat_actions"/i.test(text))).toHaveLength(2);
+    expect(await readInheritedGitHubReviewWaits(db, [])).toEqual([]);
+  });
+
+  it("reads the waits of forty runs with the statements of four runs", async () => {
+    const first = await seedGitHubReviewWait(db);
+    const runs = [first.run];
+    while (runs.length < 40) runs.push((await seedGitHubReviewWait(db, { companyId: first.companyId, agentId: first.agentId })).run);
+    const few = await withStatements(db, () => readInheritedGitHubReviewWaits(db, runs.slice(0, 4)));
+    const many = await withStatements(db, () => readInheritedGitHubReviewWaits(db, runs));
+    expect(many.result.map(wait => wait?.kind)).toEqual(runs.map(() => "published"));
+    expect(many.result.slice(0, 4)).toEqual(few.result);
+    // The requester lineage, the source message link, the reviews and the
+    // publications: one statement each, for any number of runs.
+    expect({ few: few.sql.length, many: many.sql.length }).toEqual({ few: 4, many: 4 });
+    expect(many.sql.filter(text => /from "run_identity_contexts"/i.test(text))).toHaveLength(1);
+    expect(many.sql.filter(text => /from "chat_message_links"/i.test(text))).toHaveLength(2);
+  });
 
   it("binds each call afresh while reusing the compiled query", async () => {
     const first = await seedGitHubReviewWait(db), second = await seedGitHubReviewWait(db);

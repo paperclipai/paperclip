@@ -3,6 +3,7 @@ import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } fro
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
+import { unlaunchedPortableTaskLease } from "../plugin-task-ownership.js";
 
 type NativeRemoteExecutionScope = {
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">;
@@ -13,6 +14,7 @@ export async function readNativeRemoteExecutionOwnershipForRuns(db: Db, inputs: 
   const key = (companyId: string, issueId: string, runId: string) => `${companyId}:${issueId}:${runId}`;
   const leases = inputs.length ? await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
     issueId: environmentLeases.issueId, runId: environmentLeases.heartbeatRunId,
+    unlaunchedPortable: unlaunchedPortableTaskLease(),
     metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup')`,
   }).from(environmentLeases).where(and(
     or(...inputs.map(input => and(eq(environmentLeases.companyId, input.run.companyId),

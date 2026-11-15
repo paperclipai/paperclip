@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { redactSensitiveText } from "../redaction.js";
-import { initializeMcpHttpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { initializeMcpHttpSession, mcpHttpRequestInit, parseMcpHttpResponseBody } from "./mcp-http.js";
 
 export const RAILWAY_MCP_URL = "https://mcp.railway.com";
 export const RAILWAY_API_URL = "https://backboard.railway.com/graphql/v2";
@@ -172,10 +172,9 @@ async function boundedResponseText(response: Response, signal: AbortSignal): Pro
 export async function discoverRailwayWorkspace(options: RailwayClientOptions): Promise<string> {
   const send = (init: RequestInit) => options.request(RAILWAY_MCP_URL, { ...init, redirect: "error", signal: options.signal });
   const headers = { Authorization: options.authorization };
-  const list = (requestHeaders: Record<string, string>) => send({
-    method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
-    body: JSON.stringify({ jsonrpc: "2.0", id: "paperclip-railway-workspace-probe", method: "tools/call", params: { name: "list-workspaces", arguments: {} } }),
-  });
+  const list = (requestHeaders: Record<string, string>) => send(mcpHttpRequestInit(requestHeaders, {
+    id: "paperclip-railway-workspace-probe", method: "tools/call", params: { name: "list-workspaces", arguments: {} },
+  }));
   let response = await list(headers);
   if (response.status === 400) {
     await response.body?.cancel();

@@ -87,7 +87,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
 
     expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).toEqual([
       { kind: kind === "owned" ? "awaiting_evidence" : "blocked", runId: f.runId,
-        reason: kind === "owned" ? "controller_still_alive" : "provider_checkpoint_permanently_failed" },
+        reason: kind === "owned" ? "controller_still_alive" : "provider_checkpoint_permanently_failed",
+        // This process's own live lease lapses by itself; recovery looks again then.
+        ...(kind === "owned" ? { retryAt: expect.any(Date) } : {}) },
     ]);
     const current = await readRun(f.runId);
     expect(current.status).toBe(kind === "owned" ? "running" : "failed");

@@ -20,6 +20,7 @@ import { providerUsageReceipt } from "../services/provider-usage.js";
 import { adapterExecutionControls, createAdapterExecutionControl, registerAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { promptInjectionCorpus } from "./fixtures/prompt-injection-corpus.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, home: string;
 beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-guard-gateway-")));
@@ -106,7 +107,7 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
 
 const benign = promptInjectionCorpus[0]!.content;
 const safe = { verdict: { violation: false, findings: [] }, receipt: { ...providerUsageReceipt(), inputTokens: 100, outputTokens: 10, costStatus: "reported", costCents: "0.0020000", pricingProvenance: { source: "provider_reported" } } };
-async function fixture() {
+async function fixture(gatewayDb?: (run: typeof heartbeatRuns.$inferSelect) => typeof db) {
   const f = await createRunFixture(db);
   await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: "alice", membershipRole: "owner", status: "active" });
   const binding = await aiConnectionService(db).save(f.company.id, "alice", { provider: "openrouter", method: "api_key", name: "Classifier", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
@@ -121,7 +122,7 @@ async function fixture() {
       ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
       : { content: [{ type: "text", text: benign }] } });
   });
-  const gateway = createToolGatewayService(db, { promptInjectionProvider: classifier, remoteHttpRequest, toolActionSigningSecret: "signing-fixture" });
+  const gateway = createToolGatewayService(gatewayDb?.(f.run) ?? db, { promptInjectionProvider: classifier, remoteHttpRequest, toolActionSigningSecret: "signing-fixture" });
   const session = await gateway.createSession({ companyId: f.company.id, agentId: f.agent.id, runId: f.run.id });
   const tool = (await gateway.listToolsForSession(session.token)).find(t => t.connectionId === remote.connection.id)!;
   return { ...f, remote, classifier, remoteHttpRequest, gateway, session, tool };
@@ -134,7 +135,88 @@ async function evidence(companyId: string, toolInvocationId: string) {
   const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, toolInvocationId));
   expect(events).toContainEqual(expect.objectContaining({ eventType: "call_completed", metadata: expect.objectContaining({ promptInjection: expect.objectContaining({ detector: "model", invocationId: invocations[0].id }) }) }));
 }
+
+/** Commit a real competing write after each accounting snapshot starts.
+ * The admission must still read current authority when it obtains its locks. */
+function interleaveAccountingSnapshot(advance: () => Promise<void>) {
+  return new Proxy(db, { get(target, key) {
+    if (key !== "transaction") return Reflect.get(target, key);
+    return (callback: Parameters<typeof db.transaction>[0], options: Parameters<typeof db.transaction>[1]) => {
+      let first = Boolean(options?.isolationLevel);
+      return target.transaction(tx => callback(new Proxy(tx, { get(transaction, property) {
+        if (property !== "select") return Reflect.get(transaction, property);
+        return (...fields: Parameters<typeof db.select>) => {
+          const builder = transaction.select(...fields), from = builder.from.bind(builder);
+          builder.from = ((...args: Parameters<typeof from>) => {
+            const query = from(...args);
+            if (args[0] === companies && first) {
+              first = false;
+              const execute = query.execute.bind(query);
+              query.execute = async (...executeArgs: Parameters<typeof execute>) => {
+                const rows = await execute(...executeArgs);
+                await advance();
+                return rows;
+              };
+            }
+            return query;
+          }) as typeof builder.from;
+          return builder;
+        };
+      } })), options);
+    };
+  } });
+}
 describe("model classification at gateway result boundaries", () => {
+  it("returns a screened connector result while run events advance the admission snapshot", async () => {
+    let interleavings = 0;
+    const f = await fixture(run => interleaveAccountingSnapshot(async () => {
+      await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id,
+        agentId: run.agentId, eventType: "lifecycle", message: "stream advanced during classifier admission" });
+      interleavings++;
+    }));
+    const result = await f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name, parameters: {} });
+    expect(JSON.stringify(result.result)).toContain("secret.txt");
+    expect(interleavings).toBeGreaterThan(0);
+    expect(f.classifier).toHaveBeenCalledOnce();
+    await evidence(f.company.id, result.invocationId);
+    const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.company.id));
+    expect(holds).toHaveLength(1);
+    expect(holds[0].state).toBe("settled");
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+    const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(current.nextEventSeq).toBeGreaterThan(f.run.nextEventSeq);
+  });
+  it.each(["stopped", "steered"] as const)("refuses classifier dispatch when the run is %s after the admission snapshot", async change => {
+    const f = await fixture(run => interleaveAccountingSnapshot(async () => {
+      await db.update(heartbeatRuns).set(change === "stopped" ? { status: "cancelled" } : { responsibleUserId: "alice" })
+        .where(eq(heartbeatRuns.id, run.id));
+    }));
+    await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name, parameters: {} })).rejects.toMatchObject({
+      status: 422, reasonCode: "prompt_injection_blocked",
+    });
+    expect(f.classifier).not.toHaveBeenCalled();
+    expect(await db.select().from(promptInjectionInvocations).where(eq(promptInjectionInvocations.companyId, f.company.id))).toHaveLength(0);
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(0);
+  });
+  it("screens concurrent connector reads and saves each charge once while run events advance", async () => {
+    const f = await fixture(run => interleaveAccountingSnapshot(async () => {
+      await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+        eventType: "lifecycle", message: "parallel connector progress" });
+    }));
+    const results = await Promise.all(Array.from({ length: 4 }, () => f.gateway.executeTool({
+      sessionToken: f.session.token, tool: f.tool.name, parameters: {},
+    })));
+    expect(f.classifier).toHaveBeenCalledTimes(4);
+    expect(new Set(results.map(result => result.invocationId)).size).toBe(4);
+    for (const result of results) {
+      expect(JSON.stringify(result.result)).toContain("secret.txt");
+      await evidence(f.company.id, result.invocationId);
+    }
+    const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.company.id));
+    expect(holds).toHaveLength(4);
+    expect(holds.every(hold => hold.state === "settled")).toBe(true);
+    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(4);
+  });
   it.each([
     ["direct", false], ["test", false], ["approved", false],
     ["direct", true], ["test", true], ["approved", true],

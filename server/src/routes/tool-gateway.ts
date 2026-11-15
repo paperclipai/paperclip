@@ -1,8 +1,8 @@
-import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
+import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId, requiredConnectionUserAction } from "./connection-management-authz.js";
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
+import { agents, companies, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
 import {
   humanizeConnectionDisplayName,
   type PermissionKey,
@@ -56,6 +56,16 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+/**
+ * Error details an HTTP caller may see. `execution` is the call's audit record
+ * (request IDs, timings, the server-side stack of an error); the audit keeps
+ * it, and callers never need it. Agents paste errors into task comments.
+ */
+function callerErrorDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { execution: _auditOnly, ...rest } = details;
+  return rest;
+}
+
 async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
   const controller = new AbortController();
   const aborted = () => controller.abort();
@@ -87,21 +97,28 @@ async function handleMcpGatewayProtocol(
     const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
     const id = body.id ?? null;
     if (body.method === "initialize") {
-      await toolGateway.initializeNamedGatewayProtocol({
+      const session = await toolGateway.initializeNamedGatewayProtocol({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
       });
+      const allowedActions = session.gatewayTokenAllowedActions;
+      const mayList = (action: "tools/list" | "resources/list" | "prompts/list") =>
+        !allowedActions || allowedActions.includes(action);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           protocolVersion: "2025-03-26",
-          capabilities: { tools: {}, resources: {}, prompts: {} },
+          capabilities: {
+            ...(mayList("tools/list") ? { tools: {} } : {}),
+            ...(mayList("resources/list") ? { resources: {} } : {}),
+            ...(mayList("prompts/list") ? { prompts: {} } : {}),
+          },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
           _meta: {
-            "paperclip/mcp-app-ui": "unsupported",
-            "paperclip/mcp-app-ui-detail": "Interactive ui:// iframe hosting is not available in Paperclip Runner.",
+            "paperclip/mcp-app-ui": "host_rendered",
+            "paperclip/mcp-app-ui-detail": "Paperclip renders MCP Apps ui:// views in the task chat. The gateway does not forward them to clients.",
           },
         },
       });
@@ -237,7 +254,7 @@ async function handleMcpGatewayProtocol(
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,
-        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...callerErrorDetails(err.details) } },
       });
       return;
     }
@@ -333,7 +350,7 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
     res.status(err.status).json({
       error: err.message,
       reasonCode: err.reasonCode,
-      ...err.details,
+      ...callerErrorDetails(err.details),
     });
     return;
   }
@@ -360,6 +377,13 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     if (connectionRequestUserId(req) && await access.canUser(companyId, connectionRequestUserId(req)!, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
+  }
+
+  /** The person-facing Tokens page of a gateway, where token values are revealed. */
+  async function gatewayTokensPath(companyId: string, gatewayId: string) {
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+    if (!company) throw new ToolGatewayHttpError(404, "Company not found", "company_not_found");
+    return `/${company.issuePrefix}/apps/gateways/${gatewayId}/tokens`;
   }
 
   function assertBoardMutationAccess(req: import("express").Request, companyId: string) {
@@ -401,7 +425,15 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
         managementContext: connectionRequestContext(req),
       });
-      res.status(201).json(gateway);
+      if (req.actor.type !== "agent") {
+        res.status(201).json(gateway);
+        return;
+      }
+      // Agents link the person to the saved gateway; clients need a token from its Tokens page.
+      const tokensPath = await gatewayTokensPath(req.params.companyId as string, gateway.id);
+      const gatewayPath = tokensPath.replace(/\/tokens$/, "/overview");
+      res.status(201).json({ ...gateway, gatewayPath, tokensPath,
+        nextStep: `Link the saved gateway as a Markdown link, such as [${gateway.name}](${gatewayPath}), in your reply or question. A client connects with a token from its Tokens page (${tokensPath}).` });
     } catch (err) {
       sendGatewayError(res, err);
     }
@@ -443,13 +475,55 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       const actor = getActorInfo(req);
-      res.status(201).json(await toolGateway.createNamedGatewayToken({
+      const input = {
         companyId,
         gatewayId: (req.params.gatewayId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
         managementContext: connectionRequestContext(req),
-      }));
+      };
+      if (req.actor.type !== "agent") {
+        res.status(201).json(await toolGateway.createNamedGatewayToken(input));
+        return;
+      }
+      // A token value is shown once, to whoever receives the create response.
+      // An agent could repeat it in chat, so an agent-created client token has
+      // no value until its responsible person reveals one on the Tokens page.
+      // The validator admits only gateway_client subjects on this route.
+      const tokensPath = await gatewayTokensPath(companyId, input.gatewayId);
+      const created = await toolGateway.createPendingRevealGatewayToken(input);
+      res.status(201).json({
+        ...created,
+        tokensPath,
+        ...requiredConnectionUserAction(req, { type: "gateway_token", id: created.id, companyId }, tokensPath,
+          `Reveal and copy the value of "${created.name}" on the gateway's Tokens page, then give it to the client.`, "reveal_credential"),
+        nextStep: `Created "${created.name}" without a value. Its value is generated only when the person reveals it on the gateway's Tokens page (${tokensPath}); `
+          + "link that page as a Markdown link. Never ask for, accept, or repeat token values in chat. "
+          + "When this replaces an old token, do not revoke the old one in this turn: its client keeps working on it until the person reveals the new value "
+          + "and installs it, and revoking now disconnects that client. Revoke the old token only after the person says the client works with the new one, "
+          + "or tell them they can revoke it on the same Tokens page.",
+      });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/gateway-tokens/:tokenId/reveal", async (req, res) => {
+    try {
+      assertBoardOrAgent(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        assertCompanyAccess(req, companyId);
+        throw new ToolGatewayHttpError(403,
+          "Final: only a person can reveal a gateway client token value, on the gateway's Tokens page. Do not ask for or repeat token values in chat.",
+          "gateway_token_requires_person");
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      res.json(await toolGateway.revealNamedGatewayToken({ companyId, tokenId: req.params.tokenId as string, userId: req.actor.userId }));
     } catch (err) {
       sendGatewayError(res, err);
     }

@@ -18,6 +18,8 @@ import * as secretOwner from "../services/secrets.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { readProcessStartedAt } from "../services/hot-restart.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt, resolveRemoteTerminationLease } from "../services/remote-execution-termination.js";
+import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
@@ -164,6 +166,11 @@ describe("durable sandbox creation through the runtime entry point", () => {
     }
     expect(await db.select().from(sandboxCreationOperations)).toEqual([before]);
     expect(creates).toBe(1);
+    // The later migration narrowed the key to unresolved operations; a reapply keeps that.
+    const indexes = await db.execute(sql`select indexdef from pg_indexes where indexname = 'sandbox_creation_operations_owner_idx'`);
+    expect([...indexes].map(row => String((row as { indexdef: unknown }).indexdef))).toEqual([
+      expect.stringContaining("WHERE (state <> 'resolved'::text)"),
+    ]);
   });
   it("fails before the external action when the durable admission write fails", async () => {
     await rejectWrites("sandbox_creation_operations", "reject_fixture_creation");
@@ -177,6 +184,129 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await due(); await runtime().flushDeferredOrphanCleanups();
     expect(await db.select().from(environmentLeases)).toHaveLength(1);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
+  });
+  describe("same-run recovery after the attached lease closes", () => {
+    type Lease = Awaited<ReturnType<typeof acquire>>["lease"];
+    const stopReceipt = (lease: Lease) => remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" });
+    const operations = () => db.select().from(sandboxCreationOperations);
+    async function acquirePlugin() {
+      await db.update(environments).set({ driver: "plugin", config: { pluginKey: "paperclip.creation-fixture", driverKey: "creation-fixture", driverConfig: {} } }).where(eq(environments.id, environmentId));
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, environmentDrivers: [{ driverKey: "creation-fixture", kind: "environment_driver", displayName: "Computer", creationOperationVersion: 1, configSchema: { type: "object" } }] } }).where(eq(plugins.id, pluginId));
+      return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!,
+        heartbeatRunId: runId, issueId: null, persistedExecutionWorkspace: null });
+    }
+    /** The closing write left the operation attached; the next creation with the
+     * same key proves the stop, resolves it, and creates exactly one replacement. */
+    async function expectOneReplacement(first: { lease: Lease }, acquireLease: () => Promise<{ lease: Lease }>) {
+      const [before] = await operations();
+      expect(before).toMatchObject({ state: "attached", leaseId: first.lease.id });
+      const second = await acquireLease();
+      expect(second.lease.id).not.toBe(first.lease.id);
+      expect(second.lease.providerLeaseId).not.toBe(first.lease.providerLeaseId);
+      expect(creates).toBe(2);
+      expect(await operations()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: before!.id, state: "resolved", leaseId: first.lease.id }),
+        expect.objectContaining({ state: "attached", leaseId: second.lease.id, runId, requestKey: before!.requestKey }),
+      ]));
+      // A retry of the replacement replays it instead of creating again.
+      expect((await acquireLease()).lease.id).toBe(second.lease.id);
+      expect(creates).toBe(2);
+    }
+
+    it.each([["sandbox", acquire], ["plugin", acquirePlugin]] as const)("creates one replacement once a stop receipt closes the %s lease", async (_driver, acquireLease) => {
+      const first = await acquireLease();
+      expect(await environmentService(db).releaseLease(first.lease.id, "released", { cleanupStatus: "success", remoteExecutionTermination: stopReceipt(first.lease) }))
+        .toMatchObject({ status: "released" });
+      await expectOneReplacement(first, acquireLease);
+    });
+
+    it("creates one replacement after the Runner complete operation stops a retained reusable lease", async () => {
+      const first = await acquirePlugin();
+      await db.update(environmentLeases).set({ status: "retained", leasePolicy: "reuse_by_environment", releasedAt: null })
+        .where(eq(environmentLeases.id, first.lease.id));
+      // The same write the `complete` operation makes for each reusable owner of a
+      // stopped task: no releaseLease call.
+      const [owner] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, first.lease.id));
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          remoteExecutionTermination: remoteTerminationReceipt(owner!, { providerLeaseId: owner!.providerLeaseId, state: "stopped" }),
+          runnerTaskExecutionStopped: true })}::jsonb` }).where(eq(environmentLeases.id, first.lease.id));
+      await expectOneReplacement(first, acquirePlugin);
+    });
+
+    it("creates one replacement when only the destroyed successor proves an expired reusable lease stopped", async () => {
+      const first = await acquire();
+      const [{ agentId }] = await db.select({ agentId: agents.id }).from(agents).where(eq(agents.companyId, companyId));
+      const issueId = randomUUID(), successorRunId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Reused sandbox", status: "done" });
+      await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
+      const acquiredAt = new Date(Date.now() - 2000), handoffAt = new Date(Date.now() - 1000);
+      const [previous] = await db.update(environmentLeases).set({ status: "expired", leasePolicy: "reuse_by_environment", issueId,
+        acquiredAt, releasedAt: handoffAt, cleanupStatus: "success", metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ agentId })}::jsonb` })
+        .where(eq(environmentLeases.id, first.lease.id)).returning();
+      const successor = { ...previous!, id: randomUUID(), heartbeatRunId: successorRunId, acquiredAt: handoffAt,
+        status: "released" as const, releasedAt: new Date(), metadata: { agentId } };
+      const handoff = createReusableLeaseHandoff(previous!, successor);
+      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ reusableLeaseSuccessor: handoff })}::jsonb` })
+        .where(eq(environmentLeases.id, first.lease.id));
+      await db.insert(environmentLeases).values({ ...successor, metadata: { agentId, reusableLeasePredecessor: handoff,
+        remoteExecutionTermination: remoteTerminationReceipt(successor, { providerLeaseId: successor.providerLeaseId, state: "destroyed" }) } });
+      const [stored] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, first.lease.id));
+      // No receipt is stored on the expired lease; recovery computes it from the successor.
+      expect(hasRemoteTerminationReceipt(stored!)).toBe(false);
+      expect(hasRemoteTerminationReceipt(await resolveRemoteTerminationLease(db, stored!))).toBe(true);
+      await expectOneReplacement(first, acquire);
+    });
+
+    it.each([
+      ["failed cleanup", "failed", { cleanupStatus: "failed", receipt: true }],
+      ["cleanup success without a receipt", "released", { cleanupStatus: "success", receipt: false }],
+      ["a receipt for another lease", "released", { cleanupStatus: "success", receipt: "foreign" }],
+      ["a receipt for another provider task", "released", { cleanupStatus: "success", receipt: "other-task" }],
+      ["a retained lease", "retained", { cleanupStatus: "success", receipt: true }],
+      ["pending cleanup", "pending_cleanup", { cleanupStatus: "failed", receipt: false }],
+    ] as const)("keeps the creation key after %s", async (_case, status, options) => {
+      const first = await acquire();
+      const receipt = options.receipt === "foreign" ? stopReceipt({ ...first.lease, id: randomUUID() })
+        : options.receipt === "other-task" ? { ...stopReceipt(first.lease), providerLeaseId: "other-task" }
+        : options.receipt ? stopReceipt(first.lease) : undefined;
+      await environmentService(db).releaseLease(first.lease.id, status, { cleanupStatus: options.cleanupStatus,
+        ...(receipt ? { remoteExecutionTermination: receipt } : {}) });
+      await expect(acquire()).rejects.toThrow("Sandbox creation has already transferred ownership");
+      expect(await operations()).toEqual([expect.objectContaining({ state: "attached", leaseId: first.lease.id })]);
+      expect(creates).toBe(1);
+    });
+
+    it("keeps an earlier task's operation when the lease now holds a replacement task", async () => {
+      const first = await acquire();
+      await db.update(sandboxCreationOperations).set({ metadata: sql`metadata || '{"creationProviderLeaseId":"earlier-task"}'::jsonb` });
+      await environmentService(db).releaseLease(first.lease.id, "released", { cleanupStatus: "success", remoteExecutionTermination: stopReceipt(first.lease) });
+      await expect(acquire()).rejects.toThrow("Sandbox creation has already transferred ownership");
+      expect(await operations()).toEqual([expect.objectContaining({ state: "attached", leaseId: first.lease.id })]);
+      expect(creates).toBe(1);
+    });
+
+    it("lets only one of two concurrent recoveries create the replacement", async () => {
+      const first = await acquire();
+      await environmentService(db).releaseLease(first.lease.id, "released", { cleanupStatus: "success", remoteExecutionTermination: stopReceipt(first.lease) });
+      // Hold whichever recovery reaches the provider until the other one has settled.
+      let settleOther!: () => void;
+      const otherSettled = new Promise<void>(resolve => { settleOther = resolve; });
+      beforeReply = () => otherSettled;
+      const outcomes = [acquire(), acquire()].map(attempt => attempt.then(
+        value => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error })));
+      const loser = await Promise.race(outcomes);
+      settleOther();
+      const settled = await Promise.all(outcomes);
+      expect(loser.error).toEqual(expect.objectContaining({ message: "Sandbox creation requires reconciliation before another attempt" }));
+      expect(settled.filter(outcome => outcome.value)).toHaveLength(1);
+      expect(creates).toBe(2);
+      expect((await operations()).filter(operation => operation.state !== "resolved")).toEqual([
+        expect.objectContaining({ state: "attached", leaseId: settled.find(outcome => outcome.value)!.value!.lease.id }),
+      ]);
+      expect(await operations()).toHaveLength(2);
+    });
   });
   it("recovers a failed lease write with a fresh receiver and empty web disk", async () => {
     await rejectWrites("environment_leases", "reject_fixture_lease");

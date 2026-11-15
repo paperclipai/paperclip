@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
-import { onNativeSessionCleanupSettled } from "../../vendor/paperclip-runner/index.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { onNativeSessionCleanupQuarantined, onNativeSessionCleanupSettled } from "../../vendor/paperclip-runner/index.js";
 
 /**
  * A retained native session close holds task input in the runner's process
@@ -9,9 +10,17 @@ import { onNativeSessionCleanupSettled } from "../../vendor/paperclip-runner/ind
  * dispatch repeats every admission check under its own locks.
  */
 export function registerNativeCleanupReleaseWake(db: Db, onError: (error: unknown, companyId: string) => void): () => void {
-  return onNativeSessionCleanupSettled(({ companyId }) => {
+  const unsubscribeSettled = onNativeSessionCleanupSettled(({ companyId }) => {
     if (!companyId) return;
-    void db.transaction(async tx => notifyDeferredExecutionWork(tx, { companyId }))
+    void db.transaction(async tx => {
+      await notifyDeferredExecutionWork(tx, { companyId });
+      await notifyQueuedRunDispatch(tx, { companyId });
+    }).catch((error: unknown) => onError(error, companyId));
+  });
+  const unsubscribeQuarantined = onNativeSessionCleanupQuarantined(({ companyId, operatorRecoveryRequired }) => {
+    if (!companyId || !operatorRecoveryRequired) return;
+    void db.transaction(async tx => notifyQueuedRunDispatch(tx, { companyId }))
       .catch((error: unknown) => onError(error, companyId));
   });
+  return () => { unsubscribeSettled(); unsubscribeQuarantined(); };
 }

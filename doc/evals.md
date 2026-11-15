@@ -520,7 +520,7 @@ is a broken user outcome or invariant, not an individual red cell.
 4. **Design the smallest general correction.** Name the desired user behavior,
    the authoritative state/transaction or provider boundary that owns it, the
    affected callers, and the existing guarantees that must survive. Check it
-   against `PRODUCT.md` and `SPEC-implementation.md`. A change to an intentional
+   against `PRODUCT.md` and the existing code and tests. A change to an intentional
    product rule is a contract change, not an excuse to delete its guard. Avoid
    case-name branches, phrase-specific prompts, unconditional retries, or
    weakening approval, ownership, cancellation, and budget gates to get green.

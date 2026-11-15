@@ -7,7 +7,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
-import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
@@ -22,6 +22,19 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 const EMPTY_LOG_SHA256 = createHash("sha256").digest("hex");
+
+/**
+ * An unexpired legacy controller lease means the old preparer may still be
+ * unwinding, unless the shared owner prover proves that recorded controller
+ * process gone (a drained or killed server whose replacement is now running).
+ */
+async function preparerMayStillUnwind(run: Run & { controllerProcess?: Record<string, unknown> | null }): Promise<boolean> {
+  if (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt <= new Date()) return false;
+  if (run.runtimeMode !== "legacy" || !run.controllerBootId || run.controllerBootId === legacyControllerBootId
+    || !run.controllerProcess) return true;
+  return !(await legacyControllerProvenGone({ runtimeMode: run.runtimeMode, controllerBootId: run.controllerBootId,
+    controllerProcess: run.controllerProcess }));
+}
 
 export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
   return failedNativePreparation(db, run, coordinator, false);
@@ -42,7 +55,7 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
     || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
     || run.nativeIssueId || run.nativeSessionId || run.runnerProfileJson?.nativeExecutionInput != null
     || run.runnerProfileJson?.nativeWorkspaceSync != null
-    || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+    || await preparerMayStillUnwind(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
@@ -55,7 +68,12 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
     && await hasSettledFailedPreparationEvidence(db, run, historicalRetryAncestor)
-    && await hasVerifiedWorkspaceRepair(db, run);
+    && (!holdsPreparedFiles(run) || await hasVerifiedWorkspaceRepair(db, run));
+}
+
+function holdsPreparedFiles(run: Run) {
+  return run.runnerProfileJson?.remoteWorkspace != null || run.resultJson?.workspaceRestoreFailure != null
+    || hasRequiredWorkspaceRecovery(run.resultJson);
 }
 
 async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {
@@ -89,12 +107,13 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
-        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "aiConnectionNonAssigneeCommentWake" && typeof value === "boolean")
+      && !(key === "nativeWorkspaceOwnerStopProof" && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
-      "workspaceRestoreRecovery"].includes(key))) return false;
+      // A bounded diagnostic code; it carries no execution or replay authority.
+      "workspaceRestoreRecovery", "failureCause"].includes(key))) return false;
   return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }, historicalRetryAncestor));
 }
 
@@ -115,7 +134,8 @@ export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   // Restart recovery records this certificate only after revoking a preparing
   // controller. A generic process-lost error cannot establish safe replay.
-  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+  const lostPreparation = run.status === "failed"
+    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE)
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.
@@ -134,7 +154,7 @@ export async function isInterruptedNativePreparation(db: Db, run: Run): Promise<
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const settled = recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   if (!isInterruptedNativePreparationCandidate(run)
-    || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()
+    || await preparerMayStillUnwind(run)
     || !settled && (!run.controllerBootId || run.controllerBootId === legacyControllerBootId)) return false;
   const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -225,7 +245,7 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
       heartbeatRuns.nativeIssueId, heartbeatRuns.nativeSessionId, heartbeatRuns.sessionIdAfter].map(column => isNull(column)),
     noProviderOutputPredicate(),
     sql`${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}' = 'paperclip_runner'`,
-    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission') = '{}'::jsonb`,
+    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission' - 'aiConnectionNonAssigneeCommentWake') = '{}'::jsonb`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->>'kind' = 'workspace_wait'`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->'providerWorkStarted' = 'false'::jsonb`,
     sql`(${heartbeatRuns.resultJson} - 'cancellation' - 'workspaceBusy' - 'executionRecovery') = '{}'::jsonb`,
@@ -278,7 +298,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   if (!beforeSelection && !neverClaimed) return false;
   const settled = beforeDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
   // The old preparer can still be unwinding even though the run is terminal.
-  if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+  if (await preparerMayStillUnwind(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));

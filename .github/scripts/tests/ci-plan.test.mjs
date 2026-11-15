@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { comparisonPaths, planTasks } from "../ci-plan.mjs";
 import { mergeDiff } from "../ci-diff.mjs";
+import { planLane } from "../../../scripts/ci-typecheck-lane.mjs";
 
 const root = new URL("../../../", import.meta.url);
 const config = JSON.parse(readFileSync(new URL("turbo.json", root), "utf8"));
@@ -62,7 +63,19 @@ test("repository-wide guidance guards run uncached for every scanned UI file typ
   assert.equal(config.tasks["//#ci:typecheck"].cache, false);
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
   const job = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
-  assert.match(job, /- name: Verify repository-wide CLI guidance safety\n        run: pnpm exec vitest run --project @paperclipai\/server server\/src\/__tests__\/cli-invocation-safety.test.ts/);
+  assert.match(job, /\n        run: node scripts\/ci-typecheck-lane\.mjs\n/);
+  assert.match(job, /\n        if: \$\{\{ hashFiles\('scripts\/ci-typecheck-lane\.mjs'\) != '' \}\}\n        run: node scripts\/ci-typecheck-lane\.mjs\n/);
+  const fallback = job.split("\n        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') == '' }}\n")[1].split("\n\n")[0];
+  for (const command of [
+    "pnpm run typecheck:build-gaps",
+    "node scripts/typecheck-test-programs.mjs --low-memory",
+    "pnpm --filter @paperclipai/server typecheck",
+    "node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations",
+    "server/src/__tests__/cli-invocation-safety.test.ts",
+    "pnpm run test:release-registry",
+  ]) assert.ok(fallback.includes(command), command);
+  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).prepare.find((task) => task.name === "CLI guidance safety");
+  assert.deepEqual(guidance.args, ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"]);
   assert.ok(!job.includes("uses: ./.github/actions/run-ci-task"));
 });
 

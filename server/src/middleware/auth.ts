@@ -2,7 +2,7 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -23,12 +23,13 @@ import {
   rekeyCompanyIssueIdentifiers,
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
+import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { captureRunIdentity } from "../services/run-identity.js";
+import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
+import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -69,61 +70,17 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
-async function resolveLegacyRunResponsibleUserId(
-  db: Db,
-  input: { companyId: string; agentId: string; runId: string },
-) {
-  if (!isUuidLike(input.runId)) return null;
-  const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-      ),
-    )
-    .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
-}
+const agentAuthenticationFields = {
+  companyId: agents.companyId,
+  status: agents.status,
+  lifecycleHolds: agents.lifecycleHolds,
+};
 
 async function loadResponsibleUserMemberships(
   db: Db,
   input: { companyId: string; userId: string | null },
 ) {
   if (!input.userId) return [];
-  const [user, memberships] = await Promise.all([
-    db
-      .select({ id: authUsers.id })
-      .from(authUsers)
-      .where(eq(authUsers.id, input.userId))
-      .then((rows) => rows[0] ?? null),
-    db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.companyId, input.companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, input.userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      ),
-  ]);
-  return user ? memberships : [];
-}
-
-/**
- * The user's own active company memberships — the exact company scope a
- * locally authenticated session actor carries. Shared by the session path
- * and the Cloud trusted-header path so both resolve the same access set.
- */
-async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
   return db
     .select({
       companyId: companyMemberships.companyId,
@@ -133,11 +90,50 @@ async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
     .from(companyMemberships)
     .where(
       and(
+        eq(companyMemberships.companyId, input.companyId),
         eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.principalId, input.userId),
         eq(companyMemberships.status, "active"),
+        exists(db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.id, input.userId))),
       ),
     );
+}
+
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+function activeUserMembershipFilter(userId: string) {
+  return and(
+    eq(companyMemberships.principalType, "user"),
+    eq(companyMemberships.principalId, userId),
+    eq(companyMemberships.status, "active"),
+  );
+}
+
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(activeUserMembershipFilter(userId));
+}
+
+async function loadCloudTenantMembershipsWithStaleAdmin(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+      staleInstanceAdmin: sql<boolean>`exists (select 1 from ${instanceUserRoles}
+        where ${instanceUserRoles.userId} = ${userId} and ${instanceUserRoles.role} = 'instance_admin')`,
+    })
+    .from(companyMemberships)
+    .where(activeUserMembershipFilter(userId));
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -210,6 +206,7 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  localAgentProcessBoundary?: LocalAgentProcessBoundary | null;
 }
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
@@ -218,6 +215,9 @@ const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  const localBoundary = opts.deploymentMode === "local_trusted"
+    ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
+    : null;
   const authenticate: RequestHandler = async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -303,6 +303,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      if (req.actor.source === "local_implicit"
+        && !(await localBoundary?.grantsImplicitBoard(req.socket))) {
+        req.actor = { type: "none", source: "none" };
+      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
@@ -314,7 +318,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+    const verifiedClaims = verifyLocalAgentJwt(token);
+    const boardKey = verifiedClaims ? null : await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
@@ -339,22 +344,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }
     }
 
-    const tokenHash = hashToken(token);
-    const key = await db
+    const key = verifiedClaims ? null : await db
       .select()
       .from(agentApiKeys)
-      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
+      .where(and(eq(agentApiKeys.keyHash, hashToken(token)), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      const claims = verifiedClaims;
       if (!claims) {
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
 
       const agentRecord = await db
-        .select()
+        .select(agentAuthenticationFields)
         .from(agents)
         .where(eq(agents.id, claims.sub))
         .then((rows) => rows[0] ?? null);
@@ -405,15 +409,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (agentRunWritesRevoked(identityRun)
         && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
+        if (agentRunSupersededByFreshContinuation(identityRun)) {
+          _res.status(403).json({ error: "A newer run continues this task. End the turn.", code: "agent_run_superseded" });
+          return;
+        }
         _res.status(403).json({ error: conversation ? "This conversation turn was cancelled" : "This run was cancelled",
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
-      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
-          { readScope: "request_authentication" });
-        identityRun.activeIdentityContextId = captured.context?.id ?? null;
-        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      if (identityRun) {
+        Object.assign(identityRun, await resolveRequestRunIdentity(db,
+          { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun));
       }
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
@@ -442,11 +448,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? identityRun.responsibleUserId
         : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : isUuidLike(claims.run_id)
+        ? normalizeOptionalString(identityRun?.responsibleUserId)
+        : null;
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
@@ -475,7 +479,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(eq(agentApiKeys.id, key.id));
 
     const agentRecord = await db
-      .select()
+      .select(agentAuthenticationFields)
       .from(agents)
       .where(eq(agents.id, key.agentId))
       .then((rows) => rows[0] ?? null);
@@ -623,15 +627,21 @@ async function resolveCloudTenantActorOnce(
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
   //
-  // Every request runs this path, static files included. The purge and the
-  // tenant sync stay ordered; the two reads below are independent of them, so
-  // they run concurrently. A loaded database then costs one round trip per
-  // request rather than three in a row.
-  const purgeAndSync = (async () => {
+  // Every request runs this path, static files included. The membership read
+  // below reports whether such a row exists, so the purge runs only when one
+  // does, or when that read cannot tell. A loaded database then costs one
+  // round trip per request rather than three in a row.
+  const membershipRowsRead = loadCloudTenantMembershipsWithStaleAdmin(db, userId);
+  const purgeStaleInstanceAdmin = async () => {
     await db
       .delete(instanceUserRoles)
       .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
-
+  };
+  const purge = membershipRowsRead.then(
+    (rows) => rows.length === 0 || rows.some((row) => row.staleInstanceAdmin) ? purgeStaleInstanceAdmin() : undefined,
+    () => purgeStaleInstanceAdmin(),
+  );
+  const tenantSync = (async () => {
     await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
       const now = new Date();
       await db
@@ -719,8 +729,10 @@ async function resolveCloudTenantActorOnce(
   // blocking authentication, mirroring the fail-closed owner-elevation
   // resolution below.
   const additionalMembershipsRead: Promise<{ companyId: string; membershipRole: string | null; status: string }[]> =
-    loadActiveUserCompanyMemberships(db, userId).then(
-      (rows) => rows.filter((row) => row.companyId !== companyId),
+    membershipRowsRead.then(
+      (rows) => rows
+        .filter((row) => row.companyId !== companyId)
+        .map((row) => ({ companyId: row.companyId, membershipRole: row.membershipRole, status: row.status })),
       (err) => {
         logger.warn(
           { err, userId, stackId },
@@ -739,11 +751,13 @@ async function resolveCloudTenantActorOnce(
   // Settle every started statement before an error leaves: the caller stops
   // counting authentication work for idle and drain checks when this throws,
   // and the owner-settings read can insert the missing settings row.
-  const [synced, membershipsRead, ownerRead] = await Promise.allSettled([
-    purgeAndSync,
+  const [purged, synced, membershipsRead, ownerRead] = await Promise.allSettled([
+    purge,
+    tenantSync,
     additionalMembershipsRead,
     ownerInstanceAdminRead,
   ]);
+  if (purged.status === "rejected") throw purged.reason;
   if (synced.status === "rejected") throw synced.reason;
   if (membershipsRead.status === "rejected") throw membershipsRead.reason;
   if (ownerRead.status === "rejected") throw ownerRead.reason;

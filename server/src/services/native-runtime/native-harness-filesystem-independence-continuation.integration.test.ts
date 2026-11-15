@@ -92,19 +92,19 @@ describeEmbeddedPostgres("legacy harness continuation without provider-home file
         const describe = vi.fn<NativeSessionBackend["descriptor"]>(async () => ({ kind: "runner", name: "controlled provider boundary", version: "fixture", capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }, runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }));
         const backend: NativeSessionBackend = { descriptor: describe, recoverSession: recover, openSession: fresh, openReplacementSession: fresh };
         const failure = await executePaperclipNativeSession({ db: f.db, execution: current, runnerInstanceId: native.runnerInstanceId, useRunnerd: true, backend, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: runtimeRoot, environmentId: randomUUID(), leaseId: randomUUID(), providerKey: "fixture", reusableLeaseConfigured: true, runner: { execute: async () => { throw new Error("unexpected remote process execution"); } }, sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "new-fixture-sandbox" } } as never }).catch(error => error);
+        // A warm owner whose controller a restart replaced, on a newly created
+        // sandbox, is retired like a per-turn owner and resumes the same way.
+        expect(recover, String(failure)).toHaveBeenCalledOnce();
+        expect(recover.mock.calls[0]![0]).toMatchObject({ providerSessionId: snapshot.providerSessionId, identity: { runId } });
         if (lifecycle === "warm") {
-          expect(String(failure)).toContain("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate");
-          expect(describe).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled(); expect(fresh).not.toHaveBeenCalled();
-          const [retained] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-          const [unchanged] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-          expect(retained!.runnerProfileJson).toEqual(sourceProfile);
-          expect(unchanged!.runnerProfileJson?.sessionCheckpoint).toEqual(rebound);
-          observations.push({ refusal: String(failure), providerSessionId: rebound!.providerSessionId,
-            policy: rebound!.providerRecoveryPolicy, replacementAttempts: 0 });
+          // Warm resumes from its own warm checkpoint, which carries no
+          // replacement policy: a failed resume is reported, never replaced.
+          expect(String(failure)).toContain("native_session_recovery_failed");
+          expect(fresh).not.toHaveBeenCalled();
+          observations.push({ providerSessionId: recover.mock.calls[0]![0].providerSessionId, replacementAttempts: 0 });
           continue;
         }
-        expect(recover, String(failure)).toHaveBeenCalledOnce();
-        expect(recover.mock.calls[0]![0]).toMatchObject({ providerSessionId: snapshot.providerSessionId, providerRecoveryPolicy: policy, identity: { runId } });
+        expect(recover.mock.calls[0]![0]).toMatchObject({ providerRecoveryPolicy: policy });
         expect(fresh).toHaveBeenCalledTimes(policy === "allow_replacement_after_resume_failure" ? 1 : 0);
         const digest = `sha256:${"a".repeat(64)}`;
         const artifacts = Object.fromEntries(Object.entries({ grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",

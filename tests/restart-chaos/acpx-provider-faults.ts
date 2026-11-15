@@ -27,7 +27,7 @@
 import { chmod, mkdir, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { DEFAULT_PROVIDER_DELAY_MS, DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS, type ProviderFaultKind } from "./provider-faults.js";
+import { DEFAULT_PROVIDER_DELAY_MS, DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS, PROVIDER_RESTART_KINDS, type ProviderFaultKind, type ProviderRestartKind } from "./provider-faults.js";
 import type { AdapterId, WaveOptions } from "./types.js";
 
 export const ACPX_SIDECAR_HOOK = path.join(import.meta.dirname, "provider-shim", "acpx-sidecar-hook.mjs");
@@ -119,12 +119,15 @@ export function withAcpxSidecarHook(nodeOptions: string | undefined): string {
  * not PV3: a duplicate has nothing in flight for a restart to cross.
  */
 export function parseProviderFaultRestart(raw: string | undefined, afterRaw: string | undefined, kinds: readonly ProviderFaultKind[],
-  delaysMs: readonly number[] | undefined): Pick<WaveOptions, "providerFaultRestart" | "providerFaultRestartAfterMs"> {
+  delaysMs: readonly number[] | undefined): Pick<WaveOptions, "providerFaultRestart" | "providerFaultRestartAfterMs" | "providerFaultRestartKinds"> {
   if (raw === undefined) {
-    if (afterRaw !== undefined) throw new Error("--provider-fault-restart-after-seconds needs --provider-fault-restart K1");
+    if (afterRaw !== undefined) throw new Error("--provider-fault-restart-after-seconds needs --provider-fault-restart (K1, K2 or K4)");
     return {};
   }
-  if (raw !== "K1") throw new Error("--provider-fault-restart supports K1 (kill -9 the control plane) only");
+  const restartKinds = raw.split(",").map(value => value.trim()).filter(Boolean) as ProviderRestartKind[];
+  if (!restartKinds.length || restartKinds.some(kind => !(PROVIDER_RESTART_KINDS as readonly string[]).includes(kind))) {
+    throw new Error(`--provider-fault-restart takes ${PROVIDER_RESTART_KINDS.join(", ")} (comma-separated kinds cycle across PV1/PV2 tasks)`);
+  }
   if (kinds.includes("PV3")) throw new Error("--provider-fault-restart combines with PV1 or PV2; a PV3 duplicate holds nothing across a restart");
   let afterMs = DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS;
   if (afterRaw !== undefined) {
@@ -137,5 +140,6 @@ export function parseProviderFaultRestart(raw: string | undefined, afterRaw: str
   if (shortest !== null && afterMs >= shortest) {
     throw new Error(`--provider-fault-restart-after-seconds (${afterMs / 1000}s) must be shorter than every PV1 delay (shortest ${shortest / 1000}s)`);
   }
-  return { providerFaultRestart: "K1", providerFaultRestartAfterMs: afterMs };
+  return { providerFaultRestart: restartKinds[0]!, providerFaultRestartAfterMs: afterMs,
+    ...(restartKinds.length > 1 ? { providerFaultRestartKinds: restartKinds } : {}) };
 }

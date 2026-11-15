@@ -3,6 +3,14 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 const acceptedTimes = new WeakMap<Request, number>();
 export const slackCloudAcceptedAt = (request: Request): number | undefined => acceptedTimes.get(request);
 
+export async function withSlackCloudAcceptedAt<T>(request: Request, acceptedAt: number, work: () => Promise<T>): Promise<T> {
+  if (!Number.isFinite(acceptedAt)) throw new SlackCloudReceiptError("form_accepted_time_invalid", "invalid");
+  const before = acceptedTimes.get(request);
+  acceptedTimes.set(request, acceptedAt);
+  try { return await work(); }
+  finally { if (before === undefined) acceptedTimes.delete(request); else acceptedTimes.set(request, before); }
+}
+
 export class SlackCloudReceiptError extends Error {
   constructor(readonly code: string, readonly disposition: "invalid" | "attention" | "retry") { super(code); }
 }

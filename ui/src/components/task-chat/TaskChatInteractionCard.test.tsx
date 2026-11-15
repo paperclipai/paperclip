@@ -262,6 +262,32 @@ describe("TaskChatInteractionCard", () => {
     expect(preview).not.toMatch(/[`*_~[\]]|(^|\s)- /);
   });
 
+  // Full cohort 11: the unanswered-question chip and the composer takeover showed the same
+  // pending question at once, both with id "interaction-<id>", so the page had a duplicate id.
+  it("keeps the interaction id unique while its timeline chip and takeover card are both shown", () => {
+    const interaction = pendingAskUserQuestionsInteraction;
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(interaction)} showUnansweredQuestion onReviewRequest={() => {}} />
+            <div data-testid="task-chat-composer-takeover">
+              <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" />
+            </div>
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const anchors = container.querySelectorAll(`[id="interaction-${interaction.id}"]`);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]!.getAttribute("data-testid")).toBe("task-chat-unanswered-question");
+    const takeover = container.querySelector(`[data-testid="task-chat-composer-takeover"] [data-interaction-id="${interaction.id}"]`);
+    expect(takeover).not.toBeNull();
+    expect(takeover!.id).toBe("");
+    const ids = [...container.querySelectorAll("[id]")].map(node => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("renders a plan confirmation as a linked document preview", () => {
     const interaction = createRequestConfirmation({
       sourceRunId: "run-plan",
@@ -520,7 +546,7 @@ describe("TaskChatInteractionCard", () => {
       </ThemeProvider></TooltipProvider></QueryClientProvider>,
     ));
 
-    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    const link = container.querySelector('a[href="/PAP/issues/PAP-42#document-preview"]');
     expect(link?.textContent).toBe("two screenshots");
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   applyPendingMigrations,
@@ -24,6 +24,8 @@ import {
 import type { ChatProvider } from "@paperclipai/shared";
 import { enqueueIssueInteractionChatPublications, enqueueTerminalIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
+import { createChatInteractionContinuations } from "../services/chat-channels/interactions/continuations.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -1496,5 +1498,61 @@ describeEmbeddedPostgres(
         ),
       ).toBe(true);
     });
+
+    // Staging run 55207345: the assignee's running turn recorded the user's
+    // Slack reply as acceptance (resolve-from-comment) and kept working. The
+    // chat continuation worker still woke the assignee; that wake waited
+    // behind the running turn, lost the already-delivered reply from its
+    // context, and reviewed-chat attestation refused it as a failed run
+    // (reviewed_chat_execution_binding_not_authorized, context_mismatch).
+    it.each(["responding_run", "board"] as const)(
+      "wakes the assignee for a chat-bound confirmation only when no responding run owns the decision (%s)", async resolver => {
+        const fixture = await seedBoundIssue(["slack"]);
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.agentId,
+          status: "running", responsibleUserId: "board-user", contextSnapshot: { issueId: fixture.issueId } });
+        await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.issueId));
+        const service = issueThreadInteractionService(db);
+        const interaction = await service.create(
+          { id: fixture.issueId, companyId: fixture.companyId },
+          { kind: "request_confirmation", continuationPolicy: "wake_assignee",
+            payload: { version: 1, prompt: "May I merge both pull requests?" } },
+          { agentId: fixture.agentId, runId },
+        );
+        await markInteractionCardsPublished(fixture.companyId, interaction.id);
+        if (resolver === "responding_run") {
+          const [reply] = await db.insert(issueComments).values({ companyId: fixture.companyId, issueId: fixture.issueId,
+            authorType: "user", authorUserId: "board-user", body: "yes, merge them", createdAt: new Date(Date.now() + 1_000) }).returning();
+          await resolveConfirmationFromComment(db, { companyId: fixture.companyId, issueId: fixture.issueId,
+            interactionId: interaction.id, input: { commentId: reply!.id, decision: "accept" },
+            actor: { agentId: fixture.agentId, runId } });
+        } else {
+          await service.acceptInteraction(
+            { id: fixture.issueId, companyId: fixture.companyId, projectId: null, goalId: null },
+            interaction.id, {}, { userId: "board-user" },
+          );
+        }
+        const wakeup = vi.fn(async () => ({ id: randomUUID() }));
+        const continuations = createChatInteractionContinuations(db, {
+          heartbeat: { wakeup } as never,
+          preparePublications: async () => undefined,
+          redactError: (error: unknown) => String(error),
+          CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS: 1_000,
+        });
+        const forInteraction = and(eq(chatActions.kind, "interaction_wakeup"),
+          eq(sql<string>`${chatActions.payload}->>'interactionId'`, interaction.id));
+        const [issued] = await db.select({ id: chatActions.id }).from(chatActions).where(forInteraction);
+        expect(issued).toBeDefined();
+        await continuations.processPendingInteractionWakeups(1, issued!.id);
+        const actions = await db.select({ status: chatActions.status, result: chatActions.result }).from(chatActions)
+          .where(forInteraction);
+        if (resolver === "responding_run") {
+          expect(wakeup).not.toHaveBeenCalled();
+          expect(actions).toEqual([{ status: "processed", result: { code: "interaction_wakeup_owned_by_responding_run" } }]);
+        } else {
+          expect(wakeup).toHaveBeenCalledTimes(1);
+          expect(actions[0]?.status).toBe("processed");
+        }
+      });
   },
 );

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "../vendor/paperclip-runner/index.js";
+import type { LinuxProcessStartOptions } from "../vendor/paperclip-runner/index.js";
 import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
@@ -186,6 +186,7 @@ export async function readProcessStartedAt(
   const runCommand = options.runCommand ?? runProcessCommand;
 
   if (platform === "linux") {
+    const { readLinuxProcessStartedAt } = await import("../vendor/paperclip-runner/index.js");
     return readLinuxProcessStartedAt(pid, options.linuxProcessStart);
   }
 

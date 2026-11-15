@@ -17,6 +17,9 @@ fn scripted_transport(reply_id: u64) -> AcpxSidecarTransport {
 
 #[test]
 fn late_park_observation_reply_preserves_ordinary_commands_and_event_polling() {
+    // Shutdown can orphan the script's `cat` for a moment after its shell dies.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let _orphans = crate::process_lineage::host_orphans::may_orphan();
     for poll_first in [false, true] {
         let mut transport = scripted_transport(2);
         let start = Instant::now();
@@ -76,6 +79,9 @@ fn late_park_observation_reply_preserves_ordinary_commands_and_event_polling() {
 
 #[test]
 fn late_park_observation_does_not_relax_ordinary_reply_identity() {
+    // Shutdown can orphan the script's `cat` for a moment after its shell dies.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let _orphans = crate::process_lineage::host_orphans::may_orphan();
     for wrong_id in [1, 99] {
         let mut transport = scripted_transport(wrong_id);
         assert!(transport

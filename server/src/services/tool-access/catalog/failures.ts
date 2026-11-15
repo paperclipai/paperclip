@@ -20,6 +20,12 @@ export function isOAuthEndpointRejection(error: unknown): boolean {
   return typeof code === "string" && code.endsWith("_endpoint_rejected");
 }
 
+/** A caller without an agent grant has not tested the connection's credential. */
+export function isCallerAuthorizationFailure(error: unknown, actor?: ActorInfo): boolean {
+  return actor?.actorType === "agent" && error instanceof HttpError
+    && asRecord(error.details).code === "agent_authorization_required";
+}
+
 export function healthFailureHttpStatus(failure: {
   status: ToolConnectionHealthStatus;
   code: string;
@@ -31,6 +37,7 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "oauth_insufficient_scope") return 422;
   if (failure.code === "slack_mcp_access_disabled") return 422;
   if (failure.code === "user_authorization_required") return 422;
+  if (failure.code === "agent_authorization_required" || failure.code === "agent_authorization_ambiguous") return 422;
   if (failure.code === "github_installation_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
@@ -62,7 +69,8 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "slack_mcp_access_disabled" || code === "google_workspace_services_unavailable") {
       return { status: "error", message: error.message, code };
     }
-    if (code === "user_authorization_required" || code === "github_installation_required") {
+    if (code === "user_authorization_required" || code === "agent_authorization_required"
+      || code === "agent_authorization_ambiguous" || code === "github_installation_required") {
       return { status: "error", message: error.message, code };
     }
     if (code === "tool_connection_transport_unsupported") {
