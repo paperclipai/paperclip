@@ -670,6 +670,21 @@ describe("parseSetupTokenCredential", () => {
     expect(parseSetupTokenCredential(text)).toBeNull();
   });
 
+  it.each(["365 days", "11 months", "1 year"])("reads the token when the before-anchor says it is valid for %s", (validity) => {
+    const text = [`Your OAuth token (valid for ${validity}):`, "", FULL_TOKEN, "", SETUP_TOKEN_AFTER_ANCHOR].join("\n");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns null when the before-anchor line carries extra prose", () => {
+    const text = ["Your OAuth token (valid for 1 year): keep it", "", FULL_TOKEN, "", SETUP_TOKEN_AFTER_ANCHOR].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when two before-anchor lines with different validity appear", () => {
+    const text = ["Your OAuth token (valid for 1 year):", "Your OAuth token (valid for 365 days):", FULL_TOKEN, SETUP_TOKEN_AFTER_ANCHOR].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
   it("returns null for a wrong token prefix between the anchors", () => {
     const text = successScreen(["sk-ant-api03-AAAABBBBCCCCDDDDEEEE1111"]);
     expect(parseSetupTokenCredential(text)).toBeNull();
