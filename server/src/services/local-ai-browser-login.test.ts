@@ -196,7 +196,7 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
 
   it("reports a missing Claude CLI instead of an abandoned sign-in", async () => {
     const home = await fakeCli("claude", "exit 0");
-    process.env.PATH = "/usr/bin:/bin";
+    process.env.PATH = await mkdtemp(path.join(root!, "empty-path-"));
     const login = startLocalBrowserLogin("anthropic", home);
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
     expect(login.error).toMatch(/requires the Claude CLI.*Install Claude.*Paperclip's PATH/);
