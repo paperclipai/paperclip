@@ -19,11 +19,15 @@ export function isPendingPlanConfirmation(interaction: PlanInteraction) {
     && typeof interaction.payload.target.revisionId === "string";
 }
 export function normalizePlanMarkdown(body: string | null | undefined) { return (body ?? "").replaceAll("\\_", "_"); }
+export function planPreviewLabel(revision: number): RegExp {
+  return new RegExp(`^Open Plan revision ${revision}(?: in task sidebar)?$`);
+}
+
 export async function expectPlanStageVisible(page: Page, options: { native: boolean; revision: number | null }) {
   const root = options.native ? page.locator('[data-testid="task-chat-turn"][data-settled="true"]') : page.locator("body");
   const preview = root.getByTestId("task-chat-plan-preview").last();
   await expect(preview).toBeVisible({ timeout: 30_000 });
-  if (options.revision !== null) await expect(preview).toHaveAttribute("aria-label", `Open Plan revision ${options.revision}`);
+  if (options.revision !== null) await expect(preview).toHaveAttribute("aria-label", planPreviewLabel(options.revision));
 }
 
 /** The classic matrix and deployment-targeted journeys share this exact user story. */
