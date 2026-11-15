@@ -10,7 +10,7 @@ import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
-import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
@@ -587,7 +587,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const receipts = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(owned).for("update");
       if (!receipts.length) return;
       // Register the recovery signal before the write it announces.
-      await notifyIssueRecovery(tx, { companyId: run.companyId });
+      await notifyIssueGraphRecovery(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(agentWakeupRequests).set({
         idempotencyKey: null,
         payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb)
@@ -5392,8 +5392,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return mergedRun;
     }
 
+    const queuedRunId = randomUUID();
     const queueOutcome = await db.transaction(async (tx) => {
-      await notifyRunDispatch(tx, { companyId: agent.companyId, issueId: readNonEmptyString(enrichedContextSnapshot.issueId) });
+      await notifyRunDispatch(tx, { companyId: agent.companyId, issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
+        runId: readNonEmptyString(enrichedContextSnapshot.issueId) ? undefined : queuedRunId });
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
@@ -5463,6 +5465,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
+          id: queuedRunId,
           companyId: agent.companyId,
           agentId,
           scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
