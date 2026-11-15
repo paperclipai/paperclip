@@ -1,6 +1,7 @@
 import type { SecretProvider, SecretProviderDescriptor } from "@paperclipai/shared";
 import { awsSecretsManagerProvider } from "./aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "./local-encrypted-provider.js";
+import { nenvProvider } from "./nenv-provider.js";
 import {
   gcpSecretManagerProvider,
   vaultProvider,
@@ -13,6 +14,7 @@ const providers: SecretProviderModule[] = [
   awsSecretsManagerProvider,
   gcpSecretManagerProvider,
   vaultProvider,
+  nenvProvider,
 ];
 
 const providerById = new Map<SecretProvider, SecretProviderModule>(

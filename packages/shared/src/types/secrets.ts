@@ -160,11 +160,17 @@ export interface VaultProviderConfig {
   secretPathPrefix?: string | null;
 }
 
+export interface NenvProviderConfig {
+  baseUrl: string;
+  namespace: string;
+}
+
 export type SecretProviderConfigPayload =
   | LocalEncryptedProviderConfig
   | AwsSecretsManagerProviderConfig
   | GcpSecretManagerProviderConfig
-  | VaultProviderConfig;
+  | VaultProviderConfig
+  | NenvProviderConfig;
 
 export interface SecretProviderConfigHealthDetails {
   code: string;
