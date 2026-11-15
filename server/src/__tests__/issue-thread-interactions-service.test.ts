@@ -3508,7 +3508,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       kind: "request_confirmation", payload: { version: 1, prompt: "New request",
         target: { type: "custom", key } },
     }, { userId: "local-board" })).rejects.toThrow();
-    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId: randomUUID() }, card.id, {}, { userId: "local-board" }))
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId: randomUUID(), projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
       .rejects.toMatchObject({ status: 404 });
   });
 
@@ -3516,7 +3516,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     { type: "custom", key: "" },
     { type: "custom", key: "authorization", href: "javascript:alert(1)" },
     { type: "issue_document", key: "plan", revisionId: "invalid" },
-  ])("keeps invalid stored target structure protected: %j", async target => {
+  ] as const)("keeps invalid stored target structure protected: %j", async target => {
     const { companyId, issueId } = await seedConfirmationIssue("Invalid target structure");
     const [card] = await db.insert(issueThreadInteractions).values({
       companyId, issueId, kind: "request_confirmation", status: "pending",
@@ -3524,7 +3524,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: { version: 1, prompt: "Review this request", target },
     }).returning();
     await expect(interactionsSvc.listForIssue(issueId)).rejects.toThrow();
-    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId }, card.id, {}, { userId: "local-board" }))
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
       .rejects.toThrow();
     await expect(issuesSvc.addComment(issueId, "This request needs repair", { userId: "local-board" }))
       .resolves.toMatchObject({ body: "This request needs repair" });
@@ -3538,7 +3538,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       const [malformed] = await db.insert(issueThreadInteractions).values({
         companyId, issueId, kind, status: "pending", continuationPolicy: "wake_assignee",
         createdByUserId: "local-board",
-        payload: { version: 1, prompt: null, supersedeOnUserComment: true },
+        payload: sql`${JSON.stringify({ version: 1, prompt: null, supersedeOnUserComment: true })}::jsonb`,
       }).returning();
       const [valid] = await db.insert(issueThreadInteractions).values({
         companyId, issueId, kind: "request_confirmation", status: "pending",
@@ -3555,7 +3555,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         .toMatchObject({ status: "expired", result: { outcome: "superseded_by_comment", commentId: saved.id } });
       await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({ id: issueId, companyId }))
         .resolves.toEqual([]);
-      await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId }, malformed.id, {}, { userId: "local-board" }))
+      await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, malformed.id, {}, { userId: "local-board" }))
         .rejects.toThrow();
     },
   );
