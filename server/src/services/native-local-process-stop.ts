@@ -1,5 +1,6 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { notifyInstructionCopyStopEvidence, notifyInstructionCopyStopEvidenceForRuns } from "./instruction-collection-notifications.js";
+import { notifyInstructionCollection, notifyInstructionCopyStopEvidence, notifyInstructionCopyStopEvidenceForRuns } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -595,6 +596,16 @@ export async function releaseOwnedSettledNativeRunProcessesAtShutdown(db: Db, op
   const released = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     await tx.execute(sql.raw(`set local statement_timeout = ${SHUTDOWN_SETTLED_PROCESS_STATEMENT_TIMEOUT_MS}`));
+    for (const run of stopped) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, JSON.stringify({ companyId: run.companyId, runId: run.id }));
+      await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
+      await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
+      await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+      await notifyDirectoryCleanup(tx, { companyId: run.companyId, runId: run.id });
+    }
+    for (const companyId of new Set(stopped.map(run => run.companyId))) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+    }
     const rows = await tx.execute(sql`with stopped as (
         select * from jsonb_to_recordset(${recorded}::jsonb) as stopped(id uuid, pid integer, pgid integer, started text, started_iso text)
       ), released as (
@@ -615,16 +626,7 @@ export async function releaseOwnedSettledNativeRunProcessesAtShutdown(db: Db, op
       from released
       returning company_id as "companyId", run_id as "runId", agent_id as "agentId"`) as unknown as
       Array<{ companyId: string; runId: string; agentId: string }>;
-    if (rows.length === 0) return rows;
-    await notifyInstructionCopyStopEvidenceForRuns(tx, rows);
-    for (const run of rows) {
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, JSON.stringify({ companyId: run.companyId, runId: run.runId }));
-      await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.runId, agentId: run.agentId });
-      await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.runId });
-    }
-    for (const companyId of new Set(rows.map(run => run.companyId))) {
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
-    }
+    if (rows.length > 0) await notifyInstructionCopyStopEvidenceForRuns(tx, rows);
     return rows;
   });
   for (const run of released) pendingSettledProcessReleases.delete(run.runId);

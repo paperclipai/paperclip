@@ -37,14 +37,13 @@ export async function notifyInstructionCopyStopEvidence(transaction: object, sco
 export async function notifyInstructionCopyStopEvidenceForRuns(transaction: object,
   scopes: ReadonlyArray<{ companyId: string; runId: string }>) {
   if (scopes.length === 0 || typeof (transaction as Db).execute !== "function") return;
-  const runs = JSON.stringify(scopes.map(scope => ({ company_id: scope.companyId, run_id: scope.runId })));
-  const waiting = await (transaction as Db).execute(sql`update agent_instruction_working_copies
-    set next_attempt_at = least(coalesce(next_attempt_at, now()), now()), updated_at = clock_timestamp()
-    where (company_id, run_id) in (select company_id, run_id from jsonb_to_recordset(${runs}::jsonb) as stopped(company_id uuid, run_id uuid))
-      and ${waitingCopyState}
-    returning company_id as "companyId", run_id as "runId"`) as unknown as Array<{ companyId: string; runId: string }>;
-  for (const scope of waiting) {
+  for (const scope of scopes) {
     await notifyInstructionCollection(transaction, scope);
     await notifyDirectoryCleanup(transaction, scope);
   }
+  const runs = JSON.stringify(scopes.map(scope => ({ company_id: scope.companyId, run_id: scope.runId })));
+  await (transaction as Db).execute(sql`update agent_instruction_working_copies
+    set next_attempt_at = least(coalesce(next_attempt_at, now()), now()), updated_at = clock_timestamp()
+    where (company_id, run_id) in (select company_id, run_id from jsonb_to_recordset(${runs}::jsonb) as stopped(company_id uuid, run_id uuid))
+      and ${waitingCopyState}`);
 }
