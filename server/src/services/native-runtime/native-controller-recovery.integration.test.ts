@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentTaskSessions, agents, companies, controllerInstances, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -612,17 +612,20 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       await new Promise(resolve => oldServer.once("spawn", resolve));
       const startedAt = await readProcessStartedAt(oldServer.pid!);
       expect(startedAt).toBeTruthy();
-      const { inspect, recordOwner, runId, current } = await seedWarmFollowUpOnOldServer();
-      await recordOwner({ controllerBootId: randomUUID(), controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
+      const { inspect, recordOwner, runId, current, fixture } = await seedWarmFollowUpOnOldServer();
+      const outgoingBoot = randomUUID();
+      await recordOwner({ controllerBootId: outgoingBoot, controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
         controllerProcessStartedAt: new Date(startedAt!), leaseOwner: null, leaseExpiresAt: null });
       const before = Date.now();
       const waiting = await inspect().catch(error => error);
       expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      expect(waiting.owner).toEqual({ runId: fixture.scope.runId, controllerBootId: outgoingBoot });
       expect(waiting.retryAt.getTime()).toBeGreaterThan(before);
       expect(waiting.retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 10_000);
-      await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt });
+      await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt, waitingForOwner: waiting.owner });
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
-        .toMatchObject({ phase: "retryable_failure", attempt: 0, failureCode: NATIVE_RETAINED_OWNER_WAIT, resultId: null });
+        .toMatchObject({ phase: "retryable_failure", attempt: 0, failureCode: NATIVE_RETAINED_OWNER_WAIT, resultId: null,
+          failureDetail: expect.objectContaining({ waitingForOwner: { runId: fixture.scope.runId, controllerBootId: outgoingBoot } }) });
       const [task] = await db.select().from(issues).where(eq(issues.executionRunId, runId));
       expect(task?.status).toBe("in_progress");
 
@@ -768,7 +771,11 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
         await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
         claim = claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt });
         void claim.finally(() => { claimSettled = true; });
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
         expect(claimSettled).toBe(false);
       });
       expect(await claim).toHaveLength(1);

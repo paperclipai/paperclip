@@ -53,10 +53,10 @@ export async function waitForLiveWarmSessionOwner(input: {
   const finishedAt = prior?.finishedAt ?? null;
   const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
     idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
-  if (!retryAt) return;
+  if (!retryAt || !owner.controllerBootId) return;
   const checkpointedAt = await input.checkpointedAt();
   if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
-  throw new NativeControllerRecoveryWaitingError(retryAt, { runId: input.priorRunId, controllerBootId: owner.controllerBootId! });
+  throw new NativeControllerRecoveryWaitingError(retryAt, { runId: input.priorRunId, controllerBootId: owner.controllerBootId });
 }
 
 export type RemoteWarmSessionRecovery = {
