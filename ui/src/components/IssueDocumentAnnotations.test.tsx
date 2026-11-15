@@ -71,6 +71,16 @@ vi.mock("@/api/document-annotations", () => ({
   documentAnnotationsApi: mockAnnotationsApi,
 }));
 
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(async (): Promise<unknown[]> => []),
+}));
+const mockAccessApi = vi.hoisted(() => ({
+  listUserDirectory: vi.fn(async () => ({ users: [] as unknown[] })),
+}));
+
+vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
 }));
@@ -690,6 +700,80 @@ describe("IssueDocumentAnnotations", () => {
     // Each rendered comment shows an author avatar.
     const avatars = expandedThread?.querySelectorAll('[data-slot="avatar"], [data-slot="agent-avatar"]') ?? [];
     expect(avatars.length).toBe(2);
+  });
+
+  it("names comment authors from the company directory when the host passes no maps", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([
+      makeThread({
+        id: "open-1",
+        comments: [
+          {
+            id: "comment-board",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the board.",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "paperclip-id:leia",
+            createdByRunId: null,
+            createdAt: new Date("2026-04-01T00:01:00Z"),
+            updatedAt: new Date("2026-04-01T00:01:00Z"),
+          },
+          {
+            id: "comment-agent",
+            companyId: "co-1",
+            threadId: "open-1",
+            issueId: "issue-1",
+            documentId: "doc-1",
+            body: "From the agent.",
+            authorType: "agent",
+            authorAgentId: "agent-uxdesigner",
+            authorUserId: null,
+            createdByRunId: "run-1",
+            createdAt: new Date("2026-04-01T00:02:00Z"),
+            updatedAt: new Date("2026-04-01T00:02:00Z"),
+          },
+        ],
+      }),
+    ]);
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-uxdesigner", name: "UXDesigner" }]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "paperclip-id:leia",
+          status: "active",
+          user: { id: "paperclip-id:leia", name: "Leia", email: "leia@example.com", image: "https://example.com/leia.png" },
+        },
+      ],
+    });
+    const root = createRoot(container);
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={makeQueryClient()}>
+          <Harness doc={doc} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => {
+      expect(container.querySelector('[data-thread-id="open-1"]')).not.toBeNull();
+    });
+    const threadCard = container.querySelector('[data-thread-id="open-1"]') as HTMLElement | null;
+    await act(async () => threadCard!.click());
+
+    await waitFor(() => {
+      const text = container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "";
+      expect(text).toContain("Leia");
+      expect(text).toContain("UXDesigner");
+    });
+    const text = container.querySelector('[data-thread-id="open-1"]')?.textContent ?? "";
+    expect(text).not.toContain("papercli");
+    expect(text).not.toContain("agent-ux");
+    expect(mockAgentsApi.list).toHaveBeenCalledWith("co-1");
+    expect(mockAccessApi.listUserDirectory).toHaveBeenCalledWith("co-1");
   });
 
   it("does not render a persistent New comment on selection hint when panel is open", async () => {
