@@ -94,7 +94,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
-  startedAtMs?: number | null;
+  spawnStartedAtMs?: number | null;
 }
 
 interface SpawnTarget {
@@ -128,13 +128,13 @@ function resolveProcessGroupId(child: ChildProcess) {
 const windowsTreeStops = new WeakMap<ChildProcess, Promise<void>>();
 
 async function stopWindowsOwnedTree(
-  running: Pick<RunningProcess, "child" | "startedAtMs">,
+  running: Pick<RunningProcess, "child" | "spawnStartedAtMs">,
   signal: NodeJS.Signals,
 ) {
   try {
     running.child.kill(signal);
   } catch {}
-  const rootCreatedAtMs = running.startedAtMs ?? null;
+  const rootCreatedAtMs = running.spawnStartedAtMs ?? null;
   if (rootCreatedAtMs === null) return;
   if (typeof running.child.pid !== "number" || running.child.pid <= 0) return;
   const result = await terminateWindowsOwnedTree({
@@ -151,7 +151,7 @@ async function stopWindowsOwnedTree(
 }
 
 export function stopWindowsOwnedProcessTree(
-  running: Pick<RunningProcess, "child" | "startedAtMs">,
+  running: Pick<RunningProcess, "child" | "spawnStartedAtMs">,
   signal: NodeJS.Signals,
 ): Promise<void> {
   const inFlight = windowsTreeStops.get(running.child);
@@ -165,7 +165,7 @@ export function stopWindowsOwnedProcessTree(
 
 // Exported so the direct-child fallback branch can be unit-tested directly.
 export function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId" | "startedAtMs">,
+  running: Pick<RunningProcess, "child" | "processGroupId" | "spawnStartedAtMs">,
   signal: NodeJS.Signals,
 ): Promise<void> {
   if (
@@ -4921,6 +4921,7 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        const spawnStartedAtMs = Date.now();
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
@@ -4930,7 +4931,6 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
-        const startedAtMs = Date.parse(startedAt);
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
@@ -4949,13 +4949,13 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
-          startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+          spawnStartedAtMs,
         });
 
         let treeStop: Promise<void> = Promise.resolve();
         let treeStopFailure: string | null = null;
         const signalChild = (signal: NodeJS.Signals) => {
-          treeStop = signalRunningProcess({ child, processGroupId, startedAtMs }, signal).catch(
+          treeStop = signalRunningProcess({ child, processGroupId, spawnStartedAtMs }, signal).catch(
             (err) => {
               treeStopFailure = err instanceof Error ? err.message : String(err);
             },

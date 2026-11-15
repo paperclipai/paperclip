@@ -557,7 +557,7 @@ export async function touchLocalServiceRegistryRecord(
 
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> &
-    Partial<Pick<LocalServiceRegistryRecord, "port" | "processCreatedAt">>,
+    Partial<Pick<LocalServiceRegistryRecord, "port" | "processCreatedAt" | "startedAt">>,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; verifyAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
@@ -585,7 +585,7 @@ export async function terminateLocalService(
   };
 
   if (process.platform === "win32" && Number.isInteger(record.pid) && record.pid > 0) {
-    const rootCreatedAtMs = parseProcessCreatedAtMs(record.processCreatedAt ?? null);
+    const rootCreatedAtMs = parseProcessCreatedAtMs(record.processCreatedAt ?? record.startedAt ?? null);
     const result = await terminateWindowsOwnedTree({
       rootPid: record.pid,
       ...(rootCreatedAtMs === null ? {} : { rootCreatedAtMs }),

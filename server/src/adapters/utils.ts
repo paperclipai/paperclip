@@ -19,7 +19,7 @@ export const runningProcesses: Map<
     child: ChildProcess;
     graceSec: number;
     processGroupId: number | null;
-    startedAtMs?: number | null;
+    spawnStartedAtMs?: number | null;
   }
 > = serverUtils.runningProcesses;
 export const MAX_CAPTURE_BYTES = serverUtils.MAX_CAPTURE_BYTES;
