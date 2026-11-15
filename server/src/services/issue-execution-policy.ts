@@ -1237,6 +1237,39 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   return stageResult;
 }
 
+/** Status decision reason when verified native work enters a configured review stage. */
+export const COMPLETION_REVIEW_STAGE_REASON = "execution_stage_review_required";
+/** Status decision reason when the configured review policy refuses the completion, as the route would. */
+export const COMPLETION_REVIEW_STAGE_REJECTED_REASON = "execution_stage_transition_rejected";
+
+export type CompletionReviewStageEntry =
+  | { kind: "none" }
+  | { kind: "starts"; patch: Record<string, unknown>; state: IssueExecutionState }
+  | { kind: "rejected"; message: string };
+
+/**
+ * What a worker's completion does to the task's configured execution policy,
+ * exactly as the issue route would apply `status: "done"`: start the next
+ * pending stage (with the monitor transition for the new assignee), leave the
+ * task free to close, or refuse the transition. Refusals fail closed.
+ */
+export function completionReviewStageEntry(issue: IssueLike, actorAgentId: string): CompletionReviewStageEntry {
+  let patch: Record<string, unknown>;
+  try {
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (!policy) return { kind: "none" };
+    ({ patch } = applyIssueExecutionPolicyTransition({
+      issue, policy, previousPolicy: policy, requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: actorAgentId, userId: null },
+    }));
+  } catch (error) {
+    return { kind: "rejected", message: error instanceof Error ? error.message : String(error) };
+  }
+  const state = patch.executionState as IssueExecutionState | null | undefined;
+  if (patch.status !== "in_review" || state?.status !== "pending" || !state.currentParticipant) return { kind: "none" };
+  return { kind: "starts", patch, state };
+}
+
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
   return { patch: applyMonitorTransition(input, {}) };
 }

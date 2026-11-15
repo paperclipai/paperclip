@@ -10,7 +10,7 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("submits 
   const page=await browser.newPage();let posts=0;
   await page.route("**/*",async route=>{
    if(route.request().method()==="POST"){posts++;expect(new URL(route.request().url()).pathname).toBe("/api/issues/source/interactions/approval/accept");return route.fulfill({status:scenario==="failed POST"?403:200,contentType:"application/json",body:JSON.stringify({id:"approval",companyId:"company",issueId:"source",status:"accepted",resolvedByUserId:scenario==="wrong person"?"other":"person",payload})});}
-   await route.fulfill({contentType:"text/html; charset=utf-8",body:'<section data-testid="task-chat-interaction" id="interaction-approval">Deployment API key Morgan env.DEPLOYMENT_API_KEY<button onclick="fetch(\'/api/issues/source/interactions/approval/accept\',{method:\'POST\'})">Create binding</button></section>'});
+   await route.fulfill({contentType:"text/html; charset=utf-8",body:'<section data-testid="task-chat-interaction" data-interaction-id="approval">Deployment API key Morgan env.DEPLOYMENT_API_KEY<button onclick="fetch(\'/api/issues/source/interactions/approval/accept\',{method:\'POST\'})">Create binding</button></section>'});
   });
   await page.goto("http://127.0.0.1:3300/RUN/chat");
   const action=acceptCompanySecretBindingApproval(page,"company","source",marker,()=>1000);

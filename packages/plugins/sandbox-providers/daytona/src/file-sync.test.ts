@@ -338,20 +338,70 @@ it.skipIf(!gnuTar)("extracts interleaved read-only skill directories with GNU ta
     expect(await fs.readFile(path.join(target, "references", "agents", "qa.md"), "utf8")).toBe("QA instructions");
     expect((await fs.stat(path.join(target, "references", "agents"))).mode & 0o777).toBe(0o555);
     expect((await fs.stat(path.join(target, "references", "agents", "qa.md"))).mode & 0o777).toBe(0o444);
+    // Recovery re-materializes the same admitted bytes on the host with new
+    // timestamps. That is still the same bundle: keep it, never fail on it.
+    const qa = path.join(target, "references", "agents", "qa.md");
+    const agentsDir = path.join(target, "references", "agents");
+    const resumedAt = new Date(Date.now() + 3_600_000);
+    for (const entry of [qa, agentsDir, path.join(target, "references", "overview.md")]) await fs.utimes(entry, resumedAt, resumedAt);
+    await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "rematerialized-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    expect((await fs.stat(qa)).mtime.getTime()).toBe(resumedAt.getTime());
     // Never treat a corrupted read-only bundle as a cache hit, even if its
     // file size, permissions and timestamp still match the source archive.
-    const qa = path.join(target, "references", "agents", "qa.md");
-    const before = await fs.stat(qa);
+    // Repair it in place instead of failing the run.
+    const sourceTimes = await Promise.all([qa, agentsDir, path.join(target, "references", "overview.md")]
+      .map((entry) => fs.stat(path.join(source, path.relative(target, entry)))));
+    const before = sourceTimes[0]!;
+    await fs.chmod(agentsDir, 0o755);
     await fs.chmod(qa, 0o644);
     await fs.writeFile(qa, "XX instructions");
     await fs.chmod(qa, 0o444);
+    await fs.chmod(agentsDir, 0o555);
     await fs.utimes(qa, before.atime, before.mtime);
+    await fs.utimes(agentsDir, sourceTimes[1]!.atime, sourceTimes[1]!.mtime);
+    await fs.utimes(path.join(target, "references", "overview.md"), sourceTimes[2]!.atime, sourceTimes[2]!.mtime);
+    await performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] });
+    expect(await fs.readFile(qa, "utf8")).toBe("QA instructions");
+    expect((await fs.stat(agentsDir)).mode & 0o777).toBe(0o555);
+    expect((await fs.stat(qa)).mode & 0o777).toBe(0o444);
+    expect(await fs.readFile(path.join(target, "unrelated.txt"), "utf8")).toBe("keep me");
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+    // A repair that cannot finish still leaves the bundle sealed read-only.
+    const blocked = path.join(target, "references", "overview.md");
+    await fs.chmod(path.join(target, "references"), 0o755);
+    await fs.rm(blocked);
+    await fs.mkdir(blocked);
+    await fs.writeFile(path.join(blocked, "child"), "x");
+    await fs.chmod(path.join(target, "references"), 0o555);
+    // A writable directory the user keeps beside the bundle stays writable.
+    const userDir = path.join(target, "notes");
+    await fs.mkdir(userDir, { mode: 0o755 });
     await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
-      operations: [{ operationId: "corrupt-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
-    expect(await fs.readFile(qa, "utf8")).toBe("XX instructions");
+      operations: [{ operationId: "blocked-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
+    for (const dir of ["references", "references/agents"]) {
+      expect((await fs.stat(path.join(target, dir))).mode & 0o777).toBe(0o555);
+    }
+    expect((await fs.stat(userDir)).mode & 0o777).toBe(0o755);
+    expect((await fs.stat(blocked)).mode & 0o200).toBe(0o200);
+    await fs.chmod(blocked, 0o700);
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+    // A reopen that fails part-way (an unreadable user directory) re-seals the
+    // bundle and leaves no scratch files behind either.
+    const unreadable = path.join(target, "private");
+    await fs.mkdir(unreadable);
+    await fs.chmod(unreadable, 0o300);
+    await expect(performSyncIn({ sandbox: sandbox as never, remoteDir, timeoutSeconds: 30,
+      operations: [{ operationId: "unreadable-skill-resume", files: [{ sourcePath: source, targetPath: target, kind: "directory", mode: 0o555 }] }] })).rejects.toThrow("syncIn extract");
+    for (const dir of ["references", "references/agents"]) {
+      expect((await fs.stat(path.join(target, dir))).mode & 0o777).toBe(0o555);
+    }
+    expect((await fs.stat(unreadable)).mode & 0o777).toBe(0o300);
     expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
 
   } finally {
+    await fs.chmod(path.join(target, "private"), 0o700).catch(() => undefined);
     for (const base of [source, target]) {
       for (const dir of ["references/agents", "references"]) await fs.chmod(path.join(base, dir), 0o700).catch(() => undefined);
     }

@@ -2673,6 +2673,33 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("after returning a final response");
   });
 
+  it("offers Try again on a model-unavailable failure and retries that run", async () => {
+    const onRetryFailedRun = vi.fn();
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "blocked",
+      onRetryFailedRun,
+      interruption: { intentId: null, responsibility: "user", state: "waiting_for_user", nextRetryAt: null,
+        canRetry: false, userAction: "choose_model", rejectedModel: "openrouter/missing", sourceRunIds: ["model-rejected"], observedRunId: "model-rejected" },
+      linkedRuns: [{
+        runId: "model-rejected", runtimeMode: "native", status: "failed",
+        errorCode: "native_provider_model_rejected",
+        error: "The selected model is not available.",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      }],
+    });
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Model unavailable");
+    const retry = marker?.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(retry).not.toBeNull();
+    flushSync(() => retry!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledWith("model-rejected");
+  });
+
   it("names the rejected model id that the task interruption carries", () => {
     renderThread({
       comments: [],
@@ -6067,6 +6094,16 @@ describe("TaskChatThread composer execution controls", () => {
     expect(onStop).toHaveBeenCalledOnce();
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopPending />);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')?.disabled).toBe(true);
+  });
+  it("offers Stop where a running task's Stop lives while its run is still waiting in line", async () => {
+    const onStop = vi.fn(async () => {});
+    const waiting = { id: "waiting-run", status: "queued", invocationSource: "assignment", triggerDetail: null, startedAt: null,
+      finishedAt: null, createdAt: "2026-11-13T12:00:00Z", agentId: "agent-1", agentName: "Codie", adapterType: "codex_local" };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="todo" liveRuns={[waiting]} onCancelRun={onStop} />);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]');
+    expect(button).not.toBeNull();
+    await act(async () => { button!.click(); });
+    expect(onStop).toHaveBeenCalledOnce();
   });
   it("does not offer Stop for settled work even when a callback is available", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="todo" onCancelRun={vi.fn()} />);

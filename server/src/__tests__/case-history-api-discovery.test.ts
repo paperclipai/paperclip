@@ -30,3 +30,8 @@ it("names the nested case id and how people appear in case history", () => {
   expect(revisions.description).toContain("createdByUserId");
   expect(searchRunnerApi({ query: "GET /api/cases/{id}" }).results[0]!.summary).toBe("Read a case and its current facts");
 });
+
+it("tells chat to keep the person's brief as a document on a new case's primary task", () => {
+  expect(CASES_CHAT_DIRECTIVE).toContain("save that brief as a document on the case's primary task with initialDocuments");
+  expect(CASES_CHAT_DIRECTIVE).toContain("Case fields do not replace the brief");
+});

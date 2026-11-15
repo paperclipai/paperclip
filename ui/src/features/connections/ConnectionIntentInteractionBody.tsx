@@ -36,9 +36,14 @@ import {
 } from "./ConnectionSetupFlow";
 
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
+import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "@/components/coordinator/NeedsYouCardKit";
 
 export interface ConnectionIntentInteractionBodyProps {
   footerSlot?: ReactNode;
+  /** A Needs You card (PAP-775): the service in an inset panel, the verbs in the footer. */
+  compact?: boolean;
+  /** The Needs You page's artifact row, first in the panel. */
+  artifactRow?: ReactNode;
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
@@ -48,6 +53,8 @@ export interface ConnectionIntentInteractionBodyProps {
 
 export function ConnectionIntentInteractionBody({
   footerSlot,
+  compact = false,
+  artifactRow,
   interaction,
   currentUserId,
   addresseeLabel,
@@ -74,6 +81,14 @@ export function ConnectionIntentInteractionBody({
   const provider = isAi ? aiProviderSchema.safeParse(interaction.payload.serviceSlug).data : undefined;
   const serviceName = provider ? AI_CONNECTION_CAPABILITIES[provider].name : interaction.payload.serviceName;
   const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
+  const serviceLogo = <AppLogo
+    name={interaction.payload.serviceName}
+    brandKey={interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug}
+    logoUrl={interaction.payload.serviceLogoUrl}
+    darkLogoUrl={interaction.payload.serviceDarkLogoUrl}
+    size={20}
+    compact
+  />;
   const accessRequest = interaction.payload.accessRequest;
   const agentQuery = useQuery({
     queryKey: ["agents", "detail", interaction.payload.requestingAgentId, interaction.companyId],
@@ -345,6 +360,38 @@ export function ConnectionIntentInteractionBody({
   const needsRetry = interaction.payload.phase === "needs_retry";
   const authorizing = interaction.payload.phase === "authorizing";
 
+  if (accessRequest && compact) {
+    const busy = completeMutation.isPending || declineMutation.isPending;
+    const askFirst = accessRequest.tools.filter(tool => tool.permission === "ask_first").length;
+    return <div id={focusTargetId} ref={focusTargetRef} tabIndex={-1} data-testid="connection-intent-focus-target">
+      <div data-testid="connection-intent-access-request" className="space-y-4">
+        <NeedsYouPanel>
+          {artifactRow}
+          <NeedsYouPanelRow icon={serviceLogo} title={`${interaction.payload.serviceName} · ${accessRequest.connectionName}`}
+            meta={`${accessRequest.tools.length} ${accessRequest.tools.length === 1 ? "tool" : "tools"} for ${interaction.payload.requestingAgentName}`} />
+          <ul aria-label="Tool permissions" className="flex max-h-48 flex-col gap-1 overflow-y-auto text-xs">
+            {accessRequest.tools.map(tool => <li key={tool.catalogEntryId} className="flex items-start justify-between gap-3">
+              <span className="min-w-0 break-all font-mono text-foreground">{tool.toolName}</span>
+              <span className="shrink-0 text-muted-foreground">{tool.permission === "allowed" ? "Allowed" : "Ask first"}</span>
+            </li>)}
+          </ul>
+          <NeedsYouPanelNote>
+            Access applies to {interaction.payload.requestingAgentName} only{askFirst > 0 ? ` · ${askFirst} still ${askFirst === 1 ? "asks" : "ask"} you first` : ""}.
+          </NeedsYouPanelNote>
+        </NeedsYouPanel>
+        {setupView.kind === "error" ? <QueryErrorState error={setupView.error} onRetry={setupView.retry} /> : null}
+        {completeMutation.error || declineMutation.error ? <p role="alert" className="text-sm text-destructive">{describeError(completeMutation.error ?? declineMutation.error).body}</p> : null}
+        {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">Connection manager required.</p> : null}
+        <DecisionCardFooter leading={footerSlot}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>Deny</Button>
+          <Button size="sm" disabled={busy || !setupQuery.data?.canGrantAccess} onClick={() => completeMutation.mutate(accessRequest.connectionId)}>
+            {completeMutation.isPending ? "Granting access…" : "Grant access"}
+          </Button>
+        </DecisionCardFooter>
+      </div>
+    </div>;
+  }
+
   if (accessRequest) {
     const busy = completeMutation.isPending || declineMutation.isPending;
     return <div id={focusTargetId} ref={focusTargetRef} tabIndex={-1} data-testid="connection-intent-focus-target">
@@ -457,6 +504,21 @@ export function ConnectionIntentInteractionBody({
           onCancel={() => { closeSetup(); returnFocusToCard(); }}
         /> : setupContent;
 
+  const headline = readyForAdoption ? `Use your ${aiProviderName} account` : needsOwnAiConnection ? `Connect your ${aiProviderName} account` : isAi ? `${aiProviderName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`;
+  const description = readyForAdoption
+    ? `Your account is connected. Use it for ${interaction.payload.requestingAgentName} to resume this task.`
+    : needsOwnAiConnection
+    ? `${interaction.payload.requestingAgentName} needs your own AI connection. Connect here and the task will resume automatically.`
+    : interaction.payload.purpose === "ai"
+    ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
+    : isChatHandoff ? "Complete the human sign-in step in the saved setup. Your task continues when the connection is ready."
+    : isEmail ? "Connect AgentMail to create an email address for this agent."
+    : "New connections default to all agents; you can choose fewer during setup. Reusing an account adds access for this agent.";
+  // Paper "Connect a service": a plain connect names the service and its state
+  // in the panel; AI, email and chat setups keep their own headline there.
+  const plainConnect = !isAi && !isEmail && !isChatHandoff;
+  const retryMessage = "Authorization didn’t finish. Your previous choices are safe; try again.";
+
   return (
     <div
       id={focusTargetId}
@@ -465,7 +527,16 @@ export function ConnectionIntentInteractionBody({
       data-testid="connection-intent-focus-target"
     >
       <div data-testid="connection-intent-actions">
-        <div className="flex items-start gap-3">
+        {compact ? <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">{description}</p>
+          <NeedsYouPanel>
+            {artifactRow}
+            <NeedsYouPanelRow icon={serviceLogo} title={plainConnect ? interaction.payload.serviceName : headline}
+              meta={plainConnect ? authorizing ? "Authorizing…" : "Not connected" : undefined} />
+            {needsRetry ? <NeedsYouPanelNote>{retryMessage}</NeedsYouPanelNote>
+              : plainConnect ? <NeedsYouPanelNote>Requested by {interaction.payload.requestingAgentName}.</NeedsYouPanelNote> : null}
+          </NeedsYouPanel>
+        </div> : <div className="flex items-start gap-3">
           <AppLogo
             name={interaction.payload.serviceName}
             logoUrl={interaction.payload.serviceLogoUrl}
@@ -474,27 +545,18 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {readyForAdoption ? `Use your ${aiProviderName} account` : needsOwnAiConnection ? `Connect your ${aiProviderName} account` : isAi ? `${aiProviderName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
+              {headline}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {readyForAdoption
-                ? `Your account is connected. Use it for ${interaction.payload.requestingAgentName} to resume this task.`
-                : needsOwnAiConnection
-                ? `${interaction.payload.requestingAgentName} needs your own AI connection. Connect here and the task will resume automatically.`
-                : interaction.payload.purpose === "ai"
-                ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
-                : isChatHandoff ? "Complete the human sign-in step in the saved setup. Your task continues when the connection is ready."
-                : isEmail ? "Connect AgentMail to create an email address for this agent."
-                : "New connections default to all agents; you can choose fewer during setup. Reusing an account adds access for this agent."}
+              {description}
             </p>
           </div>
-        </div>
+        </div>}
 
-        {needsRetry ? (
+        {needsRetry && !compact ? (
           <p className="mt-4 flex items-center gap-2 text-sm text-destructive">
             <RotateCcw className="h-4 w-4" />
-            Authorization didn’t finish. Your previous choices are safe; try
-            again.
+            {retryMessage}
           </p>
         ) : null}
 
@@ -530,13 +592,14 @@ export function ConnectionIntentInteractionBody({
                 <Button type="button">
                   {authorizing ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
+                  ) : compact ? null : (
                     <Plug className="h-4 w-4" />
                   )}
                   {authorizing
                     ? "Continue setup"
                     : needsRetry
                       ? "Try again"
+                      : compact ? `Connect ${interaction.payload.serviceName}`
                       : setupQuery.data?.existingConnections.length ? "Connect / Use existing" : "Connect"}
                 </Button>
               </DialogTrigger>

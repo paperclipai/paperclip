@@ -3042,6 +3042,15 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
+  it("explicit stop confirms a sandbox Daytona no longer has as destroyed", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    mockGet.mockRejectedValue(new MockDaytonaNotFoundError("gone"));
+    await expect(plugin.definition.onEnvironmentStopLease!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: "sandbox-gone", config: { reuseLease: false },
+    })).resolves.toEqual({ providerLeaseId: "sandbox-gone", state: "destroyed" });
+  });
+
   describe("explicit stop of a sandbox in the provider error state", () => {
     const stopParams = (sandboxId: string) => ({ driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
       providerLeaseId: sandboxId, config: { reuseLease: false } });

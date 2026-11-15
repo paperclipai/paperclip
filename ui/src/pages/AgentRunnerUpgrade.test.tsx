@@ -42,9 +42,10 @@ it("keeps an upgrade receipt on its original agent when navigation changes the c
   document.body.appendChild(container);
   const root = createRoot(container);
   const noop = () => {};
+  const saved = vi.fn();
   const render = (value: AgentDetail) => root.render(<QueryClientProvider client={client}>
     <ConfigurationTab agent={value} companyId={value.companyId} onDirtyChange={noop} onSaveActionChange={noop}
-      onCancelActionChange={noop} onSavingChange={noop} updatePermissions={{ mutate: noop, isPending: false }} />
+      onCancelActionChange={noop} onSavingChange={noop} onSaved={saved} updatePermissions={{ mutate: noop, isPending: false }} />
   </QueryClientProvider>);
   try {
     await act(async () => render(original));
@@ -54,10 +55,37 @@ it("keeps an upgrade receipt on its original agent when navigation changes the c
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     expect(mocks.update).toHaveBeenCalledWith(original.id, { runner: "paperclip" }, original.companyId);
     expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(saved).not.toHaveBeenCalled();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["agents", "detail", original.id] });
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["agents", "detail", "other-agent"] });
   } finally {
     await act(async () => root.unmount());
+    client.clear();
+    container.remove();
+  }
+});
+
+it.each(["runtime", "secrets"] as const)("notifies the save tray after a successful %s save", async content => {
+  const original = agent("saved-agent");
+  const updated = { ...original, adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } };
+  mocks.update.mockResolvedValue(updated);
+  const saved = vi.fn(), noop = () => {};
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(() => root.render(<QueryClientProvider client={client}>
+      <ConfigurationTab agent={original} companyId={original.companyId} content={content}
+        onDirtyChange={noop} onSaveActionChange={noop} onCancelActionChange={noop} onSavingChange={noop}
+        onSaved={saved} updatePermissions={{ mutate: noop, isPending: false }} />
+    </QueryClientProvider>));
+    expect(saved).not.toHaveBeenCalled();
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(saved).toHaveBeenCalledOnce();
+  } finally {
+    await act(() => root.unmount());
     client.clear();
     container.remove();
   }

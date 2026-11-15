@@ -1,4 +1,5 @@
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
+import type { ProviderToolIconsResponse } from "@paperclipai/shared";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
@@ -305,6 +306,16 @@ export const toolsApi = {
   },
   connectApp: (companyId: string, input: ConnectToolApp) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
+  createMachineSignIn: (companyId: string, input: import("@paperclipai/shared").CreateMachineSignIn) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult>(`/companies/${companyId}/tools/machine-sign-in`, input),
+  getMachineSignIn: (connectionId: string) =>
+    api.get<import("@paperclipai/shared").MachineSignInStatus>(`/tool-connections/${connectionId}/machine-sign-in`),
+  testMachineSignIn: (connectionId: string, input: import("@paperclipai/shared").TestMachineSignIn) =>
+    api.post<ConnectToolAppResult>(`/tool-connections/${connectionId}/machine-sign-in/test`, input),
+  rotateMachineSignIn: (connectionId: string, input: import("@paperclipai/shared").RotateMachineSignIn) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult & { completed: boolean }>(`/tool-connections/${connectionId}/machine-sign-in/rotate`, input),
+  completeMachineSignInRotation: (connectionId: string) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult>(`/tool-connections/${connectionId}/machine-sign-in/rotate/complete`, {}),
   startOAuth: (
     connectionId: string,
     input: {
@@ -430,6 +441,8 @@ export const toolsApi = {
     }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
+  listProviderToolIcons: (companyId: string) =>
+    api.get<ProviderToolIconsResponse>(`/companies/${companyId}/tool-icons`),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
   listConnectionActivity: (connectionId: string, limit = 20) =>

@@ -10,7 +10,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -24,7 +23,7 @@ import { parseProviderPackArguments, materializeCandidateProviderPack, providerP
 import { smokeKimiProviderPack } from "./kimi-provider-pack-smoke.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
-import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack } from "./provider-pack-runtime-tree.mjs";
+import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack, sha256Tree } from "./provider-pack-runtime-tree.mjs";
 import { packContractDigest } from "./contracts/contract-fingerprints.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -60,35 +59,6 @@ function sha256File(path) {
   return `sha256:${createHash("sha256")
     .update(readFileSync(path))
     .digest("hex")}`;
-}
-
-function sha256Tree(root) {
-  const hash = createHash("sha256");
-  const visit = (directory, prefix = "") => {
-    const entries = readdirSync(directory, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name),
-    );
-    for (const entry of entries) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const absolutePath = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        hash.update(`directory\0${relativePath}\n`);
-        visit(absolutePath, relativePath);
-      } else if (entry.isFile()) {
-        hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
-      } else if (entry.isSymbolicLink()) {
-        hash.update(
-          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
-        );
-      } else {
-        throw new Error(
-          `Provider pack tree contains unsupported entry ${relativePath}`,
-        );
-      }
-    }
-  };
-  visit(root);
-  return `sha256:${hash.digest("hex")}`;
 }
 
 function writePortableNodeShim(name, entrypoint) {
@@ -314,6 +284,16 @@ try {
     : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
         cwd: workspaceRoot,
       }).status !== 0;
+  // Set only by a publication build of the Runner image (the
+  // `runner-artifacts` Dockerfile target with
+  // PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1): the identity of the inputs the image
+  // was built from, which is its `inputs-<digest>` tag.
+  // scripts/runner-image-layout.mjs checks it against the image, and refuses
+  // it in a pack from any other build.
+  const runnerInputsDigest = process.env.PAPERCLIP_RUNNER_INPUTS_DIGEST?.trim();
+  if (runnerInputsDigest && !/^[0-9a-f]{64}$/.test(runnerInputsDigest)) {
+    throw new Error("PAPERCLIP_RUNNER_INPUTS_DIGEST must be 64 hexadecimal characters");
+  }
   const payload = {
     compatibility,
     // Semantic digest of the Runner/pack contracts. Image packs are reused only
@@ -330,6 +310,7 @@ try {
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
+    ...(runnerInputsDigest ? { runnerInputsDigest } : {}),
     distDigest,
     bridgeDigest: `sha256:${createHash("sha256")
       .update(opencodeProxySha)

@@ -2,6 +2,7 @@ import { expect } from "@playwright/test";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { runnerE2EServerControlPaths } from "../harness-env.js";
+import { markdownLinkTargets, unresolvedLinkTarget } from "../chat-rendered-links.js";
 import { checks, type Entity } from "./internal-support.js";
 import { privilegedDefinition, privilegedObservation, settlePrivilegedChat } from "./privileged-support.js";
 
@@ -24,6 +25,10 @@ export function gradeRestartService(value: unknown) {
   // avoids claiming a restart or offline responsiveness is left to a human reader.
   c.add("pre-restart-reply-recorded", typeof o.reply === "string" && o.reply.trim().length > 0,
     "The canonical run leaves its own reply before the operator restart.");
+  // A link the person clicks must open a real page. A placeholder copied from guidance, such as
+  // /<prefix>/company/settings/instance, renders as /%3Cprefix%3E/... and opens nothing.
+  c.add("reply-links-resolve", ![...o.links, ...markdownLinkTargets(o.reply)].some(unresolvedLinkTarget),
+    "Every link in the saved and rendered reply is a resolved path; none keeps a template placeholder such as <prefix>.");
   return c.result();
 }
 export const privilegedInstanceCases = [{ ...privilegedDefinition("instance-operations.restart-service", "privileged-instance", {
@@ -69,4 +74,4 @@ export const privilegedInstanceCases = [{ ...privilegedDefinition("instance-oper
     await ctx.input.evidence("chat-catalog-owned-service-restart.json", { ...state, retainedCommentIds: after.map(row => row.id) });
   }, grade: gradeRestartService,
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
-}), oracleVersion: "paperclip.chat-catalog.privileged.restart-service.v2" }];
+}), sourceFiles: ["chat-catalog-domains/privileged-support.ts", "chat-catalog-domains/turn-response-card.ts", "chat-catalog-domains/privileged-instance.ts", "chat-rendered-links.ts", "chat-scenarios/instance-operations.yaml"], oracleVersion: "paperclip.chat-catalog.privileged.restart-service.v3" }];

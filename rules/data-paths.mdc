@@ -49,10 +49,10 @@ Apply a review level that matches the path:
 - **Observability change (lighter review).** The operator endpoint gate stays in
   place. The no-operation behaviour stays when no endpoint is set. A privacy
   review is not necessary while the change stays inside the closed
-  span-attribute allowlist.
+  span-attribute allowlist defined in the code that opens the span.
 - **Run-log change (no extra review).** A run-log change needs neither review
-  level above, because the data stays in the instance database. Update
-  `doc/run-log-events.md` when an event is added or changed.
+  level above, because the data stays in the instance database. Define the
+  event and its payload where it is written; do not list it in a doc.
 
 ## Exclusion
 

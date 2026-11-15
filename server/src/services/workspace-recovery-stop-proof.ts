@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "./run-dispatch-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -47,6 +48,7 @@ export function sourceRunProvablyOver(run: typeof heartbeatRuns.$inferSelect, co
 export async function releaseLapsedCoordinatorOwner(tx: Pick<Db, "update">, input: { companyId: string; runId: string },
   coordinator: Coordinator | undefined, at: Date): Promise<boolean> {
   if (!coordinator?.leaseOwner || !lapsedFinishedCoordinatorOwner(coordinator, at)) return false;
+  await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
   const cleared = await tx.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: at })
     .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
       eq(nativeRunFinalizations.leaseOwner, coordinator.leaseOwner),

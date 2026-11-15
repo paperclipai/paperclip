@@ -2805,7 +2805,9 @@ async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<P
   const cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
   try {
     const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-    if (!sandbox) throw new Error("Daytona retained sandbox is unavailable");
+    // Daytona reports the exact sandbox as not found: it is gone, so nothing
+    // runs there and nothing is retained. Destroy reports the same receipt.
+    if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     evictSandboxHandle(scope);
     // Provider auto-delete can destroy a stopped sandbox without an explicit
     // delete call. Confirm the provider disabled it before stopping saved work;

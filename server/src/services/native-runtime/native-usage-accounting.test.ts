@@ -30,6 +30,20 @@ describe("native turn accounting", () => {
     expect(nativeUsageCostUsd(snapshot.usage, provider)).toBe(0.5);
   });
 
+  it("names the run's first served generation on its receipt and keeps it stable across later turns", () => {
+    const accounting = createNativeTurnAccounting(provider);
+    const usage = (providerRequestId?: unknown) => ({ kind: "usage", usage: { runDeltaComplete: true,
+      runDelta: { inputTokens: 5, outputTokens: 1 }, upstreamProvider: "Novita", ...(providerRequestId === undefined ? {} : { providerRequestId }) } });
+    accounting.observe(event(1, "turn.started"));
+    accounting.observe(event(2, "item.completed", "turn-1", usage()));
+    expect(accounting.snapshot().usage).not.toHaveProperty("providerRequestId");
+    [event(3, "item.completed", "turn-1", usage(42)), event(4, "item.completed", "turn-1", usage("gen-first")),
+      event(5, "turn.completed"), event(6, "turn.started", "turn-2"),
+      event(7, "item.completed", "turn-2", usage("gen-later")), event(8, "turn.completed", "turn-2")].forEach(value => accounting.observe(value));
+    expect(accounting.snapshot().usage).toMatchObject({ providerRequestId: "gen-first" });
+    expect(normalizeNativeUsage(accounting.snapshot().usage)).toEqual({ inputTokens: 10, outputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0 });
+  });
+
   // s7501 run 0a18c2d0 (ACPX Claude): K1 killed the Runner mid-turn. ACPX
   // reports provisional zero usage until a turn ends, so the lost turn never
   // got a complete report. The restored Runner failed it as lost on restore and
@@ -110,6 +124,31 @@ describe("native turn accounting", () => {
     accounting.observe(event(2, "turn.failed", "turn-1", { error: { code: "provider_terminal_error_missing" } }));
     expect(accounting.snapshot().complete).toBe(false);
     expect(accounting.snapshot().usage).not.toHaveProperty("accountingUsageLost");
+  });
+
+  it("counts a prompt turn and the provider-started turn after it once each, as the executor receives them", () => {
+    const acpx = { kind: "acpx" as const, agent: "claude", model: "claude-sonnet-5" } as never;
+    const accounting = createNativeTurnAccounting(acpx);
+    const report = (inputTokens: number, outputTokens: number, sessionCost: number) => ({ kind: "usage", usage: {
+      total: { inputTokens: 0, outputTokens: 0, providerCostUsd: sessionCost },
+      runDelta: { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, providerCostUsd: 0 }, runDeltaComplete: true } });
+    const history = [
+      event(1, "turn.started", "turn_lab_prompt", { status: "inProgress" }),
+      event(2, "item.completed", "turn_lab_prompt", report(6, 4, 0.2)),
+      event(3, "turn.completed", "turn_lab_prompt", { status: "completed", error: null, awaitingProviderTurn: true }),
+      event(4, "turn.started", "provider-1", { status: "inProgress", origin: "provider" }),
+      event(5, "item.completed", "provider-1", report(30, 20, 0.465)),
+      event(6, "turn.completed", "provider-1", { status: "completed", error: null }),
+    ];
+    history.forEach(value => accounting.observe(value));
+    history.forEach(value => accounting.observe(value));
+    const snapshot = accounting.finish("provider-1");
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.turnId).toBe("provider-1");
+    expect(normalizeNativeUsage(snapshot.usage)).toEqual({ inputTokens: 36, outputTokens: 24, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    expect(nativeUsageCostUsd(snapshot.usage, acpx)).toBeUndefined();
+    expect(snapshot.usage).not.toHaveProperty("accountingCostUsdExact");
+    expect(JSON.stringify(snapshot.usage)).not.toMatch(/0\.665|0\.465|0\.2[^0-9]/);
   });
 
   it("keeps an incomplete provider report pending instead of trusting placeholder zeroes", () => {

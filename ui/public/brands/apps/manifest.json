@@ -84,6 +84,12 @@
       "localAsset": "/brands/apps/candid.png"
     },
     {
+      "slug": "circleback",
+      "provider": "Circleback",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/circleback.png"
+    },
+    {
       "slug": "clickhouse",
       "provider": "ClickHouse",
       "catalogVisible": true,
@@ -715,6 +721,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/tailscale.png"
     }
   ]
 }

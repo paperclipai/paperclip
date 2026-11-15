@@ -8,6 +8,7 @@ import { parseRecoveryStep, parseRecoveryStepReceipts, recoveryStepControlSpec, 
 import { generationHome, parseK15DeployShape, redeployEnvironment, redeployIdentity } from "./redeploy.js";
 import { awaitingRewake, gradeRewake, noteMarker, rewakeKind, rewakeMarker, rewakeStep, type RewakeArtifacts } from "./rewake.js";
 import { planTasks, planWave, taskFaultSchedule } from "./scheduler.js";
+import { stableRequestId } from "./observer.js";
 import type { OracleArtifacts, RunSample, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 import { workloadDefinitions } from "./workloads.js";
 
@@ -50,7 +51,7 @@ describe("W2, W2Q, W2C: re-wake after success", () => {
     const calls: Array<{ method: string; route: string; body: unknown }> = [];
     const record = { plan: { taskId: "t01", index: 3, nonce: "0bcd1204", followUpAfterMs: 10_000, workload: "W2", ...plan } } as unknown as TaskRecord;
     const api = {
-      async get<T>(route: string) { return (route.endsWith("/interactions") ? interactions : []) as T; },
+      async get<T>(route: string) { return (route.endsWith("/interactions") ? interactions : route === "/api/agents/a1" ? { adapterConfig: { model: "m1" } } : []) as T; },
       async post<T>(route: string, body?: unknown) { calls.push({ method: "post", route, body }); return { id: "c1" } as T; },
       async patch<T>(route: string, body?: unknown) { calls.push({ method: "patch", route, body }); return {} as T; },
     };
@@ -93,7 +94,7 @@ describe("W2, W2Q, W2C: re-wake after success", () => {
   it("W2C: changes the agent configuration first, then wakes at least 5 s later", async () => {
     const { calls, record, step } = harness({ workload: "W2C", followUpAfterMs: 0 });
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 5_000);
-    expect(calls).toEqual([{ method: "patch", route: "/api/agents/a1", body: { adapterConfig: { idleTimeoutMs: 301_003 } } }]);
+    expect(calls).toEqual([{ method: "patch", route: "/api/agents/a1", body: { adapterConfig: { model: "m1", idleTimeoutMs: 301_003 }, replaceAdapterConfig: true } }]);
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 7_000);
     expect(calls).toHaveLength(1);
     await step(sample("in_review", [run("r1", "succeeded", 1_000)]), 10_000);
@@ -212,6 +213,27 @@ describe("K15 staging deploy shape", () => {
     expect(() => parseK15DeployShape({ env: "daytona", faults: ["K1"] }, "30", false)).toThrow("add K15");
     expect(() => parseK15DeployShape({ env: "daytona", faults: ["K15"], k15HoldMs: [1, 2] }, "30", false)).toThrow("--k15-hold-seconds");
     expect(() => parseK15DeployShape({ env: "daytona", faults: ["K15"] }, "2-3", false)).toThrow("between 5 and 600");
+  });
+
+  it("runs volume-free servers only on Daytona with the wave's object store", () => {
+    const image = `ghcr.io/x/y@sha256:${"a".repeat(64)}`;
+    expect(wave(["--env", "daytona", "--daytona-image", image, "--storage", "s3", "--ephemeral-server", "--faults", "K15", "--k15-fresh-home"]))
+      .toMatchObject({ ephemeralServer: true, storage: "s3", k15FreshHome: true });
+    expect(wave(["--env", "daytona", "--daytona-image", image])).not.toHaveProperty("ephemeralServer");
+    expect(wave(["--env", "daytona", "--daytona-image", image, "--storage", "s3", "--ephemeral-server"]).workloads.every(workload => !workloadDefinitions[workload].usesRepository)).toBe(true);
+    expect(workloadDefinitions.W2.startComment?.("n1")).toContain("CHAOS-n1");
+    expect(workloadDefinitions.W2C.startComment).toBeDefined();
+    expect(workloadDefinitions.W2Q.startComment).toBeUndefined();
+    expect(stableRequestId("start-t01-n1")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(stableRequestId("start-t01-n1")).toBe(stableRequestId("start-t01-n1"));
+    expect(stableRequestId("start-t02-n1")).not.toBe(stableRequestId("start-t01-n1"));
+    expect(wave(["--env", "daytona", "--daytona-image", image, "--faults", "K15", "--k15-fresh-home"]))
+      .toMatchObject({ ephemeralServer: true, storage: "s3", k15FreshHome: true });
+    expect(() => wave(["--env", "daytona", "--daytona-image", image, "--storage", "local", "--faults", "K15", "--k15-fresh-home"]))
+      .toThrow("--k15-fresh-home");
+    expect(() => wave(["--env", "daytona", "--daytona-image", image, "--ephemeral-server"])).toThrow("--storage s3");
+    expect(() => wave(["--env", "local", "--storage", "s3", "--ephemeral-server"])).toThrow("--env daytona");
+    expect(() => wave(["--env", "daytona", "--daytona-image", image, "--storage", "s3", "--ephemeral-server", "--workloads", "A1,B1"])).toThrow("B1");
   });
 
   it("drops the volume variables for a fresh home, and gives each generation its own home", () => {

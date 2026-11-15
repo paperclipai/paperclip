@@ -70,7 +70,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     description: `Implement the approved Design as a small website plan. Once eligible, read the actual Design task and save a task document with the exact reference ${marker}, accessible labels and a clear primary action, then finish normally. Do not deploy, create other tasks or invent approval.` });
   return { worker, task, design, marker };
 }, gradeDesignDependency, {
-  expectedHumanMessageCount: 2, expectedRunCount: 4, minimumRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v8",
+  expectedHumanMessageCount: 2, expectedRunCount: 4, minimumRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v9",
   sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     const workerId = (state.worker as Entity | undefined)?.id ?? "", websiteTask = state.task as Entity, gate = state.design as Entity;
@@ -86,6 +86,10 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     const source = ctx.input.page.url(), task = state.task as Entity, design = state.design as Entity, websiteRoot = `/api/issues/${task.id}`;
     state.waitingTask = await ctx.input.api.get<Issue>(websiteRoot);
     state.designUnfinishedAtWait = (await ctx.input.api.get<Issue>(`/api/issues/${design.id}`)).status !== "done";
+    // The scripted human checks the blocker in the task UI only after it is saved. Without the saved edge the UI
+    // step can only time out on a missing row (gha-43088288923), which reads as a harness defect; stop with the cause.
+    if (!(state.waitingTask as Issue).blockedBy?.some(row => row.id === design.id))
+      throw new Error("The CEO did not save Design as a blocker on Website before approval; a reply or comment alone does not hold the work");
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
     // A backlog task shows its blockers in the properties panel; the thread's blocker banner appears only once it is Blocked.
     const blockedBy = ctx.input.page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')

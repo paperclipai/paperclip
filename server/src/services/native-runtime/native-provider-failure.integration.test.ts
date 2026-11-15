@@ -17,6 +17,7 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE } from "./native-provider-failure.js";
+import { NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { collectRunFailureDiagnostics } from "../run-failure-diagnostics.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { readPersistedNativeFailureEvidence, readPersistedNativeModelRejection } from "./native-provider-failure-evidence.js";
@@ -148,7 +149,10 @@ describe("native completed failure diagnostics", () => {
       const reviewAuthorityEnded = scenario === "superseded-review" || scenario === "resolved-review";
       const ownerChanged = scenario === "reassigned" || scenario === "successor-race";
       expect(adapter.errorCode).toBe(classified ? "native_provider_model_rejected" : undefined);
-      expect(adapter.errorMessage).toBe(classified ? NATIVE_MODEL_REJECTION_MESSAGE : scenario === "succeeded" ? null : `Native session ${terminal.runTerminalState}`);
+      // A runner-issued turn failure code names the cause instead of the generic text.
+      const openCodeExplanation = "The OpenCode turn failed (opencode_server_exited). Inspect the run events for the last recorded step.";
+      expect(adapter.errorMessage).toBe(classified ? NATIVE_MODEL_REJECTION_MESSAGE : scenario === "succeeded" ? null
+        : opencode ? openCodeExplanation : `Native session ${terminal.runTerminalState}`);
       expect(adapter.resultJson?.nativeProviderFailure).toEqual(classified ? expectedDiagnostic : undefined);
       // Only a committed, unclassified failure of the terminal turn explains the generic message.
       const turnFailure = scenario === "unknown-error" ? { provider: "codex", category: "turn_failed", codexErrorInfo: "other" }
@@ -292,12 +296,21 @@ describe("native completed failure diagnostics", () => {
         expect(finalRun.resultJson?.nativeTurnFailure).toEqual(turnFailure);
         const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
         expect(wakes.filter(wake => wake.payload?.issueId === issueId)).toHaveLength(1);
+        if (opencode) {
+          // The projected failure names the recorded runner cause, not an unexplained failure.
+          await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+          const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          expect(settled).toMatchObject({ status: "failed", errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode, error: openCodeExplanation });
+          expect(settled.error).not.toContain("Private");
+        }
         if (scenario === "unknown-error") {
           await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
           const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
           const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
           expect(coordinator.phase).toBe("committed");
-          expect(settled).toMatchObject({ status: "failed", processPid: EXITED_PID, processGroupId: EXITED_PID });
+          // A Codex `other` failure carries no specific cause, so it stays unexplained.
+          expect(settled).toMatchObject({ status: "failed", processPid: EXITED_PID, processGroupId: EXITED_PID,
+            errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode, error: NATIVE_RUN_FAILED_UNEXPLAINED.error });
           await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1_000, eventType: "harness.ready" });
           expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
           const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

@@ -5,6 +5,29 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Read attached files in native runs
+
+Native runs receive readable paths for the exact files admitted in their
+current wake. A compatible remote Runner downloads files over HTTPS from the
+configured tenant origin using short-lived grants. The tenant verifies each
+grant against the live run and the exact authorized attachment. Runner verifies
+the size and SHA-256 and clears its local copy at turn end. Linux SSH and
+command-backed sandbox targets can also stage files through their bound
+transport when Runner download is unavailable. Image inputs must be opened
+with the provider's image-capable file reader.
+
+The same paths support authorized historical external-chat reads. Their
+existing conversation and source-comment checks still apply. External-chat
+history tools grant access only within the authorized conversation.
+Plugin Runner tasks require a compatible Runner build and HTTPS access to
+the tenant download endpoint.
+
+Temporary slots are isolated per staging operation. Cleanup clears the verified
+file after the turn and refuses symlinks or replacement files. Abrupt controller
+or remote-host failure can interrupt cleanup; sandbox disposal remains the
+backstop for ephemeral environments. Retained provider sessions and checkpoints
+keep their existing format and identity across this change.
+
 ## Upload files from a task
 
 People can open the task's Artifacts tab and use the upload icon, or drop files

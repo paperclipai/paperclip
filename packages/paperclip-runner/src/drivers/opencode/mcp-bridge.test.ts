@@ -7,6 +7,7 @@ import {
 } from "../../contracts/completion-result.js";
 
 import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../semantic-tools/catalog.js";
 
 const bridges: OpenCodeMcpBridge[] = [];
 
@@ -416,4 +417,150 @@ it("returns missing-field guidance before dispatch and accepts an explicit retry
   const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
   expect(accepted.result.isError).not.toBe(true);
   expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
+});
+
+describe("repeated identical tool input rejections", () => {
+  // Recorded in chat-eval cohort 12 (cases.handoff-same-task): on some hosts
+  // handoff_case arrived with no arguments on every call, and the runner
+  // returned the same rejection each time, before the control plane could see it.
+  const handoff = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === "handoff_case")!;
+  const call = (bridge: OpenCodeMcpBridge, id: string, args: unknown, name = "paperclip_handoff_case") =>
+    rpc(bridge, { id, method: "tools/call", params: { name, arguments: args } })
+      .then(response => response.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>);
+
+  it("corrects the second identical rejection with the expected properties and stops the third", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "handoff_case", description: handoff.description, inputSchema: handoff.inputSchema }], handler,
+    });
+    bridges.push(bridge);
+    const first = (await call(bridge, "1", {})).result.content[0]!.text;
+    expect(first).toMatch(/^Invalid tool input: missing required fields: idempotencyKey, case, instructions\./);
+    expect(first).not.toContain("rejected");
+
+    const second = (await call(bridge, "2", {})).result.content[0]!.text;
+    expect(second.startsWith(first)).toBe(true);
+    expect(second).toContain("This exact call has now been rejected 2 times with the same arguments. Arguments received each time: none.");
+    expect(second).toContain("Expected properties: required idempotencyKey, case, instructions; optional to, toAgentId, phase,");
+    expect(second).toContain("Required fields idempotencyKey, case, instructions did not arrive; if you sent them, send every field as a top-level argument of handoff_case in one call.");
+    expect(second).not.toContain("wrong type");
+
+    const third = (await call(bridge, "3", {})).result.content[0]!.text;
+    expect(third).toMatch(/^This call was not accepted: handoff_case was already rejected 2 times in this run with these exact arguments\./);
+    expect(third).toContain("Stop calling handoff_case with these arguments: change them, or stop and tell the user what blocked you.");
+    expect((await call(bridge, "4", {})).result.content[0]!.text).toContain("already rejected 3 times");
+
+    // Changed arguments are judged afresh, and a valid call still runs.
+    const changed = (await call(bridge, "5", { idempotencyKey: "k" })).result.content[0]!.text;
+    expect(changed).toMatch(/^Invalid tool input: missing required fields: case, instructions\./);
+    const valid = { idempotencyKey: "k", case: { id: "00000000-0000-4000-8000-000000000001" }, toAgentId: "00000000-0000-4000-8000-000000000002", phase: "build", instructions: "Go." };
+    expect((await call(bridge, "6", valid)).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  // Recorded in chat-eval cohort 13: on the DigitalOcean host paperclip_finish
+  // arrived with continuation as JSON text, and the same call was rejected
+  // until the guard stopped it.
+  it("accepts an object-typed field sent as JSON text and records the coercion", async () => {
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => diagnostics.push(message) });
+    bridges.push(bridge);
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    const response = await call(bridge, "c1", { ...report, reportedWorkDisposition: "yielded", continuation: JSON.stringify(continuation) }, "paperclip_finish");
+    expect(response.result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { ...report, reportedWorkDisposition: "yielded", continuation } }));
+    const coerced = diagnostics.map(message => JSON.parse(message)).filter(entry => entry.schema === "paperclip.runner.tool-input-coerced/v1");
+    expect(coerced).toEqual([expect.objectContaining({ tool: "paperclip_finish", coercion: "json_string_to_object", paths: ["/continuation"] })]);
+    expect(JSON.stringify(coerced)).not.toContain("wait");
+  });
+
+  it("records a coercion only for a newly admitted call, never for a rejected or replayed one", async () => {
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => diagnostics.push(message) });
+    bridges.push(bridge);
+    const coercions = () => diagnostics.map(message => JSON.parse(message)).filter(entry => entry.schema === "paperclip.runner.tool-input-coerced/v1");
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const continuation = JSON.stringify({ kind: "response_wake", summary: "wait", idempotencyKey: "k" });
+    const rejected = await call(bridge, "r1", { ...report, reportedWorkDisposition: "done", continuation }, "paperclip_finish");
+    expect(rejected.result.isError).toBe(true);
+    expect(coercions()).toEqual([]);
+    const sent = { ...report, reportedWorkDisposition: "yielded", continuation };
+    expect((await call(bridge, "y1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect((await call(bridge, "y1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledOnce();
+    expect(coercions()).toHaveLength(1);
+  });
+
+  it("never parses text in a field that accepts text, nor text that is not an object", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startOpenCodeMcpBridge({ tools: [{ name: "note", inputSchema: {
+      type: "object", required: ["body", "options"], additionalProperties: false,
+      properties: { body: { type: "string" }, options: { type: "object", required: ["mode"], properties: { mode: { type: "string" } } } },
+    } }], handler });
+    bridges.push(bridge);
+    const body = '{"mode":"x"}';
+    expect((await call(bridge, "n1", { body, options: '{"mode":"fast"}' }, "note")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: { body, options: { mode: "fast" } } }));
+    for (const [id, options] of [["n2", "[1]"], ["n3", "fast"], ["n4", '{"mode":']]) {
+      const rejected = await call(bridge, id, { body, options }, "note");
+      expect(rejected.result.isError).toBe(true);
+      expect(rejected.result.content[0]!.text).toContain("/options must be object");
+    }
+    // Parsed text that is still invalid is reported by what is wrong inside it.
+    const inner = await call(bridge, "n5", { body, options: '{"mode":1}' }, "note");
+    expect(inner.result.content[0]!.text).toBe("Invalid tool input: /options/mode must be string");
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("parses object items sent as JSON text inside arrays, and never parses text items", async () => {
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => diagnostics.push(message) });
+    bridges.push(bridge);
+    const claim = { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [{ description: "Polish copy", blocksCompletion: false }] };
+    const sent = { summary: "s", reportedWorkDisposition: "done", verification: [],
+      evidence: [JSON.stringify({ ref: "doc:plan" })],
+      completionClaim: { ...claim, remainingWork: [JSON.stringify(claim.remainingWork[0])] } };
+    expect((await call(bridge, "a1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: {
+      ...sent, evidence: [{ ref: "doc:plan" }], completionClaim: claim,
+    } }));
+    const coerced = diagnostics.map(message => JSON.parse(message)).filter(entry => entry.schema === "paperclip.runner.tool-input-coerced/v1");
+    expect(coerced).toEqual([expect.objectContaining({ paths: ["/evidence/0", "/completionClaim/remainingWork/0"] })]);
+
+    const tags = await startOpenCodeMcpBridge({ tools: [{ name: "tag", inputSchema: {
+      type: "object", required: ["labels"], properties: { labels: { type: "array", items: { type: "string" } } },
+    } }], handler });
+    bridges.push(tags);
+    expect((await call(tags, "t1", { labels: ['{"a":1}'] }, "tag")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: { labels: ['{"a":1}'] } }));
+  });
+
+  it("says that fields with the wrong type arrived instead of saying they did not arrive", async () => {
+    const bridge = await startOpenCodeMcpBridge({ handler: async () => ({ accepted: true }) });
+    bridges.push(bridge);
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const args = { ...report, reportedWorkDisposition: "yielded", continuation: "wait for the reply" };
+    await call(bridge, "w1", args, "paperclip_finish");
+    const second = (await call(bridge, "w2", args, "paperclip_finish")).result.content[0]!.text;
+    expect(second).toContain("This exact call has now been rejected 2 times");
+    expect(second).toContain("Every field you sent arrived, but one has the wrong type: continuation must be an object or null, not text (send the object itself, not its JSON as quoted text).");
+    expect(second).not.toContain("did not arrive");
+    const third = (await call(bridge, "w3", args, "paperclip_finish")).result.content[0]!.text;
+    expect(third).toContain("continuation must be an object or null, not text");
+    expect(third).not.toContain("did not arrive");
+  });
+
+  it("applies the completion tool's continuation rule outside its advertised schema", async () => {
+    const bridge = await startOpenCodeMcpBridge({ handler: async () => ({ accepted: true }) });
+    bridges.push(bridge);
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    expect((await call(bridge, "f1", { ...report, reportedWorkDisposition: "done", continuation }, "paperclip_finish")).result.content[0]!.text)
+      .toBe('Invalid tool input for paperclip_finish: continuation is only for reportedWorkDisposition: "yielded". Use continuation: null or omit it for done, completed, or needs_review.');
+    expect((await call(bridge, "f2", { ...report, reportedWorkDisposition: "yielded", continuation }, "paperclip_finish")).result.isError).toBeUndefined();
+  });
 });

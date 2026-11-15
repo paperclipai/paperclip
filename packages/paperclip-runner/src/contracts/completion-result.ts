@@ -375,13 +375,10 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
         "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
     },
   },
-  // Keep the provider-facing root a concrete object. Codex code-mode renders a
-  // root allOf containing only an if/then constraint as `args: unknown`, hiding
-  // every required field from the model. This equivalent direct conditional
-  // preserves validation without obscuring the object-shaped tool signature.
-  if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { properties: { continuation: { type: ["object", "null"] } } },
-  else: { properties: { continuation: { type: "null" } } },
+  // Keep the provider-facing root a plain object with no root conditional:
+  // some hosts render a root allOf or if/then as unknown or empty arguments.
+  // Runner bridges apply the yielded-only continuation rule through
+  // toolInputVariantError, and canonical validation enforces it again.
 } as const;
 
 export const PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA = {

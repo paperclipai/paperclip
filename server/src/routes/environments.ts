@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { assertEnvironmentVariablesNotProtected } from "../services/protected-environment-keys.js";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_ADAPTER_TYPES,
@@ -1085,6 +1086,7 @@ export function environmentRoutes(
       ),
       config: await normalizeEnvironmentConfigForPersistence({
         db,
+        operation: "create",
         companyId,
         environmentName: req.body.name,
         driver: req.body.driver,
@@ -1097,6 +1099,7 @@ export function environmentRoutes(
         pluginWorkerManager: options.pluginWorkerManager,
       }),
     };
+    await assertEnvironmentVariablesNotProtected(db, { name: input.name, driver: input.driver, config: input.config }, input.envVars);
     // Create the row and its binding rows atomically so an invalid secret
     // ref cannot leave an environment persisted without its bindings.
     const environment = await db.transaction(async (tx) => {
@@ -1262,6 +1265,10 @@ export function environmentRoutes(
     // Persist the config change and its binding rows atomically: a binding
     // ref that fails validation (e.g. a deleted secret) must roll the whole
     // save back instead of leaving the config re-pointed with stale bindings.
+    if (patch.envVars !== undefined || patch.config !== undefined || patch.driver !== undefined) {
+      await assertEnvironmentVariablesNotProtected(db, { id: existing.id, name: nextName, driver: nextDriver,
+        config: patch.config ?? existing.config }, patch.envVars ?? existing.envVars);
+    }
     if (patch.config !== undefined || patch.driver !== undefined) {
       const instanceDefault = (await instanceSettingsService(db).get()).defaultEnvironmentId;
       await assertAgentsReadyForEnvironmentChange(db, existing, { driver: nextDriver, config: patch.config ?? existing.config },
@@ -1387,12 +1394,15 @@ export function environmentRoutes(
       const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
         reason: "environment deleted",
+        forceStopUnsettled: true,
+        db,
       });
       if (warmSessions.busy > 0 || warmSessions.failed > 0) {
         throw conflict(
           warmSessions.busy > 0
             ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
-            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+            : `Cannot delete this environment because its warm native runner could not be stopped (${warmSessions.failures
+              .map((failure) => `run ${failure.runId}: ${failure.reason}`).join("; ")}). Retry after the runner exits.`,
           { nativeRunnerSessions: warmSessions },
         );
       }

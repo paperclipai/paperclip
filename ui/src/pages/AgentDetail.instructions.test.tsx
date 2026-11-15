@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentInstructionsBundle, AgentInstructionsFileDetail, AgentInstructionsFileSummary } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentFileRunNotice, PromptsTab } from "./AgentDetail";
+import { TooltipProvider } from "../components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsFile: vi.fn(),
   updateInstructionsBundle: vi.fn(),
   saveInstructionsFile: vi.fn(),
+  renameInstructionsFile: vi.fn(),
   deleteInstructionsFile: vi.fn(),
   instructionHistory: vi.fn(),
   instructionCandidates: vi.fn(),
@@ -248,6 +250,9 @@ describe("PromptsTab instruction editor", () => {
       virtual: false,
       content: data.content,
     }));
+    mockAgentsApi.renameInstructionsFile.mockImplementation(async (_agentId, data) => ({
+      ...makeSummary(data.renameTo, data.renameTo), content: data.content, contentHash: "b".repeat(64),
+    }));
     mockAgentsApi.deleteInstructionsFile.mockResolvedValue({});
   });
 
@@ -278,7 +283,7 @@ describe("PromptsTab instruction editor", () => {
     root = createRoot(container);
     await act(async () => {
       root?.render(
-        <QueryClientProvider client={queryClient}>
+        <QueryClientProvider client={queryClient}><TooltipProvider>
           <PromptsTab
             agent={props.agent ?? makeAgent()}
             companyId={props.companyId ?? "company-1"}
@@ -287,7 +292,7 @@ describe("PromptsTab instruction editor", () => {
             onCancelActionChange={props.onCancelActionChange ?? vi.fn()}
             onSavingChange={props.onSavingChange ?? vi.fn()}
           />
-        </QueryClientProvider>,
+        </TooltipProvider></QueryClientProvider>,
       );
     });
     await flushReact();
@@ -333,14 +338,16 @@ describe("PromptsTab instruction editor", () => {
       onDirtyChange, onCancelActionChange: next => { discard = next; },
     });
     await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Add agent file"]')!.click());
-    const input = container.querySelector<HTMLInputElement>('[aria-label="New Markdown file name"]')!;
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!;
+    expect(document.activeElement).toBe(input);
+    expect(input.placeholder).toBe("Untitled");
+    expect(container.textContent).toContain("Untitled.md");
     for (const invalid of ["bad name", "file.json", "../escape", "notes.md", "bad!", "AGENTS"]) {
       await act(() => setNativeValue(input, invalid));
-      expect(buttonByText(container, "Create").disabled).toBe(true);
+      expect(input.getAttribute("aria-invalid")).toBe("true");
     }
     await act(() => setNativeValue(input, "valid-notes_2"));
-    expect(buttonByText(container, "Create").disabled).toBe(false);
-    await act(() => buttonByText(container, "Create").click());
+    expect(input.getAttribute("aria-invalid")).not.toBe("true");
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     expect(container.textContent).toContain("valid-notes_2.md");
     expect(container.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe("");
@@ -348,6 +355,68 @@ describe("PromptsTab instruction editor", () => {
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
     expect(container.textContent).not.toContain("valid-notes_2.md");
     expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("saves the live draft name and content together without creating Untitled.md", async () => {
+    await renderPromptsTab(makeBundle("AGENTS.md", []), {});
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Add agent file"]')!.click());
+    await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "research"));
+    await act(() => setNativeValue(container.querySelector<HTMLTextAreaElement>('[aria-label="Instruction file editor"]')!, "# Research notes"));
+    await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
+    await act(async () => { saveAction?.(); });
+    await waitFor(() => expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalledWith("agent-1", expect.objectContaining({ path: "research.md", content: "# Research notes" }), "company-1"));
+    expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
+    expect(mockAgentsApi.updateInstructionsBundle).not.toHaveBeenCalled();
+  });
+
+  it("keeps the required root delete control disabled", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original") });
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Delete AGENTS.md"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.closest('[aria-label="This file is required"]')).not.toBeNull();
+  });
+
+  it("renames the root through one source-hash guarded server operation", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original", { contentHash: "a".repeat(64) }) });
+    await waitFor(() => expect(container.querySelector('[data-testid="instructions-raw-source"]')?.textContent).toBe("Original"));
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
+    await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
+    await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
+    await act(async () => { saveAction?.(); });
+    await waitFor(() => expect(mockAgentsApi.renameInstructionsFile).toHaveBeenCalledWith("agent-1", {
+      path: "AGENTS.md", renameTo: "ROOT.md", content: "Original", baseHash: "a".repeat(64),
+    }, "company-1"));
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+    expect(mockAgentsApi.updateInstructionsBundle).not.toHaveBeenCalled();
+    expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("persists the new configured name when renaming a missing root", async () => {
+    await renderPromptsTab(makeBundle("AGENTS.md", []), {});
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
+    await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
+    await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
+    await act(async () => { saveAction?.(); });
+    await waitFor(() => expect(mockAgentsApi.renameInstructionsFile).toHaveBeenCalledWith("agent-1", {
+      path: "AGENTS.md", renameTo: "ROOT.md", content: "", baseHash: null,
+    }, "company-1"));
+    expect(mockAgentsApi.saveInstructionsFile).not.toHaveBeenCalled();
+  });
+
+  it("retains the draft when the server rejects a stale rename", async () => {
+    const summary = makeSummary("AGENTS.md", "AGENTS.md");
+    await renderPromptsTab(makeBundle("AGENTS.md", [summary]), { "AGENTS.md": makeDetail(summary, "Original", { contentHash: "a".repeat(64) }) });
+    await waitFor(() => expect(container.querySelector('[aria-label="Rename AGENTS.md"]')).not.toBeNull());
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Rename AGENTS.md"]')!.click());
+    await act(() => setNativeValue(container.querySelector<HTMLInputElement>('[aria-label="Markdown file name"]')!, "ROOT"));
+    mockAgentsApi.renameInstructionsFile.mockRejectedValueOnce(new Error("File changed"));
+    await waitFor(() => expect(saveAction).toEqual(expect.any(Function)));
+    await act(async () => { saveAction?.(); });
+    await waitFor(() => expect(container.textContent).toContain("File changed"));
+    expect(mockAgentsApi.deleteInstructionsFile).not.toHaveBeenCalled();
+    expect(mockAgentsApi.updateInstructionsBundle).not.toHaveBeenCalled();
   });
 
   it("shows inline copy feedback before Edit for five seconds without dirtying the file", async () => {
@@ -662,15 +731,13 @@ describe("PromptsTab instruction editor", () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="Add agent file"]')!.click();
     });
     await flushReact();
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="New Markdown file name"]');
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Markdown file name"]');
     expect(input).not.toBeNull();
 
     await act(async () => {
       setNativeValue(input!, "notes");
-      buttonByText(container, "Create").click();
     });
 
-    await selectInstructionMode("Edit");
     await waitFor(() => {
       expect(container.querySelector<HTMLTextAreaElement>('textarea[placeholder="File contents"]')?.value).toBe("");
     });

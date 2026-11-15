@@ -39,6 +39,33 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<typeof connectionGrants.$inferSelect | null> {
+    if (connection.credentialPolicy === "per_agent") {
+      const agentId = actor?.actorType === "agent" ? actor.actorId : null;
+      if (actor?.actorType === "agent" && !agentId) {
+        throw unprocessable("This connection needs the agent's authorization", {
+          code: "agent_authorization_required",
+        });
+      }
+      // Discovery has no run identity in background/operator work. Use only
+      // an unambiguous active agent grant; an agent caller must use its own.
+      const grants = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "agent"),
+        eq(connectionGrants.status, "active"),
+        ...(agentId ? [eq(connectionGrants.subjectAgentId, agentId)] : []),
+      )).limit(2);
+      if (grants.length !== 1) {
+        throw unprocessable(grants.length > 1
+          ? "This connection has multiple agent accounts. Use a separate connection for each agent."
+          : "This connection needs the agent's authorization", {
+          code: grants.length > 1 ? "agent_authorization_ambiguous" : "agent_authorization_required",
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        });
+      }
+      return grants[0]!;
+    }
     const actorUserId =
       connectionActorUserId(actor);
     if (actorUserId) {

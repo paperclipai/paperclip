@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 import { describe, expect, it, vi, type Mock } from "vitest";
-import { AcpxProviderProcessLostError } from "./codex-runtime-adapter.js";
+import { AcpxProviderProcessLostError } from "./acpx-runtime-adapter.js";
 import { QUALIFIED_ACPX_PROFILES } from "./qualified-profiles.js";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";
@@ -51,6 +51,18 @@ describe("Codex ACPX harness driver", () => {
     const events = await collectUntil(session.events(), "turn.completed");
     expect(events.find(event => event.eventType === "run.result.proposed")?.payload).toEqual(capture.mock.calls[0]![0]);
     await session.close({ reason: "same-invocation normalization verified" });
+  });
+  it("records the runner bridge's input coercion diagnostics as run events", async () => {
+    const fixture = driverFixture({ agent: "claude", model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
+    const session = await fixture.driver.openSession({ runId: "run-coercion", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { role: "user", text: "Work" } });
+    const message = JSON.stringify({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "paperclip_finish", paths: ["/continuation"] });
+    fixture.hostOptions!.semanticTools!.onDiagnostic!(message);
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    expect(events.filter(event => event.eventType === "harness.diagnostic").map(event => event.payload))
+      .toContainEqual({ code: "runner_tool_bridge_diagnostic", message });
+    await session.close({ reason: "coercion recorded" });
   });
   it("does not commit a direct normalized input digest when proposal retention is backpressured", async () => {
     const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, {

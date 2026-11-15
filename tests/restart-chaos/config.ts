@@ -9,10 +9,14 @@ import { parseK15DeployShape, parseK15HoldSeconds } from "./redeploy.js";
 import { validateRecoveryStep } from "./recovery-step-faults.js";
 import { parseLongTurnMinutes } from "./long-turn.js";
 import { isRewakeWorkload } from "./rewake.js";
+import { applyStagingMix, STAGING_MIX_ARG_OPTIONS } from "./staging-mix.js";
+import { workloadDefinitions } from "./workloads.js";
+import { parseClassROptions } from "./class-r.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
+import { expandReleaseSwapArgs } from "./release-swap-schedule.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { SESSION_FAULT_KINDS, SESSION_FAULT_WORKLOADS, isSessionFault, type SessionFaultKind } from "./session-faults.js";
@@ -90,7 +94,7 @@ function integer(raw: string | undefined, name: string, fallback: number, min: n
 
 export function parseCommand(argv: readonly string[], now = Date.now()): ParsedCommand {
   // Tolerate a forwarded literal `--` (for example from a package runner).
-  const args = argv[0] === "--" ? argv.slice(1) : [...argv];
+  const { args, releaseSwap } = expandReleaseSwapArgs(argv[0] === "--" ? argv.slice(1) : [...argv]);
   const { values } = parseArgs({
     args,
     strict: true,
@@ -142,16 +146,26 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "k15-hold-seconds": { type: "string" },
       "k15-overlap-seconds": { type: "string" },
       "k15-fresh-home": { type: "boolean" },
+      "ephemeral-server": { type: "boolean" },
+      "runner-bind-fault": { type: "boolean" },
       "tm1-hold-seconds": { type: "string" },
       "fail-recovery-step": { type: "string" },
       "long-turn-minutes": { type: "string" },
+      "sandbox-watch-seconds": { type: "string" },
+      "cr1-hold-seconds": { type: "string" },
+      "cr2-hold-seconds": { type: "string" },
+      "cr3-stall-seconds": { type: "string" },
+      ...STAGING_MIX_ARG_OPTIONS,
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "runner-bind-fault", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes", "cr1-hold-seconds", "cr2-hold-seconds", "cr3-stall-seconds", "sandbox-watch-seconds"] as const) {
+      if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
+    }
+    for (const key of Object.keys(STAGING_MIX_ARG_OPTIONS) as Array<keyof typeof STAGING_MIX_ARG_OPTIONS>) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -200,11 +214,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const diskFullFaults = allFaults.filter(isDiskFullFault);
   const sessionFaults = allFaults.filter(isSessionFault);
   const baseline = allFaults.includes("K0");
+  const volumeFree = values["ephemeral-server"] === true || values["k15-fresh-home"] === true;
   const options: WaveOptions = {
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q4) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => !(volumeFree && workloadDefinitions[id].usesRepository) && id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4" && id !== "H2" && id !== "SM"
       && !takesJourneyTriggers(id) && !isRewakeWorkload(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault) && fault !== "K0"),
@@ -251,6 +266,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (baseline && (stormMinutes || crashPoint)) throw new Error("--faults K0 plans cells with no fault; a storm or crash-point wave has its own faults");
   Object.assign(options, validateRecoveryStep(options, values["fail-recovery-step"]));
   Object.assign(options, parseLongTurnMinutes(values["long-turn-minutes"]));
+  if (values["sandbox-watch-seconds"] !== undefined) {
+    if (env !== "daytona") throw new Error("--sandbox-watch-seconds captures Daytona sandboxes; run it with --env daytona");
+    options.sandboxWatchMs = integer(values["sandbox-watch-seconds"], "sandbox-watch-seconds", 30, 10, 600) * 1000;
+  }
   // The matrix planner builds its own task plans; a long turn would silently drop out of them.
   if (options.longTurnMinutes && values.matrix) throw new Error("--long-turn-minutes is not a --matrix option; run it as a planned wave");
   if (providerFaults.length) {
@@ -309,6 +328,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   Object.assign(options, parseK15HoldSeconds(options, values["k15-hold-seconds"]));
   Object.assign(options, parseK15DeployShape(options, values["k15-overlap-seconds"], values["k15-fresh-home"] === true));
+  Object.assign(options, parseClassROptions(options, { cr1: values["cr1-hold-seconds"], cr2: values["cr2-hold-seconds"], cr3: values["cr3-stall-seconds"] }));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
@@ -321,7 +341,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   applyJourneyOptions(options, { matrix: values.matrix === true, serverFrom: values["server-from"], tasksGiven: values.tasks !== undefined,
     triggersGiven: values.triggers !== undefined });
-  const storage = values.storage ?? "local";
+  const storage = values.storage ?? (values["k15-fresh-home"] ? "s3" : "local");
   const workspaceRepo = values["workspace-repo"];
   if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
     throw new Error("R1 (code change in a cloned repository) and --workspace-repo <git repository> go together: pass both or neither");
@@ -374,6 +394,19 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["db-pressure"] !== undefined) options.dbPressure = integer(values["db-pressure"], "db-pressure", 0, 1, 8);
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
+  if (values["ephemeral-server"] || options.k15FreshHome) {
+    const flag = values["ephemeral-server"] ? "--ephemeral-server" : "--k15-fresh-home (a volume-free deploy)";
+    if (storage !== "s3") throw new Error(`${flag} runs volume-free and needs shared object storage: pass --storage s3`);
+    if (env !== "daytona") throw new Error(`${flag} runs only with --env daytona: a local workspace blocks a volume-free server`);
+    if (options.faults.includes("K14")) throw new Error(`${flag} does not combine with K14 (--upgrade-from)`);
+    const repository = options.workloads.filter(workload => workloadDefinitions[workload].usesRepository);
+    if (repository.length) throw new Error(`${flag} cannot run ${repository.join(", ")}: the fixture repository is a local_path project source, which a volume-free server refuses; pick other --workloads`);
+    options.ephemeralServer = true;
+  }
+  if (values["runner-bind-fault"]) {
+    if (env !== "daytona") throw new Error("--runner-bind-fault holds a port inside a remote sandbox: run it with --env daytona");
+    options.runnerBindFault = true;
+  }
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
     options.storageFaults = list<StorageFaultKind>(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
@@ -388,7 +421,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
   if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
   if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
-  return { mode: "wave", options, keep };
+  if (releaseSwap) options.releaseSwap = releaseSwap;
+  return { mode: "wave", options: applyStagingMix(options, values), keep };
 }
 
 export function publicGitHubUrl(remote: string): string {

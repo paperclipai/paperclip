@@ -153,6 +153,16 @@ export function runnerApiOperation(id: string): RunnerApiOperation {
   return operation;
 }
 
+/**
+ * Catalog text names company pages as /<prefix>/...; a model can copy that
+ * placeholder verbatim into a link. When the caller's company prefix is known,
+ * hand back real paths. Returns a copy; the shared catalog is never mutated.
+ */
+export function withCompanyPagePaths<T>(value: T, prefix: string | null | undefined): T {
+  if (!prefix || !/^[A-Za-z0-9]+$/.test(prefix)) return value;
+  return JSON.parse(JSON.stringify(value).replaceAll("/<prefix>/", `/${prefix}/`)) as T;
+}
+
 export const runnerApiSearchSchema = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5), cursor: z.string().max(200).optional() }).strict();
 export function searchRunnerApi(value: unknown) {
   const parsed = runnerApiSearchSchema.safeParse(value);

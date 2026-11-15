@@ -9,6 +9,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { NativeEnvironmentProbeCleanupError, probeNativeRunnerEnvironment, resolveSourceCodexHome } from "../../vendor/paperclip-runner/index.js";
 import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import { resolvePaperclipRunnerTransport } from "@paperclipai/adapter-utils/runner-connectivity";
 import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
@@ -97,6 +98,12 @@ async function probeRemoteNativeCodex(options: {
   const { createRemoteNativeArtifactPreparation, createRemoteRunnerProcessLauncher, stageRemoteRunnerFile, readRemoteRunnerState } = await import("./native-session-executor.js");
   const runner = target.transport === "ssh" ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd }) : target.runner;
   if (!runner) throw new Error("runner_transport_ineligible: remote process runner is unavailable");
+  const preconfigured = target.transport === "ssh" && options.context.config.homeMode === "preconfigured";
+  const environment = { ...options.environment };
+  if (preconfigured) {
+    delete environment.CODEX_HOME;
+    environment.HOME = await readRemoteUserHome(runner);
+  }
   const id = crypto.randomUUID();
   const runnerInstanceId = `setup-${id}`;
   const ingress = target.transport === "sandbox" && target.effectiveCapabilities?.runnerWebSocketIngress === true;
@@ -122,14 +129,15 @@ async function probeRemoteNativeCodex(options: {
   };
   const runtimeDirectory = await realpath(await mkdtemp(join(tmpdir(), "paperclip-native-setup-")));
   return probePreparedNativeRuntime(runtimeDirectory, async () => {
-    const sourceCodexHome = await prepareProbeCodexSource(runtimeDirectory, options.sourceCodexHome, options.sourceAuthJson);
+    const sourceCodexHome = preconfigured ? "" : await prepareProbeCodexSource(runtimeDirectory, options.sourceCodexHome, options.sourceAuthJson);
     let remoteDirectoryCreated = false;
     let signalSpawned!: () => void;
     const spawned = new Promise<void>(resolve => { signalSpawned = resolve; });
     return { runtimeDirectory: runtimeDirectory, provider: "codex", model: options.model, reasoningEffort: options.reasoningEffort,
-      workingDirectory: remoteWorkspace, environment: options.environment, timeoutMs: options.timeoutMs,
+      workingDirectory: remoteWorkspace, environment, timeoutMs: options.timeoutMs,
       transportOptions: {
         externallySandboxed: target.transport === "sandbox",
+        ...(preconfigured ? { homeMode: "preconfigured" as const } : {}),
         runnerBinary: controllerRunnerBinary, codexCommand: remoteCodexBinary, sourceCodexHome,
         runnerFilesystemRoot: remoteFilesystemRoot,
         prpIdentity: { runnerInstanceId, runId: id, environmentLeaseId: `setup-${id}`, normalizedSessionId: `setup-${id}`, turnId: `turn-${id}`, itemId: `item-${id}` },
@@ -157,6 +165,7 @@ async function probeRemoteNativeCodex(options: {
             runnerProcessLauncher: createRemoteRunnerProcessLauncher({ target, runner, remoteBinary, stateDirectory: remoteStateDirectory,
               onRunnerProcessSpawned: signalSpawned, processIdentityPath: posix.join(remoteStateDirectory, "runner-process.identity"), diagnosticsDirectory: posix.join(remoteRoot, "diagnostics"), runnerInstanceId,
               ensureArtifact: async () => {
+                if (preconfigured) return;
                 for (const name of ["auth.json", "config.toml"] as const) {
                   const sourcePath = join(runtimeDirectory, "codex-home", name);
                   try { await stat(sourcePath); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
@@ -205,7 +214,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
   let runtimeDirectory: string | undefined;
   let sourceAuthJson: string | undefined;
   try {
-    if (provider === "codex") {
+    if (provider === "codex" && !(context.executionTarget?.kind === "remote" && context.executionTarget.transport === "ssh" && context.config.homeMode === "preconfigured")) {
       const { buildNativeProviderEnvironment } = await import("./native-session-executor.js");
       sourceCodexHome = context.managedAiCredentialHome ?? resolveSourceCodexHome(buildNativeProviderEnvironment(environment));
     }

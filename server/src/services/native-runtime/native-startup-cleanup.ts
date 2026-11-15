@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
@@ -202,6 +203,7 @@ export async function acknowledgeNativeStartupCleanup(db: Db, input: { companyId
     await assertStartupCreationsStopped(tx as unknown as Db, marker);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.environmentCleanup);
+    await notifyQueuedRunDispatch(tx, { companyId: run.companyId });
     await tx.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
       failureCode: "native_retry_cancelled", updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.resultId)));
   });

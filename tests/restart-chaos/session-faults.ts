@@ -36,6 +36,10 @@ export function sessionFaultServerEnvironment(faults: readonly SessionFaultKind[
   return faults?.includes("SR1U") ? { PAPERCLIP_TEST_WARM_RETIREMENT_FAULT: "unconfirmed" } : {};
 }
 
+export function runnerBindFaultServerEnvironment(armed: boolean | undefined): Record<string, string> {
+  return armed ? { PAPERCLIP_TEST_RUNNER_BIND_FAULT: "first_launch" } : {};
+}
+
 /** What the board changed, recorded on the task's question. */
 export interface SessionRotation {
   at: number;

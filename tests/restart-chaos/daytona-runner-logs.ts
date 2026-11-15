@@ -29,6 +29,36 @@ export const RUNNER_LOG_PROBE = [
     + ' echo "== file $f $(stat -c "%s bytes, modified %y" "$f" 2>/dev/null)"; tail -c 24576 "$f"; echo; done',
 ].join("; ");
 
+/**
+ * Class R (class-r.ts): what killed or wedged the provider. On top of the Runner probe:
+ * - every process with its start time (`lstart`) and what it is blocked on (`wchan`), so a replaced process
+ *   shows a new start time and a wedged one shows its wait;
+ * - TCP sockets with their owners, so a provider blocked on a Paperclip callback shows an open connection;
+ * - the Runner's runtime directory listing (size and last write of each file);
+ * - the tail of every log, transcript or state file the Runner and the provider keep under the runtime root and
+ *   the usual provider log homes (OpenCode `opencode/log`, Claude `debug` and `projects` transcripts, ACPX state).
+ * A remote Runner's own stdout and stderr go to /dev/null, so these files are the only sandbox-side record.
+ */
+export const CLASS_R_PROBE = [
+  'echo "== observed_at $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"',
+  'echo "== uptime"; cat /proc/uptime 2>/dev/null',
+  'echo "== processes"; ps -eo pid,ppid,sid,lstart,etimes,stat,wchan:24,rss,args 2>/dev/null | cut -c1-400 | head -n 160',
+  'echo "== sockets"; (ss -tanp 2>/dev/null || netstat -tanp 2>/dev/null) | head -n 80',
+  'echo "== memory"; free -m 2>/dev/null',
+  'echo "== disk"; df -h / /tmp 2>/dev/null',
+  'echo "== oom"; dmesg 2>/dev/null | grep -iE "oom|killed process" | tail -n 20',
+  // Every Runner runtime root: the shared checkout's and each isolated task workspace's (`.paperclip-workspaces/<id>`).
+  'roots=$(find /home/daytona -xdev -maxdepth 5 -type d -name .paperclip-runtime -prune -print 2>/dev/null | head -n 20)',
+  'echo "== runtime roots"; echo "$roots"',
+  'echo "== runtime files"; for root in $roots; do find "$root" -xdev -maxdepth 9 \\( -name node_modules -o -name provider-pack \\) -prune -o -type f'
+    + ' -printf "%TY-%Tm-%TdT%TH:%TM:%TS %10s %p\\n" 2>/dev/null; done | sort | tail -n 200',
+  'for f in $(find $roots /tmp /home/daytona/.local/share/opencode /home/daytona/.claude -xdev -maxdepth 10'
+    + ' \\( -name node_modules -o -name provider-pack \\) -prune -o -type f'
+    + ' \\( -name "*.log" -o -name "*.stderr" -o -name "*state*.json" -o -name "*.identity"'
+    + ' -o -path "*opencode/log/*" -o -path "*/debug/*.txt" -o -path "*/projects/*.jsonl" \\) -mmin -240 -print 2>/dev/null | head -n 60); do'
+    + ' echo "== file $f $(stat -c "%s bytes, modified %y" "$f" 2>/dev/null)"; tail -c 32768 "$f"; echo; done',
+].join("; ");
+
 /** The whole capture (client, listing and every probe) gets this long; the outage it runs in must not grow. */
 export const RUNNER_LOG_CAPTURE_DEADLINE_MS = 45_000;
 
@@ -66,7 +96,10 @@ export function probeableSandbox(sandbox: DaytonaSandboxRow): boolean {
 export async function captureWaveRunnerLogs(input: {
   apiKey: string; companyId: string; environmentId: string; outDir: string; label: string; secrets: readonly string[];
   client?: ProbeClient; timeoutSeconds?: number; deadlineMs?: number;
+  /** The fixed probe to run: the Runner probe (default) or the class R probe. */
+  probe?: "runner" | "class_r";
 }): Promise<RunnerLogCapture> {
+  const probe = input.probe === "class_r" ? CLASS_R_PROBE : RUNNER_LOG_PROBE;
   // An unusable label must not throw out of the restart path: fall back to a fixed directory and record why.
   let label = "capture";
   let labelError: string | null = null;
@@ -118,7 +151,9 @@ export async function captureWaveRunnerLogs(input: {
         try {
           const sandbox = await client.get(row.id);
           if (!live()) { if (!expired) entry.error = "deadline"; continue; }
-          const response = await sandbox.process.executeCommand(`sh -c '${RUNNER_LOG_PROBE.replace(/'/g, `'\\''`)}'`, undefined, {}, input.timeoutSeconds ?? 20);
+          // The class R probe reads more files; give it longer, still inside the shared capture deadline.
+          const response = await sandbox.process.executeCommand(`sh -c '${probe.replace(/'/g, `'\\''`)}'`, undefined, {},
+            input.timeoutSeconds ?? (input.probe === "class_r" ? 40 : 20));
           // Evidence that arrives after the deadline was taken after the outage window: never write it.
           if (!live()) { if (!expired) entry.error = "deadline"; continue; }
           entry.exitCode = response.exitCode;
@@ -133,5 +168,61 @@ export async function captureWaveRunnerLogs(input: {
     } catch (error) {
       if (!expired) capture.error = error instanceof Error ? error.message : String(error);
     }
+  }
+}
+
+export interface SandboxCommandAttempt { sandboxId: string; exitCode: number | null; output: string; error: string | null }
+
+/**
+ * Runs one fixed command (a fixed script with validated arguments, built by the caller) in the started sandboxes
+ * of this wave, one at a time, until `done` accepts a result. Only CR2 (class-r.ts) uses it; its script acts only
+ * in the sandbox whose Runner serves the task's run. Failures are recorded, never thrown.
+ *
+ * The whole search shares one deadline (default 60 s), because CR2 runs it inside a fault, sometimes while the
+ * controller is down. Once the deadline passes no new command starts, and the result reports `deadline`.
+ */
+export async function executeInWaveSandboxes(input: {
+  apiKey: string; companyId: string; environmentId: string; command: string; secrets: readonly string[];
+  done: (attempt: SandboxCommandAttempt) => boolean;
+  client?: ProbeClient; timeoutSeconds?: number; deadlineMs?: number;
+}): Promise<{ attempts: SandboxCommandAttempt[]; error: string | null }> {
+  const attempts: SandboxCommandAttempt[] = [];
+  const deadlineMs = input.deadlineMs ?? 60_000;
+  const deadlineAt = Date.now() + deadlineMs;
+  const remainingSeconds = () => Math.floor((deadlineAt - Date.now()) / 1000);
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">(resolve => { timer = setTimeout(() => resolve("deadline"), deadlineMs); });
+  let expired = false;
+  const search = async (): Promise<string | null> => {
+    const client = input.client ?? await createRemoteFixtureClient(input.apiKey) as unknown as ProbeClient;
+    const wave = { companyId: input.companyId, environmentId: input.environmentId };
+    const rows: DaytonaSandboxRow[] = [];
+    for await (const row of client.list({ labels: { "paperclip-company-id": wave.companyId, "paperclip-environment-id": wave.environmentId } })) rows.push(row);
+    for (const row of selectWaveSandboxes(rows, wave).filter(probeableSandbox)) {
+      // Never start a command (a kill) after the deadline.
+      if (expired || remainingSeconds() < 1) return `deadline ${deadlineMs} ms exceeded`;
+      let attempt: SandboxCommandAttempt;
+      try {
+        const sandbox = await client.get(row.id);
+        if (expired || remainingSeconds() < 1) return `deadline ${deadlineMs} ms exceeded`;
+        const response = await sandbox.process.executeCommand(input.command, undefined, {},
+          Math.min(input.timeoutSeconds ?? 30, remainingSeconds()));
+        attempt = { sandboxId: row.id, exitCode: response.exitCode,
+          output: redactKnownSecrets(String(response.result ?? ""), input.secrets).slice(-16_384), error: null };
+      } catch (error) {
+        attempt = { sandboxId: row.id, exitCode: null, output: "", error: error instanceof Error ? error.message : String(error) };
+      }
+      if (expired) return `deadline ${deadlineMs} ms exceeded`;
+      attempts.push(attempt);
+      if (input.done(attempt)) return null;
+    }
+    return null;
+  };
+  try {
+    const outcome = await Promise.race([search().catch((error: unknown) => error instanceof Error ? error.message : String(error)), deadline]);
+    if (outcome === "deadline") { expired = true; return { attempts: [...attempts], error: `deadline ${deadlineMs} ms exceeded` }; }
+    return { attempts, error: outcome };
+  } finally {
+    clearTimeout(timer);
   }
 }
