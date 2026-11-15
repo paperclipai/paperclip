@@ -76,6 +76,8 @@ export function registerIssueRecoveryWork(
   const scopeKey = (scope: IssueRecoveryScope | undefined) => scope
     ? JSON.stringify([scope.companyId, scope.issueId, scope.graphRunId, scope.graphIssueId, scope.backstop]) : "*";
   const isGraph = (scope: IssueRecoveryScope | undefined) => Boolean(scope?.graphRunId || scope?.graphIssueId);
+  const loadOrigin = (scope: IssueRecoveryScope | undefined) => !workSignalDebug.enabled ? undefined : !scope ? "reload" as const
+    : scope.backstop ? "backstop" as const : scope.issueId || isGraph(scope) ? "hint" as const : "company" as const;
   const graphs = new Map<string, { at: number; ids: Promise<string[] | null> }>();
   async function resolveGraph(scope: IssueRecoveryScope | undefined) {
     if (!scope || !isGraph(scope)) return;
@@ -115,6 +117,7 @@ export function registerIssueRecoveryWork(
         if (workSignalDebug.enabled) workSignalDebug.event(queue, "load", { scope: key });
         if (!enabled) { cursors.delete(key); return []; }
         if (await toCompany(scope, worker)) return { rows: null, complete: true };
+        if (scope?.issueIds?.length === 0) return { rows: [], complete: true };
         const cursor = cursors.get(key);
         const changedSince = passes.changedSince(scope, key, !cursor);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
@@ -133,8 +136,7 @@ export function registerIssueRecoveryWork(
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         passes.loaded(scope, key, complete);
         const keepUnseen = changedSince ? { keepUnseen: true as const } : {};
-        const origin = !workSignalDebug.enabled ? undefined : !scope ? "reload" as const : scope.backstop ? "backstop" as const
-          : scope.issueId || isGraph(scope) ? "hint" as const : "company" as const;
+        const origin = loadOrigin(scope);
         return { rows: rows.map(row => ({ ...row, dueAt: Date.now(), ...(origin ? { origin } : {}) })), complete, ...keepUnseen };
       },
       check: async entry => {
@@ -172,22 +174,28 @@ export function registerIssueRecoveryWork(
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
         if (await toCompany(scope, worker)) return { rows: null, complete: true };
+        if (scope?.issueIds?.length === 0) return { rows: [], complete: true };
         const changedSince = passes.changedSince(scope, key, !cursors.has(key));
         const rows = await sweep.listSuspects(scope ? { companyId: scope.companyId, issueId: scope.issueId,
           issueIds: scope.issueIds, ...(changedSince ? { changedSince } : {}) } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         passes.loaded(scope, key, complete);
+        const origin = loadOrigin(scope);
         return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now(),
-          ...(scope?.backstop ? { fromBackstop: true as const } : {}) })), complete, ...(changedSince ? { keepUnseen: true as const } : {}) };
+          ...(scope?.backstop ? { fromBackstop: true as const } : {}), ...(origin ? { origin } : {}) })), complete,
+          ...(changedSince ? { keepUnseen: true as const } : {}) };
       },
       check: async entry => {
         if (!enabled) return null;
+        if (workSignalDebug.enabled) workSignalDebug.event(DELIVERY_QUEUES.assignedWorkInvariant, "check", { issueId: entry.id,
+          companyId: entry.companyId, wake: entry.fromDeadline ? "deadline" : entry.origin ?? "load", dueAt: entry.dueAt });
         let next: number | null = null, unchanged = false;
         await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: (at, detail) => { next = next === null ? at : Math.min(next, at); unchanged ||= detail?.unchanged === true; } });
         const { unchanged: _previous, fromBackstop: _source, ...rest } = entry;
-        return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}) };
+        return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}),
+          ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
     return worker;
