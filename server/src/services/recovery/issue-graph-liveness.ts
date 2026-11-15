@@ -776,7 +776,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       const path = [...dependencyPath, blocker];
 
       if (blocker.status === "blocked") {
-        const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
+        const nested = firstBlockedChainFinding(source, blocker, path, seen);
         if (nested) return nested;
         if (hasExplicitWaitingPath(blocker)) continue;
       }
