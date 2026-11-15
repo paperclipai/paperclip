@@ -90,6 +90,24 @@ export async function requestAgentLifecycleRecheckInTransaction(
   return true;
 }
 
+export async function wakeStoppingAgentLifecycleInTransaction(
+  tx: Pick<Db, "select" | "update">,
+  agentId: string,
+  notify: () => Promise<void>,
+): Promise<boolean> {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Lifecycle wakes require the producer transaction");
+  const [agent] = await tx.select({ lifecycleState: agents.lifecycleState, lifecycleOperation: agents.lifecycleOperation })
+    .from(agents).where(eq(agents.id, agentId)).for("update");
+  const operation = agent?.lifecycleOperation;
+  if (!agent || !operation || !["pausing", "terminating", "cleaning_up"].includes(agent.lifecycleState)
+    || (!operation.retryAt && !operation.leaseOwner)) return false;
+  await notify();
+  await tx.update(agents).set({ lifecycleOperation: sql`(${agents.lifecycleOperation} - 'retryAt')
+    || case when ${agents.lifecycleOperation} ? 'leaseOwner' then '{"recheckRequested":true}'::jsonb else '{}'::jsonb end` })
+    .where(eq(agents.id, agentId));
+  return true;
+}
+
 /** The caller owns the accounting transaction and has locked this agent. */
 async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: LifecycleRow,
   command: LifecycleCommand, options: ChangeOptions = {}, policyHolds?: string[], restartPause = false) {

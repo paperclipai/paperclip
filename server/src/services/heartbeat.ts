@@ -4453,7 +4453,8 @@ export function heartbeatService(
         or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
           and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))),
         sql`not (coalesce((${environmentLeases.metadata}->'releaseDeferral'->>'retryAt')::timestamptz > now(), false)
-          and ${environmentLeases.metadata}->'releaseDeferral'->>'trigger' is not distinct from ${options.trigger ?? null}::text)`));
+          and (${options.trigger ?? null}::text is null
+            or coalesce(${environmentLeases.metadata}->'releaseDeferral'->'triggers', '[]'::jsonb) ? ${options.trigger ?? ""}::text))`));
     const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
     let blocker: string | null = null;
     for (const run of runs) {

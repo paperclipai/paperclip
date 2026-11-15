@@ -1,6 +1,8 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { currentControllerBootId } from "./controller-process-identity.js";
+import { wakeStoppingAgentLifecycleInTransaction } from "../modules/agent-lifecycle/index.js";
 import type { ProviderResourceDisposition } from "./environment-runtime.js";
 import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
 
@@ -15,18 +17,25 @@ export type LeaseReleaseDeferral = {
   attempts: number;
   retryAt: string;
   failingSince: string;
-  trigger?: string;
+  triggers?: string[];
+  attemptedByBootId?: string;
   providerResourceDisposition: ProviderResourceDisposition | null;
 };
 
-const retriedThisProcess = new Set<string>();
+const LEASE_RELEASE_TRIGGER_LIMIT = 20;
 
-export function leaseReleaseRetriedThisProcess(leaseId: string) {
-  return retriedThisProcess.has(leaseId);
+export function currentLeaseReleaseBootId() {
+  return currentControllerBootId();
 }
 
-export function markLeaseReleaseRetriedThisProcess(leaseId: string) {
-  retriedThisProcess.add(leaseId);
+export function leaseReleaseAttemptedByThisBoot(deferral: LeaseReleaseDeferral | null) {
+  return deferral?.attemptedByBootId === currentControllerBootId();
+}
+
+export function nextLeaseReleaseTriggers(previous: LeaseReleaseDeferral | null, trigger: string | undefined) {
+  const triggers = [...(previous?.triggers ?? [])];
+  if (trigger && !triggers.includes(trigger)) triggers.push(trigger);
+  return triggers.slice(-LEASE_RELEASE_TRIGGER_LIMIT);
 }
 
 export function readLeaseReleaseDeferral(metadata: Record<string, unknown> | null | undefined): LeaseReleaseDeferral | null {
@@ -42,14 +51,8 @@ export function leaseReleaseRetryDelayMs(attempts: number) {
   return Math.min(LEASE_RELEASE_RETRY_MAX_MS, LEASE_RELEASE_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1));
 }
 
-export async function wakeStoppingAgentLifecycle(tx: Pick<Db, "update">, agentId: string) {
-  const woken = await tx.update(agents).set({ lifecycleOperation: sql`(${agents.lifecycleOperation} - 'retryAt')
-    || case when ${agents.lifecycleOperation} ? 'leaseOwner' then '{"recheckRequested":true}'::jsonb else '{}'::jsonb end` })
-    .where(and(eq(agents.id, agentId), inArray(agents.lifecycleState, ["pausing", "terminating", "cleaning_up"]),
-      sql`(${agents.lifecycleOperation} ? 'retryAt' or ${agents.lifecycleOperation} ? 'leaseOwner')`))
-    .returning({ id: agents.id });
-  if (woken.length > 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle);
-  return woken.length > 0;
+export function wakeStoppingAgentLifecycle(tx: Db, agentId: string) {
+  return wakeStoppingAgentLifecycleInTransaction(tx, agentId, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
 }
 
 export async function settleUnchangedNativeWorkspace(db: Db, runId: string, companyId: string): Promise<boolean> {

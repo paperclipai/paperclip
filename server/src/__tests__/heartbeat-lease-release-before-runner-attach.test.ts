@@ -257,6 +257,23 @@ describeEmbeddedPostgres("environment lease release between sandbox acquire and 
     await expectSandboxReleased(fixture);
   }, 60_000);
 
+  it("gives each overlapping stop operation one immediate attempt, then respects the stored retry time", async () => {
+    const fixture = await seed("runner_launch");
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60 * 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: fixture.manager });
+    const parent = `lifecycle:${randomUUID()}`, child = `lifecycle:${randomUUID()}`;
+    for (let pass = 0; pass < 30; pass++) {
+      expect(await heartbeat.agentInvocationStopBlocker([fixture.agentId], "Agent lifecycle stop requested",
+        { trigger: pass % 2 === 0 ? parent : child })).toMatch(/^environment_lease_release_deferred:workspace_owner_active$/);
+    }
+    expect((await lease(fixture.leaseId)).metadata?.releaseDeferral).toMatchObject({ reason: "workspace_owner_active",
+      attempts: 2, triggers: [parent, child] });
+    expect(fixture.teardownCalls()).toHaveLength(0);
+  }, 60_000);
+
   it.each(PRE_LAUNCH)("the orphan lease check releases a sandbox a cancelled run leaked during %s", async window => {
     const fixture = await seed(window);
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), errorCode: "cancelled" })
