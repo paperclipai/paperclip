@@ -1494,9 +1494,9 @@ function AskUserQuestionsCard({
                     <PromptText>{question.prompt}</PromptText>
                   </div>
                   {question.helpText ? (
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      {question.helpText}
-                    </p>
+                    <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                      <MarkdownBody externalReferences={externalReferences} mediaMode="reference">{question.helpText}</MarkdownBody>
+                    </div>
                   ) : null}
                 </div>
                 <TaskField
@@ -1680,7 +1680,7 @@ function AskUserQuestionsCard({
                 className="rounded-2xl border border-border/70 bg-background/82 p-4"
               >
                 <div className="text-sm font-semibold text-foreground">
-                  {question.prompt}
+                  <MarkdownBody externalReferences={externalReferences} mediaMode="reference">{question.prompt}</MarkdownBody>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {labels.length > 0 ? (
