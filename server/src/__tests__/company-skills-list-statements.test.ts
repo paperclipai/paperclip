@@ -64,16 +64,41 @@ describeEmbeddedPostgres("GET /api/companies/:companyId/skills statements per re
   }, 60_000);
 
   it("still renames a changed category and prunes an empty one under the lock", async () => {
-    const company = await seedCompanyWithBoardAccess(ctx.db, "Skills repair");
-    const svc = folderService(ctx.db);
-    const category = await svc.ensureBundledCategory(company.companyId, "Repair Category");
-    await ctx.db.update(folders).set({ name: "Renamed by hand" }).where(eq(folders.id, category.id));
-    const repaired = await svc.ensureBundledCategory(company.companyId, "Repair Category");
-    expect(repaired).toMatchObject({ id: category.id, name: "Repair Category" });
+    const statements = meter();
+    try {
+      const company = await seedCompanyWithBoardAccess(ctx.db, "Skills repair");
+      const svc = folderService(ctx.db);
+      const locked = async (write: () => Promise<unknown>) => {
+        const before = statements.read();
+        statements.startLog();
+        await write();
+        const log = statements.stopLog();
+        const lockIndex = log.findIndex((entry) => /pg_advisory_xact_lock/.test(entry.sql));
+        const writes = log.filter((entry) => /^\s*(insert|update|delete)\b/i.test(entry.sql));
+        return {
+          transactions: statements.read().transactions - before.transactions,
+          lockedBeforeWrite: lockIndex >= 0 && writes.every((entry) => entry.inTransaction && log.indexOf(entry) > lockIndex),
+          writes: writes.length,
+        };
+      };
 
-    await svc.pruneEmptyBundledCategories(company.companyId, ["Repair Category"]);
-    expect((await bundledFolders(company.companyId)).map((row) => row.id)).toContain(category.id);
-    await svc.pruneEmptyBundledCategories(company.companyId, []);
-    expect((await bundledFolders(company.companyId)).map((row) => row.id)).not.toContain(category.id);
+      const created = await locked(() => svc.ensureBundledCategory(company.companyId, "Repair Category"));
+      expect(created).toMatchObject({ transactions: 1, lockedBeforeWrite: true });
+      expect(created.writes).toBeGreaterThan(0);
+      const [category] = (await bundledFolders(company.companyId)).filter((row) => row.systemKey === "bundled:repair-category");
+      await ctx.db.update(folders).set({ name: "Renamed by hand" }).where(eq(folders.id, category!.id));
+      const renamed = await locked(() => svc.ensureBundledCategory(company.companyId, "Repair Category"));
+      expect(renamed).toMatchObject({ transactions: 1, lockedBeforeWrite: true, writes: 1 });
+      expect((await bundledFolders(company.companyId)).find((row) => row.id === category!.id)?.name).toBe("Repair Category");
+
+      expect(await locked(() => svc.pruneEmptyBundledCategories(company.companyId, ["Repair Category"])))
+        .toEqual({ transactions: 0, lockedBeforeWrite: false, writes: 0 });
+      expect((await bundledFolders(company.companyId)).map((row) => row.id)).toContain(category!.id);
+      expect(await locked(() => svc.pruneEmptyBundledCategories(company.companyId, [])))
+        .toEqual({ transactions: 1, lockedBeforeWrite: true, writes: 1 });
+      expect((await bundledFolders(company.companyId)).map((row) => row.id)).not.toContain(category!.id);
+    } finally {
+      statements.uninstall();
+    }
   }, 60_000);
 });
