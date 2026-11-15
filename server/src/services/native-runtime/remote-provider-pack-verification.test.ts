@@ -120,6 +120,24 @@ describe("installed provider pack compatibility", () => {
     if (field === "digest") pack.digest = sha("corrupt");
     await expect(check(pack)).rejects.toThrow("runner_remote_provider_artifact_incompatible");
   });
+  it("accepts a reported installed manifest only when its sealed content equals the expected pack", async () => {
+    const expected = manifest("b");
+    const report = (installed: unknown) => vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => ({
+      exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "",
+      stdout: request.args?.[0] === "--version" ? "1.18.34\n"
+        : `\npaperclip-pack-manifest=${Buffer.from(JSON.stringify(installed)).toString("base64")}\n` }));
+    const input = { cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack", manifest: expected, acceptProvenance: true };
+    const otherBuild = manifest("b");
+    otherBuild.payload.runnerSourceRevision = "a".repeat(40);
+    await expect(verifyRemoteProviderPack({ ...input, runner: { execute: report(reseal(otherBuild)) } })).resolves.toEqual(reseal(otherBuild));
+    const otherContent = reseal({ ...otherBuild, payload: { ...otherBuild.payload, contractDigest: sha("other") } });
+    await expect(verifyRemoteProviderPack({ ...input, runner: { execute: report(otherContent) } }))
+      .rejects.toMatchObject({ failureCheck: "installed_manifest_invalid" });
+    await expect(verifyRemoteProviderPack({ ...input, runner: { execute: report({ ...reseal(otherBuild), digest: sha("unsealed") }) } }))
+      .rejects.toMatchObject({ failureCheck: "installed_manifest_invalid" });
+    await expect(verifyRemoteProviderPack({ ...input, acceptProvenance: false, runner: { execute: report(reseal(otherBuild)) } }))
+      .resolves.toEqual(expected);
+  });
   it("does not reuse image packs when the controller's bundled pack records no contract digest", async () => {
     const current = manifest("b");
     delete current.payload.contractDigest;
