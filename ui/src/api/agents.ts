@@ -171,6 +171,10 @@ export const agentsApi = {
     api.patch<Agent & import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
+  interactionPermissions: (id: string) =>
+    api.get<import("@paperclipai/shared").AgentInteractionPermissionsState>(agentPath(id, undefined, "/interaction-permissions")),
+  updateInteractionPermissions: (id: string, patch: import("@paperclipai/shared").AgentInteractionPermissionsPatch) =>
+    api.patch<import("@paperclipai/shared").AgentInteractionPermissionsState>(agentPath(id, undefined, "/interaction-permissions"), patch),
   instructionsBundle: (id: string, companyId?: string) =>
     api.get<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle")),
   updateInstructionsBundle: (
