@@ -135,6 +135,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
+  isQueuedInterruptHandoff,
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
   startingQueuedCommentIds,
@@ -2492,7 +2493,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       });
       try {
         const updatedQueue = await onInterruptQueued(runId);
-        if (updatedQueue?.state === "deferred") {
+        if (updatedQueue?.state === "deferred" && !isQueuedInterruptHandoff(updatedQueue)) {
           const remaining = new Set(updatedQueue.entries.map(entry => entry.comment.id));
           setConsumedQueuedCommentIds(current => new Set([...current].filter(id => !remaining.has(id))));
           setLocalInterruptPlacements(current => new Map([...current].filter(([id]) => !remaining.has(id))));
@@ -3650,7 +3651,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
-      queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
+      // Shares the chat's read: whichever observer mounts first must not send
+      // its own request while the page's bootstrap is loading.
+      queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId!), issueId!, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId!)),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: summarizeLiveRuns,

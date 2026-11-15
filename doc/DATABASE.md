@@ -1779,7 +1779,7 @@ second.
 Database backups contain snapshot receipts, not S3 payloads or encryption keys.
 Disaster recovery requires the database, object store, and original master key.
 Unsaved live sandbox edits remain outside that saved-version guarantee. See
-[setup and explicit local import](DEVELOPING.md#experimental-native-remote-workspace-storage).
+[setup and explicit local import](workspace-storage.md#experimental-native-remote-workspace-storage).
 
 ## Chat communication snapshots
 
@@ -1845,7 +1845,7 @@ The plugin runtime tracks plugin-owned database namespaces and migrations in `pl
 
 Paperclip supports automatic and manual logical database backups. These dumps include
 non-system database schemas such as `public`, the Drizzle migration journal, and
-plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
+plugin-owned database schemas. See `doc/database-backups.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 

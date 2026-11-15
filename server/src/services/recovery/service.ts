@@ -127,7 +127,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
-import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueRecoveryActionService, SOURCE_TERMINAL_RESOLUTION } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
@@ -3670,7 +3670,8 @@ export function recoveryService(
           actionId: action.id,
           status: "resolved",
           outcome: "restored",
-          resolutionNote: "source_terminal",
+          resolutionNote: SOURCE_TERMINAL_RESOLUTION,
+          sourceTerminal: true,
         });
         if (resolved) {
           result.resolved += 1;
