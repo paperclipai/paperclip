@@ -288,7 +288,7 @@ describeEmbeddedPostgres("activity service", () => {
       commentIds: taken, claimedAt: "2026-11-15T00:00:00.000Z" };
     // A retry copies its predecessor's context; that receipt is not its own.
     await db.insert(heartbeatRuns).values([runId, retryRunId].map((id, index) => ({
-      id, companyId, agentId, scopeKind: "issue", issueId, invocationSource: "assignment",
+      id, companyId, agentId, scopeKind: "issue" as const, issueId, invocationSource: "assignment",
       status: index ? "running" : "failed", createdAt: new Date(Date.now() - (2 - index) * 1000),
       contextSnapshot: { issueId, firstTurnQueuedInput: receipt },
     })));
