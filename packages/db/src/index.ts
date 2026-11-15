@@ -8,6 +8,7 @@ export {
   dedicatedDbConnectionStats,
   type DedicatedDbConnectionStats,
   type DedicatedDbConnectionOptions,
+  preparedStatementStats,
   databaseConnectionBudget,
   PRIVATE_POOL_MAX_CONNECTIONS,
   createOwnedDatabaseListener,
@@ -65,3 +66,4 @@ export * from "./schema/index.js";
 
 export { databaseWorkScopeKey, primeDatabaseWorkTransactionId, signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";
 export { withDatabaseOperation } from "./response-capture.js";
+export { databaseStatementCount } from "./statement-count.js";

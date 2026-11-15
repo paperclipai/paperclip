@@ -3,7 +3,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { cleanupRun, discoverState, type CleanupReport } from "./cleanup.ts";
 import { PaperclipClient, Redactor, realClock, type Clock, type Fetcher } from "./client.ts";
-import { FALLBACK_TOKEN_ENV, parseOptions, readSecrets, TOKEN_ENV, type Options } from "./config.ts";
+import { FALLBACK_TOKEN_ENV, metricsCredential, parseOptions, readSecrets, TOKEN_ENV, type Options } from "./config.ts";
 import { criteriaTable } from "./criteria.ts";
 import { checkSpend, estimateSpend, type SpendEstimate } from "./estimate.ts";
 import { Ramp, type RampOutcome } from "./ramp.ts";
@@ -121,7 +121,7 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
     await prepareCompany({ api, options, state, store, credential: secrets.credential, log: out });
     const ramp = new Ramp({
       api, clock: deps.clock, fetcher: deps.fetcher, options, state, store, maxTasks: estimate.maxTasks,
-      spendCapUsd: options.confirmSpendUsd ?? Math.max(options.spendThresholdUsd, estimate.totalUsd), metricsToken: secrets.metricsToken,
+      spendCapUsd: options.confirmSpendUsd ?? Math.max(options.spendThresholdUsd, estimate.totalUsd), metricsToken: metricsCredential(options, secrets),
       log: out, shouldStop: () => interrupted,
     });
     outcome = await ramp.run();
