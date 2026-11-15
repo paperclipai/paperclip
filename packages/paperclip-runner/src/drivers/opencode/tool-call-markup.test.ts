@@ -86,6 +86,7 @@ describe("model control tokens", () => {
     ["an answer explaining chat templates in inline code", "ChatML starts a turn with `<|im_start|>` and ends it with `<|im_end|>`."],
     ["a double-backtick code span", "Write ``<|im_start|>`` with two backticks, then `x`."],
     ["a code span across lines", "The template opens with `<|im_start|>\nuser<|im_end|>` and so on."],
+    ["a code span after a fence holding a lone backtick", "~~~text\n`\n~~~\nUse ``<|im_start|>`` here."],
     ["control tokens in a fence", "The template looks like this:\n```\n<|im_start|>user\nhi<|im_end|>\n```"],
     ["HTML", "<div>\n<p>Hello</p>\n</div>"],
     ["comparison operators", "Use x < 3 and y > 2."],

@@ -35,11 +35,13 @@ const SENTINEL_OPENING = /<\/?[|｜]/;
 /**
  * Inline code spans as [start, end) offsets: a backtick run closes at the next
  * run of the same length within its paragraph. An escaped backtick opens
- * nothing, and an unmatched run is literal text.
+ * nothing, an unmatched run is literal text, and backticks inside fenced
+ * blocks never pair with ones outside.
  */
-function codeSpans(content: string): Array<[number, number]> {
+function codeSpans(source: string): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
-  if (!content.includes("`")) return spans;
+  if (!source.includes("`")) return spans;
+  const content = withoutFencedBlocks(source);
   for (let index = 0; index < content.length; index += 1) {
     const char = content[index];
     if (char === "\\") {
@@ -89,7 +91,34 @@ function firstSentinel(line: string, lineStart: number, spans: Array<[number, nu
   return first;
 }
 
-function fenceOf(line: string): { indent: number; char: string; length: number; rest: string } | null {
+/** The content with every fenced block's lines blanked, keeping offsets. */
+function withoutFencedBlocks(content: string): string {
+  let openFence: { indent: number; char: string; length: number } | null = null;
+  return content.split("\n").map(line => {
+    const fence = fenceOf(line);
+    if (openFence) {
+      if (closesFence(fence, openFence)) openFence = null;
+      return " ".repeat(line.length);
+    }
+    if (opensFence(fence)) {
+      openFence = { indent: fence.indent, char: fence.char, length: fence.length };
+      return " ".repeat(line.length);
+    }
+    return line;
+  }).join("\n");
+}
+
+type Fence = { indent: number; char: string; length: number; rest: string };
+
+function closesFence(fence: Fence | null, open: { indent: number; char: string; length: number }): boolean {
+  return !!fence && fence.indent <= open.indent + 3 && fence.char === open.char && fence.length >= open.length && !fence.rest.trim();
+}
+
+function opensFence(fence: Fence | null): fence is Fence {
+  return !!fence && !(fence.char === "`" && fence.rest.includes("`"));
+}
+
+function fenceOf(line: string): Fence | null {
   const match = /^([ \t]*)(`{3,}|~{3,})(.*)$/.exec(line);
   return match
     ? { indent: match[1]!.replace(/\t/g, "    ").length, char: match[2]![0]!, length: match[2]!.length, rest: match[3]! }
@@ -116,11 +145,10 @@ function scaffoldingStart(content: string, forms: readonly string[], lineForms: 
     offset += line.length + 1;
     const fence = fenceOf(line);
     if (openFence) {
-      if (fence && fence.indent <= openFence.indent + 3 && fence.char === openFence.char && fence.length >= openFence.length && !fence.rest.trim())
-        openFence = null;
+      if (closesFence(fence, openFence)) openFence = null;
       continue;
     }
-    if (fence && !(fence.char === "`" && fence.rest.includes("`"))) {
+    if (opensFence(fence)) {
       openFence = { indent: fence.indent, char: fence.char, length: fence.length };
       continue;
     }
