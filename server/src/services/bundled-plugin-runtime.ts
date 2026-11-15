@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export function resolveBundledPluginRuntimeLoader(
   moduleDirectory = path.dirname(fileURLToPath(import.meta.url)),
@@ -34,4 +34,8 @@ export function resolveBundledPluginRuntimeLoader(
     return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
   })) throw new Error("Managed plugin runtime loader escapes the current image");
   return loader;
+}
+
+export function pluginWorkerImportArgs(loaderPath: string): string[] {
+  return ["--import", pathToFileURL(loaderPath).href];
 }
