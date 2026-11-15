@@ -1219,6 +1219,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         !loginMeta.requiresLogin &&
         !clearSessionForMaxTurns &&
         !poisonedPreviousMessageId &&
+        !claudeRefusal &&
         isClaudeProviderQuotaError({
           parsed,
           stdout: proc.stdout,
@@ -1231,6 +1232,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         !clearSessionForMaxTurns &&
         !poisonedPreviousMessageId &&
         !providerQuota &&
+        !claudeRefusal &&
         isClaudeTransientUpstreamError({
           parsed,
           stdout: proc.stdout,
@@ -1323,6 +1325,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         summary: parsedStream.summary || asString(parsed.result, ""),
         clearSession:
           clearSessionForMaxTurns ||
+          claudeRefusal ||
           // Clear-on-error: a poisoned previous_message_id is a deterministic
           // state error. Force the server to drop persisted session state for
           // this issue so the next continuation starts from a clean slate.

@@ -102,4 +102,45 @@ describe("claude_local failure classification precedence", () => {
 
     expect(result.errorCode).toBe("model_not_found");
   });
+
+  it("keeps a refusal on the refusal lane when tool output mentions 429", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "success", stop_reason: "refusal",
+          result: "API Error: Opus 5.5's safeguards flagged this message" },
+        "429 passed, 0 failed",
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_refusal");
+    expect(result.errorFamily).toBe("model_refusal");
+    expect(result.clearSession).toBe(true);
+  });
+
+  it("does not classify a failure as transient from tool output alone", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error", result: "API Error: invalid request" },
+        "returns a 503 problem response",
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBeNull();
+    expect(result.errorFamily).toBeNull();
+  });
+
+  it("still detects a transient failure from the result and stderr fields", async () => {
+    mockExecutionResult(
+      buildProcResult({ is_error: true, subtype: "error", result: "API Error: 529 overloaded_error: the service is overloaded" }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_transient_upstream");
+    expect(result.errorFamily).toBe("transient_upstream");
+  });
 });
