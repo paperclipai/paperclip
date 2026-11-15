@@ -2,6 +2,7 @@ import { tailscaleNetworks } from "./services/connectors/tailscale/network.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
 import { registerReattachPhaseWork } from "./services/heartbeat/reattach-phase.js";
+import { closeWriterThreads, installWriterThreads, readWriterThreadSettings } from "./services/writer-threads/writer-threads.js";
 import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { registerPersonCommentWaitWork } from "./services/native-runtime/native-provider-turn-wait.js";
@@ -752,11 +753,13 @@ async function startServerWithDatabaseTeardown(
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
 
+  installWriterThreads(db, activeDatabaseConnectionString, readWriterThreadSettings());
   // Ends every pool this process opened. Used by the orderly shutdown path
   // (after the application services, before the embedded provider stops) and
   // by the fail-loud startup path, so no exit leaves pooled backends behind.
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
+    await closeWriterThreads(db, 5_000);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
     await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5), closeDedicatedDbConnections(db, 5)]);
   };
