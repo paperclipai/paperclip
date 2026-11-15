@@ -234,6 +234,18 @@ suite("remote workspace snapshot storage", () => {
     expect(reads).toBe(2);
     expect(put).not.toHaveBeenCalled();
   });
+  it.each([["digest", 0], ["size", 1]] as const)("rejects an archive whose %s differs from the sandbox receipt before recording or storing it", async (_field, extra) => {
+    const f = await fixture(); const put = vi.spyOn(storage, "putFile");
+    const expectedArchive = { sha256: extra ? f.captured.sha256 : createHash("sha256").update("other archive").digest("hex"),
+      byteSize: f.captured.byteSize + extra };
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, expectedArchive })).rejects.toThrow("remote_workspace_capture_transfer_mismatch");
+    expect(put).not.toHaveBeenCalled();
+    const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(row).toMatchObject({ status: "pending", objectKey: null, sha256: null });
+    expect(row?.metadata?.uploads ?? []).toEqual([]);
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, expectedArchive: { sha256: f.captured.sha256, byteSize: f.captured.byteSize } });
+    expect(ref.manifestDigest).toBe(f.captured.manifestDigest);
+  });
   it("reconciles an upload whose reply was lost after object persistence, without the old scratch file", async () => {
     const f = await fixture(); const put = storage.putFile.bind(storage); let loseReply = true;
     storage.putFile = async input => { const result = await put(input); if (loseReply) { loseReply = false; throw new Error("lost upload reply"); } return result; };

@@ -4,7 +4,7 @@ import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
 import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
 import type { CompletionEvidence } from "./staging-mix.js";
-import { laterAnswers, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
+import { laterAnswers, rejectedDoneRuns, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
 import { AGENT_SLOTS_FILE, agentSlotsFromRows } from "./agent-slots.js";
 import { agents, createDb, type Db } from "../../packages/db/src/index.js";
 import { maxConcurrentRunsSql } from "../../server/src/services/heartbeat/timer-policy.js";
@@ -79,7 +79,8 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
         wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
-        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
+        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,
+        providerTurnStarted: run.providerTurnStarted == null ? null : Boolean(run.providerTurnStarted),        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
     }),
     wakes: wakes.map(wake => ({ id: text(wake.id), reason: text(wake.reason), source: text(wake.source), triggerDetail: text(wake.triggerDetail),
@@ -99,7 +100,9 @@ async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, s
             r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
             floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
-            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt"
+            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt",
+            exists (select 1 from heartbeat_run_events t where t.company_id = r.company_id and t.run_id = r.id
+                       and t.event_type in ('turn.submitted', 'turn.accepted', 'turn.started')) as "providerTurnStarted"
        from heartbeat_runs r
        left join lateral (select coalesce(e.payload->'prpEvent'->'payload'->'result'->>'reportedWorkDisposition', e.payload->'result'->>'reportedWorkDisposition') as disposition, e.created_at as accepted_at
                             from heartbeat_run_events e where e.run_id = r.id and e.event_type = 'run.result.accepted'
@@ -168,8 +171,10 @@ export interface EvidenceObserver {
 export function completionEvidence(evidence: { completedAt: number | null; wakes?: readonly DeliveryWake[];
   runs: ReadonlyArray<DeliveryRun & { acceptedDisposition: string | null; acceptedAt: number | null }> }): CompletionEvidence {
   const answers = laterAnswers(evidence);
+  const rejected = rejectedDoneRuns(evidence);
   return { completedAt: evidence.completedAt, runs: evidence.runs.map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
-    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)) })) };
+    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)),
+    doneRejected: Boolean(run.runId && rejected.has(run.runId)) })) };
 }
 
 export function wakeEvidenceOnce(input: { databaseUrl: () => string; companyId: string; waveDir: string;
