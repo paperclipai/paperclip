@@ -130,7 +130,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -14672,6 +14672,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   signal?: AbortSignal;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
+  acceptProvenanceDifferences?: boolean;
 }): Promise<{ root: string; manifest: RemoteProviderPackManifest; source: "staged" | "preinstalled" | "uploaded" }> {
   const remoteTarget = input.target, remoteCommandRunner = input.runner;
   const configuredProviderPackRoot = input.configuredProviderPackRoot;
@@ -14679,10 +14680,10 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   const stagedRemoteProviderPackRoot = posix.join(remoteTarget.remoteCwd, ".paperclip-runtime", "paperclip-runner", "provider-pack");
   let activeRemoteProviderPackRoot: string | null = null;
   let preinstalledProviderPackRoots: string[] = [];
-  const verifyRemoteProviderPack = async (packRoot: string) => {
-    await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest });
-  };
+  let selectedProviderPackManifest = expectedProviderPackManifest;
+  const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
+    verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
+      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
     const result = await remoteCommandRunner.execute({
@@ -14704,16 +14705,16 @@ export async function prepareRemoteProviderPackOnTarget(input: {
     verifyStaged: () => measureNativeRunnerSpan(
       input.trace,
       "provider_pack.verify",
-      () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+      async () => { selectedProviderPackManifest = await verifyRemoteProviderPack(stagedRemoteProviderPackRoot, true); },
     ),
     usePreinstalled: async (onRejected) => useVerifiedPreinstalledRemoteProviderPack({
       onRejected,
       candidates: preinstalledProviderPackRoots = await measureNativeRunnerSpan(input.trace, "provider_pack.discover", discoverPreinstalledProviderPack),
       verifyAndLink: async (preinstalledProviderPack) => {
-        await measureNativeRunnerSpan(
+        const preinstalledManifest = await measureNativeRunnerSpan(
           input.trace,
           "provider_pack.verify_preinstalled",
-          () => verifyRemoteProviderPack(preinstalledProviderPack),
+          () => verifyRemoteProviderPack(preinstalledProviderPack, true),
         );
         const escapedSource = preinstalledProviderPack.replaceAll(
           "'",
@@ -14740,6 +14741,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           throw providerPackIncompatible("link_failed", "preinstalled provider pack could not be linked");
         }
         activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        selectedProviderPackManifest = preinstalledManifest;
         await input.onLog?.(
           "stderr",
           "[paperclip-runner] using manifest-matched preinstalled provider pack\n",
@@ -14774,9 +14776,10 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           targetPath: stagedRemoteProviderPackRoot,
           mode: 0o700,
         }),
-        verifyUploaded: () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        verifyUploaded: async () => { await verifyRemoteProviderPack(stagedRemoteProviderPackRoot); },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      selectedProviderPackManifest = expectedProviderPackManifest;
     },
   });
   activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
@@ -14786,7 +14789,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
       "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
     );
   }
-  return { root: activeRemoteProviderPackRoot!, manifest: expectedProviderPackManifest, source: packSource };
+  return { root: activeRemoteProviderPackRoot!, manifest: selectedProviderPackManifest, source: packSource };
 }
 
 /** Read selection identity only; verify controller contents only if upload is needed. */
@@ -17214,7 +17217,13 @@ async function createRunnerdBackendWithinSessionClaim(
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
         manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
         signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
+        acceptProvenanceDifferences: providerPackProvenanceReuseAllowed({ retainProviderPack, explicitProviderPackSelection,
+          authoritySelectable: providerPackAuthority !== null }),
       });
+      if (prepared.manifest.digest !== expectedProviderPackManifest.digest) {
+        providerPackAuthority!.select(prepared.manifest);
+        expectedProviderPackManifest = prepared.manifest;
+      }
       activeRemoteProviderPackRoot = prepared.root;
       providerPackVerified = true;
     }
