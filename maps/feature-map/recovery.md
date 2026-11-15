@@ -27,7 +27,8 @@ Agent access: [companion](../agent-access-map/recovery.md).
   no duplicate dispatch, and later recovery after preparation leaves the registry.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
-- `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+- `exhaustion`: `recovery/exhaustion` — a run stopped for a reason only a person can resolve offers ordinary Retry;
+  exhausted infrastructure recovery instead continues in one fresh run from saved work.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,
@@ -467,8 +468,7 @@ only. Separately inspect the underlying execution if it is still stuck.
   silently trigger recovery that fights the user's instruction.
 - Source inspection and mocked component tests do not qualify real server
   restart continuity. Use the appropriate runtime suite for that claim.
-- See [execution semantics](../../doc/execution-semantics.md) for the governing
-  recovery contract and [steering](./steering.md) for saved follow-ups.
+- See [steering](./steering.md) for saved follow-ups.
 
 ### Storybook verification
 

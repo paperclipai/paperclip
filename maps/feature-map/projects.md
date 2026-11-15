@@ -29,8 +29,9 @@ Open `/projects`, create a project, and enter its overview or Issues view.
 ### `repository-settings`
 
 Open `/projects/:projectId/configuration` and its repository/workspace settings.
-Workspace storage shows the saved provider or Core/local choice. Plugin-backed
-projects retain their storage owner.
+Storage is fixed at creation and has no control here. When a storage plugin is
+installed, or the project uses one, **Available in** lists the environments that
+can use the project's storage.
 
 ### `project-access`
 

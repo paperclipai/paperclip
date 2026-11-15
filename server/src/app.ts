@@ -1,8 +1,10 @@
+import { authorizationReadScope } from "./services/authorization-read-scope.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sync.js";
 import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
 import { startMcpRevocationIndexSync } from "./services/public-mcp/revocation-index-sync.js";
 import { startMcpIngressHandoffExpiry } from "./services/public-mcp/ingress-handoff-expiry.js";
+import { runnerAttachmentDownloadRoutes } from "./services/native-runtime/runner-attachment-download.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
@@ -10,7 +12,7 @@ import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
 import { eq } from "drizzle-orm";
-import { chatEndpoints } from "@paperclipai/db";
+import { chatEndpoints, dedicatedDbConnectionStats } from "@paperclipai/db";
 import { fastResponseRoutes } from "./routes/fast-responses.js";
 import { fastResponseService } from "./services/fast-responses.js";
 import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
@@ -20,7 +22,7 @@ import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { databaseOperationMiddleware } from "./middleware/database-operation.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
-import { retainedUiAssets } from "./retained-ui-assets.js";
+import { publishRetainedUiAssetsAtStartup, retainedUiAssets } from "./retained-ui-assets.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
@@ -28,6 +30,8 @@ import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
 import { browserUseRoutes } from "./routes/browser-use.js";
+import { mcpAppsRoutes } from "./routes/mcp-apps.js";
+import { mcpSkillsRoutes } from "./routes/mcp-skills.js";
 import { registerChatActionWork } from "./services/chat-action-work.js";
 import { registerChatDeliveryWork } from "./services/chat-delivery-work.js";
 import { registerBrowserUseCleanup } from "./services/browser-use-work.js";
@@ -95,6 +99,7 @@ import { readinessRoutes } from "./routes/ready.js";
 import { livenessRoutes } from "./routes/liveness.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
+import { runnerCallOutcomeMiddleware } from "./middleware/runner-call-outcome.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -132,6 +137,7 @@ import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { createSavedWorkspaceArchiveOpener } from "./services/saved-workspace-archive.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
+import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
@@ -225,6 +231,7 @@ import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-w
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import { heartbeatService } from "./services/heartbeat.js";
+import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
@@ -247,6 +254,14 @@ import {
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 import { apiServerTiming } from "./middleware/api-server-timing.js";
+import { instanceServerMetricsRoutes } from "./routes/instance-server-metrics.js";
+import {
+  serverMetricsAgentPreHandler,
+  serverMetricsArrival,
+  serverMetricsEnabledFromEnv,
+  startServerMetrics,
+  stopServerMetrics,
+} from "./services/server-metrics.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
@@ -485,9 +500,12 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    serverMetricsEnabled?: boolean;
   },
 ) {
   const app = express();
+  const serverMetrics = (opts.serverMetricsEnabled ?? serverMetricsEnabledFromEnv(process.env)) ? startServerMetrics(() => dedicatedDbConnectionStats(db)) : null;
+  if (serverMetrics) app.use("/api", serverMetricsArrival());
   // First, so the reported server time includes admission and database waits.
   app.use("/api", apiServerTiming());
   app.use(databaseOperationMiddleware);
@@ -580,6 +598,7 @@ export async function createApp(
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
   app.use(nativeRunMcpRoutes());
+  app.use(runnerAttachmentDownloadRoutes(db, opts.storageService));
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
@@ -601,6 +620,8 @@ export async function createApp(
     storage: opts.storageService,
   });
   if (opts.budgetResumeDelivery) opts.budgetResumeDelivery.prepareChatRetry = chatChannels.prepareFailedChatRunRetry;
+  // A restart's automatic Retry of a connected conversation needs the same callback.
+  registerInterruptedTurnChatRetry(chatChannels.prepareFailedChatRunRetry);
   // Voice capabilities are verified by the signed callback route, not by
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
@@ -615,6 +636,8 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  app.use(authorizationReadScope);
+  app.use(runnerCallOutcomeMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
   app.use("/api/auth", authRoutes(db));
@@ -817,6 +840,7 @@ export async function createApp(
     openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, opts.storageService),
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(tailscaleConnectionRoutes(db));
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,
@@ -854,7 +878,10 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
-  api.use(attentionRoutes(db));
+  api.use(attentionRoutes(db, {
+    pluginWorkerManager: workerManager,
+    decisionServiceOptions: opts.decisionServiceOptions,
+  }));
   api.use(decisionTrainingRoutes(db));
   api.use(decisionRoutes(db, opts.decisionServiceOptions));
   api.use(decisionQueueRoutes(db));
@@ -872,6 +899,7 @@ export async function createApp(
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
+  if (serverMetrics) api.use(instanceServerMetricsRoutes(serverMetrics));
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -1005,11 +1033,14 @@ export async function createApp(
     },
   );
   runtimePluginLoader = loader;
+  workerManager.setActivationTimeoutRecovery?.(plugin => loader.requestActivationTimeoutRecovery(plugin));
   const browserUse = browserUseService(db, undefined,
     { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
     (session, run) => toolGateway.browserUseSessionAuthorized({ ...session, runId: run.heartbeatRunId, invocationId: run.invocationId }));
   api.use(browserUseRoutes(db, browserUse));
   api.use(toolGatewayRoutes(db, toolGateway));
+  api.use(mcpAppsRoutes(db, toolGateway));
+  api.use(mcpSkillsRoutes(db, toolGateway));
   api.use(
     pluginRoutes(
       db,
@@ -1067,6 +1098,7 @@ export async function createApp(
 
   api.use(museBoardRoutes(db, opts.authPublicBaseUrl));
   api.use(museQualificationRoutes(db));
+  if (serverMetrics) app.use("/api", serverMetricsAgentPreHandler(serverMetrics));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -1101,7 +1133,12 @@ export async function createApp(
       );
       if (process.env.PAPERCLIP_SHARED_UI_ASSETS === "true") {
         const retained = retainedUiAssets(createStorageProviderFromConfig(loadStorageConfig()));
-        await retained.publish(path.join(uiDist, "assets"));
+        // Publish while the routes below are built; the outcome is awaited
+        // before the first background work starts. The promise settles to the
+        // failure instead of rejecting, so it is never an unhandled rejection.
+        app.locals.retainedUiAssetsPublication = trackIdleWork(publishRetainedUiAssetsAtStartup(retained, path.join(uiDist, "assets"), error =>
+          logger.error({ err: error }, "Shared UI assets could not be published because storage is unavailable; serving this build from local files"))
+          .then(() => null, (error: unknown) => ({ error })));
         staticUi.use("/assets", retained.serve);
       }
       // Serve root/index through the same runtime HTML transform as SPA routes.
@@ -1240,6 +1277,11 @@ export async function createApp(
 
   app.use(staticUi);
   app.use(errorHandler);
+
+  // A build whose asset names collide with different published bytes refuses
+  // to start, so the outcome is known before any job, queue, or run starts.
+  const retainedUiAssetsPublication = await (app.locals.retainedUiAssetsPublication as Promise<{ error: unknown } | null> | undefined);
+  if (retainedUiAssetsPublication) throw retainedUiAssetsPublication.error;
 
   jobCoordinator.start();
   const deliveryWork = createDeliveryWorkCoordinator({
@@ -1395,6 +1437,7 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
+      await loader.stopActivationTimeoutRecovery();
       await agentLifecycle.stop();
       unregisterMcpOwners();
       await publicMcpEvents?.stop();
@@ -1420,6 +1463,7 @@ export async function createApp(
         // caller stops the database and the provider. A lease release that
         // fails stays a durable record for the startup reaper.
         await setupTokenLoginService?.shutdown();
+        if (serverMetrics) stopServerMetrics(serverMetrics);
       });
     });
     return appServicesShutdown;

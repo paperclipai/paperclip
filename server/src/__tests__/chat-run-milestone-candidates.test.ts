@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { and, asc, gte, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, chatConversations, chatEndpoints, companies, createDb, heartbeatRuns,
+  agents, chatConversations, chatEndpoints, chatPublications, companies, createDb, heartbeatRuns,
   issues, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { chatRunMilestoneSource } from "../services/chat-run-milestone-candidates.js";
 import { boundRunIssueIdSql } from "../services/run-task-binding.js";
+import { enqueueChatRunMilestones } from "../services/chat-run-publications.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("chat milestone candidate prefilter", () => {
@@ -20,6 +21,39 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(async () => {
     await db?.$client.end({ timeout: 0 });
     await database?.cleanup();
+  });
+
+  it("does not fetch run result TOAST blocks for already published milestones", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Settled milestones", issuePrefix: "SETT" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Chat agent" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Chat task" });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
+    await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId });
+    const [conversation] = await db.insert(chatConversations).values({ companyId, endpointId, issueId, externalConversationId: "settled", externalLabel: "Settled", state: "active" }).returning();
+    const runIds = Array.from({ length: 6 }, () => randomUUID());
+    for (const runId of runIds) {
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId, source: "chat:slack" }, resultJson: { presentationDecision: {}, output: Array.from({ length: 4000 }, () => randomUUID()).join("") } });
+      await db.insert(chatPublications).values({ companyId, endpointId, conversationId: conversation.id, issueId, idempotencyKey: `run:${runId}:completed:${endpointId}`, state: "published", payload: { text: "Completed", progressState: "completed" } });
+    }
+    try {
+      await db.transaction(async (tx) => {
+        const fetched = async () => {
+          const rows = await tx.execute(sql`select pg_stat_get_xact_blocks_fetched(reltoastrelid)::int as blocks from pg_class where oid = 'heartbeat_runs'::regclass`);
+          return Number(rows[0].blocks);
+        };
+        const before = await fetched();
+        expect(await enqueueChatRunMilestones(tx as unknown as typeof db)).toBe(0);
+        const after = await fetched();
+        await tx.execute(sql`select result_json -> 'presentationDecision' from heartbeat_runs where id = ${runIds[0]}`);
+        expect(await fetched()).toBeGreaterThan(after);
+        expect(after).toBe(before);
+      });
+    } finally {
+      await db.update(chatConversations).set({ state: "completed" }).where(sql`${chatConversations.id} = ${conversation.id}`);
+    }
   });
 
   it("preserves complete rows, binding precedence, company scope and the recovery window", async () => {

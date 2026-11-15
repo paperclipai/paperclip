@@ -1,12 +1,12 @@
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { and, desc, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import type {
   IssueRecoveryAction,
@@ -86,7 +86,10 @@ export type ResolveIssueRecoveryActionInput = {
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
+  sourceTerminal?: boolean;
 };
+
+export const SOURCE_TERMINAL_RESOLUTION = "source_terminal";
 
 /** A spent saved-work recovery is described from its current state. Text saved
  * by an older release could ask a person to inspect the run's environment. */
@@ -345,7 +348,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     try {
       const created = await db.transaction(async (tx) => {
         await notifyAttentionRetentionWork(tx, { companyId: input.companyId });
-        await notifyIssueRecovery(tx, { companyId: input.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
@@ -390,6 +393,21 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
     const now = new Date();
     if (existing && input.createOnly) return existing;
+    if (!existing) {
+      const [source] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.sourceIssueId))).limit(1);
+      if (source && (source.status === "done" || source.status === "cancelled")) {
+        const [settled] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.cause, input.cause),
+          eq(issueRecoveryActions.fingerprint, input.fingerprint),
+          eq(issueRecoveryActions.resolutionNote, SOURCE_TERMINAL_RESOLUTION),
+        )).limit(1);
+        if (settled) return toReadModel(settled);
+      }
+    }
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
       // A distinct failure identity must not overwrite the active action of a
@@ -417,7 +435,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], tx => tx.update(issueRecoveryActions).set({ nextAction: input.nextAction, updatedAt: now })
             .where(and(eq(issueRecoveryActions.id, existing.id),
               inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning(), { companyId: input.companyId });
+              sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).returning(), { companyId: input.companyId, issueId: input.sourceIssueId });
           if (updated) return toReadModel(updated);
         }
         return existing;
@@ -438,7 +456,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           Math.min(nextAttemptCount, effectiveMaxAttempts),
         );
         const [exhausted] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
-          await notifyIssueRecovery(tx, { companyId: input.companyId });
+          await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
           await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
           if ((!input.preserveExistingOwner && existing.cause !== input.cause)
             || (input.evidence?.runId !== undefined && input.evidence.runId !== existing.evidence?.runId)) {
@@ -493,14 +511,14 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
               ),
             )
             .returning();
-        }, { companyId: input.companyId });
+        }, { companyId: input.companyId, issueId: input.sourceIssueId });
         if (!exhausted) {
           return retryUpsertSourceScoped(input, retryCount);
         }
         return toReadModel(exhausted);
       }
       const [updated] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
-        await notifyIssueRecovery(tx, { companyId: input.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         if ((!input.preserveExistingOwner && existing.cause !== input.cause)
           || (input.evidence?.runId !== undefined && input.evidence.runId !== existing.evidence?.runId)) {
@@ -566,7 +584,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
             ),
           )
           .returning();
-      }, { companyId: input.companyId });
+      }, { companyId: input.companyId, issueId: input.sourceIssueId });
       if (!updated) {
         return retryUpsertSourceScoped(input, retryCount);
       }
@@ -575,14 +593,14 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
 
     try {
       const [created] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
-        await notifyIssueRecovery(tx, { companyId: input.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
         return tx
           .insert(issueRecoveryActions)
           .values(buildInsertValues(input, ownerType, now))
           .returning();
-      }, { companyId: input.companyId });
+      }, { companyId: input.companyId, issueId: input.sourceIssueId });
       return toReadModel(created!);
     } catch (error) {
       if (!isUniqueRecoveryActionConflict(error)) throw error;
@@ -619,12 +637,11 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
     }
 
-    const [updated] = await writeExecutionControl(dbOrTx, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
-      const pending = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
-        .where(and(...predicates)).limit(1);
-      if (!pending.length) return [];
-      // Resolving another attention releases this issue's preserved Native
-      // waiter to one normal inspection. No recurring monitor or new turn.
+    const [candidate] = await dbOrTx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(...predicates)).limit(1);
+    if (!candidate) return null;
+
+    const releaseWaiter = async (tx: DbOrTransaction) => {
       const [waiter] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
         .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId)).where(and(
           eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.sourceIssueId),
@@ -632,7 +649,30 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
           isNotNull(nativeRunFinalizations.leaseOwner), inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted"]),
         )).limit(1);
       if (waiter) await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
-      await notifyIssueRecovery(tx, { companyId: input.companyId });
+    };
+
+    if (input.sourceTerminal) {
+      const [settled] = await dbOrTx.transaction(async tx => {
+        await releaseWaiter(tx as unknown as DbOrTransaction);
+        await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
+        return tx.update(issueRecoveryActions)
+          .set({ status: input.status, outcome: input.outcome, resolutionNote: input.resolutionNote ?? null, resolvedAt: now, updatedAt: now })
+          .where(and(...predicates, sql`exists (select 1 from ${issues} where ${issues.id} = ${issueRecoveryActions.sourceIssueId}
+            and ${issues.companyId} = ${issueRecoveryActions.companyId} and ${issues.status} in ('done', 'cancelled'))`))
+          .returning();
+      });
+      return settled ? toReadModel(settled) : null;
+    }
+
+    const [updated] = await writeExecutionControl(dbOrTx, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], async tx => {
+      const pending = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(and(...predicates)).limit(1);
+      if (!pending.length) return [];
+      // Resolving another attention releases this issue's preserved Native
+      // waiter to one normal inspection. No recurring monitor or new turn.
+      await releaseWaiter(tx as unknown as DbOrTransaction);
+      await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       return tx
@@ -646,7 +686,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
         })
         .where(and(...predicates))
         .returning();
-    }, { companyId: input.companyId });
+    }, { companyId: input.companyId, issueId: input.sourceIssueId });
 
     return updated ? toReadModel(updated) : null;
   }

@@ -366,6 +366,63 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }
     });
 
+    it("carries the failed run's wake reason into a Retry so a monitor check is not lost", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const retryRunId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_session_interrupted",
+        contextSnapshot: { issueId, wakeReason: "issue_monitor_due", monitorNotes: "Phase 2 check" } })
+        .where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { retryOfRunId: runId, wakeReason: "task_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger).toMatchObject({ reason: "task_retry", sourceRunId: runId, retriedReason: "issue_monitor_due" });
+        await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, status: "failed",
+          contextSnapshot: { issueId, wakeReason: "task_retry", executionContinuation: envelope } });
+        const chained = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { retryOfRunId: retryRunId, wakeReason: "task_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(chained.trigger).toMatchObject({ sourceRunId: retryRunId, retriedReason: "issue_monitor_due" });
+        for (const resumedSession of [false, true]) {
+          const prompt = renderPaperclipWakePrompt({ reason: "task_retry", executionContinuation: envelope }, { resumedSession });
+          expect(prompt).toContain("- reason: task_retry");
+          expect(prompt).toContain("- retried wake: issue_monitor_due");
+        }
+        const fresh = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { wakeReason: "issue_assigned" }, summary: null, exposeLowTrustRaw: false });
+        expect(fresh.trigger).not.toHaveProperty("retriedReason");
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null, contextSnapshot: source.contextSnapshot })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("carries the original wake through a chain of automatic re-queues", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const firstRetryId = randomUUID(), secondRetryId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed",
+        contextSnapshot: { issueId, wakeReason: "issue_monitor_due", monitorNotes: "Phase 2 check" } })
+        .where(eq(heartbeatRuns.id, runId));
+      try {
+        await db.insert(heartbeatRuns).values([
+          { id: firstRetryId, companyId, agentId, status: "failed", retryOfRunId: runId,
+            contextSnapshot: { issueId, wakeReason: "transient_failure_retry", retryReason: "interrupted_preparation" } },
+          { id: secondRetryId, companyId, agentId, status: "running", retryOfRunId: firstRetryId,
+            contextSnapshot: { issueId, wakeReason: "transient_failure_retry" } },
+        ]);
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: secondRetryId,
+          context: { wakeReason: "transient_failure_retry" }, summary: null, exposeLowTrustRaw: false });
+        expect(envelope.trigger).toMatchObject({ reason: "transient_failure_retry", retriedReason: "issue_monitor_due" });
+        const preserved = await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: firstRetryId,
+          context: { wakeReason: "issue_monitor_due" }, summary: null, exposeLowTrustRaw: false });
+        expect(preserved.trigger).not.toHaveProperty("retriedReason");
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, secondRetryId));
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, firstRetryId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null, contextSnapshot: source.contextSnapshot })
+          .where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
     it("keeps Local CLI run-authored comments as history without promoting them to human direction", async () => {
       const id = randomUUID();
       await db.insert(issueComments).values({ id, companyId, issueId, authorType: "user",

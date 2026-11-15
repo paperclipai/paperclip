@@ -792,6 +792,10 @@ function MarkdownBodyImpl({
     () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
     [companies],
   );
+  const knownPrefixSet = useMemo(
+    () => (knownPrefixes ? new Set(knownPrefixes.map((prefix) => prefix.toUpperCase())) : undefined),
+    [knownPrefixes],
+  );
   const externalReferenceLookup = useMemo<MarkdownExternalReferenceMap | null>(() => {
     if (!externalReferences) return null;
     const lookup: MarkdownExternalReferenceMap = {};
@@ -900,7 +904,7 @@ function MarkdownBodyImpl({
         );
       }
 
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href, knownPrefixSet) : null;
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
@@ -1017,7 +1021,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes, knownPrefixSet]);
 
   return (
     <div

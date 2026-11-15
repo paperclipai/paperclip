@@ -30,8 +30,9 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
-import { captureBrowserException } from "./lib/sentry";
+import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { adoptHardLoadChatBootstrap } from "./lib/issue-chat-bootstrap";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -65,7 +66,7 @@ function MutationErrorToastBridge() {
 const queryClient = createAppQueryClient(
   {
     connectivity,
-    reportError: (error) => captureBrowserException(error),
+    reportError: (error, queryKey) => captureQueryException(error, queryKey),
     notifyMutationError: ({ title, body }) => pushMutationErrorToast?.({ title, body, tone: "error" }),
   },
   {
@@ -89,6 +90,8 @@ bindConnectivity(queryClient, connectivity);
 startPersistedQueryCache(queryClient, {
   buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
 });
+// Readers that start before the task page mounts share a hard load's bootstrap.
+adoptHardLoadChatBootstrap(queryClient);
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({
     canReload: () => connectivity.getSnapshot().status === "online"

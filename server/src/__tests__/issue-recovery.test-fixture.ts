@@ -11,6 +11,7 @@ import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { meterDatabaseStatements } from "./helpers/database-statement-meter.js";
 
 vi.setConfig({ testTimeout: 90_000 });
 
@@ -18,7 +19,8 @@ const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_RECOVERY_TEST_D
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 export const describeIssueRecovery: ReturnType<typeof describe.skipIf> = describe.skipIf(!support.supported);
 
-export function issueRecoveryFixture() {
+export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
+  let meter: ReturnType<typeof meterDatabaseStatements> | undefined;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
@@ -35,6 +37,7 @@ export function issueRecoveryFixture() {
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("issue-recovery-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    if (options.meter) meter = meterDatabaseStatements(db, external ?? database!.connectionString);
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
   beforeEach(async () => {
@@ -49,8 +52,8 @@ export function issueRecoveryFixture() {
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
-  async function start() {
+  afterAll(async () => { meter?.uninstall(); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
     tasks.clear();
@@ -63,7 +66,7 @@ export function issueRecoveryFixture() {
         return work;
       } });
     };
-    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining);
+    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining, options);
     dispatch = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
     await Promise.all([worker.ready, dispatch.ready, cancellation.ready]);
@@ -77,7 +80,7 @@ export function issueRecoveryFixture() {
       void pass.then(() => passes.delete(pass), () => passes.delete(pass));
       return pass;
     } });
-    const work = other.registerIssueStateRecoveryWork(competing, () => true);
+    const work = other.registerIssueStateRecoveryWork(competing, () => true, { backstopMs: 0 });
     extraStops.push(() => competing.stop()); extraDeadlines.push(competing.nextWakeAt); await work.ready;
   }
   async function fixture() {
@@ -115,11 +118,12 @@ export function issueRecoveryFixture() {
       .where(eq(agents.id, f.agentId));
     return failures;
   }
-  async function settled() {
+  async function settled(options: { backstopPending?: boolean } = {}) {
     await vi.waitFor(async () => {
       await Promise.allSettled([...passes]);
       await heartbeat.drainActiveRunExecutions();
-      const wake = coordinator.nextWakeAt();
+      const next = coordinator.nextWakeAt();
+      const wake = options.backstopPending && next !== null && next > Date.now() + 60_000 ? null : next;
       const detail = wake === null ? "" : JSON.stringify({ now: Date.now(), tasks: await Promise.all([...tasks].map(async ([queue, task]) => ({ queue, at: task.nextRunAt?.(), pending: await task.hasPending() }))),
         runs: (await db.select().from(heartbeatRuns)).map(run => ({ id: run.id, status: run.status, error: run.errorCode, lease: run.controllerLeaseExpiresAt, reason: run.contextSnapshot?.wakeReason })) });
       expect(wake, detail).toBeNull();
@@ -231,6 +235,7 @@ export function issueRecoveryFixture() {
   return {
     start, compete, fixture, completingProvider, settled, quiet, finish, completed, savedConversation,
     get db() { return db; },
+    get meter() { return meter!; },
     get heartbeat() { return heartbeat; },
     set heartbeat(value: typeof heartbeat) { heartbeat = value; },
     get coordinator() { return coordinator; },

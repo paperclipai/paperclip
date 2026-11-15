@@ -11,6 +11,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 import { errorHandler } from "./error-handler.js";
 import { userProfileRoutes } from "../routes/user-profiles.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const aliasFields = ["name", "email-local", "email", "principal"] as const;
@@ -172,11 +173,13 @@ const aliasFields = ["name", "email-local", "email", "principal"] as const;
     await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, importedCompanyId), eq(companyMemberships.principalId, userId)));
     await db.insert(instanceSettings).values({ singletonKey: "default", experimental: { enableOwnerInstanceAdmin: true } })
       .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { experimental: { enableOwnerInstanceAdmin: true } } });
+    invalidateInstanceSettingsCache();
     const elevated = await resolve(db, value);
     expect(elevated?.isInstanceAdmin).toBe(true);
     expect(elevated?.companyIds).toEqual(actor!.companyIds);
     expect(await db.select().from(instanceUserRoles).where(eq(instanceUserRoles.userId, userId))).toEqual([]);
     await db.update(instanceSettings).set({ experimental: { enableOwnerInstanceAdmin: false } });
+    invalidateInstanceSettingsCache();
     expect((await resolve(db, value))?.isInstanceAdmin).toBe(false);
   });
 

@@ -331,8 +331,8 @@ async function main() {
       const cleanup = await owned.cleanUp();
       timeline.add("daytona_cleanup", cleanup);
       await writeFile(path.join(outDir, "sandbox-cleanup.json"), `${JSON.stringify(cleanup, null, 2)}\n`, { mode: 0o600 });
-      if (cleanup.remainingSandboxes.length || cleanup.errors.length || cleanup.environmentDeleteBlocked || !cleanup.environmentDeleted) {
-        process.stderr.write(`Daytona cleanup incomplete: remaining ${cleanup.remainingSandboxes.join(", ") || "none"}; `
+      if (cleanup.remainingSandboxes.length || cleanup.undeletedSandboxes.length || cleanup.errors.length || cleanup.environmentDeleteBlocked || !cleanup.environmentDeleted) {
+        process.stderr.write(`Daytona cleanup incomplete: remaining ${cleanup.remainingSandboxes.join(", ") || "none"}; left after deletion ${cleanup.undeletedSandboxes.join(", ") || "none"}; `
           + `environment deleted ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? ` (blocked: ${String(cleanup.environmentDeleteBlocked)})` : ""}; ${cleanup.errors.join("; ")}\n`);
         process.exitCode = 1;
       }

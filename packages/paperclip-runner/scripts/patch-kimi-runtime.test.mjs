@@ -252,6 +252,8 @@ test("real pinned Kimi and ACPX exchange instructions/tools/denial/errors with a
       createRequire(cli), module, module.exports, cli, dirname(cli));
     compiledFactory = module.exports;
   }
+  // Mirrors the runtime adapter: the exact outbound permission reply proves delivery.
+  const { createAcpxPermissionReplyConfirmations } = await tsImport("../src/drivers/acpx/interaction-delivery.ts", import.meta.url);
   const [{ verifyKimiInstallation }, { QUALIFIED_ACPX_PROFILES }, { kimiManagedConfiguration }, instructionModule, { createKimiMessageProjection }, { normalizeAcpxPermission }, environmentModule, { configuredEnvironmentProjection, CONFIGURED_ENVIRONMENT_KEYS }] = await Promise.all([
     tsImport("../src/drivers/acpx/kimi-installation.ts", import.meta.url),
     tsImport("../src/drivers/acpx/qualified-profiles.ts", import.meta.url),
@@ -421,13 +423,16 @@ test("real pinned Kimi and ACPX exchange instructions/tools/denial/errors with a
       const fence = compiledFactory ? await compiledFactory.acquireAcpxProviderLifetimeLease({ agentHomeDirectory: home }) : undefined;
       const owner = { lease, fence, children: [], completions: [], handle: undefined, runtime: undefined, closed: false };
       owners.push(owner);
+      const replies = createAcpxPermissionReplyConfirmations();
       owner.runtime = createAcpRuntime({ cwd: workspace, sessionStore: store,
         agentRegistry: { resolve: () => "paperclip-verified-kimi-command", list: () => ["kimi"] },
         mcpServers: [{ type: "http", name: "peer", url: `${endpoint}/mcp`, headers: [] }],
         permissionMode: "approve-all", permissionPolicy: { defaultAction: "escalate" }, timeoutMs: 15_000,
         protocolGuardFactory: () => admission.createGuard(),
-        onAcpMessage: (direction, message) => nativeMessages.push({ owner, direction, message }),
-        onPermissionRequest: async (request, context) => {
+        onAcpMessage: (direction, message) => { replies.observe(direction, message); nativeMessages.push({ owner, direction, message }); },
+        onPermissionRequest: async (request, stockContext) => {
+          const reply = replies.bind(request, stockContext.signal);
+          const decision = await (async (context) => {
           permissions.push(request.raw);
           assert.ok(context.responseDelivery instanceof Promise);
           assert.ok(request.raw.options.every(option => option.kind !== "allow_always"));
@@ -470,6 +475,9 @@ test("real pinned Kimi and ACPX exchange instructions/tools/denial/errors with a
           assert.ok(["mcp__peer__echo_peer", "mcp__peer__empty_peer"].includes(request.raw.toolCall.title));
           assert.deepEqual(request.raw.toolCall.rawInput, request.raw.toolCall.title === "mcp__peer__echo_peer" ? argumentsObject : {});
           return { outcome: "allow_once" };
+          })({ ...stockContext, responseDelivery: reply.delivery });
+          reply.select(decision);
+          return decision;
         },
         spawnAgent: () => spawnNative(lease, owner),
       });

@@ -1,14 +1,12 @@
-import { readGitHubResponseRun } from "./response-run-state.js";
+import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubRunReplyState } from "../../chat-run-publications.js";
 import { and, asc, eq, gt, isNotNull, or, sql } from "drizzle-orm";
 import { chatActions, chatConversations, chatEndpointLeases, chatEndpointResources,
   chatPublications, fastResponseRequests, chatEndpoints, chatMessageLinks, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
-import type { ChatResponseScope } from "../../chat-response-availability.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
-
-type Scope = ChatResponseScope & { endpointId?: string; repositoryId?: string; number?: number };
+import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string | null; conversationId: string | null; repositoryId: string | null; number: number | null; dueAt: number };
 type FastResponse = { status: string; expiresAt: string; publicationState: string | null };
@@ -59,16 +57,34 @@ export function registerGitHubAcknowledgementWork(
         actionId ? eq(chatActions.id, actionId) : undefined,
       )).orderBy(asc(chatActions.id)).limit(100);
   }
-  async function entry(row: Awaited<ReturnType<typeof page>>[number]): Promise<Entry | null> {
-    const { latestRun, ownsLatestRequest } = await readGitHubResponseRun(db, {
-      companyId: row.companyId, endpointId: row.endpointId, agentId: row.agentId,
-      issueId: row.issueId, deliveryId: row.deliveryId!, sourceMessageId: row.sourceMessageId,
-    });
-    // Execution success alone does not decide whether a final response exists.
-    // Presentation/publication commits invalidate this parked request.
-    if (row.issueId && ownsLatestRequest && latestRun?.nativePresentationPending &&
-        await githubRunReplyState(db, { companyId: row.companyId, endpointId: row.endpointId,
-          issueId: row.issueId, runId: latestRun.id }) === "none") return null;
+  type Row = Awaited<ReturnType<typeof page>>[number];
+  async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | null> {
+    // A request whose requester provenance changed stays due, so the
+    // acknowledgement owner revokes it. It must not stop the rest of the page.
+    if (!("forbidden" in read)) {
+      const { latestRun, ownsLatestRequest } = read;
+      // Execution success alone does not decide whether a final response exists.
+      // Presentation/publication commits invalidate this parked request.
+      if (row.issueId && ownsLatestRequest && latestRun?.nativePresentationPending &&
+          await githubRunReplyState(db, { companyId: row.companyId, endpointId: row.endpointId,
+            issueId: row.issueId, runId: latestRun.id }) === "none") return null;
+    }
+    return schedule(row);
+  }
+  /** The entries of a page, by position, from one batched run-state read. */
+  async function entries(rows: Row[]) {
+    const reads = await readGitHubResponseRuns(db, rows.map(row => ({ companyId: row.companyId, endpointId: row.endpointId,
+      agentId: row.agentId, issueId: row.issueId, deliveryId: row.deliveryId!, sourceMessageId: row.sourceMessageId })));
+    const values: Array<Entry | null> = [];
+    for (const [index, row] of rows.entries()) values.push(await entry(row, reads[index]!));
+    return values;
+  }
+  async function current(actionId: string) {
+    const [row] = await page(undefined, undefined, actionId);
+    return row ? (await entries([row]))[0] ?? null : null;
+  }
+  /** When the request is due, from its own row. */
+  function schedule(row: Row): Entry | null {
     let dueAt = row.status === "failed" ? Date.parse(String(row.result?.retryAt)) : 0;
     if (!Number.isFinite(dueAt)) throw new Error("GitHub acknowledgement has an invalid retry deadline");
     const fast = row.fast;
@@ -83,6 +99,7 @@ export function registerGitHubAcknowledgementWork(
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.chatGitHubAcknowledgements,
+    reconstructionIntervalMs: githubResponseReconstructionIntervalMs,
     decodeScope: (hint: string): Scope | undefined => hint === "*" ? undefined : JSON.parse(hint),
     matches: (value: Entry, scope?: Scope) => !scope || (value.companyId === scope.companyId &&
       (!scope.issueId || value.issueId === scope.issueId) && (!scope.deliveryId || value.deliveryId === scope.deliveryId) &&
@@ -90,23 +107,24 @@ export function registerGitHubAcknowledgementWork(
       (!scope.endpointId || value.endpointId === scope.endpointId) && (!scope.repositoryId || value.repositoryId === scope.repositoryId) &&
       (!scope.number || value.number === scope.number)),
     load: async (scope?: Scope, signal?: AbortSignal) => {
-      const entries: Entry[] = [];
+      const loaded: Entry[] = [];
       let cursor: string | undefined;
       while (canRun() && !signal?.aborted) {
         const rows = await page(scope, cursor);
-        for (const row of rows) { const value = await entry(row); if (value) entries.push(value); }
-        if (rows.length < 100) return entries;
+        for (const value of await entries(rows)) if (value) loaded.push(value);
+        if (rows.length < 100) return loaded;
         cursor = rows[rows.length - 1].id;
       }
       throw signal?.reason ?? new Error("GitHub acknowledgement recovery stopped");
     },
     check: async (value: Entry, signal?: AbortSignal) => {
-      const [row] = await page(undefined, undefined, value.id);
-      const current = row ? await entry(row) : null;
-      if (!current || current.dueAt > Date.now() || !canRun() || signal?.aborted) return current;
-      await acknowledge(current.deliveryId, () => canRun() && !signal?.aborted);
+      const due = await current(value.id);
+      if (!due || due.dueAt > Date.now() || !canRun() || signal?.aborted) return due;
+      await acknowledge(due.deliveryId, () => canRun() && !signal?.aborted);
+      // A request that is still owed keeps its saved deadline. The next check
+      // reads its run state again before it acknowledges.
       const [remaining] = await page(undefined, undefined, value.id);
-      return remaining ? await entry(remaining) : null;
+      return remaining ? schedule(remaining) : null;
     },
   }, canRun);
 }

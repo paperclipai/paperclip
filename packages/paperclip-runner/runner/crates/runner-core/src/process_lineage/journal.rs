@@ -582,6 +582,9 @@ mod tests {
     #[test]
     fn reaping_stops_a_dead_runners_provider_and_its_escaped_tool_job() {
         use std::os::unix::process::CommandExt;
+        // The proof refuses while any orphan of this user started after the
+        // journal was written, including one that another test left.
+        let _no_foreign_orphans = super::super::host_orphans::no_foreign_orphans();
         let directory = temporary_directory("reap");
         let pid_file = directory.join("job.pid");
         // The wrapper lives past several samples, as a real tool wrapper does.
@@ -674,6 +677,7 @@ mod tests {
     /// attribute.
     #[test]
     fn reaping_refuses_an_orphan_born_after_the_last_sample() {
+        let orphans = super::super::host_orphans::may_orphan();
         let directory = temporary_directory("escape");
         let writer = exited_writer();
         write_marker(&directory, writer);
@@ -728,6 +732,8 @@ mod tests {
         if let Some(group) = rustix::process::Pid::from_raw(orphan.pgid) {
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
+        super::super::host_orphans::wait_until_group_gone(orphan.pgid);
+        drop(orphans);
         let _ = fs::remove_dir_all(&directory);
         assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
         assert!(!report.verified);

@@ -28,17 +28,39 @@ export function storedArchiveEntries(bytes: Buffer): Map<string, Buffer> {
   if (!rows.size || offset + 4 > bytes.length || bytes.readUInt32LE(offset) !== 0x02014b50) throw new Error("Missing feedback ZIP directory");
   return rows;
 }
-export function interruptedBundleMatches(bundle: FeedbackTraceBundle, ids: { company: string; issue: string; run: string; agent: string; comment: string }) {
-  const run = bundle.paperclipRun;
-  const runFile = bundle.files.find(f => f.path === "paperclip/run.json"), eventsFile = bundle.files.find(f => f.path === "paperclip/run-events.json");
-  if (!runFile || !eventsFile) return false;
-  try {
-    const saved = JSON.parse(runFile.contents) as Record<string, unknown>, events = JSON.parse(eventsFile.contents) as Array<{ runId?: string; agentId?: string; seq?: number }>;
-    return bundle.companyId === ids.company && bundle.issueId === ids.issue && bundle.envelope.targetId === ids.comment
-      && run?.id === ids.run && run.companyId === ids.company && run.agentId === ids.agent && run.status === "cancelled"
-      && saved.id === ids.run && saved.status === "cancelled" && saved.agentId === ids.agent && saved.companyId === ids.company
-      && events.length > 0 && events.every(e => e.runId === ids.run) && Number(run.eventCount) === events.length;
-  } catch { return false; }
+export interface InterruptedBundleField { field: string; passed: boolean; expected: unknown; actual: unknown }
+/** Each property the exported bundle must keep for the original cancelled run, with the value it held, so a failure
+ * names the property that changed instead of one combined false. */
+export function interruptedBundleFields(bundle: FeedbackTraceBundle, ids: { company: string; issue: string; run: string; agent: string; comment: string }): InterruptedBundleField[] {
+  // A malformed export still yields named failed fields rather than throwing.
+  const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const run = record(bundle?.paperclipRun), files = Array.isArray(bundle?.files) ? bundle.files : [];
+  const runFile = files.find(f => record(f)?.path === "paperclip/run.json"), eventsFile = files.find(f => record(f)?.path === "paperclip/run-events.json");
+  const parse = (text: unknown): unknown => { try { return typeof text === "string" ? JSON.parse(text) : undefined; } catch { return undefined; } };
+  const saved = record(parse(runFile?.contents));
+  const parsedEvents = parse(eventsFile?.contents);
+  const events = Array.isArray(parsedEvents) ? parsedEvents.map(event => record(event) ?? {}) as Array<{ runId?: unknown }> : undefined;
+  const field = (name: string, expected: unknown, actual: unknown, passed = actual === expected) => ({ field: name, passed, expected, actual });
+  return [
+    field("bundle.companyId", ids.company, bundle?.companyId),
+    field("bundle.issueId", ids.issue, bundle?.issueId),
+    field("envelope.targetId", ids.comment, record(bundle?.envelope)?.targetId),
+    field("paperclipRun.id", ids.run, run?.id),
+    field("paperclipRun.companyId", ids.company, run?.companyId),
+    field("paperclipRun.agentId", ids.agent, run?.agentId),
+    field("paperclipRun.status", "cancelled", run?.status),
+    field("run.json.id", ids.run, saved?.id),
+    field("run.json.status", "cancelled", saved?.status),
+    field("run.json.agentId", ids.agent, saved?.agentId),
+    field("run.json.companyId", ids.company, saved?.companyId),
+    field("run-events.json.count", "at least one event", Array.isArray(events) ? events.length : null, Array.isArray(events) && events.length > 0),
+    field("run-events.json.runIds", [ids.run], Array.isArray(events) ? [...new Set(events.map(e => e.runId))] : null, Array.isArray(events) && events.every(e => e.runId === ids.run)),
+    field("paperclipRun.eventCount", Array.isArray(events) ? events.length : null, run?.eventCount === undefined ? undefined : Number(run.eventCount),
+      Array.isArray(events) && Number(run?.eventCount) === events.length),
+  ];
+}
+export function interruptedBundleMatches(bundle: FeedbackTraceBundle, ids: Parameters<typeof interruptedBundleFields>[1]) {
+  return interruptedBundleFields(bundle, ids).every(row => row.passed);
 }
 export function gradeFeedbackBundle(value: unknown) {
   const c = checks(), o = privilegedObservation(value); c.add("actual-local-feedback-export", !!o, "A real human-owned scoped CLI export and retained interrupted-work trace are required."); if (!o) return c.result();
@@ -46,6 +68,9 @@ export function gradeFeedbackBundle(value: unknown) {
   c.add("interrupted-work-not-fabricated-failure", o.state.workerWasReallyWaiting === true && o.state.cancelledBeforeCanonical === true
     && o.state.exportedInterruptionMatches === true && o.runs.some(r => r.id === o.state.workerRunId && r.status === "cancelled")
     && o.state.originalTraceUnchanged === true, "The original actual cancelled run, source-attributed comment and exact retained events survive export; cancellation is never relabeled as a failed native/model outcome.");
+  // Named per-property results for the exported bundle, so a failed export says which saved property changed.
+  for (const row of (o.state.exportedInterruption as InterruptedBundleField[] | undefined) ?? [])
+    c.add(`exported-interruption:${row.field}`, row.passed, `The exported bundle keeps ${row.field} of the cancelled run: expected ${JSON.stringify(row.expected)}, exported ${JSON.stringify(row.actual)}.`);
   c.add("owned-local-bytes-and-scope", o.state.bundleWithinOwnedDirectory === true && o.state.exportCompanyMatches === true && o.state.exportIssueMatches === true
     && o.state.fullTraceBytesMatch === true && o.state.archiveBytesMatch === true && typeof o.state.zipSha256 === "string" && Number(o.state.zipBytes) > 0
     && o.state.noPrivateCredentialBytes === true && o.state.remoteSharingUnchanged === true && o.state.bundlePublished === false,
@@ -106,7 +131,8 @@ const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privile
     const traceDir = index.files.fullTraces[0]!;
     if (path.basename(traceDir) !== traceDir) throw new Error("Unexpected feedback trace directory");
     const bundleBytes = await readFile(path.join(directory, "full-traces", traceDir, "bundle.json")), bundle = JSON.parse(bundleBytes.toString()) as FeedbackTraceBundle;
-    state.exportedInterruptionMatches = interruptedBundleMatches(bundle, { company, issue: task.id, run: String(state.workerRunId), agent: (state.worker as Entity).id, comment: String(state.workerCommentId) });
+    state.exportedInterruption = interruptedBundleFields(bundle, { company, issue: task.id, run: String(state.workerRunId), agent: (state.worker as Entity).id, comment: String(state.workerCommentId) });
+    state.exportedInterruptionMatches = (state.exportedInterruption as InterruptedBundleField[]).every(row => row.passed);
     const actual = await ctx.input.api.get<FeedbackTraceBundle>(`/api/feedback-traces/${state.traceId}/bundle`);
     state.fullTraceBytesMatch = JSON.stringify(bundle) === JSON.stringify(actual);
     const zip = await readFile(result.zipPath), archive = storedArchiveEntries(zip);
@@ -125,6 +151,8 @@ const feedback = privilegedDefinition("cli-operations.feedback-bundle", "privile
     state.zipBytes = zip.length; state.zipSha256 = sha(zip);
     state.noPrivateCredentialBytes = [indexBytes, bundleBytes, zip].every(bytes => !(ctx.input.privateSecrets ?? []).some(secret => secret && bytes.includes(Buffer.from(secret))));
     if (!state.noPrivateCredentialBytes) throw new Error("Private credential bytes detected in local feedback output; matched content withheld");
+    // Keep the exported bundle itself as evidence, after the private-credential check above has cleared it.
+    await ctx.input.evidence("feedback-export-bundle.json", bundle);
     const after = await ctx.input.api.get<FeedbackTrace>(`/api/feedback-traces/${state.traceId}`), before = state.traceBefore as Record<string, unknown>;
     state.originalTraceUnchanged = ["id", "targetId", "status", "destination", "exportId"].every(key => after[key as keyof FeedbackTrace] === before[key]);
     const sharingAfter = await ctx.input.api.get<{ feedbackDataSharingPreference?: string }>("/api/instance/settings/general");
@@ -155,7 +183,7 @@ async function companionPhaseForCancelled(ctx: Parameters<typeof companionPhase>
     attributed: human.length === 1 && replies.length > 0 && profile.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true
       && replies.every(c => Date.parse(c.createdAt!) >= Date.parse(human[0]!.createdAt!)) };
 }
-feedback.oracleVersion = "paperclip.chat-catalog.feedback-bundle.v2"; feedback.expectedRunCount = 3; feedback.expectedHumanMessageCount = 2; feedback.attemptTimeoutMs = 900000;
+feedback.oracleVersion = "paperclip.chat-catalog.feedback-bundle.v3"; feedback.expectedRunCount = 3; feedback.expectedHumanMessageCount = 2; feedback.attemptTimeoutMs = 900000;
 feedback.runPolicy = { kind: "terminal-counts", terminalStatusCounts: { succeeded: 2, cancelled: 1 } };
 feedback.cleanup = async (ctx, state) => { try { const pending = pendingFixtures.get(ctx);
     if (pending) { const runs = await ctx.allRuns(); for (const run of runs.filter(r => r.agentId === pending.gate.worker.id && ["queued", "running"].includes(r.status))) await ctx.input.api.post(`/api/heartbeat-runs/${run.id}/cancel`, {}); await releaseRuntimeWorker({ gate: pending.gate.gate }); pendingFixtures.delete(ctx); }

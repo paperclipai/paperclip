@@ -132,12 +132,18 @@ describe("execution truth projection", () => {
     const projected = projectExecution(source, coordinator({ phase: "terminal_failure" }), [], action, now);
     expect(projected).toMatchObject({
       phase: "recovery_needed", label: "Stopped", cause: action.cause,
-      nextAction: status === "recovered" ? "Saved work recovered. Send a message to continue."
+      nextAction: status === "recovered" ? "Saved work recovered."
         : status === "blocked" ? "The saved source cannot be read safely." : "Recovering saved work…",
       permittedActions: ["inspect_run"], successorRunId: null,
     });
     expect(source.status).toBe("failed");
     expect(action.evidence.automaticRecovery.replay).toBe("blocked");
+    if (status === "recovered") {
+      expect(projectExecution({ ...source, status: "timed_out" }, coordinator({ phase: "terminal_failure" }), [], action, now)
+        .nextAction).toBe("Saved work recovered.");
+      expect(projectExecution({ ...source, errorCode: "native_session_cleanup_quarantined" },
+        coordinator({ phase: "terminal_failure" }), [], action, now).nextAction).toBe("Saved work recovered.");
+    }
     expect(projectExecution(source, undefined, [], { ...action,
       evidence: { ...action.evidence, workspaceRecovery: { ...action.evidence.workspaceRecovery,
         runId: "5f227d75-b314-4511-bf23-9c615277e69b" } },

@@ -3,8 +3,9 @@ import { privateIdentityBrowser } from "./identity-private-browser.js";
 import { pollUntil } from "../api.js";
 import type { AiConnectionList } from "../../../packages/shared/src/ai-connections.js";
 import type { ConnectionGrantsResponse, ToolConnectionInstall } from "../../../packages/shared/src/types/tool-access.js";
-import { NEW_COMPANY_NATIVE_MODEL, NEW_COMPANY_PROVIDER_MODEL, nativeSetupRequest, requireNativeFirstAgentProof,
+import { NEW_COMPANY_NATIVE_MODEL, NEW_COMPANY_PROVIDER_MODEL, NativeProofFailure, nativeSetupRequest, requireNativeFirstAgentProof,
   type NativeCompany, type NativeFirstAgent, type NativeSetupProbe, type NativeSetupRequest, type NewCompanyNativeReceipt } from "./identity-new-company-native-proof.js";
+import type { IdentityPrivateStep } from "./identity-private-browser-steps.js";
 export type { NewCompanyNativeReceipt } from "./identity-new-company-native-proof.js";
 interface Input {
   page: Page; origin: string; companyName: string; agentName: string; credential: string; deadlineAt: number;
@@ -23,7 +24,10 @@ export async function finishNativeNewCompany(input: Input): Promise<NewCompanyNa
 export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
   registerCompany(company: NativeCompany): Promise<void>;
   registerConnection(companyId: string, connectionId: string, grantId: string): Promise<void>;
+  /** Names the fixed step in progress, for the child's closed failure record. */
+  step?(name: IdentityPrivateStep): void;
 }): Promise<NewCompanyNativeReceipt> {
+  const step = (name: IdentityPrivateStep) => input.step?.(name);
   let attached = false; try { test.info(); attached = true; } catch { /* standalone only */ }
   if (attached) throw new Error("Credential-bearing company setup requires the private child");
   const { page, origin } = input;
@@ -32,7 +36,7 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
     const response = await page.context().request.get(origin + endpoint, { timeout: Math.min(30_000, remaining()) });
     if (!response.ok()) throw new Error(`Public company setup read returned HTTP ${response.status()}`); return response.json() as Promise<T>;
   };
-  const session = await get<{ user: { id: string } }>("/api/auth/get-session");
+  step("new-company-create"); const session = await get<{ user: { id: string } }>("/api/auth/get-session");
   const before = await get<NativeCompany[]>("/api/companies");
   await page.getByRole("button", { name: /^Open .+ (?:organization|workspace|company) switcher$/i }).click();
   await page.getByRole("menuitem", { name: "Create organization", exact: true }).click();
@@ -47,7 +51,7 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
   if ((await get<NativeFirstAgent[]>(`/api/companies/${company.id}/agents`)).length) throw new Error("The wizard created an agent before the public route departure");
   // Ordinary address-bar navigation to a supported public route. No hidden
   // dialog action, draft edit or forced localStorage state is used.
-  const publicSetupRoute = `/${company.issuePrefix}/agents/new`;
+  step("new-company-agent-route"); const publicSetupRoute = `/${company.issuePrefix}/agents/new`;
   await page.goto(new URL(publicSetupRoute, origin).href, { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("onboarding-wizard")).not.toBeVisible();
   await expect(page.getByRole("heading", { name: "Meet your next agent", exact: true })).toBeVisible();
@@ -58,7 +62,7 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
   if (setupAgents.length !== 1 || setupAgents[0]?.name !== input.agentName || setupAgents[0]?.role !== "ceo" || setupAgents[0]?.lifecycleState === "ready")
     throw new Error("Public first-agent dialog did not save one setup-held CEO");
   const provisional = setupAgents[0]!;
-  await page.getByRole("dialog").locator("summary").filter({ hasText: /^Advanced$/ }).click();
+  step("new-company-configure"); await page.getByRole("dialog").locator("summary").filter({ hasText: /^Advanced$/ }).click();
   await page.getByRole("button", { name: "Experimental harness", exact: true }).click();
   await page.getByRole("option", { name: "OpenCode (Paperclip Runner)", exact: true }).click();
   await page.getByRole("button", { name: "Configure agent", exact: true }).click();
@@ -101,7 +105,7 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
   page.on("response", onResponse);
   const settleReads = async () => { await Promise.all([...reads].map(read => read.catch(() => {}))); if (errors.length) throw new Error("Public company setup response identity check failed"); };
   try {
-    await page.getByRole("combobox", { name: "Connection", exact: true }).click();
+    step("new-company-account"); await page.getByRole("combobox", { name: "Connection", exact: true }).click();
     await page.getByRole("option", { name: "Connect an account…", exact: true }).click();
     const accountDialog = page.getByRole("dialog").filter({ has: page.getByRole("heading", { name: "Connect account", exact: true }) });
     await accountDialog.locator("summary").filter({ hasText: /^Advanced providers$/ }).click();
@@ -117,24 +121,28 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
     await accountDialog.getByRole("button", { name: "Connect", exact: true }).click();
     await expect(accountDialog).not.toBeVisible({ timeout: remaining() }); await settleReads();
     if (!connection) throw new Error("Public new-company account creation receipt missing");
-    await page.getByRole("button", { name: "Run test", exact: true }).click();
+    step("new-company-test"); await page.getByRole("button", { name: "Run test", exact: true }).click();
     await expect(page.getByRole("button", { name: "Test again", exact: true })).toBeVisible({ timeout: remaining() }); await settleReads();
     if (probes.length !== 1 || probes[0]?.status !== "pass") throw new Error("The selected native account/model test did not pass");
-    await page.getByRole("button", { name: "Finish setup", exact: true }).click();
-    await expect(page.getByRole("button", { name: new RegExp(`^Assign ${input.agentName} a Task$`) })).toBeVisible({ timeout: remaining() }); await settleReads();
+    step("new-company-hire"); await page.getByRole("button", { name: "Finish setup", exact: true }).click();
+    // The button appears while Paperclip is still preparing the agent; a person
+    // assigns work only once it is enabled, when the agent is ready.
+    await expect(page.getByRole("button", { name: new RegExp(`^Assign ${input.agentName} a Task$`) })).toBeEnabled({ timeout: remaining() }); await settleReads();
   } finally { page.off("response", onResponse); }
-  const agents = await get<NativeFirstAgent[]>(`/api/companies/${company.id}/agents`);
+  step("new-company-readback"); const agents = await get<NativeFirstAgent[]>(`/api/companies/${company.id}/agents`);
   if (agents.length !== 1 || agents[0]?.id !== provisional.id) throw new Error("Public setup duplicated or replaced the first agent");
   const agent = await get<NativeFirstAgent>(`/api/agents/${provisional.id}`);
   const responsibleCompany = await get<NativeCompany>(`/api/companies/${company.id}`);
   const accounts = await get<AiConnectionList>(`/api/companies/${company.id}/ai-connections?agentId=${agent.id}`);
   const grants = await get<ConnectionGrantsResponse>(`/api/tool-connections/${connection!.connectionId}/grants`);
   const installs = await get<{ installs: ToolConnectionInstall[] }>(`/api/tool-connections/${connection!.connectionId}/installs`);
-  requireNativeFirstAgentProof({ company: responsibleCompany, agent, humanId: session.user.id, environment, savedSetupAgentId: provisional.id, probes, hires, connection: connection!, accounts, grants, installs: installs.installs });
+  try { requireNativeFirstAgentProof({ company: responsibleCompany, agent, humanId: session.user.id, environment, savedSetupAgentId: provisional.id, probes, hires, connection: connection!, accounts, grants, installs: installs.installs }); }
+  catch (error) { if (error instanceof NativeProofFailure) step(`new-company-proof-${error.reason}`); throw error; }
+  step("new-company-credential-scan");
   if (JSON.stringify(agent).includes(input.credential)) throw new Error("The public first-agent record exposes a credential; values withheld");
   const draftContainsCredential = await page.evaluate(secret => Object.values(localStorage).some(value => String(value).includes(secret)), input.credential);
   if (draftContainsCredential) throw new Error("The public setup draft exposes a credential; values withheld");
-  const settings = await get<{ enableAgentChat: boolean }>("/api/instance/settings/experimental");
+  step("new-company-chat"); const settings = await get<{ enableAgentChat: boolean }>("/api/instance/settings/experimental");
   if (!settings.enableAgentChat) throw new Error("The actual new-company chat entry is unavailable");
   await page.goto(`${origin}/${company.issuePrefix}/chats/${agent.id}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();

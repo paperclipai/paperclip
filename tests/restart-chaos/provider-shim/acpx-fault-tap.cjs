@@ -41,8 +41,19 @@ function createFaultRuntime(config, now = Date.now) {
     },
     /** Every rule applies at most once per task, across sidecar and provider restarts. */
     claim(rule) {
-      const marker = path.join(config.stateDirectory, `${rule.nonce}.${rule.kind}.${rule.message}.applied`);
-      try { writeFileSync(marker, String(process.pid), { flag: "wx" }); return true; } catch { return false; }
+      const base = path.join(config.stateDirectory, `${rule.nonce}.${rule.kind}.${rule.message}`);
+      // `occurrence` N (default 1): pass the first N-1 matching messages of the task, take the Nth.
+      const occurrence = Number.isSafeInteger(rule.occurrence) && rule.occurrence > 1 ? rule.occurrence : 1;
+      if (occurrence > 1) {
+        let seen = 0;
+        try { seen = readFileSync(`${base}.seen`, "utf8").length; } catch { /* none yet */ }
+        if (seen < occurrence - 1) {
+          try { appendFileSync(`${base}.seen`, "x"); } catch { /* best effort */ }
+          this.log({ event: "passed", nonce: rule.nonce, kind: rule.kind, message: rule.message, occurrence, seen: seen + 1 });
+          return false;
+        }
+      }
+      try { writeFileSync(`${base}.applied`, String(process.pid), { flag: "wx" }); return true; } catch { return false; }
     },
   };
 }
