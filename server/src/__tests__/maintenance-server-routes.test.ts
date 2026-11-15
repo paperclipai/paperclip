@@ -161,7 +161,12 @@ describeDatabase("assembled maintenance server production wiring", () => {
       await server.updateIssue({ id: issue!.id, status: "done" }); await settleClock(server);
       const quiet = server.proxy.queries.length;
       for (let step = 0; step < 4; step++) { await server.advance(30_000); await settleClock(server); }
-      expect(server.proxy.queries.length).toBe(quiet);
+      // The controller instance lease may check once more that the boot no longer holds the
+      // run's stamped records, then stops (it renews only while the boot holds work).
+      expect(server.proxy.queries.slice(quiet).filter(query => !query.sql.includes("controller_instances"))).toEqual([]);
+      const leaseIdle = server.proxy.queries.length;
+      for (let step = 0; step < 2; step++) { await server.advance(30_000); await settleClock(server); }
+      expect(server.proxy.queries.length).toBe(leaseIdle);
       await writeFile(path.join(server.directory, "receipt-measurement.json"), JSON.stringify({ phase: "ordinary-held-task-retry", companyId: company.id, issueId: issue!.id,
         requestId: retry.requestId, waiting, grace, parked, executed, count: count!.count, parkedRealMs: 30_000, parkedQueries: 0, settledClockMs: 120_000, settledQueries: 0,
         boundary: "actual Retry and subtree release HTTP, wakeAgents false, real clock through process/controller authority, real local process, no outcome seeded", frames: server.proxy.frames }, null, 2));

@@ -31,7 +31,7 @@ interface Receipt extends Record<string,unknown> {id:string;companyId:string;ass
 interface Authority {binding:{id:string;companyId:string;agentId:string;generation:number};assignment:Pick<Assignment,"id"|"companyId"|"agentId"|"bindingId"|"bindingGeneration"|"runId"|"normalizedSessionId"|"turnId"|"revision"|"controllerGeneration"|"status"> & {expiresAt:Date;createdAt:Date;claimedAt?:Date|null}}
 interface Identity<S> {
   authorize(subject:S,assignmentId:string,settled?:boolean):Promise<Authority>;
-  enabled(provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
+  enabled(database:Pick<Db,"select">,provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
   expectedResource?():string;
   assertSubjectCredential?(tx:ExternalAdmissionTransaction,subject:S):Promise<void>;
 }
@@ -60,7 +60,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
   async function assertCurrentAuthority(database:Database,b:Binding,allowFence=false) {
     if(allowFence)return;
     const actualProvider=provider==="muse"?"muse":b.providerKind;
-    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
+    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(database,actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
     const [agent]=await database.select().from(agents).where(and(eq(agents.id,b.agentId),eq(agents.companyId,b.companyId)));
     const [company]=await database.select().from(companies).where(eq(companies.id,b.companyId));
     const [user]=await database.select({id:authUsers.id}).from(authUsers).where(eq(authUsers.id,b.operatorId));
@@ -312,10 +312,15 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
           await tx.execute(sql`update ${operationTable} set status=${provider==="muse"&&outcome.status==="rejected"?"rejected":store.completed},outcome=${JSON.stringify(outcome)}::jsonb,source_event_id=${event.sourceEventId},updated_at=now() where id=${op.id}::uuid`);
           const action=op.command.action;
-          await tx.execute(sql`update ${assignmentTable} set last_activity_at=now() where id=${a.id}::uuid`);
-          if(action==="renew"&&outcome.status==="renewed")await tx.execute(sql`update ${assignmentTable} set expires_at=${new Date(Number(outcome.expiresAtUnixMs)).toISOString()}::timestamptz where id=${a.id}::uuid`);
-          if(a.status!=="fenced"&&outcome.status!=="rejected"&&action==="accept")await tx.execute(sql`update ${assignmentTable} set status='accepted',${sql.raw(store.acceptedAt)}=now() where id=${a.id}::uuid`);
-          if(a.status!=="fenced"&&action==="finish"&&(provider==="muse"?outcome.status!=="rejected":outcome.status==="completed"))await tx.execute(sql`update ${assignmentTable} set status='settled',${sql.raw(provider==="muse"?"accepted_result_at":"settled_at")}=now() where id=${a.id}::uuid`);
+          // Write the assignment once. PostgreSQL re-runs foreign-key checks
+          // when a transaction updates a row version it already wrote, so a
+          // second UPDATE takes KEY SHARE on the run while this guard is held.
+          // Admission locks that run before the guard, and the two deadlock.
+          const assignmentChanges=[sql`last_activity_at=now()`];
+          if(action==="renew"&&outcome.status==="renewed")assignmentChanges.push(sql`expires_at=${new Date(Number(outcome.expiresAtUnixMs)).toISOString()}::timestamptz`);
+          if(a.status!=="fenced"&&outcome.status!=="rejected"&&action==="accept")assignmentChanges.push(sql`status='accepted',${sql.raw(store.acceptedAt)}=now()`);
+          if(a.status!=="fenced"&&action==="finish"&&(provider==="muse"?outcome.status!=="rejected":outcome.status==="completed"))assignmentChanges.push(sql`status='settled',${sql.raw(provider==="muse"?"accepted_result_at":"settled_at")}=now()`);
+          await tx.execute(sql`update ${assignmentTable} set ${sql.join(assignmentChanges,sql`,`)} where id=${a.id}::uuid`);
           if(binding?.providerKind==="grok_bot"&&a.status!=="fenced"&&action==="finish"&&outcome.status==="completed")await grokRoutineService(tx as unknown as Db).settleWorkNotifications(a.companyId,a.bindingId,a.id);
           if(provider==="muse") {
             if(action==="consume_input"&&outcome.status==="consumed") {

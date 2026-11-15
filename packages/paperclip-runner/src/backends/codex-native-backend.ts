@@ -1,6 +1,7 @@
 import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
@@ -101,7 +102,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "acpx_runtime",
         displayName: `${ACPX_CAPABILITY_PROFILES[input.provider.agent].displayName} via ACPX`,
-        version: "0.13.1",
+        version: QUALIFIED_ACPX_VERSION,
       };
     default:
       throw new Error(
@@ -142,17 +143,23 @@ function createTransportBackedNativeSessionBackend(
     );
   }
 
-  const constraints = [
-    ...(supportsCollaborativePlanning &&
+  const planMode = supportsCollaborativePlanning &&
     "executionMode" in input &&
-    input.executionMode === "plan"
+    input.executionMode === "plan";
+  const claudeAcpx = input.provider.kind === "acpx" && input.provider.agent === "claude";
+  const constraints = [
+    ...(planMode
       ? [
           "Use native plan collaboration mode and do not modify workspace files.",
           "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
-          "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
-          "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+          ...planProposalConstraints(input.provider.kind, claudeAcpx),
         ]
-      : []),
+      : claudeAcpx && input.task.workMode === "standard"
+        ? [
+            // Agents may opt into a plan approval gate on Standard tasks too.
+            "If the task asks for a plan first, or the change is risky enough that the user should agree on the approach, you may use EnterPlanMode and then ExitPlanMode with the complete plan. Paperclip saves it as the task's Plan document, asks the user to approve it and ends this turn; continue after approval.",
+          ]
+        : []),
     ...nativeTaskConstraints(input),
   ];
 
@@ -217,7 +224,10 @@ function createTransportBackedNativeSessionBackend(
       requireProviderSessionIdentity: options.transportFactory !== undefined,
     }),
     preparedContext ? constraints : undefined,
-    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS : undefined,
+    // Codex interruption uses a bounded 30-second transport command. Keep
+    // listening for its terminal through that window before quarantining a wait.
+    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS
+      : isCodex ? 30_000 : undefined,
   );
   if (input.provider.kind === "cursor_cloud") {
     backend.descriptor = async () => {
@@ -276,4 +286,28 @@ export function createCodexNativeSessionBackend(
     throw new Error("Codex native backend requires provider kind codex");
   }
   return createTransportBackedNativeSessionBackend(input, options);
+}
+
+/**
+ * How a planning run hands its proposal to Paperclip. The harness's own
+ * proposed-plan surface becomes the task's Plan document and approval gate, so
+ * the proposal must land before the completion report.
+ */
+function planProposalConstraints(providerKind: string, claudeAcpx: boolean): string[] {
+  if (claudeAcpx) {
+    return [
+      "Claude Code is in plan mode. When the plan is ready, call ExitPlanMode with the complete plan as your last action. Paperclip saves it as the task's Plan document, asks the user to approve it and ends this turn.",
+      "Do not write the plan with document tools and do not call the semantic completion tool before ExitPlanMode.",
+    ];
+  }
+  if (providerKind === "codex") {
+    return [
+      "Present the complete plan once, in a message, as a single <proposed_plan>...</proposed_plan> block. Paperclip saves that block as the task's Plan document and asks the user to approve it, so do not write the plan with document tools.",
+      "Present the plan before calling the semantic completion tool, then keep the final response to a short note that the plan is waiting for approval.",
+    ];
+  }
+  return [
+    "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
+    "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+  ];
 }

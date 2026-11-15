@@ -7,6 +7,7 @@ import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRu
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -49,7 +50,7 @@ export function issueRecoveryFixture() {
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
-  async function start() {
+  async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
     tasks.clear();
@@ -62,7 +63,7 @@ export function issueRecoveryFixture() {
         return work;
       } });
     };
-    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining);
+    worker = heartbeat.registerIssueStateRecoveryWork(coordinator, () => !draining, options);
     dispatch = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
     await Promise.all([worker.ready, dispatch.ready, cancellation.ready]);
@@ -76,7 +77,7 @@ export function issueRecoveryFixture() {
       void pass.then(() => passes.delete(pass), () => passes.delete(pass));
       return pass;
     } });
-    const work = other.registerIssueStateRecoveryWork(competing, () => true);
+    const work = other.registerIssueStateRecoveryWork(competing, () => true, { backstopMs: 0 });
     extraStops.push(() => competing.stop()); extraDeadlines.push(competing.nextWakeAt); await work.ready;
   }
   async function fixture() {
@@ -114,11 +115,12 @@ export function issueRecoveryFixture() {
       .where(eq(agents.id, f.agentId));
     return failures;
   }
-  async function settled() {
+  async function settled(options: { backstopPending?: boolean } = {}) {
     await vi.waitFor(async () => {
       await Promise.allSettled([...passes]);
       await heartbeat.drainActiveRunExecutions();
-      const wake = coordinator.nextWakeAt();
+      const next = coordinator.nextWakeAt();
+      const wake = options.backstopPending && next !== null && next > Date.now() + 60_000 ? null : next;
       const detail = wake === null ? "" : JSON.stringify({ now: Date.now(), tasks: await Promise.all([...tasks].map(async ([queue, task]) => ({ queue, at: task.nextRunAt?.(), pending: await task.hasPending() }))),
         runs: (await db.select().from(heartbeatRuns)).map(run => ({ id: run.id, status: run.status, error: run.errorCode, lease: run.controllerLeaseExpiresAt, reason: run.contextSnapshot?.wakeReason })) });
       expect(wake, detail).toBeNull();
@@ -218,9 +220,14 @@ export function issueRecoveryFixture() {
       conversationState: "waiting" });
     const message = withMessage ? await issueService(db).addComment(chat.id, "Keep this message", { userId: "recovery-user" }, { clientRequestId: randomUUID() }) : null;
     await settings.updateExperimental({ enableAgentChat: false });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
     await start(); await quiet();
     expect(replies).toEqual([]);
-    return { ...f, settings, chat, message, replies, failures };
+    const resume = async (owner = db) => owner.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: f.companyId });
+      await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
+    });
+    return { ...f, settings, chat, message, replies, failures, resume };
   }
   return {
     start, compete, fixture, completingProvider, settled, quiet, finish, completed, savedConversation,

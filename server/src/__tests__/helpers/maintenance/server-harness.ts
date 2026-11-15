@@ -1,3 +1,4 @@
+import type { ManagedExperimentalFeatureKey } from "@paperclipai/shared";
 import type { IdleWorkCaptureSnapshot } from './idle-work-capture.js';
 import type { IncomingHttpSnapshot } from '../../../../../scripts/sleep-qualification/evidence.mjs';
 import { fork } from "node:child_process";
@@ -51,6 +52,7 @@ type Snapshot = { idle: { active: number; generation: number }; startup: { phase
   announcement?: { intercepted: boolean; requests: string[]; unmatched: string[]; boundary: string } };
 
 export interface MaintenanceConfiguration {
+  managedFeatures?: Readonly<Partial<Record<ManagedExperimentalFeatureKey, boolean>>>;
   automaticBackups?: { intervalMinutes: number; idleCheckpoint: boolean };
   announcements?: boolean;
   telemetryOrigin?: string;
@@ -60,7 +62,18 @@ export interface MaintenanceConfiguration {
   deploymentMode?: "local_trusted" | "authenticated";
   storageProvider?: "local_disk" | "s3";
 }
+export interface MaintenanceRuntimeSecrets {
+  PAPERCLIP_AGENT_JWT_SECRET: string;
+  PAPERCLIP_DECISION_SIGNING_SECRET: string;
+  PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: string;
+  BETTER_AUTH_SECRET: string;
+  PAPERCLIP_SECRETS_MASTER_KEY: string;
+}
 export interface MaintenanceServerOptions {
+  runtimeSecrets?: Readonly<MaintenanceRuntimeSecrets>;
+  childEntry?: URL;
+  childPreload?: URL;
+  databasePoolMax?: number;
   artifactRoot?: string; enabled?: boolean; clock?: boolean; suppressed?: boolean; githubOrigin?: string;
   connector?: { origin: string; signPrivateKey: string; sealPrivateKey: string; instanceId?: string };
   cloud?: { jwks: string; s3Origin: string; standby: boolean };
@@ -71,6 +84,19 @@ export interface MaintenanceServerOptions {
 }
 export async function startMaintenanceServer(databaseUrl: string, options: MaintenanceServerOptions = {}) {
   const configuration = options.configuration;
+  const runtimeSecrets = options.runtimeSecrets;
+  if (runtimeSecrets !== undefined) {
+    const keys: Array<keyof MaintenanceRuntimeSecrets> = ['PAPERCLIP_AGENT_JWT_SECRET', 'PAPERCLIP_DECISION_SIGNING_SECRET',
+      'PAPERCLIP_TOOL_ACTION_SIGNING_SECRET', 'BETTER_AUTH_SECRET', 'PAPERCLIP_SECRETS_MASTER_KEY'];
+    if (!runtimeSecrets || Object.keys(runtimeSecrets).length !== keys.length || keys.some(key =>
+      typeof runtimeSecrets[key] !== 'string' || runtimeSecrets[key].trim().length < 32)
+      || !/^[a-f0-9]{64}$/.test(runtimeSecrets.PAPERCLIP_SECRETS_MASTER_KEY)) {
+      throw new Error('Maintenance runtimeSecrets requires exactly five complete generated fixture secrets');
+    }
+  }
+  if (options.databasePoolMax !== undefined && (!Number.isInteger(options.databasePoolMax) || options.databasePoolMax < 1 || options.databasePoolMax > 4)) {
+    throw new Error('Maintenance database pool must be an integer from 1 through 4');
+  }
   if (options.captureIdleWork && options.clock) throw new Error("Passive setup diagnostics require the real clock");
   if (options.tenantActor && (!options.cloud || !configuration?.managedInstance || configuration.deploymentMode !== 'authenticated' || configuration.storageProvider !== 's3')) {
     throw new Error('Managed tenant fixture requires the supported authenticated S3 profile');
@@ -111,7 +137,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     })();
   }
   try {
-    const proxy = await startMaintenancePostgresProxy(databaseUrl);
+    const proxy = await startMaintenancePostgresProxy(databaseUrl, options.captureIdleWork);
     stopProxy = proxy.stop;
     await new Promise<void>((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
     const address = reservation.address();
@@ -132,20 +158,24 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const captureStartedAt = options.captureIdleWork ? Date.now() : undefined;
     const captureSources = options.captureIdleWork ? new Map<number, string[]>() : undefined;
     let settledDiagnosticId = 0;
-    const child = fork(fileURLToPath(new URL("./server-child.ts", import.meta.url)), [], {
+    const child = fork(fileURLToPath(options.childEntry ?? new URL("./server-child.ts", import.meta.url)), [], {
       cwd: fileURLToPath(new URL("../../../../..", import.meta.url)),
-      execArgv: [...((configuration?.announcements || options.captureIdleWork) ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
+      execArgv: [...(options.childPreload ? ["--require", fileURLToPath(options.childPreload)] : []), ...((configuration?.announcements || options.captureIdleWork || options.childEntry) ? ['--experimental-test-module-mocks'] : []), "--import", fileURLToPath(new URL("../../../../node_modules/tsx/dist/loader.mjs", import.meta.url))],
       env: {
         ...(captureStartedAt === undefined ? {} : {
           PAPERCLIP_MAINTENANCE_IDLE_WORK_CAPTURE: '1',
           PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW: `${new Date(captureStartedAt).toISOString()}/${new Date(captureStartedAt + 60_000).toISOString()}`,
         }),
+        ...(options.childPreload ? {
+          PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG: process.env.PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_LOG,
+          PAPERCLIP_SKILL_DEFAULT_CADENCE_GUARD_ORIGINS: JSON.stringify([options.githubOrigin, options.cloud?.s3Origin].filter(Boolean)),
+        } : {}),
         PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_ENV: "production",
         PAPERCLIP_HOME: directory, PAPERCLIP_CONFIG: configPath, PAPERCLIP_INSTANCE_ID: "maintenance-test",
         PAPERCLIP_RUNNER_STATE_DIR: path.join(directory, "durable-sessions"),
-        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: configuration ? "4" : "6", DATABASE_APPLICATION_NAME: "maintenance-integration-test",
-        PAPERCLIP_AGENT_JWT_SECRET: randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: randomUUID(),
-        PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomUUID(), BETTER_AUTH_SECRET: randomUUID(),
+        DATABASE_URL: proxy.url, DATABASE_POOL_MAX: options.databasePoolMax === undefined ? (configuration ? "4" : "6") : String(options.databasePoolMax), DATABASE_APPLICATION_NAME: "maintenance-integration-test",
+        PAPERCLIP_AGENT_JWT_SECRET: runtimeSecrets?.PAPERCLIP_AGENT_JWT_SECRET ?? randomUUID(), PAPERCLIP_DECISION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_DECISION_SIGNING_SECRET ?? randomUUID(),
+        PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: runtimeSecrets?.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET ?? randomUUID(), BETTER_AUTH_SECRET: runtimeSecrets?.BETTER_AUTH_SECRET ?? randomUUID(),
         CODEX_HOME: path.join(directory, "codex"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: String(configuration?.announcements ?? false),
         ...(configuration?.announcements ? { PAPERCLIP_MAINTENANCE_ANNOUNCEMENT_FIXTURE: '1' } : {}),
         PAPERCLIP_DB_BACKUP_ENABLED: String(Boolean(configuration?.automaticBackups)), PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
@@ -164,8 +194,8 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
         } : {}),
         ...(options.controlJwks ? { PAPERCLIP_CLOUD_STACK_ID: "maintenance-stack", PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: options.controlJwks } : {}),
         ...(options.cloud ? {
-          PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {}, plugins: { autoInstall: [] } }),
-          PAPERCLIP_SECRETS_MASTER_KEY: randomBytes(32).toString("hex"),
+          PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: configuration?.managedFeatures ?? {}, plugins: { autoInstall: [] } }),
+          PAPERCLIP_SECRETS_MASTER_KEY: runtimeSecrets?.PAPERCLIP_SECRETS_MASTER_KEY ?? randomBytes(32).toString("hex"),
           PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "maintenance-tenant-token", PAPERCLIP_CLOUD_STACK_ID: "maintenance-stack",
           PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: options.cloud.jwks, PAPERCLIP_CLOUD_WARM_STANDBY: options.cloud.standby ? "1" : "0",
           PAPERCLIP_PUBLIC_URL: options.tenantActor ? `http://127.0.0.1:${address.port}` : "https://pool-maintenance.staging.paperclip.app", PAPERCLIP_PRIMARY_HOST: options.tenantActor ? "127.0.0.1" : "pool-maintenance.staging.paperclip.app",
@@ -180,6 +210,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const log = createWriteStream(path.join(directory, "server.log"));
     stopLog = () => new Promise<void>(resolve => log.end(resolve));
     let serverReady = false;
+    let childGuard: unknown;
     child.stdout?.on("data", chunk => { output += String(chunk); log.write(chunk); });
     child.stderr?.on("data", chunk => { output += String(chunk); log.write(chunk); });
     const requests = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -187,7 +218,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     const ready = new Promise<number>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
     const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
     child.on("message", (message: any) => {
-      if (message.kind === "ready") { serverReady = true; readyResolve(message.port); }
+      if (message.kind === "ready") { childGuard = message.defaultCadenceGuard; serverReady = true; readyResolve(message.port); }
       else if (message.id) {
         const request = requests.get(message.id); requests.delete(message.id);
         if (message.kind === "error") request?.reject(new Error(message.error)); else request?.resolve(message);
@@ -227,7 +258,7 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
     };
     const port = await withDeadline(ready, 90_000, () => `Maintenance boot timed out: ${output.slice(-12_000)}`);
     return {
-      proxy, directory, retainedDirectory, port, stop,
+      proxy, directory, retainedDirectory, port, stop, pid: child.pid, get childGuard() { return childGuard; },
       async api<T>(method: string, route: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
         if (options.clock) await request("realtime");
         try {

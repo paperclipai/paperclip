@@ -89,8 +89,9 @@ the bounded waiting allowance is rejected without poisoning accepted batches.
 Transient network, 409, 429 and server errors receive bounded retries. A 412
 or a changed head fences the stale writer; a 409 alone does not prove ownership
 loss or conditional-write support. Live log messages and progress are published
-after storage confirmation. Finalization drains admitted writes before closing
-and hashing the stream. Logging failure reports incomplete persistence and
+after storage confirmation. Finalization rejects new enqueue calls and drains
+already-started bounded admissions, including calls waiting for capacity, before
+closing and hashing the stream. Logging failure reports incomplete persistence and
 leaves the final size/digest unknown rather than claiming a complete snapshot.
 The original progress projection remains coarsely throttled; concurrent batch
 completions share a single progress write.
@@ -252,6 +253,25 @@ that the local source did not change, and verifies the remote SHA-256 before
 switching the run's reference. It supports terminal `interrupted` runs as well.
 It does not treat an unproven mirror as an original file or ignore a recorded
 size/digest mismatch.
+
+For online preservation of settled native files, use
+`server/scripts/migrate-run-evidence.ts --preserve-settled-native-files` with
+the existing company, cursor, limit and apply options. This separate mode does
+not require global idle. It requires a native run with a finished status and
+an explicitly released finalizer in `committed` or `terminal_failure`, no pending
+attempt, no physical finalization owner, no retained allocation for that run,
+and no task execution or checkout bound to it. A stale controller deadline or
+historical PID does not establish this authority. Unknown recovery states stay
+blocked; a terminal failure's existing blocked warning remains unchanged.
+
+The online path locks the native finalization scope and rechecks the source
+row, owner generation and reference before publication. The source must use its
+canonical company/agent/run filename, with no aliases, symlinks or hard links.
+It streams and verifies the exact local bytes, then publishes the read-only
+archive and an activity receipt in one guarded transaction. Originals remain
+on disk. A changed source or owner leaves the original reference unchanged.
+This mode keeps raw history separate from canonical native-event coverage,
+including when the original source has an integrity warning.
 
 An archive preserves historical evidence; it does not certify a complete native
 transcript. The run's status, canonical events, and original completion metadata

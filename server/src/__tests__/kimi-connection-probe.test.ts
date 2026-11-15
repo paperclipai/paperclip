@@ -24,7 +24,7 @@ vi.mock("node:child_process", async importOriginal => {
     spawn: (file: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
       if (file !== "ssh") return actual.spawn(file, args, options);
       mocks.wire.push({ file, args, stdin: true });
-      return actual.spawn(process.execPath, ["-e", 'process.stdout.write(require("node:fs").readFileSync(0,"utf8"))'], options);
+      return actual.spawn(process.execPath, ["-e", 'const wire = require("node:fs").readFileSync(0); process.stdout.write(wire.subarray(wire.indexOf(10) + 1))'], options);
     },
   };
 });

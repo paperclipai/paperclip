@@ -100,6 +100,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   githubWizard: Pick<ReturnType<typeof createGitHubAppSetup>["githubWizard"], "repairCloud">;
   nativeBotIdentityClaimBarrier?: () => Promise<void>;
   allowLocalVoiceBoard?: boolean;
+  stageConfigurationEffects?: (transaction: Db, endpointId: string, actorUserId: string | null | undefined) => Promise<void>;
 };
 export function createChatConfiguration(db: Db, options: ChatConfigurationOptions) {
   const { endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime, nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict, legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials, persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory, reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor, runtimeContextForRecord, stageTelegramMaintenance, processTelegramMaintenance, recordTelegramStopSubscription, fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, isSupportedTelegramWebhookBaseUrl } = options;
@@ -176,6 +177,14 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     const endpoint = record.endpoint;
+    const mutate = <T>(work: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) => db.transaction(async tx => {
+      const result = await work(tx);
+      if (endpoint.provider === "slack" && options.stageConfigurationEffects) {
+        await options.stageConfigurationEffects(tx as unknown as Db, endpointId, actorUserId);
+        await credentialLease.assertOwned(tx);
+      }
+      return result;
+    });
     if (input.action === "pause") {
       if (endpoint.status !== "active") {
         throw conflict("Only an active chat connection can be paused", {
@@ -183,7 +192,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         });
       }
       await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
         await credentialLease.assertOwned(tx);
         const pausedAt = new Date();
         const current = await tx
@@ -299,7 +308,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       let activatedEndpoint!: EndpointRow;
       try {
         await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
           await credentialLease.assertOwned(tx);
           const resumedAt = new Date();
           const current = await tx
@@ -384,7 +393,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           const failure = redactError(error);
           const failedAt = new Date();
           await managementContext?.reauthorize();
-          await db.transaction(async (tx) => {
+          await mutate(async (tx) => {
             await credentialLease.assertOwned(tx);
             await notifyChatEndpointConfiguration(tx, endpoint);
             await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
@@ -478,7 +487,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         });
       }
       await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
         await credentialLease.assertOwned(tx);
         const current = await tx
           .select({ setup: chatEndpoints.setup, status: chatEndpoints.status })
@@ -724,7 +733,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     if (!endpoint.botExternalId) {
       try {
         await managementContext?.reauthorize();
-        const claimed = await db.transaction(async (tx) => {
+        const claimed = await mutate(async (tx) => {
           await credentialLease.assertOwned(tx);
           await notifyChatEndpointConfiguration(tx, endpoint);
           await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
@@ -793,7 +802,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       (input.action === "configure" || input.action === "reconnect");
     try {
       await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
         await credentialLease.assertOwned(tx);
         const current = await tx
           .select({ setup: chatEndpoints.setup })
@@ -892,7 +901,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       const failure = redactError(error);
       await invalidateRuntime(endpoint.id).catch(() => undefined);
       await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
         await credentialLease.assertOwned(tx);
         await notifyChatEndpointConfiguration(tx, endpoint);
         await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
@@ -922,7 +931,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     }
 
     await managementContext?.reauthorize();
-      await db.transaction(async (tx) => {
+      await mutate(async (tx) => {
       await credentialLease.assertOwned(tx);
       await logActivity(tx as unknown as Db, {
         companyId: endpoint.companyId,

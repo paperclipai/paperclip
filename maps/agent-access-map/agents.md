@@ -63,6 +63,12 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+`GET /api/agents/{id}/interaction-permissions` follows configuration-read access.
+`PATCH /api/agents/{id}/interaction-permissions` is restricted to board-authenticated
+human permission managers (`users:manage_permissions`); agents cannot change it.
+Optional [interaction restrictions](../../doc/agent-interaction-permissions.md)
+can independently deny peer configuration despite a configure/suggest grant.
+
 `agents:read` permits redacted configuration, configured skills, instruction content,
 and configuration/instruction history reads. It does not permit changes, restore,
 or environment probes. `agents:configure` still includes read/write authority;
@@ -83,7 +89,7 @@ An unfinished record keeps compatibility status `paused` with a
 `setup` hold and cannot receive API keys or authenticate with keys or JWTs.
 Its standard grants apply at hire. Authorized completion retries recover the
 same record and approval without changing the submitted configuration.
-Normal agent-authored hiring keeps its existing approval policy.
+Normal agent-authored hiring keeps its existing approval policy. A pending hire may propose a budget, but only board approval activates that policy. Direct creation or an immediate hire with a positive budget requires a board actor.
 
 An agent-owned plugin may prepare the draft and leave its lifecycle in
 `verifying` while that setup hold remains. Only bounded Core-issued setup probes
@@ -211,6 +217,8 @@ CLI.
 
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
+
+Changes to the legacy `budgetMonthlyCents` field and built-in provision budget overrides require a board actor, including budget-changing rollbacks.
 
 The roster intent preserves unrelated settings, rejects stale model/connection
 previews and harness changes, and checks the full execution configuration under

@@ -22,7 +22,7 @@ Three things decide whether saved work and installed packs stay compatible:
 | What changed | What carries it | Effect |
 | --- | --- | --- |
 | The provider's upstream release: package versions, platform closures, a launcher shipped verbatim | The profile's `commandDigest` | Saved sessions for that provider start fresh |
-| The shared ACPX layer | The profile's `acpxVersion` and the Runner's ACPX patch in the pack `contractDigest` | The same for every provider |
+| The shared ACPX layer | The profile's `acpxVersion` and the Runner's ACPX patch in the pack `contractDigest` | Saved sessions carry forward for every provider when the new ACPX loads the old records; list each carried release in `CARRIED_ACPX_RELEASES` and test the resume |
 | A runner/pack contract: schemas, generated catalogs, Rust shapes and env keys | The provider pack's `contractDigest` | Older image packs are not reused |
 
 Ordinary Runner source changes, refactors and comments change none of these.
@@ -51,6 +51,14 @@ Ordinary Runner source changes, refactors and comments change none of these.
 - **Keep earlier versions decodable.** Saved inputs with any version from 1
   through the current one decode, so recovery can refuse them. Launch and
   recovery admission require the exact current profile and digest.
+
+- **Carry sessions across ACPX upgrades.** An ACPX upgrade keeps saved
+  sessions when the new ACPX loads the session records the old one wrote. Add
+  the old release to `CARRIED_ACPX_RELEASES` (`acpx_provider_backend.rs`), keep
+  the session identity's ACPX value (`SESSION_IDENTITY_ACPX_VERSION`), and add
+  a resume test with a record the old release wrote. An ACPX release whose
+  records the new one cannot load is not listed, and its sessions are refused
+  as `provider_state_incompatible`.
 
 ## Adding a provider
 

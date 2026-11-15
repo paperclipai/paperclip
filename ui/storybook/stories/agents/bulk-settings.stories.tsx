@@ -72,7 +72,7 @@ const meta = {
   component: BulkSettingsPage,
   parameters: { layout: "fullscreen", initialEntries: ["/PAP/agents/all"], paperclip: {
     capabilities: ["agents/organization", "agents/instructions"], implementation: "production", boundary: "fixtures",
-    notes: "Actual Agents page, filter icon/popover with preserved selection, bulk roster, sheet, account picker, model intersection and narrow PATCH client. Includes paused agents at normal contrast. The roster has no status selector or persistent selection hint. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
+    notes: "Actual Agents page, filter icon/popover with preserved selection, bulk roster, sheet, account picker, model intersection and narrow PATCH client. Includes paused agents at normal contrast. The filter popover has model, status, harness and connection selectors. The roster has no persistent selection hint. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
   } },
 } satisfies Meta<typeof BulkSettingsPage>;
 export default meta;
@@ -85,16 +85,21 @@ export const FilterJourney: Story = { play: async ({ canvasElement }) => {
   const screen = within(canvasElement.ownerDocument.body);
   await userEvent.click(await page.findByRole("checkbox", { name: "Select Sage" }));
   await userEvent.click(page.getByRole("button", { name: "Filter agents" }));
-  const filters = within(await screen.findByRole("dialog", { name: "Agent filters" }));
-  await userEvent.click(filters.getByRole("button", { name: "Codex" }));
+  const filters = within(await screen.findByRole("dialog", { name: "Agent filter choices" }));
+  await userEvent.selectOptions(filters.getByRole("combobox", { name: "Harness" }), "codex_local");
   await expect(page.queryByRole("checkbox", { name: "Select Sage" })).not.toBeInTheDocument();
-  await expect(page.getByText("1 hidden by filters")).toBeVisible();
+  await expect(screen.getByText("1 hidden by filters")).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "Select Scout" })).toBeEnabled();
-  await userEvent.click(filters.getByRole("button", { name: "Clear" }));
+  await userEvent.selectOptions(filters.getByRole("combobox", { name: "Model" }), "model:gpt-5.3-codex");
+  await userEvent.selectOptions(filters.getByRole("combobox", { name: "Status" }), "paused");
+  await userEvent.selectOptions(filters.getByRole("combobox", { name: "Connection" }), `connection:${accounts[0].id}`);
+  await expect(page.getByRole("checkbox", { name: "Select Scout" })).toBeVisible();
+  await expect(page.queryByRole("checkbox", { name: "Select Atlas" })).not.toBeInTheDocument();
+  await userEvent.click(filters.getByRole("button", { name: "Clear filters" }));
   await expect(await page.findByRole("checkbox", { name: "Select Sage" })).toBeChecked();
   await userEvent.keyboard("{Escape}");
   await expect(page.getByRole("button", { name: "Filter agents" })).toHaveFocus();
-  await userEvent.click(page.getByRole("button", { name: "Clear selection" }));
+  await userEvent.click(screen.getByRole("button", { name: "Clear selection" }));
 } };
 
 async function selectCodex(canvasElement: HTMLElement, mixed = false) {

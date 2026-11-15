@@ -19,7 +19,7 @@ describe("composer run settings", () => {
     expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: { type: "secret_ref", secretId: "model-secret" } } } })).toBe("");
     expect(composerDefaultModel({ ...agent("codex_local"), adapterConfig: { model: " private-codex " } })).toBe("private-codex");
     expect(composerDefaultModel(agent("codex_local"))).toBe("");
-    expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-5.6-sol");
+    expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-6.1-sol");
     expect(composerDefaultModel(agent("grok_local"))).toBe("grok-build");
     expect(composerDefaultModel(undefined)).toBe("");
   });

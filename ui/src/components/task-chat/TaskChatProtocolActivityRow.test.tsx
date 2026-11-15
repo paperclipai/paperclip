@@ -61,7 +61,10 @@ describe("TaskChatProtocolActivityRow", () => {
     const row = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-protocol-activity-row"] button');
     expect(container.querySelector("article")).toBeNull();
     expect(row?.textContent).toContain("Searched the web");
-    expect(row?.textContent).toContain("smoked pork shoulder");
+    expect(row?.textContent).toContain("“site:nextjs.org/docs/app/api-reference/config/eslint");
+    const strip = container.querySelector('[data-testid="task-chat-research-sources"]');
+    expect([...strip!.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["nextjs.org"]);
+    expect(strip?.textContent).toContain("+5 more");
     expect(
       row
         ?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')
@@ -69,7 +72,7 @@ describe("TaskChatProtocolActivityRow", () => {
     ).toBe(true);
     expect(
       row?.querySelector(".task-chat-collapsed-line-fade")?.textContent,
-    ).toContain("smoked pork shoulder");
+    ).toContain("site:nextjs.org");
     expect(row?.getAttribute("aria-expanded")).toBe("false");
     expect(row?.getAttribute("aria-controls")).toMatch(/^task-chat-protocol-activity-/);
 

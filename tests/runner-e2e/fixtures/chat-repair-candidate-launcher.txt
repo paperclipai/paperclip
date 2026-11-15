@@ -18,6 +18,7 @@ import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from 
 import { recoverWorkerTiming } from "./worker-timing.js";
 import { openEvalOperations, type EvalOperations } from "./operations.js";
 import { readRecoveredFeedback } from "./feedback-recovery.js";
+import { PRIVATE_FRAMEWORK_REPORT, referenceSealedFrameworkAttachments } from "./private-framework-report.js";
 import { readInterruptedAttemptTrace } from "./trace-recovery.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
 import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
@@ -53,7 +54,7 @@ import { packageEvidence, publishRunnerE2EAttemptEvidence } from "./evidence.js"
 import { prepareRunnerE2ECampaignDirectory, resolveRunnerE2EResultsRoot } from "./results-root.js";
 import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
-import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
+import { requiresPrivateManualEvidence, manualCellKind } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
@@ -941,6 +942,8 @@ async function runAttempt(input: {
         manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
           executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
+        if (evidence.files.includes(PRIVATE_FRAMEWORK_REPORT)) await referenceSealedFrameworkAttachments(uploadDir,
+          path.join(manualPrivateHandoff.root, "originals", manualCellKind(candidate.id)), candidate.id);
       } else {
         result = await publishRunnerE2EAttemptEvidence({
           result,

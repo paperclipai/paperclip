@@ -28,6 +28,7 @@ async function verifyLiveRunnerAdoption(
   uncertainAtClose = false,
   semanticRecoveryMode?: "denied-before-cancel" | "cleanup-only",
   stopExitProofFault?: "missing" | "false",
+  livenessUnverifiedWhileConnected?: "within-grace" | "past-grace" | "reset-by-success",
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const pendingCompletion = toolHandlerOrder?.startsWith("completion-") === true;
@@ -38,7 +39,7 @@ async function verifyLiveRunnerAdoption(
     evidence: [], verification: [], attentionRequests: [], artifacts: [],
   }));
   const server = createServer();
-  let authority: DurablePrpControlPlane | null = null;
+  let authority = null as DurablePrpControlPlane | null;
   const checkpoint = vi.fn(async () => undefined);
   server.on("upgrade", (request, socket, head) => {
     if (!authority) {
@@ -136,7 +137,7 @@ async function verifyLiveRunnerAdoption(
       );
     }
     runnerPid = first.evidence().runnerPid;
-    runnerStartedAt = first.transport.processInfo().startedAt;
+    runnerStartedAt = first.transport.processInfo!().startedAt;
     expect(runnerPid).toEqual(expect.any(Number));
 
     if (goalMidTurn) {
@@ -214,6 +215,7 @@ async function verifyLiveRunnerAdoption(
       ...options,
       ...(preparedTask && !adoptionAuthorization.startsWith("legacy") ? { authorizeRunnerAdoption } : {}),
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
+      ...(livenessUnverifiedWhileConnected ? { runnerReconnectGraceMs: livenessUnverifiedWhileConnected === "within-grace" ? 60_000 : 2_000 } : {}),
       ...(semanticRecoveryMode === "cleanup-only" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
@@ -311,6 +313,31 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     if (toolHandlerOrder?.endsWith("after")) adopted.transport.setServerRequestHandler(redispatchedTool);
+    if (livenessUnverifiedWhileConnected) {
+      const pause = (ms: number) => new Promise(resolveWait => setTimeout(resolveWait, ms));
+      expect(authority?.activeRunnerConnectionCount()).toBe(1);
+      rejectLiveness = true;
+      if (livenessUnverifiedWhileConnected === "reset-by-success") {
+        await pause(1_400);
+        rejectLiveness = false;
+        await pause(500);
+        rejectLiveness = true;
+        await pause(1_400);
+      } else {
+        await pause(livenessUnverifiedWhileConnected === "within-grace" ? 1_500 : 3_000);
+      }
+      rejectLiveness = false;
+      if (livenessUnverifiedWhileConnected === "past-grace") {
+        await expect(adopted.transport.request("thread/read", {})).rejects.toThrow("native_adopted_runner_identity_unverifiable");
+      } else {
+        await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+          expect.objectContaining({ thread: expect.objectContaining({ id: "codex-thread-1" }) }));
+        expect(adopted.evidence().diagnostics.join("\n")).not.toContain("native_adopted_runner_identity_unverifiable");
+      }
+      expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      expect(signal).not.toHaveBeenCalled();
+      if (livenessUnverifiedWhileConnected === "past-grace") return;
+    }
     if (semanticRecoveryMode) {
       const retained = authority as DurablePrpControlPlane | null;
       expect(retained).not.toBeNull();
@@ -404,7 +431,7 @@ async function verifyLiveRunnerAdoption(
       } else expect(redispatchedTool).not.toHaveBeenCalled();
     }
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
-    expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+    expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
@@ -448,7 +475,7 @@ async function verifyLiveRunnerAdoption(
         expect(await Promise.race([notificationsClosed, new Promise<boolean>(resolve => { queueDeadline = setTimeout(() => resolve(false), 250); })])).toBe(true);
       } finally { clearTimeout(queueDeadline); }
       await expect(adopted.transport.close()).rejects.toBe(probeError);
-      expect(adopted.transport.processInfo()).toMatchObject({ exited: false });
+      expect(adopted.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
       expect(signal).not.toHaveBeenCalled();
       expect(checkpoint).not.toHaveBeenCalled();
@@ -519,6 +546,10 @@ it("adopts a prepared runner after losing its controller launch cache without pr
 
 it.each(["deny", "legacy", "legacy-missing", "missing-binding"] as const)("preserves adoption authorization with %s",
   mode => verifyLiveRunnerAdoption(false, false, false, false, false, true, mode), 30_000);
+
+it.each(["within-grace", "past-grace", "reset-by-success"] as const)(
+  "bounds a rejected liveness probe of a connected adopted runner by the reconnect grace (%s)",
+  mode => verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", undefined, false, undefined, undefined, mode), 30_000);
 
 it("retains authenticated adopted-runner ownership when a close probe rejects", () => verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", undefined, true), 30_000);
 

@@ -1,15 +1,16 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
-import { CoordinatorTasks } from "./CoordinatorTasks";
+import { CoordinatorTaskViews } from "./CoordinatorTaskViews";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -40,6 +41,7 @@ import {
   type TaskViewKey,
 } from "../lib/task-views";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -101,18 +103,9 @@ export function Issues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
-  const [params] = useSearchParams();
-  const location = useLocation();
-  const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
-  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
-    const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
-    const search = next.toString();
-    return <Navigate to={`/inbox/${taskView(requestedView).inboxTab}${search ? `?${search}` : ""}${location.hash}`} replace />;
-  }
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTaskViews /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {
@@ -244,8 +237,7 @@ function OrganizationIssues({
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -283,14 +275,7 @@ function OrganizationIssues({
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 
-  const {
-    data: issuePages,
-    isLoading,
-    isFetchingNextPage,
-    error,
-    hasNextPage,
-    fetchNextPage,
-  } = useInfiniteQuery({
+  const issuesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
@@ -327,6 +312,10 @@ function OrganizationIssues({
     placeholderData: (previousData) => previousData,
   });
 
+  const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
+  // The task list is loaded once its first page of rows has rendered.
+  usePageContentReady(!selectedCompanyId || (issuesView.kind !== "loading" && issuesView.kind !== "reconnecting"));
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
@@ -353,12 +342,14 @@ function OrganizationIssues({
     );
   }
 
+  if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
+
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      preloadTaskChats
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}

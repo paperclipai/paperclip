@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use paperclip_runner_core::acpx_sidecar_transport::{
     AcpxSidecarTransport, AcpxSidecarTransportConfig,
 };
+#[cfg(unix)]
+use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
 use paperclip_runner_core::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
 };
@@ -89,11 +91,60 @@ fn a_poisoned_transport_discards_events_buffered_before_failure() {
 
 #[test]
 fn bounds_events_while_waiting_for_a_response() {
-    let mut transport = transport("flood", Duration::from_secs(2));
+    let mut transport = transport("flood", Duration::from_secs(10));
     let error = transport
         .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
         .expect_err("event flood must fail");
     assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn bounds_tiny_events_by_count_while_waiting_for_a_response() {
+    let mut transport = transport("count-flood", Duration::from_secs(20));
+    let error = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect_err("a flood of tiny events must fail");
+    assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn buffers_a_backlog_of_small_events_before_a_response() {
+    let mut transport = transport("backlog", Duration::from_secs(10));
+    transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("a backlog within the byte budget should not fail the request");
+    for expected in 1..=2_048 {
+        let event = transport
+            .poll_event(Duration::ZERO)
+            .expect("buffered event should parse")
+            .expect("buffered event should exist");
+        assert_eq!(event.sequence, expected);
+    }
+    assert!(transport
+        .poll_event(Duration::ZERO)
+        .expect("drained buffer should not fail")
+        .is_none());
+    transport.shutdown().expect("fake sidecar should stop");
+}
+
+#[test]
+fn frees_the_byte_budget_as_buffered_events_drain() {
+    let mut transport = transport("large-backlog", Duration::from_secs(10));
+    let mut expected = 1;
+    for _ in 0..2 {
+        transport
+            .request(GeneratedAcpxSidecarCommand::SessionRead, json!({}))
+            .expect("a drained buffer should admit the next backlog");
+        for _ in 0..192 {
+            let event = transport
+                .poll_event(Duration::ZERO)
+                .expect("buffered event should parse")
+                .expect("buffered event should exist");
+            assert_eq!(event.sequence, expected);
+            expected += 1;
+        }
+    }
+    transport.shutdown().expect("fake sidecar should stop");
 }
 
 #[test]
@@ -322,13 +373,13 @@ fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
 }
 
 #[test]
-fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets() {
+fn previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar() {
     const CHILD: &str = "PAPERCLIP_TEST_MCP_ENV_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets",
+                "previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -384,11 +435,11 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
         let response = sidecar
             .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
             .unwrap();
-        assert_eq!(response["name"], "paperclip-assigned");
-        assert_eq!(response["url"], "http://127.0.0.1:3100/mcp");
+        assert_eq!(response["name"], serde_json::Value::Null);
+        assert_eq!(response["url"], serde_json::Value::Null);
         assert_eq!(
-            response["hasToken"], true,
-            "assigned gateway credential was dropped"
+            response["hasToken"], false,
+            "previous-release gateway credential reached the sidecar"
         );
         assert_eq!(response["hasUnrelatedSecret"], false);
         let expected = match agent {
@@ -520,4 +571,94 @@ fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
     sidecar
         .shutdown()
         .expect("timeout cleanup remains idempotent");
+}
+
+#[test]
+#[cfg(unix)]
+fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials() {
+    const CHILD: &str = "PAPERCLIP_TEST_MANAGED_BROKER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for (agent, launcher) in [
+            ("claude", "/managed"),
+            ("claude", ""),
+            ("claude", "  "),
+            ("codex", "/managed"),
+            ("cursor", "/managed"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials",
+                ])
+                .env_clear()
+                .env(CHILD, agent)
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", launcher)
+                .env("PAPERCLIP_GITHUB_BROKER_URL", "http://127.0.0.1:3210")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "session-capability")
+                .env("PAPERCLIP_GITHUB_BRIDGE_TOKEN", "bridge-capability")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("GITHUB_TOKEN", "unbound-secret")
+                .env("UNRELATED_SECRET", "unbound-secret")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "agent={agent}, launcher={launcher:?}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        return;
+    }
+    let agent = std::env::var(CHILD).unwrap();
+    let names = [
+        "BASH_ENV",
+        "ZDOTDIR",
+        "GH_CONFIG_DIR",
+        "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+        "PAPERCLIP_GITHUB_BROKER_URL",
+        "PAPERCLIP_GITHUB_BROKER_TOKEN",
+        "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "UNRELATED_SECRET",
+    ];
+    let arguments = names.map(|name| format!("\"${name}\"")).join(" ");
+    let response = json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": 1, "ok": true, "result": { "environment": vec!["%s"; names.len()] },
+    });
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("IFS= read -r request; printf '{response}\\n' {arguments}; IFS= read -r next"),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(100),
+    };
+    let mut transport = AcpxSidecarTransport::start_for_agent(&config, &agent).unwrap();
+    let managed = agent == "claude"
+        && !std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+            .unwrap()
+            .trim()
+            .is_empty();
+    let response = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("sidecar should report its launch environment");
+    for (index, name) in names.iter().enumerate() {
+        let value = response["environment"][index].as_str().unwrap();
+        let expected = if (index < 4 && agent == "claude") || ((4..7).contains(&index) && managed) {
+            std::env::var(name).unwrap()
+        } else {
+            String::new()
+        };
+        assert_eq!(value, expected, "sidecar environment: {name}");
+    }
+    transport.shutdown().unwrap();
 }

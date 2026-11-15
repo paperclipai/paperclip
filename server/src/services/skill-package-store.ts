@@ -14,7 +14,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound } from "../errors.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "./skill-snapshot.js";
 import { ensureSkillCacheDirectory, SkillCacheBusy, withSkillVersionCacheLock } from "./skill-version-cache.js";
-import { boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
+import { assertSkillPackageFileSize, boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
   skillPackageManifest, skillPackageManifestBytes, validateSkillPackageManifest, verifySkillPackageDirectory, relocateSkillPackageVerification, writeSkillPackageArchive,
   type SkillPackageManifest } from "./skill-package-files.js";
 
@@ -101,6 +101,9 @@ const coldResponses: PackageIoQueue = { active: 0, waiting: [] };
 // Bound local response buffers independently so stalled storage does not prevent
 // verified cached reads, including reads inside an existing DB transaction.
 const inventoryIo: PackageIoQueue = { active: 0, waiting: [] };
+export function skillPackageStorageIoDepth() {
+  return { active: storageIo.active, waiting: storageIo.waiting.length };
+}
 async function withPackageIo<T>(action: () => Promise<T>, signal: AbortSignal, queue = storageIo): Promise<T> {
   signal.throwIfAborted();
   if (queue.active >= 2) {
@@ -353,16 +356,14 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     // the ordinary pool connection needed by an active cold response.
     const row = await descriptor(companyId, id);
     const manifest = await manifestFor(row, signal);
-    const read = () => withDedicatedDbConnection(cacheOwner, database =>
-      readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead, database));
+    const read = () => readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead);
     return cacheRead ? withPackageIo(read, signal, coldResponses) : read();
   }
   async function readIsolatedPackage<T>(row: Descriptor, manifest: SkillPackageManifest,
-    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean,
-    database: Db) {
+    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean) {
     const { companyId, id } = row;
     let published = false;
-    const result = await withPackageIo(async () => {
+    const result = await withPackageIo(() => withDedicatedDbConnection(cacheOwner, async database => {
       const parent = skillPackagePaths(companyId, id).parent;
       await ensureSkillCacheDirectory(parent, true);
       const staging = await fs.mkdtemp(path.join(parent, ".verify-"));
@@ -391,8 +392,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         }
         return result;
       } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archive, { force: true }); }
-    }, signal);
-    if (published) {
+    }, { admitWithoutWaiting: true }), signal);
+    if (published) await withDedicatedDbConnection(cacheOwner, async database => {
       // Verify possible eviction candidates outside both the preparation lock
       // and the storage slot used for this fill; take the lock only to remove.
       const reader = skillPackageStore(database, storage(), cacheOwner);
@@ -402,7 +403,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           try { await withSkillVersionCacheLock(cacheOwner, companyId, remove, true); }
           catch (error) { if (!(error instanceof SkillCacheBusy)) throw error; }
         }, signal);
-    }
+    }, { admitWithoutWaiting: cacheRead });
     signal.throwIfAborted();
     return result;
   }
@@ -642,15 +643,27 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     };
     return cancellation ? acquire() : flight(db, `version-read:${version.companyId}:${version.id}:${allowRecovery}`, acquire);
   }
-  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true) {
+  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true, maxBytes = Number.MAX_SAFE_INTEGER) {
     assertSkillSnapshotPath(relativePath);
-    if (!version.packageSnapshotId) return (await versionFiles(version, allowRecovery)).find(file => file.path === relativePath);
+    if (!version.packageSnapshotId) {
+      const [row] = await db.select({ ...skillVersionMetadataColumns,
+        file: sql<(CompanySkillVersionFileInventoryEntry & { tooLarge?: boolean }) | null>`(
+          select case when octet_length(f->>'content')::bigint > ${maxBytes}::bigint
+            then jsonb_build_object('tooLarge', true) else f end
+          from jsonb_array_elements(${companySkillVersions.fileInventory}) f
+          where f->>'path' = ${relativePath} limit 1)` })
+        .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, version.companyId), eq(companySkillVersions.id, version.id)));
+      if (row?.packageSnapshotId) return readVersionFile(row, relativePath, allowRecovery, maxBytes);
+      if (row?.file?.tooLarge) assertSkillPackageFileSize(maxBytes + 1, maxBytes);
+      return row?.file ?? undefined;
+    }
     const id = version.packageSnapshotId;
     const manifest = await manifestFor(await descriptor(version.companyId, id));
     const mapping = version.packageFileMap?.find(file => file.path === relativePath);
     if (version.packageFileMap && !mapping) return undefined;
     const entry = manifest.files.find(file => file.path === (mapping?.sourcePath ?? relativePath));
     if (!entry) return undefined;
+    assertSkillPackageFileSize(entry.size, maxBytes);
     const signal = AbortSignal.timeout(180_000);
     const read = async (root: string) => {
       const bytes = await readPackageFile(root, entry, signal);

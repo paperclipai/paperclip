@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { completionContracts, nativeRunResults, workAssessments } from "@paperclipai/db";
 import { classifyNativeEvidence, type NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { nativeSha256 } from "./canonical.js";
-import type { NativeMonitorDelivery, NativePreservedMonitorWait } from "./native-monitor-delivery.js";
+import type { NativeMonitorDelivery, NativePreservedMonitorWait, NativeSupersededMonitorWait } from "./native-monitor-delivery.js";
 
 export async function recordNativeWorkAssessment(input: {
   db: Db;
@@ -27,6 +27,7 @@ export async function recordNativeWorkAssessment(input: {
   /** A persisted schedule can regain settlement authority after a policy repair. */
   monitorWaitAt?: string | null;
   preservedMonitorWait?: NativePreservedMonitorWait | null;
+  supersededMonitorWait?: NativeSupersededMonitorWait | null;
   supersedesAssessmentId?: string | null;
 }) {
   const assessmentJson = {
@@ -34,6 +35,7 @@ export async function recordNativeWorkAssessment(input: {
     ...(input.monitorDelivery ? { monitorDelivery: input.monitorDelivery } : {}),
     ...(input.monitorWaitAt ? { monitorWaitAt: input.monitorWaitAt } : {}),
     ...(input.preservedMonitorWait ? { preservedMonitorWait: input.preservedMonitorWait } : {}),
+    ...(input.supersededMonitorWait ? { supersededMonitorWait: input.supersededMonitorWait } : {}),
   } as unknown as Record<string, unknown>;
   const inputDigest = nativeSha256({
     contractId: input.contractId,

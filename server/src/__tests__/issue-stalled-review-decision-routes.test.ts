@@ -319,12 +319,12 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({ status: "done" });
     expect(requesterVerdict.status).toBe(403);
     expect(requesterVerdict.body).toMatchObject({
-      error: expect.stringContaining("someone other than"),
+      error: expect.stringContaining("cannot also approve or reject it"),
       details: {
         code: "review_policy_denied",
         policy: "not_creator",
         allowedActor: "writer_other_than_review_requester",
-        remediation: expect.stringContaining("another writer"),
+        remediation: expect.stringContaining("someone else"),
       },
     });
 
@@ -350,12 +350,12 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .send({ status: "cancelled" });
     expect(agentVerdict.status).toBe(403);
     expect(agentVerdict.body).toMatchObject({
-      error: expect.stringContaining("authenticated user"),
+      error: expect.stringContaining("signed-in person"),
       details: {
         code: "review_policy_denied",
         policy: "human_only",
         allowedActor: "authenticated_user_with_issue_write_access",
-        remediation: "Have an authenticated user with issue write access submit the verdict.",
+        remediation: "Ask a person with access to this task to approve or reject it in Paperclip.",
       },
     });
 
@@ -386,7 +386,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
         code: "review_policy_denied",
         policy: "human_only",
         allowedActor: "authenticated_user_with_issue_write_access",
-        remediation: "Have an authenticated user with issue write access submit the verdict.",
+        remediation: "Ask a person with access to this task to approve or reject it in Paperclip.",
       },
     });
     const [persisted] = await db.select({
@@ -426,7 +426,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
         code: "review_policy_denied",
         policy: "not_creator",
         allowedActor: "writer_other_than_review_requester",
-        remediation: "Have another writer with issue write access submit the verdict.",
+        remediation: "Have someone else with access to this task submit the verdict.",
       },
     });
     const [persisted] = await db.select({

@@ -6,9 +6,14 @@ import {
   CLOUD_CONTROL_HEADER,
   verifyCloudControlAssertion,
   type CloudControlAction,
+  type CloudControlClaims,
 } from "../services/cloud-runtime-identity.js";
 
 const idleCapabilities = new WeakMap<Request, VerifiedIdleCapabilities>();
+const controlClaims = new WeakMap<Request, CloudControlClaims>();
+export function verifiedCloudControlClaims(req: Request): CloudControlClaims | undefined {
+  return controlClaims.get(req);
+}
 /** Only this middleware's verified assertion can install request capabilities. */
 export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities | undefined {
   return idleCapabilities.get(req);
@@ -16,7 +21,9 @@ export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities
 
 /** Endpoint → method → the one action a control assertion must name to take it. */
 const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
+  "/api/instance/ephemeral-enrollment/prepare": { POST: "ephemeral-enrollment:prepare" },
   "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
+  "/api/instance/task-drain/status": { POST: "task-drain:read-body" },
   "/api/instance/task-drain": {
     GET: "task-drain:read",
     POST: "task-drain:start",
@@ -58,7 +65,10 @@ export function cloudControlMiddleware(): RequestHandler {
       return;
     }
     try {
-      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      const rawBody: unknown = Reflect.get(req, "rawBody");
+      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction,
+        ...(Buffer.isBuffer(rawBody) ? { rawBody } : {}) });
+      controlClaims.set(req, claims);
       if (claims.idleCapabilities) idleCapabilities.set(req, claims.idleCapabilities as VerifiedIdleCapabilities);
     } catch (error) {
       logger.warn({ err: error }, "Rejected Cloud control assertion");

@@ -59,6 +59,33 @@ describe("agent instructions service", () => {
     if (entry === "../invalid") expect(bundle.warnings.length).toBeGreaterThan(0);
   });
 
+  it("records creation on new unversioned supporting files, then modification on updates", async () => {
+    const root = await makeTempDir("external-new-file-"); cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "instructions");
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root });
+    const svc = agentInstructionsService();
+    const first = await svc.writeFile(agent, "NOTES.md", "first");
+    expect(Number.isFinite(Date.parse(first.file.createdAt!))).toBe(true);
+    expect(first.file.updatedAt).toBeUndefined();
+    const second = await svc.writeFile(agent, "NOTES.md", "second");
+    expect(second.file.createdAt).toBeUndefined();
+    expect(Number.isFinite(Date.parse(second.file.updatedAt!))).toBe(true);
+  });
+
+  it("returns actual modification dates without inventing creation dates", async () => {
+    const root = await makeTempDir("external-file-dates-"); cleanupDirs.add(root);
+    const filename = path.join(root, "AGENTS.md");
+    await fs.writeFile(filename, "instructions");
+    const updated = new Date("2026-10-01T12:00:00.000Z");
+    await fs.utimes(filename, updated, updated);
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root });
+    const svc = agentInstructionsService();
+    const file = await svc.readFile(agent, "AGENTS.md");
+    expect(file.updatedAt).toBe(updated.toISOString());
+    expect(file.createdAt).toBeUndefined();
+    expect((await svc.getBundle(agent)).files[0]?.updatedAt).toBe(updated.toISOString());
+  });
+
   it("lists external bundles containing large binary assets", async () => {
     const root = await makeTempDir("external-large-assets-"); cleanupDirs.add(root);
     await fs.writeFile(path.join(root, "AGENTS.md"), "external instructions");

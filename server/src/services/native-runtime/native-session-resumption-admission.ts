@@ -8,6 +8,7 @@ import { getNativeReviewAssignment } from "./native-review-participant.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
+import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 
 export async function restoreNativeSessionExecution(db: Db, input: {
   issue: Pick<typeof issues.$inferSelect, "id" | "executionRunId">;
@@ -48,7 +49,7 @@ export async function readNativeSessionResumptionAgent(db: Db, input: {
   const { issue, run, coordinator } = input;
   if (issue.companyId !== run.companyId || issue.id !== run.nativeIssueId ||
       coordinator.companyId !== run.companyId || coordinator.issueId !== issue.id || coordinator.runId !== run.id ||
-      !["todo", "in_progress", "in_review"].includes(issue.status) ||
+      !(NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES as readonly string[]).includes(issue.status) ||
       (issue.executionRunId && issue.executionRunId !== run.id) ||
       (issue.checkoutRunId && issue.checkoutRunId !== run.id)) return null;
   const [agent] = await db.select().from(agents).where(and(

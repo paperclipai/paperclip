@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { beforeAll, beforeEach, afterEach, afterAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentFileRoots, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
+import { agents, agentConfigRevisions, agentFileRoots, agentInstructionWorkingCopies, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentFileStore, adoptAgentFiles, fileHash } from "../services/agent-file-store.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -89,6 +89,61 @@ describe("durable agent file authority", () => {
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "File owner", adapterConfig: {} });
   }
 
+  it("renames the active entry and edited content in the same committed file snapshot", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    await store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Edited"), baseHash: fileHash(Buffer.from("Original")) }, actor());
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBe("ROOT.md");
+    const [revision] = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agentId));
+    expect(revision).toMatchObject({ source: "instructions_rename", createdByUserId: userId,
+      afterConfig: { adapterConfig: { instructionsEntryFile: "ROOT.md" } } });
+    await replaceFilesystem();
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toEqual(Buffer.from("Edited"));
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toBeNull();
+  });
+
+  it("creates a renamed missing root without replacing a concurrently created source", async () => {
+    await store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("New root"), baseHash: null }, actor());
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBe("ROOT.md");
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toEqual(Buffer.from("New root"));
+    await expect(store().rename({ companyId, agentId, path: "ROOT.md", renameTo: "OTHER.md", bytes: Buffer.from("Stale draft"), baseHash: null }, actor())).rejects.toMatchObject({ status: 409 });
+    expect(await store().read(companyId, agentId, "OTHER.md", actor())).toBeNull();
+  });
+
+  it("rejects a rename that waits behind a concurrent source edit", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const writer = store().locked(companyId, agentId, actor(), true, async (_tx, _agent, folder) => {
+      enter();
+      await released;
+      await materializeInstructionBytes(folder, "AGENTS.md", Buffer.from("Concurrent edit"));
+    });
+    await entered;
+    const rename = store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Original"), baseHash: fileHash(Buffer.from("Original")) }, actor());
+    const rejected = expect(rename).rejects.toMatchObject({ status: 409 });
+    release();
+    await writer;
+    await rejected;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBeUndefined();
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Concurrent edit"));
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toBeNull();
+  });
+
+  it("preserves the active root and source when a rename cannot persist its content", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Original"), baseHash: null }, actor());
+    objects.rejectWrites = true;
+    await expect(store().rename({ companyId, agentId, path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Edited"), baseHash: fileHash(Buffer.from("Original")) }, actor())).rejects.toThrow("fixture object-store outage");
+    objects.rejectWrites = false;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.adapterConfig.instructionsEntryFile).toBeUndefined();
+    expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Original"));
+    expect(await store().read(companyId, agentId, "ROOT.md", actor())).toBeNull();
+  });
+
   it("reads instruction compatibility from the committed head after deleting the entire home", async () => {
     await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Original"));
     await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root,
@@ -109,6 +164,31 @@ describe("durable agent file authority", () => {
     expect(await instructions.getManagedEntryFingerprint({ ...agent, adapterConfig: {
       ...agent.adapterConfig, instructionsEntryFile: "missing.md",
     } })).toEqual({ entryFile: "missing.md", contentHash: null });
+  });
+
+  it("keeps recorded file dates through restore without treating projection times as edits", async () => {
+    await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Historical instructions"));
+    await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsEntryFile: "AGENTS.md" } }).where(eq(agents.id, agentId));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await store().read(companyId, agentId, "AGENTS.md", actor());
+    await store().write({ companyId, agentId, path: "NOTES.md", bytes: Buffer.from("Recorded creation"), baseHash: null }, actor());
+    const instructions = agentInstructionsService(db);
+    const created = await instructions.readFile(agent, "NOTES.md");
+    expect(Number.isFinite(Date.parse(created.createdAt!))).toBe(true);
+    await replaceFilesystem();
+    vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "false");
+    const restored = await instructions.readFile(agent, "AGENTS.md");
+    expect(restored.content).toBe("Historical instructions");
+    expect(restored.createdAt).toBeUndefined();
+    expect(restored.updatedAt).toBeUndefined();
+    const summary = (await instructions.getBundle(agent)).files.find(file => file.path === "AGENTS.md");
+    expect(summary).toBeDefined();
+    expect(summary?.createdAt).toBeUndefined();
+    expect(summary?.updatedAt).toBeUndefined();
+    const recorded = await instructions.readFile(agent, "NOTES.md");
+    expect(recorded.createdAt).toBe(created.createdAt);
+    expect(recorded.updatedAt).toBeUndefined();
   });
 
   it("imports legacy bytes, modes and empty entries, then restores without any old filesystem", async () => {
@@ -168,15 +248,40 @@ describe("durable agent file authority", () => {
     expect(await store().read(companyId, agentId, "failed.txt", actor())).toBeNull();
   });
 
-  it("dry-runs migration without adopting files and requires stopped writers for publication", async () => {
+  it("dry-runs without adopting files and publishes settled legacy files online", async () => {
     await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Legacy"));
     const input = { companyId, apply: false, writersStopped: false };
     expect(await migrateAgentFiles(db, input)).toMatchObject({ results: [{ agentId, state: "needs_import" }], pageReady: false });
     expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual([]);
-    await expect(migrateAgentFiles(db, { ...input, apply: true })).rejects.toThrow("stopped writers");
-    expect(await migrateAgentFiles(db, { ...input, apply: true, writersStopped: true })).toMatchObject({ pageReady: true });
+    expect(await migrateAgentFiles(db, { ...input, apply: true })).toMatchObject({ pageReady: true });
     await replaceFilesystem();
     expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Legacy"));
+  });
+
+  it("recognizes an active agent's existing durable head without restoring its filesystem projection", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Durable"), baseHash: null }, actor());
+    const [active] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", runtimeMode: "native" }).returning();
+    const before = await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId));
+    await fs.rm(root, { recursive: true });
+    expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: false }))
+      .toMatchObject({ results: [{ agentId, state: "durable" }], pageReady: true });
+    expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual(before);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active!.id)))[0]).toEqual(active);
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["pending_collection", "unavailable"])("preserves a %s working copy and keeps first adoption blocked", async state => {
+    await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Canonical files"));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date() }).returning();
+    const [copy] = await db.insert(agentInstructionWorkingCopies).values({ companyId, agentId, runId: run!.id,
+      responsibleUserId: userId, entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: path.join(home, "retained-copy"),
+      executionRoot: "/retained/agent-files", location: "local", state,
+      errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", receipt: { schema: "paperclip.agent-files.v1" } }).returning();
+    expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: false }))
+      .toMatchObject({ results: [{ agentId, state: "working_copy_unsettled" }], pageReady: false });
+    expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual([]);
+    expect((await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, run!.id)))[0]).toEqual(copy);
+    expect(await fs.readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("Canonical files");
   });
 
   it("refuses migration while the agent has queued or running execution", async () => {

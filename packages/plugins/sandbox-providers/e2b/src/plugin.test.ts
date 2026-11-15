@@ -308,7 +308,7 @@ describe("E2B sandbox provider plugin", () => {
 
     expect(mockConnect).toHaveBeenCalledWith("sandbox-123", expect.objectContaining({ apiKey: "resolved-key" }));
     expect(sandbox.files.write).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/), "input");
-    const stdinCall = sandbox.commands.run.mock.calls.find(([cmd]: [string]) => cmd.includes("'printf'"));
+    const stdinCall = sandbox.commands.run.mock.calls.find(([cmd]) => cmd.includes("'printf'"));
     expect(stdinCall).toBeDefined();
     if (!stdinCall) throw new Error("stdinCall not found");
     expect(stdinCall[0]).toMatch(/\.profile/);
@@ -365,7 +365,7 @@ describe("E2B sandbox provider plugin", () => {
       timeoutMs: 1000,
     });
 
-    const fgCall = sandbox.commands.run.mock.calls.find(([cmd]: [string]) => cmd.includes("'printf'"));
+    const fgCall = sandbox.commands.run.mock.calls.find(([cmd]) => cmd.includes("'printf'"));
     expect(fgCall).toBeDefined();
     if (!fgCall) throw new Error("fgCall not found");
     expect(fgCall[0]).toMatch(/\.profile/);

@@ -56,14 +56,7 @@ export function deferredProducer(jobs, run, admissionJob) {
     jobs.every(job => job.run_id === run.id && job.run_attempt === run.run_attempt && job.head_sha === run.head_sha);
 }
 
-// Only skipped admission is restartable here. A failed check or build never
-// becomes an automatic retry, and every write revalidates canonical identity.
-export async function requestDeferredProducer({ file, sha, admissionJob, api, rerun, requested = new Set() }) {
-  if (({ "cloud-readiness.yml": sourceAdmissionJob, "cloud-migrator-artifacts.yml": migratorAdmissionJob })[file] !== admissionJob) throw new Error("Unknown deferred producer contract.");
-  const { workflow, run } = await producer(file, sha, api);
-  if (!run) return "pending";
-  const key = `${run.id}/${run.run_attempt}`;
-  if (requested.has(key)) return "pending";
+async function producerJobs(run, api) {
   const jobs = [];
   let total;
   for (let page = 1; page <= 10; page++) {
@@ -73,14 +66,43 @@ export async function requestDeferredProducer({ file, sha, admissionJob, api, re
         batch.jobs.length !== Math.min(100, Math.max(0, batch.total_count - (page - 1) * 100))) throw new Error("Incomplete release producer job list.");
     total = batch.total_count;
     jobs.push(...batch.jobs);
-    if (page * 100 >= total) break;
-    if (page === 10) throw new Error("Incomplete release producer job list.");
+    if (page * 100 >= total) return jobs;
   }
+  throw new Error("Incomplete release producer job list.");
+}
+
+/** Admission is not publication. The final image gate requires the exact
+ * canonical migrator publisher, including a fresh read after its job evidence. */
+export async function readMigratorPublication(sha, api) {
+  const { workflow, run } = await producer("cloud-migrator-artifacts.yml", sha, api);
+  if (!run) return false;
+  const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
+  if (current.id !== run.id || !trusted(current, sha, workflow) || current.run_attempt !== run.run_attempt || current.status !== "completed") return false;
+  if (current.conclusion !== "success") throw new Error("Exact-source migrator publication failed; inspect its workflow before retrying.");
+  const jobs = await producerJobs(current, api);
+  if (!jobs.every(job => job.run_id === run.id && job.run_attempt === current.run_attempt && job.head_sha === sha)) return false;
+  const publish = jobs.filter(job => job.name === "publish");
+  if (publish.length !== 1 || publish[0].status !== "completed" || publish[0].conclusion !== "success") return false;
+  const confirmed = await api(`/repos/${repository}/actions/runs/${run.id}`);
+  return confirmed.id === run.id && trusted(confirmed, sha, workflow) && confirmed.run_attempt === current.run_attempt &&
+    confirmed.status === "completed" && confirmed.conclusion === "success";
+}
+
+// Only skipped admission is restartable here. A failed check or build never
+// becomes an automatic retry, and every write revalidates canonical identity.
+export async function requestDeferredProducer({ file, sha, admissionJob, api, rerun, requested = new Set() }) {
+  if (({ "cloud-readiness.yml": sourceAdmissionJob, "cloud-migrator-artifacts.yml": migratorAdmissionJob })[file] !== admissionJob) throw new Error("Unknown deferred producer contract.");
+  const { workflow, run } = await producer(file, sha, api);
+  if (!run) return "pending";
+  const key = `${run.id}/${run.run_attempt}`;
+  if (requested.has(key)) return "pending";
+  const jobs = await producerJobs(run, api);
   if (run.status !== "completed") {
     const current = jobs.filter(job => job.run_id === run.id && job.run_attempt === run.run_attempt && job.head_sha === sha);
     // Admission itself succeeds for both outcomes. Only an actual build is
     // evidence that its output admitted work; queued jobs may still be skipped.
-    return current.some(job => job.name !== admissionJob && job.labels?.length > 0 && ["in_progress", "completed"].includes(job.status) && job.conclusion !== "skipped")
+    return current.some(job => job.name !== admissionJob && Number.isSafeInteger(job.runner_id) && job.runner_id > 0 &&
+      ["in_progress", "completed"].includes(job.status) && job.conclusion !== "skipped")
       ? "admitted" : "pending";
   }
   if (!deferredProducer(jobs, run, admissionJob)) return "finished";

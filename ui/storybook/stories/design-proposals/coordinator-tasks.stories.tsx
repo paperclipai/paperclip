@@ -26,7 +26,7 @@ const meta = {
       status: "proposed", home: "design-proposals",
       exception: "Coordinator experimental workspace in an isolated worktree, awaiting review.",
       implementation: "production", boundary: "fixtures",
-      notes: "Mounts the actual CoordinatorSidebar, CoordinatorTasks and NewIssueDialog with the shared proposed task table, toolbar and sidebar styles. New task above Chat opens the task form. Keeps Tasks, Needs You, More and Recents. Needs attention uses the canonical pending-decision feed and hydrates its task IDs; it does not infer attention from task status. DesignPageShell supplies fixture-only desktop chrome; the real Layout owns responsive shell and account placement. API results are synthetic and writes are unsupported; task submission, task-detail, agent execution and cross-surface resolution require the running app. No global proposal theme is enabled, matching the narrowly scoped production opt-in.",
+      notes: "Mounts the actual CoordinatorSidebar, CoordinatorTasks and NewIssueDialog with the shared proposed task table, toolbar and sidebar styles. New task above Chat opens the task form. Keeps Tasks, Inbox, More and Recents. This table specimen does not mount the personal Mine view or exercise its triage behavior. Needs attention uses the canonical pending-decision feed and hydrates its task IDs; it does not infer attention from task status. DesignPageShell supplies fixture-only desktop chrome; the real Layout owns responsive shell and account placement. API results are synthetic and writes are unsupported; task submission, task-detail, agent execution and cross-surface resolution require the running app. No global proposal theme is enabled, matching the narrowly scoped production opt-in.",
     },
   },
   beforeEach: () => prepareFixtureApi([
@@ -37,7 +37,7 @@ const meta = {
     } },
     { path: /\/api\/issues\/[^/]+$/, method: "GET", read: ({ url }) => initialItems.find(item => item.issue.id === url.pathname.split("/").at(-1))?.issue },
     { path: /\/api\/companies\/[^/]+\/attention$/, method: "GET", read: () => ({
-      companyId: "company-storybook", generatedAt: "2026-10-27T12:00:00Z", totalCount: 2, deskBadgeCount: 2, nextCursor: null, countsBySourceKind: { issue_thread_interaction: 2 },
+      companyId: "company-storybook", generatedAt: "2026-10-27T12:00:00Z", totalCount: 2, deskBadgeCount: 2, viewCounts: { mine: 2, unassigned: 0, company: 0 }, nextCursor: null, countsBySourceKind: { issue_thread_interaction: 2 },
       items: initialItems.slice(1, 3).map(({ issue }, index) => ({ id: `fixture-decision-${index}`, sourceKind: "issue_thread_interaction", subject: { kind: "interaction", id: `fixture-question-${index}` }, relatedIssue: { id: issue.id, title: issue.title, identifier: issue.identifier } })),
     }) },
     { path: /\/api\/companies\/[^/]+\/chats$/, method: "GET", read: () => [] },

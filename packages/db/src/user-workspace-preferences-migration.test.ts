@@ -12,7 +12,7 @@ const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 
 describePostgres("workspace preferences migration", () => {
-  it("defaults off and preserves existing preferences when the renumbered migration replays", async () => {
+  it("defaults Classic off and preserves existing preferences when the table migration replays", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-workspace-preferences-replay-");
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     try {
@@ -20,8 +20,9 @@ describePostgres("workspace preferences migration", () => {
       const [original] = await sql`
         INSERT INTO user_workspace_preferences (user_id) VALUES (${userId}) RETURNING *
       `;
-      expect(original.coordinator_workspace_enabled).toBe(false);
-      await sql`UPDATE user_workspace_preferences SET coordinator_workspace_enabled = true WHERE user_id = ${userId}`;
+      expect(original.coordinator_workspace_enabled).toBe(true);
+      expect(original.classic_workspace_enabled).toBe(false);
+      await sql`UPDATE user_workspace_preferences SET coordinator_workspace_enabled = false, classic_workspace_enabled = true WHERE user_id = ${userId}`;
       const [before] = await sql`SELECT * FROM user_workspace_preferences WHERE user_id = ${userId}`;
 
       // An isolated build may already have applied this table under an older

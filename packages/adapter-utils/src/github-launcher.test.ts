@@ -189,6 +189,42 @@ process.exit(result.status ?? 98);
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
   });
+  it("sends repository creation and forks to the connection's tools when a connection is in use", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-repository-tools-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),token:process.env.GH_TOKEN ?? null}));', { mode: 0o700 });
+    let status = "available";
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status, env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    const gh = (...args: string[]) => exec(path.join(bin, "gh"), args, { env });
+    for (const [args, tool] of [
+      [["repo", "create", "demo", "--private"], "create_repository"],
+      [["repo", "new", "demo"], "create_repository"],
+      [["repo", "fork", "octo-org/tools", "--org", "acme"], "fork_repository"],
+    ] as const) {
+      const failure = await gh(...args).catch((error: { code?: number; stdout?: string; stderr?: string }) => error);
+      expect(failure).toMatchObject({ code: 1, stdout: "" });
+      expect(failure.stderr).toContain(`GitHub connection's ${tool} tool`);
+      expect(failure.stderr).not.toContain("managed-token");
+    }
+    expect(JSON.parse((await gh("repo", "create", "--help")).stdout))
+      .toEqual({ args: ["repo", "create", "--help"], token: "managed-token" });
+    expect(JSON.parse((await gh("repo", "view", "octo-org/tools")).stdout))
+      .toEqual({ args: ["repo", "view", "octo-org/tools"], token: "managed-token" });
+    // Without a connection there are no connection tools; gh runs unchanged.
+    status = "absent";
+    expect(JSON.parse((await gh("repo", "create", "demo")).stdout)).toEqual({ args: ["repo", "create", "demo"], token: null });
+  });
   it.each(["before-write", "partial-write"])("keeps Git and managed credentials available after a %s failure", async (failure) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-write-failure-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

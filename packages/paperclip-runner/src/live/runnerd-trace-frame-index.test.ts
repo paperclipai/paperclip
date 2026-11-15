@@ -9,6 +9,9 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...fs, readSync: vi.fn(fs.readSync) };
 });
 
+type PositionalRead = [fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null];
+const readPosition = (call: number) => (vi.mocked(readSync).mock.calls[call] as unknown as PositionalRead)[4];
+
 const interpretation = (frameId: number, ...emittedEventIds: string[]) =>
   `${JSON.stringify({ kind: "interpretation", frameId, emittedEventIds })}\n`;
 const settled = `${JSON.stringify({ kind: "trace_status", debugChannel: "rust_native", status: "complete" })}\n`;
@@ -41,7 +44,7 @@ describe("runnerd trace frame index", () => {
     expect(index.locate(path, "pending-1")).toEqual({ frameId: 2, nativeChannelSettled: true });
     expect(index.locate(path, "missing")).toEqual({ frameId: null, nativeChannelSettled: true });
     expect(readSync).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(readSync).mock.calls[1]![4]).toBe(Buffer.byteLength(first));
+    expect(readPosition(1)).toBe(Buffer.byteLength(first));
   });
 
   it("retains partial lines and split UTF-8 until the append is complete", () => {
@@ -87,7 +90,7 @@ describe("runnerd trace frame index", () => {
     expect(index.locate(path, "last").frameId).toBeNull();
     expect(index.locate(path, "last").frameId).toBeNull();
     expect(index.locate(path, "last").frameId).toBe(4);
-    for (const call of vi.mocked(readSync).mock.calls) expect(call[3]).toBeLessThanOrEqual(1024 * 1024);
+    for (const call of vi.mocked(readSync).mock.calls as unknown as PositionalRead[]) expect(call[3]).toBeLessThanOrEqual(1024 * 1024);
     const calls = vi.mocked(readSync).mock.calls.length;
     for (let i = 0; i < 1000; i++) index.locate(path, "missing");
     expect(readSync).toHaveBeenCalledTimes(calls);
@@ -124,8 +127,8 @@ describe("runnerd trace frame index", () => {
     }
     expect(readSync).toHaveBeenCalledTimes(72);
     for (let i = 0; i < 24; i++) {
-      expect(vi.mocked(readSync).mock.calls[24 + i]![4]).toBe(1024 * 1024);
-      expect(vi.mocked(readSync).mock.calls[48 + i]![4]).toBe(2 * 1024 * 1024);
+      expect(readPosition(24 + i)).toBe(1024 * 1024);
+      expect(readPosition(48 + i)).toBe(2 * 1024 * 1024);
     }
   });
 

@@ -215,7 +215,7 @@ describe("CompanyEnvironments", () => {
     });
   });
 
-  it("omits the Local driver option and lists Sandbox before SSH", async () => {
+  it("omits the Local driver option and lists Sandbox before SSH and Tailscale", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

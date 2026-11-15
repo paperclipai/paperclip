@@ -144,3 +144,14 @@ describe("enrichPromotedWakeContext", () => {
     expect(queued.contextSnapshot).toMatchObject({ issueId: "issue-1", taskId: "task-1", taskKey: "TASK-1" });
   });
 });
+
+describe("context compaction wakes", () => {
+  it("never merge with ordinary wakes, in either order", async () => {
+    const { wakeMustNotJoinActiveRun } = await import("./context.js");
+    const compaction = { issueId: "issue-1", contextCompactionRequestId: "req-1" };
+    const comment = { issueId: "issue-1", wakeCommentId: "comment-1" };
+    expect(wakeMustNotJoinActiveRun(compaction, comment, false)).toBe(true);
+    expect(wakeMustNotJoinActiveRun(comment, compaction, false)).toBe(true);
+    expect(wakeMustNotJoinActiveRun(comment, { issueId: "issue-1", wakeCommentId: "comment-2" }, false)).toBe(false);
+  });
+});

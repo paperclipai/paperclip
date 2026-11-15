@@ -6,7 +6,7 @@
 // source as the declarations from server/scripts/typecheck-layers.mjs, which this
 // script builds first. It then fails if a project still loads server source,
 // because that is what makes these programs large. See "Typecheck memory" in
-// doc/DEVELOPING.md.
+// doc/test-infrastructure.md.
 //
 // --reuse-declarations skips the build. Use it only straight after a server
 // typecheck on the same commit, because stale declarations pass silently.
@@ -22,7 +22,9 @@ import { isTestFile, typecheckLayers } from "../server/scripts/typecheck-layers.
 
 export const PROJECTS = [
   "server/src/__tests__/helpers/maintenance",
+  "tests/e2e",
   "tests/lifecycle-baseline",
+  "tests/restart-chaos",
   "tests/runner-e2e",
   "tests/speko-native",
 ];

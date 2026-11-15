@@ -86,14 +86,19 @@ postgres("independent accounting and deferred budget decisions", () => {
     expect(await pending(f.companyId)).toHaveLength(1);
   });
 
-  it("blocks stale limited admissions until committed work is evaluated, then stays fresh while idle", async () => {
+  // Invariant 3: unevaluated inputs are not a gate. Admission reads the ledger
+  // and live exposure itself, so a reached hard stop refuses at once while the
+  // evaluator is still behind, and an old input under the limit never refuses.
+  it("admits limited work while inputs await evaluation, and refuses a reached hard stop inline", async () => {
     const f = await fixture(1000);
     await costService(db).createEvent(f.companyId, charge(f.agentId, randomUUID(), 1));
     await db.update(budgetEvaluationWork).set({ createdAt: new Date(Date.now() - 16_000) }).where(eq(budgetEvaluationWork.companyId, f.companyId));
-    expect((await budgetService(db).evaluateAdmission(f.companyId, f.agentId)).block?.reason).toContain("awaiting reconciliation");
-    await flushBudgetEvaluationWork(db, f);
     expect((await budgetService(db).evaluateAdmission(f.companyId, f.agentId)).block).toBeNull();
-    expect(await flushBudgetEvaluationWork(db, f)).toBe(0);
+    await costService(db).createEvent(f.companyId, charge(f.agentId, randomUUID(), 1000));
+    expect(await pending(f.companyId)).not.toHaveLength(0);
+    expect((await budgetService(db).evaluateAdmission(f.companyId, f.agentId)).block?.reason).toMatch(/hard-stop/);
+    await flushBudgetEvaluationWork(db, f);
+    expect((await budgetService(db).evaluateAdmission(f.companyId, f.agentId)).block?.reason).toMatch(/hard-stop/);
   });
 
   it("retains policy raise and manual pause when evaluation races them", async () => {
@@ -108,7 +113,7 @@ postgres("independent accounting and deferred budget decisions", () => {
     expect((await db.select().from(companies).where(eq(companies.id, f.companyId)))[0].pauseReason).toBe("manual");
   });
 
-  it("does not apply another agent's stale backlog to a separately limited agent", async () => {
+  it("does not apply another agent's unevaluated hard stop to a separately limited agent", async () => {
     const f = await fixture(0);
     const otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId: f.companyId, name: "Other worker", role: "engineer", status: "active", adapterType: "process" });
@@ -116,9 +121,11 @@ postgres("independent accounting and deferred budget decisions", () => {
     for (const agentId of [f.agentId, otherAgentId]) await service.upsertPolicy(f.companyId,
       { scopeType: "agent", scopeId: agentId, amount: 1000 }, null);
     await flushBudgetEvaluationWork(db, f);
-    await costService(db).createEvent(f.companyId, charge(f.agentId, randomUUID(), 1));
+    await costService(db).createEvent(f.companyId, charge(f.agentId, randomUUID(), 1000));
     await db.update(budgetEvaluationWork).set({ createdAt: new Date(Date.now() - 16_000) }).where(eq(budgetEvaluationWork.companyId, f.companyId));
-    expect((await service.evaluateAdmission(f.companyId, f.agentId)).block).not.toBeNull();
+    // The unevaluated charge reaches this agent's hard stop and refuses it
+    // inline; the other agent's separate limit is untouched.
+    expect((await service.evaluateAdmission(f.companyId, f.agentId)).block?.reason).toMatch(/hard-stop/);
     expect((await service.evaluateAdmission(f.companyId, otherAgentId)).block).toBeNull();
   });
 

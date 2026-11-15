@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { describe, expect, it, vi } from "vitest";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "./response-delivery.js";
 

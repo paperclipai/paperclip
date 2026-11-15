@@ -3,6 +3,8 @@ import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { CreateMultipartUploadCommand, S3Client, UploadPartCommand } from "@aws-sdk/client-s3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { heartbeatRuns } from "@paperclipai/db";
+import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { storageFailureDiagnosticsFor } from "../storage/failure-diagnostics.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { putS3Multipart } from "../storage/s3-multipart.js";
@@ -80,6 +82,43 @@ describe("S3 storage failure diagnostics", () => {
 
     await expect(s3.getObject({ objectKey: "missing" })).rejects.toMatchObject({ status: 404 });
     await expect(s3.headObject({ objectKey: "missing" })).resolves.toEqual({ exists: false });
+  });
+
+  it("names a response body that was cut off after its headers arrived", async () => {
+    handler = (req, res) => {
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": "1024", "x-amz-request-id": "req-body-1" });
+      res.write(Buffer.alloc(16), () => req.socket.destroy());
+    };
+    const object = await provider().getObject({ objectKey: "company/snapshot.bin" });
+    const error = await (async () => { for await (const _chunk of object.stream) { /* drain */ } })().catch((err: unknown) => err);
+
+    expect(error).toMatchObject({ message: "aborted", code: "ECONNRESET" });
+    expect(storageFailureDiagnosticsFor(error)).toEqual({
+      provider: "s3",
+      operation: "read_object_body",
+      errorCode: "ECONNRESET",
+      httpStatus: 200,
+      requestId: "req-body-1",
+      attempts: 1,
+    });
+    const report = collectRunFailureDiagnostics(
+      { id: "run", errorCode: "setup_failed", resultJson: null } as typeof heartbeatRuns.$inferSelect,
+      { error: new Error("Workspace restore failed", { cause: error }), phase: "setup" },
+    );
+    expect(report.execution).toMatchObject({
+      storageOperation: "read_object_body",
+      storageErrorCode: "ECONNRESET",
+      storageHttpStatus: 200,
+      storageRequestId: "req-body-1",
+    });
+  });
+
+  it("does not handle a body error that its consumer left unhandled", async () => {
+    handler = (_req, res) => res.end("ok");
+    const { stream } = await provider().getObject({ objectKey: "k" });
+    const failure = new Error("unhandled body failure");
+    expect(() => stream.emit("error", failure)).toThrow(failure);
+    expect(storageFailureDiagnosticsFor(failure)).toMatchObject({ operation: "read_object_body" });
   });
 
   it("names the multipart step that failed and ignores unsafe provider fields", async () => {

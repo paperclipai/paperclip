@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, companies, companyMemberships, createDb, instanceSettings, pluginConfig, plugins, projects, toolApplications, toolConnections, toolConnectionInstalls, toolProfiles, toolMcpGateways, toolProfileBindings, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, companies, companyMemberships, applyPendingMigrations, closeFileStorageDb, createDb, instanceSettings, pluginConfig, plugins, projects, toolApplications, toolConnections, toolConnectionInstalls, toolProfiles, toolMcpGateways, toolProfileBindings, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
@@ -18,7 +18,18 @@ import { aiConnectionService } from "../services/ai-connections.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = process.env.PAPERCLIP_AGENT_RUNTIME_ASSIGNMENTS_TEST_DATABASE_URL;
+const expectedDatabase = process.env.PAPERCLIP_AGENT_RUNTIME_ASSIGNMENTS_EXPECTED_DATABASE;
+if (externalUrl || expectedDatabase) {
+  if (!externalUrl || !expectedDatabase || !/^sleep2_[a-z0-9_]+_test$/.test(expectedDatabase)) {
+    throw new Error("Explicit external fixture URL and expected database are required");
+  }
+  const target = new URL(externalUrl);
+  if (!["postgres:", "postgresql:"].includes(target.protocol) || target.hostname !== "127.0.0.1" || target.port !== "55448" || target.pathname !== `/${expectedDatabase}` || target.search) {
+    throw new Error("External fixture must match the exact owned database");
+  }
+}
+const support = externalUrl ? { supported: true as const } : await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
 
 describeDatabase("connection assignment synchronization", () => {
@@ -30,8 +41,18 @@ describeDatabase("connection assignment synchronization", () => {
   let pluginId: string;
   let applicationId: string;
   let connectionId: string;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-assignments-"); db = createDb(database.connectionString); }, 90_000);
-  afterAll(async () => { await database?.cleanup(); });
+  beforeAll(async () => {
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-assignments-");
+    db = createDb(externalUrl ?? database.connectionString, { maxConnections: 4 });
+  }, 90_000);
+  afterAll(async () => {
+    try { if (db) await closeFileStorageDb(db, 1); }
+    finally {
+      try { await db?.$client.end({ timeout: 1 }); }
+      finally { await database?.cleanup(); }
+    }
+  });
   afterEach(() => vi.unstubAllEnvs());
   beforeEach(async () => {
     companyId = randomUUID(); agentId = randomUUID(); peerId = randomUUID(); pluginId = randomUUID();
@@ -173,7 +194,7 @@ describeDatabase("connection assignment synchronization", () => {
         await vi.waitFor(() => expect(snapshots).toEqual(Array(2).fill({ publicMcp: enabled, chatConnectors: enabled })), { timeout: 5000 });
         await vi.waitFor(async () => expect(await inbox.list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]), { timeout: 5000 });
         expect(await events()).toHaveLength(before + 2);
-      } finally { delivery.dispose(); await coordinator.stop(); }
+      } finally { await delivery.dispose(); await coordinator.stop(); }
     }
   });
 
@@ -214,7 +235,7 @@ describeDatabase("connection assignment synchronization", () => {
       { companyId, profileKey: "single-target", name: "Single target" },
     ]).returning();
     if (change !== "bind") await db.insert(toolProfileBindings).values({ companyId, profileId: source.id, targetType: "agent", targetId: agentId });
-    const single = createDb(database.connectionString, { maxConnections: 1 });
+    const single = createDb(externalUrl ?? database.connectionString, { maxConnections: 1 });
     const service = toolAccessService(single);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const work = change === "bind" ? service.bindProfile(source.id, { targetType: "agent", targetId: agentId, priority: 100 })

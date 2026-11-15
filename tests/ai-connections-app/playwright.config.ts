@@ -10,7 +10,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.AI_CONNECTIONS_TEST_URL ?? "http://127.0.0.1:3100",
     browserName: "chromium",
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
     screenshot: "only-on-failure",
   },
 });

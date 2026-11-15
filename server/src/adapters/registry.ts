@@ -1,4 +1,4 @@
-import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -440,7 +440,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider !== "cursor_cloud" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
-      return probePluginRunnerEnvironment(context);
+      // Managed connections probe through testManagedEnvironment. This path has
+      // none, which a plugin Runner-task environment never runs.
+      return pluginRunnerAiConnectionRequiredTestResult("paperclip_runner");
     }
     if (profile.provider === "cursor_cloud") {
       const failure = (code: string, message: string) => ({ adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code, level: "error" as const, message }] });
@@ -642,7 +644,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.160.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits. A board operator creates each Claude Managed (Anthropic managed agent) profile through POST /api/companies/{companyId}/managed-agent-profiles; agent credentials cannot create, qualify or list one.\n",
   getConfigSchema: () => ({
     fields: [
       {

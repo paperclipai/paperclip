@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 /**
  * check-lockfile-release-age.mjs
- * Decides whether the lockfile bot may merge a refreshed pnpm-lock.yaml without review.
+ * Decides whether the lockfile bot may merge refreshed pnpm lockfiles without review.
  * Every package version that the refresh adds must be published on npm for at least
  * the minimum age. A version that is too new, or that cannot be verified, holds the
  * PR for a human.
  *
  * Exports: parseLockfilePackages(text), addedPackageVersions(baseText, headText),
+ *          addedPackageVersionsAcross(pairs),
  *          checkReleaseAge(entries, { fetchPublishTime, now, minAgeMs, concurrency })
  *
- * CLI: node check-lockfile-release-age.mjs --base <file> --head <file> --min-age-days <n>
- *      Writes `eligible=true|false` to GITHUB_OUTPUT and a Markdown report to --report.
+ * CLI: node check-lockfile-release-age.mjs --base <file> --head <file> [--base <file> --head <file> ...]
+ *        --min-age-days <n>
+ *      Pass one --base/--head pair per lockfile, in the same order. Writes `eligible=true|false`
+ *      to GITHUB_OUTPUT and a Markdown report to --report.
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +66,15 @@ export function addedPackageVersions(baseText, headText) {
     .filter(([key, resolution]) => base.get(key) !== resolution)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, resolution]) => ({ key, ...splitPackageKey(key), resolution }));
+}
+
+/** Added versions across several base/head lockfile pairs, each listed once. */
+export function addedPackageVersionsAcross(pairs) {
+  const entries = new Map();
+  for (const [baseText, headText] of pairs) {
+    for (const entry of addedPackageVersions(baseText, headText)) entries.set(`${entry.key}\0${entry.resolution}`, entry);
+  }
+  return [...entries.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export async function fetchNpmPublishTime(name, version, fetchImpl = fetch) {
@@ -135,19 +147,21 @@ export function formatReport(result, minAgeDays) {
 async function main() {
   const { values } = parseArgs({
     options: {
-      base: { type: 'string' },
-      head: { type: 'string' },
+      base: { type: 'string', multiple: true },
+      head: { type: 'string', multiple: true },
       'min-age-days': { type: 'string' },
       report: { type: 'string' },
     },
   });
   const minAgeDays = Number(values['min-age-days']);
-  if (!values.base || !values.head || !Number.isFinite(minAgeDays) || minAgeDays < 0) {
-    console.error('Usage: check-lockfile-release-age.mjs --base <file> --head <file> --min-age-days <n> [--report <file>]');
+  const bases = values.base ?? [];
+  const heads = values.head ?? [];
+  if (bases.length === 0 || bases.length !== heads.length || !Number.isFinite(minAgeDays) || minAgeDays < 0) {
+    console.error('Usage: check-lockfile-release-age.mjs --base <file> --head <file> [--base <file> --head <file> ...] --min-age-days <n> [--report <file>]');
     process.exit(2);
   }
 
-  const entries = addedPackageVersions(readFileSync(values.base, 'utf8'), readFileSync(values.head, 'utf8'));
+  const entries = addedPackageVersionsAcross(bases.map((base, index) => [readFileSync(base, 'utf8'), readFileSync(heads[index], 'utf8')]));
   const result = await checkReleaseAge(entries, { minAgeMs: minAgeDays * DAY_MS });
   const report = formatReport(result, minAgeDays);
   console.log(report);
