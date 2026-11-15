@@ -6142,15 +6142,6 @@ export function recoveryService(
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
-        // Skip candidates whose assignee is directly non-invokable (paused,
-        // terminated, pending_approval). Without this filter the backstop
-        // repeatedly enqueues wakes that always fail with 409, producing a
-        // steady stream of `wake_target_not_invokable` warnings for the same
-        // issue every heartbeat until an operator intervenes. Matches the
-        // atomic guard in the heartbeat's `agents.status -> running` update.
-        // Org-chain invalidity is not covered here for cost reasons; the
-        // enqueue path still filters those cases via
-        // `evaluateAgentInvokabilityFromDb`.
         notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES]),
       ];
       if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));

@@ -1048,9 +1048,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     async (assigneeStatus) => {
       const { companyId, agentId, blockedIssueId } =
         await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
-      // Flip the assignee into a directly non-invokable state. The backstop
-      // must drop the candidate at the SQL layer — otherwise it enqueues a
-      // wake that always fails with 409 and loops on every heartbeat.
       await db.update(agents).set({ status: assigneeStatus }).where(eq(agents.id, agentId));
 
       const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
@@ -1078,8 +1075,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const heartbeat = heartbeatService(db);
 
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
-    // Two passes while paused: the candidate must never reach the enqueue path,
-    // so it cannot leave a skipped wake row behind that survives the resume.
     for (let pass = 0; pass < 2; pass += 1) {
       const pausedPass = await heartbeat.reconcileResolvedDependencyWakes();
       expect(pausedPass.checked).toBe(0);
@@ -1091,7 +1086,6 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(resumedPass.healed).toBe(1);
     expect(resumedPass.issueIds).toEqual([blockedIssueId]);
 
-    // Still before draining, so this 0 comes from the dedup, not from the run.
     const repeatPass = await heartbeat.reconcileResolvedDependencyWakes();
     expect(repeatPass.healed).toBe(0);
     await heartbeat.drainActiveRunExecutions();
