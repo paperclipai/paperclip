@@ -42,8 +42,8 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { laterConversationTurn, laterTurns } from "./native-response-presentation-query.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -993,15 +993,10 @@ async function laterConversationTurnStarted(db: Db, run: {
   id: string; companyId: string; agentId: string; issueId: string;
 }) {
   // Compare stored timestamps; a JavaScript Date drops their microseconds.
-  const later = alias(heartbeatRuns, "later_conversation_turn");
-  const [turn] = await db.select({ id: later.id }).from(later)
-    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, run.id)).where(and(
-      eq(later.companyId, run.companyId),
-      sql`${later.contextSnapshot}->>'issueId' = ${run.issueId}`,
-      gt(later.createdAt, heartbeatRuns.createdAt),
-      eq(later.agentId, run.agentId),
-      ne(later.status, "queued"),
-    )).limit(1);
+  const [turn] = await db.select({ id: laterTurns.id }).from(laterTurns)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.agentId, run.agentId)))
+    .where(laterConversationTurn(run.issueId)).limit(1);
   return Boolean(turn);
 }
 

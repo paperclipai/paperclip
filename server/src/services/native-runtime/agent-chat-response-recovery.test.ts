@@ -671,12 +671,20 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       expect(await comments(f.runId)).toEqual([]);
     },
   );
-  it("still posts the reply when the only later run is a queued wake that has not started", async () => {
+  it.each([
+    ["a queued wake that has not started", { status: "queued" }, {}],
+    ["a discarded queued message", { status: "cancelled", errorCode: "queued_comment_discarded" }, {}],
+    ["a context compaction run", { status: "succeeded" }, { contextCompactionRequestId: "compaction-request" }],
+  ] as const)("still posts the reply when the only later run is %s", async (_, run, context) => {
     const f = await fixture();
     const [earlier] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued", runtimeMode: "native",
-      responsibleUserId: f.userId, createdAt: new Date(earlier.createdAt.getTime() + 60_000),
-      contextSnapshot: { issueId: f.issueId, source: "issue.comment", conversationSessionGeneration: 0 } });
+    const laterAt = new Date(earlier.createdAt.getTime() + 60_000);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, ...run, runtimeMode: "native",
+      responsibleUserId: f.userId, createdAt: laterAt,
+      ...(run.status === "cancelled" ? { finishedAt: laterAt } : {}),
+      ...(run.status === "succeeded" ? { startedAt: laterAt, finishedAt: laterAt } : {}),
+      contextSnapshot: { issueId: f.issueId, source: "issue.comment", conversationSessionGeneration: 0, ...context } });
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
     await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
     expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply })]);
   });
