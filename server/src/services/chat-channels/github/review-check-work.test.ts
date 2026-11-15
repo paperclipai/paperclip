@@ -122,5 +122,11 @@ describe.skipIf(!support.supported)("GitHub review check sweep", () => {
     await advance(5_000);
     // The stand-in dispatch saves nothing, so the check stays due; only it is due.
     expect(new Set(dispatched)).toEqual(new Set([target.id]));
+    // A later company-wide rebuild, which does not read the status, keeps the
+    // changed check due instead of moving it to its saved poll deadline.
+    dispatched.length = 0;
+    await hint({ companyId: f.companyId });
+    await advance(5_000);
+    expect(new Set(dispatched)).toEqual(new Set([target.id]));
   }, 300_000);
 });
