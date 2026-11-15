@@ -30,6 +30,8 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-native-stop.js";
 import { nativeSha256 } from "../native-runtime/canonical.js";
 import { callbacks, runControlPostgresSupport, setupRunControlDatabase } from "./__tests__/run-control-fixtures.js";
+import { LEASE_RELEASE_MAX_ATTEMPTS } from "../environment-lease-release-deferral.js";
+import { agentExecutionStopBlocker } from "../agent-execution-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../acknowledged-native-stop.js", async (importOriginal) => {
@@ -931,6 +933,19 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     const second = await deferral();
     expect(second).toMatchObject({ reason: "release_failed", attempts: 2 });
     expect(Date.parse(second.retryAt) - before).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("stops retrying a release after repeated deferrals and reports why the agent cannot stop", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("legacy");
+    const deps = callbacks(db);
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockResolvedValue({ released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] });
+    const control = createHeartbeatRunControl(db, deps);
+    for (let attempt = 1; attempt <= LEASE_RELEASE_MAX_ATTEMPTS + 2; attempt++) {
+      await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    }
+    const final = await deferral() as Record<string, unknown>;
+    expect(final).toMatchObject({ reason: "release_failed", attempts: LEASE_RELEASE_MAX_ATTEMPTS, exhaustedAt: expect.any(String) });
+    expect(await agentExecutionStopBlocker(db, [agent.id])).toBe("environment_lease_release_exhausted");
   });
 
   it("records a destroy held back by a busy warm session", async () => {

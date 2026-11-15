@@ -49,6 +49,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }
       expect(delays.at(-1)).toBeGreaterThanOrEqual(60_000 - 1_000);
       expect(delays.at(-1)).toBeLessThanOrEqual(60_000 + 1_000);
+      expect(lifecyclePendingRetryDelayMs(11)).toBe(15 * 60_000);
     } finally {
       await worker.stop();
     }

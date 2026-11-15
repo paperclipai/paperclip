@@ -1681,6 +1681,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     localRuns: { has(runId: string): boolean }, onDeferredDeadline?: (at: number) => void): Promise<boolean> {
     if (!lease.heartbeatRunId || localRuns.has(lease.heartbeatRunId)) return false;
     const deferral = readLeaseReleaseDeferral(lease.metadata);
+    if (deferral?.exhaustedAt) return false;
     const retryAt = deferral ? Date.parse(deferral.retryAt) : Number.NaN;
     if (deferral && retryAt > Date.now()) {
       onDeferredDeadline?.(retryAt);

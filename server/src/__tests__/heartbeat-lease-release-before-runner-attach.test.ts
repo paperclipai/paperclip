@@ -155,8 +155,15 @@ describeEmbeddedPostgres("environment lease release between sandbox acquire and 
     }
     expect(agent.lifecycleState).toBe("terminated");
     expect(passes).toBeLessThanOrEqual(1);
-    expect((await run(fixture.runId)).status).toBe("cancelled");
+    const stopped = await run(fixture.runId);
+    expect(stopped.status).toBe("cancelled");
     await expectSandboxReleased(fixture);
+    if (PRE_LAUNCH.includes(window)) {
+      expect(stopped.runnerProfileJson).not.toHaveProperty("nativeWorkspaceSync");
+      expect(stopped.runnerProfileJson).toHaveProperty("nativeWorkspaceSyncReleasedUnchanged.state", "prepared");
+    } else {
+      expect(stopped.resultJson).toHaveProperty("workspaceRestoreRecovery.schema", "paperclip.workspace-restore-recovery.v1");
+    }
   }, 60_000);
 
   it.each(ALL_WINDOWS)("stopping the run releases a sandbox leased during %s", async window => {

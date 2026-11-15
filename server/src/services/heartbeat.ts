@@ -4452,7 +4452,8 @@ export function heartbeatService(
       .where(and(inArray(heartbeatRuns.agentId, agentIds),
         or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
           and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))),
-        sql`not coalesce((${environmentLeases.metadata}->'releaseDeferral'->>'retryAt')::timestamptz > now(), false)`));
+        sql`not coalesce((${environmentLeases.metadata}->'releaseDeferral'->>'retryAt')::timestamptz > now(), false)`,
+        sql`not coalesce(${environmentLeases.metadata}->'releaseDeferral' ? 'exhaustedAt', false)`));
     const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
     let blocker: string | null = null;
     for (const run of runs) {

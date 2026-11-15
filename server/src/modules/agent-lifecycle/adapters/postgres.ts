@@ -15,7 +15,11 @@ type LifecycleRow = typeof agents.$inferSelect;
 const LIFECYCLE_PENDING_BASE_MS = 2_000;
 const LIFECYCLE_PENDING_MAX_MS = 60_000;
 
+const LIFECYCLE_PENDING_STALLED_PASSES = 10;
+const LIFECYCLE_PENDING_STALLED_MS = 15 * 60_000;
+
 export function lifecyclePendingRetryDelayMs(passes: number) {
+  if (passes > LIFECYCLE_PENDING_STALLED_PASSES) return LIFECYCLE_PENDING_STALLED_MS;
   return Math.min(LIFECYCLE_PENDING_MAX_MS, LIFECYCLE_PENDING_BASE_MS * 2 ** Math.max(0, passes - 1));
 }
 type ChangeOptions = { version?: number; owner?: string; reason?: string };

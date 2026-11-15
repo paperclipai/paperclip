@@ -1,4 +1,5 @@
 import { readProcessStartedAt } from "./hot-restart.js";
+import { readLeaseReleaseDeferral } from "./environment-lease-release-deferral.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -19,6 +20,9 @@ export async function agentExecutionStopBlocker(db: Db, agentIds: string[]): Pro
     inArray(environmentLeases.heartbeatRunId, runIds),
     inArray(sql`${environmentLeases.metadata}->>'agentId'`, agentIds),
   ));
+  if (leases.some(lease => lease.status === "active" && readLeaseReleaseDeferral(lease.metadata)?.exhaustedAt)) {
+    return "environment_lease_release_exhausted";
+  }
   if (leases.some(lease => (!lease.releasedAt && !(lease.status === "retained" && lease.cleanupStatus === "success")) || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return "environment_lease_unreleased";
   const coordinators = await db.select().from(nativeRunFinalizations)
     .where(inArray(nativeRunFinalizations.runId, runIds));
