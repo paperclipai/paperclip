@@ -114,9 +114,13 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
     console.info(`live-run census (30 min): ${JSON.stringify(result)}`);
     const settled = new Set([...f.population.inReview, ...f.population.inProgress, ...f.population.todo, f.waitingTaskId]);
     const settledChecks = f.events.filter(event => event.name === "check" && settled.has(String(event.fields.issueId)));
-    expect(settledChecks.length).toBeLessThanOrEqual(50);
-    expect(result.stranded).toBeLessThanOrEqual(50);
-    expect(result.assignedWork).toBeLessThanOrEqual(50);
+    // Before the fix: 534 settled checks and 540 backstop checks. After: 0 and 6 (the live task itself).
+    expect(settledChecks.length).toBe(0);
+    expect(result.strandedByWake.backstop ?? 0).toBeLessThanOrEqual(10);
+    // The live task's own run hints: about one check per run event.
+    expect(result.strandedByWake.hint ?? 0).toBeLessThanOrEqual(ticks + 10);
+    expect(result.assignedWork).toBeLessThanOrEqual(10);
+    expect(result.signalsBeyondRunEvents).toBe(0);
   }, 1_800_000);
 
   it("still checks a task of the live agent within the backstop bound when its own rows change without a hint", async () => {
