@@ -49,6 +49,7 @@ import * as copilotProbe from "../services/copilot-connection-probe.js";
 import * as settingsModule from "../services/instance-settings.js";
 import { agentRoutes } from "../routes/agents.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -2519,6 +2520,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.insert(toolConnections).values(ids.map(id => ({ ...connection, id, uid: id, name: `Cost ${id}` })));
       await db.insert(connectionGrants).values(ids.map(connectionId => ({ ...grant, id: randomUUID(), connectionId })));
       selects.mockClear();
+      invalidateInstanceSettingsCache();
       const large = await request(app).get(url);
       largeQueries = selects.mock.calls.length;
       expect(large.status).toBe(200);

@@ -78,11 +78,11 @@ describe("settled remote warm control evidence", () => {
       .toBe("provider.notice.recorded x2, session.goal.snapshot x1");
   });
 
-  it("points a failed attachment at the reviewed docs with its real cause", () => {
+  it("explains a failed attachment with its real cause", () => {
     const stored = 'native_session_recovery_failed: Error: PRP command run.attach failed: {"commandType":"run.attach","result":{"code":"command_execution_failed","message":"run.attach requires a settled Codex provider session: active_turn"},"status":"failed"}';
     const pointer = describeFailedAttachment(stored);
     expect(pointer).toContain("run.attach requires a settled Codex provider session: active_turn");
-    expect(pointer).toContain("https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run");
+    expect(pointer).toContain("A later run may start a new provider thread.");
     expect(describeFailedAttachment("run.attach requires the restored Codex provider process")).toContain("restored Codex provider process");
     const quoted = `PRP command run.attach failed: ${JSON.stringify({ result: { message: 'run.attach provider is invalid: unknown "value" here' } })}`;
     expect(describeFailedAttachment(quoted)).toContain('run.attach provider is invalid: unknown "value" here. A later run');

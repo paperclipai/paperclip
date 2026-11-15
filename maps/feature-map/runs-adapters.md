@@ -44,7 +44,8 @@ For latency diagnosis with an operator OTLP endpoint, search the hashed run ID
 without restricting the root span name. Compare workspace preparation with its
 `workspace_<step>` intervals. Measure controller readiness separately through
 `controller.startup.<phase>`. A recovery pause or deployment drain is not model
-execution time. See the [tracing contract](../../doc/observability.md#controller-preparation-phases).
+execution time. See the spans in
+[`execution-preparation-timing.ts`](../../server/src/services/execution-preparation-timing.ts).
 These source-level diagnostics do not establish a live response-time budget.
 `task.time_to_first_token` measures accepted ingress through the first committed
 text that the task transcript can show, including thinking and completed
