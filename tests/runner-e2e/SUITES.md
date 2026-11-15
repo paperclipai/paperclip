@@ -223,7 +223,8 @@ Optional `PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_ENDPOINT` and
 endpoint. Each attempt has a distinct `runner-e2e/<instance-id>/` prefix. The
 server rejects mixed selections and never adopts ambient production storage
 configuration. Provider environment variables and immutable image selection use
-the standard launcher contract below.
+the standard launcher contract in the runbook: see
+[Credentials](README.md#credentials) and [Daytona image](README.md#daytona-image).
 
 The explicit-only [GitHub review bot journey](GITHUB-REVIEW-JOURNEY.md) tests
 attended bot setup and an automatic PR review against an attached deployment.
@@ -2473,7 +2474,8 @@ into an agent workspace.
 Set `GITHUB_TOKEN` with read access to that repository, `OPENAI_API_KEY`, and,
 for Daytona, `DAYTONA_API_KEY` and the immutable `PAPERCLIP_E2E_DAYTONA_IMAGE`.
 On macOS, also set `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to the verified Linux
-runner from that pinned image, as described above.
+runner from that pinned image, as described in
+[Match the local controller package to the Daytona image](README.md#match-the-local-controller-package-to-the-daytona-image).
 Credentials follow the existing encrypted company-secret and redaction paths.
 These tests send the selected private skill instructions to OpenAI and deliver
 the package to the selected runtime.

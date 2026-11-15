@@ -372,7 +372,7 @@ ownerless clock on top, a queued run or a Retry wait is flagged after 8 minutes.
 R5), and six R1 tasks in three waves whose run stayed `queued` for 8 minutes while the issue still
 showed a retry row, which those waves graded only as a late R1. A retry row counts as a live timer
 only until its run is dispatched. It also flags ten tasks whose accepted Retry waited on the system
-for 8 minutes without starting a run (five in saved waves, five in the L1 waves above). U2 flags a claude task that failed four times in a
+for 8 minutes without starting a run (five in saved waves, five in the [L1 waves](SCENARIOS.md#database-contention-l1---db-pressure)). U2 flags a claude task that failed four times in a
 row with `adapter_failed`. Every U3
 flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
 warning until `adapter_failed` names its cause. Runs now record that cause as `failureCause` (shown
