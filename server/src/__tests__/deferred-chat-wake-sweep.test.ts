@@ -11,7 +11,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../services/deferred-execution-notifications.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { createDurableChatWakeupRequest } from "../services/durable-chat-wakeup.js";
+import { createDurableChatWakeupRequest, resumeDeferredChatWake } from "../services/durable-chat-wakeup.js";
 import { createInboundWakeups } from "../services/chat-channels/inbound/wakeups.js";
 import { chatWakeAuthorityDenied } from "../services/chat-channels/inbound/wakeup-authorization-error.js";
 import { logger } from "../middleware/logger.js";
@@ -56,13 +56,15 @@ describe("deferred chat wake sweep", () => {
     }).unregisterDeferredWakeOwner;
   });
   afterEach(async () => {
-    unregisterOwner?.();
+    unregisterOwner?.(); onAuthorize = undefined;
     await coordinator.stop(); await heartbeat.drainActiveRunExecutions();
     vi.useRealTimers(); vi.restoreAllMocks();
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
+  let onAuthorize: ((action: typeof chatActions.$inferSelect) => Promise<void>) | undefined;
   async function authorize(tx: Db, action: typeof chatActions.$inferSelect) {
+    await onAuthorize?.(action);
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, action.companyId),
       eq(issues.id, String(action.payload.issueId)))).for("update");
     if (!issue || issue.assigneeAgentId !== action.payload.agentId || ["backlog", "done", "cancelled"].includes(issue.status))
@@ -253,6 +255,29 @@ describe("deferred chat wake sweep", () => {
       expect(["skipped", "deferred_issue_execution"]).toContain(left.status);
       if (left.status === "skipped") expect(left.error).toBe("authority_source_comment");
     });
+  });
+
+  it("refuses a batch that another run took a message from before admission, then answers the rest alone", async () => {
+    const c = await company();
+    const older = await wake(c, { status: "done", ageMs: 10 * 60_000 });
+    const newer = await wake(c, { status: "done", ageMs: 5 * 60_000, on: older });
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: c.companyId, agentId: c.agent.id, status: "succeeded",
+      startedAt: new Date(Date.now() - 2000), finishedAt: new Date(Date.now() - 1000),
+      contextSnapshot: { issueId: randomUUID(), wakeCommentIds: [older.payloadCommentId] } }).returning();
+    let newerChecks = 0;
+    onAuthorize = async action => {
+      if (action.id !== newer.requestId || ++newerChecks !== 2) return;
+      await db.update(agentWakeupRequests).set({ status: "completed", runId: other.id }).where(eq(agentWakeupRequests.id, older.requestId));
+    };
+    const scope = { companyId: c.companyId, agentId: c.agent.id, issueId: older.issue.id, recoverySweep: true };
+    await expect(resumeDeferredChatWake(db, { ...scope, requestId: older.requestId }))
+      .rejects.toThrow("chat_inbound_wakeup_batch_changed");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, newer.requestId))).toHaveLength(0);
+    expect(await receipt(newer.requestId)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    await resumeDeferredChatWake(db, { ...scope, requestId: newer.requestId });
+    const [alone] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, newer.requestId));
+    expect(alone.contextSnapshot?.wakeCommentIds ?? [newer.payloadCommentId]).toEqual([newer.payloadCommentId]);
+    expect(await receipt(older.requestId)).toMatchObject({ status: "completed", runId: other.id });
   });
 
   it("keeps a refused follow-up in the saved pause wait without retrying, then starts it when the pause lifts", async () => {

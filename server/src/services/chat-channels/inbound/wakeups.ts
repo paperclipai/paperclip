@@ -9,7 +9,7 @@ import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { retryChatControlAdmission } from "../../chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
 import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner, CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS, type DeferredChatWakeDecline } from "../../durable-chat-wakeup.js";
-import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, issues } from "@paperclipai/db";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, heartbeatRuns, issues } from "@paperclipai/db";
 import { issueService } from "../../issues.js";
 import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
@@ -523,7 +523,16 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       commentId: String(action.payload.commentId),
       requestedByActorType: action.payload.requestedByActorType as "user" | "system",
       requestedByActorId: String(action.payload.requestedByActorId), requestedAt: action.createdAt,
-      resumeDeferred: true, authorize: async tx => { await authorizeAction(tx, action); },
+      resumeDeferred: true,
+      authorize: async tx => {
+        await authorizeAction(tx, action);
+        if (!riders.length) return;
+        const current = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+          .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, scope.companyId),
+            inArray(agentWakeupRequests.id, riders.map(rider => rider.receipt.id)))).for("update");
+        if (current.length !== riders.length || current.some(row => row.status !== "deferred_issue_execution" || row.runId))
+          throw new Error("chat_inbound_wakeup_batch_changed");
+      },
       ...(riders.length ? { onAdmitted: async (tx: Db, admitted: { runId: string | null }) => {
         if (!admitted.runId) return;
         const now = new Date();
