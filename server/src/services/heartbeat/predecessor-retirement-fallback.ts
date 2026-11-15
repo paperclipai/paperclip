@@ -4,7 +4,7 @@ import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from 
 import { persistActivity } from "../activity-log.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import {
-  findNativePredecessorRetirementUnproven, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA,
+  findNativePredecessorRetirementUnproven, readPredecessorRetirementFallback, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA,
   type PredecessorRetirementFallback, type ReplaceBeforeReuseMarker,
 } from "../native-runtime/predecessor-retirement.js";
 import { FAILED_BEFORE_PROVIDER_TURN_KEY, FAILED_BEFORE_PROVIDER_TURN_SCHEMA, findNativeFailedBeforeProviderTurn,
@@ -47,6 +47,7 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
         : eq(environmentLeases.leasePolicy, "reuse_by_environment"), isNotNull(environmentLeases.providerLeaseId),
     )).for("update")).filter(lease => !failure.providerLeaseId || lease.providerLeaseId === failure.providerLeaseId);
     if (leases.length === 0 && !beforeProviderTurn) return null;
+    if (await replacementAlreadyMissed(tx as unknown as Db, current, leases.map(lease => lease.providerLeaseId!))) return null;
     if (beforeProviderTurn) await tx.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
       [FAILED_BEFORE_PROVIDER_TURN_KEY]: { schema: FAILED_BEFORE_PROVIDER_TURN_SCHEMA, cause: beforeProviderTurn.code, proof: beforeProviderTurn.proof,
         technicalCause: beforeProviderTurn.technicalCause } })}::jsonb` })
@@ -66,6 +67,15 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
     return { version: 1 as const, providerWorkStarted: false as const, predecessorRunId: failure.predecessorRunId,
       replacedProviderLeaseIds };
   });
+}
+
+async function replacementAlreadyMissed(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "retryOfRunId">,
+  providerLeaseIds: string[]): Promise<boolean> {
+  if (!run.retryOfRunId || providerLeaseIds.length === 0) return false;
+  const [source] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.retryOfRunId)));
+  const replaced = readPredecessorRetirementFallback(source?.resultJson)?.replacedProviderLeaseIds ?? [];
+  return providerLeaseIds.some(id => replaced.includes(id));
 }
 
 /**

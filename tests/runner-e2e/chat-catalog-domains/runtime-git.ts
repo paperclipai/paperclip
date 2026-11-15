@@ -29,10 +29,10 @@ export function gradeInspectGit(value: unknown) {
   c.add("actual-diff-summary-with-file-references", /header\.html/.test(o.reply) && /Launch later/i.test(o.reply) && /Launch sooner/i.test(o.reply)
     // The changed files and values are the setup's own literals, so the reply must report them. That the work
     // is uncommitted is proven by the unchanged HEAD/status above; the reply need not use the word, only
-    // make no commit/push claim.
-    && /existing-notes\.txt/.test(o.reply)
+    // make no commit/push claim. The person asked about the website files, so the reply may leave out the
+    // unrelated existing-notes.txt change; its preservation is graded byte-for-byte above.
     && !/(?:I(?:'ve| have)? |successfully )(?:pushed|committed|published|deployed)|remote.*(?:has been|was) updated/i.test(o.reply),
-  "The answer describes the observed header and unrelated diff and makes no commit, push or remote-update claim.");
+  "The answer describes the observed header diff and makes no commit, push or remote-update claim.");
   c.add("real-native-inspection-only", o.runs.length === 2 && o.runs.every(run => run.status === "succeeded")
     && o.runs.filter(run => run.agentId === o.leadId).length === 1,
   "The real prior workspace setup and one native inspection are the only provider executions.");
