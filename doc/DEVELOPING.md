@@ -2645,10 +2645,11 @@ If a repository is detached or its source configuration changes, its previous ta
 
 ## Config Freshness
 
-When a run explicitly reuses a bound execution workspace, validation uses that
-workspace's recorded strategy. A reviewer's default worktree strategy does not
-turn an existing task directory into a new Git checkout. Restore and access
-checks still apply. A request for a fresh workspace keeps the new-workspace path.
+When task-directory policy reuses a bound host directory, validation uses that
+directory's recorded strategy. A reviewer's default worktree strategy does not
+turn it into a new Git checkout. Explicit Git policy and plugin provisioning keep
+their own strategy checks. Restore and access checks still apply. A request for
+a fresh workspace keeps the new-workspace path.
 
 Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with. Native runners project explicitly configured task environment variables into provider processes and tool commands, including custom `PAPERCLIP_*` names such as `PAPERCLIP_PAGE_BUCKET`. Adding, changing, or removing a projected variable replaces a retained provider process at the next run boundary. Unchanged variables permit process reuse. The projection contains names only; secret values stay in the child environment. Ambient host secrets are not projected. Native projections allow up to 128 variable names, 64 KiB per entry, and 256 KiB of values in total. These native launch limits do not apply to legacy adapter configuration. Runtime authority, provider login credentials, and process-loader settings use their existing restricted paths.
 

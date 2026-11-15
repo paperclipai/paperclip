@@ -745,7 +745,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     boundWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   }));
   const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh" || hostProvisionDriver === "plugin";
-  const retainedWorkspaceConfig = !fresh && requestedShouldReuseExisting && reusableExistingExecutionWorkspace
+  const retainedWorkspaceConfig = !fresh && useIsolatedTaskDirectory && !pluginTaskWorkspace && !remoteAuthority &&
+    requestedShouldReuseExisting && reusableExistingExecutionWorkspace
     ? { ...mergedConfig, workspaceStrategy: {
         ...parseObject(mergedConfig.workspaceStrategy),
         type: reusableExistingExecutionWorkspace.strategyType,
