@@ -425,9 +425,9 @@ missing-secret configuration blockers, typed provider `quota_exhausted` and
 `rate_limit` failures, recognized external connection failures, and
 non-repository workspaces that ask for a Git worktree. `all` mode reports them.
 Other run failures attach bounded diagnostic contexts. Their fields are defined
-in `server/src/sentry.ts`, pass through the existing secret redaction and size
-limits, and never include prompts, message bodies, credentials, or remote
-responses.
+in `server/src/sentry.ts` and pass through the existing secret redaction and size
+limits. They can include selected provider error titles and details, but not raw
+request or response objects, prompts, message bodies, or credentials.
 
 ### Browser data
 
