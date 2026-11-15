@@ -10,12 +10,20 @@ export async function importMuseContactPage(db:Db,namespace:MuseHostedNamespace,
   ||page.entries.some((entry,index)=>entry.sequence!==page.after+index+1))throw new Error("Muse contact page changed");
  await db.transaction(async tx=>{
   for(const {bucket} of page.entries) {
-   const [candidate]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.companyId,bucket.companyId)));
-   if(!candidate)throw new Error("Muse contact binding is unavailable");
+   const [candidate]=await tx.select({companyId:bindings.companyId,agentId:bindings.agentId}).from(bindings).where(eq(bindings.id,bucket.bindingId));
+   // Binding IDs are not reused. Canonical absence retires custody, never contact evidence.
+   if(!candidate)continue;
+   if(candidate.companyId!==bucket.companyId)throw new Error("Muse contact binding company changed");
    const [agent]=await tx.select({id:agents.id}).from(agents).where(and(eq(agents.id,candidate.agentId),eq(agents.companyId,bucket.companyId))).for("update");
-   if(!agent)throw new Error("Muse contact agent is unavailable");
-   const [binding]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.companyId,bucket.companyId),eq(bindings.agentId,agent.id))).for("update");
-   if(!binding||bucket.generation>binding.generation)throw new Error("Muse contact binding generation is unavailable");
+   if(!agent){
+    const [remaining]=await tx.select({id:bindings.id}).from(bindings).where(eq(bindings.id,bucket.bindingId)).for("update");
+    if(remaining)throw new Error("Muse contact agent is unavailable");
+    continue;
+   }
+   const [binding]=await tx.select().from(bindings).where(eq(bindings.id,bucket.bindingId)).for("update");
+   if(!binding)continue;
+   if(binding.companyId!==bucket.companyId||binding.agentId!==agent.id)throw new Error("Muse contact binding owner changed");
+   if(bucket.generation>binding.generation)throw new Error("Muse contact binding generation is unavailable");
    const row={companyId:bucket.companyId,bindingId:bucket.bindingId,bindingGeneration:bucket.generation,replicaId:bucket.id,bucketAt:new Date(bucket.bucketAt),firstAt:new Date(bucket.firstAt),lastAt:new Date(bucket.lastAt),contacts:bucket.contacts,gapsAtMostSevenSeconds:bucket.gapsAtMostSevenSeconds,maxGapMs:bucket.maxGapMs,timestamps:bucket.timestamps.map(at=>new Date(at).toISOString()),incomplete:bucket.incomplete};
    const old=await tx.select().from(buckets).where(and(eq(buckets.bindingId,row.bindingId),eq(buckets.bindingGeneration,row.bindingGeneration),eq(buckets.replicaId,row.replicaId),eq(buckets.bucketAt,row.bucketAt))).for("update");
    if(old.length){

@@ -19,7 +19,8 @@ vi.mock("../cloud-runtime-identity.js",async importOriginal=>({...await importOr
 // the App's final local-grant port ALWAYS denies, after the real Cloud owner.
 describe("Dot enrolled authority uses the supplied owned transport",()=>{
   afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs();});
-  it("reaches the actual enrolled router and then rechecks local grant without granting authority",async()=>{
+  // Explicit paired integration control; the normal App suite has no Cloud checkout.
+  it.skipIf(!process.env.PAPERCLIP_DOT_PRINCIPAL_CLOUD_CHECKOUT)("reaches the actual enrolled router and then rechecks local grant without granting authority",async()=>{
     const root=process.env.PAPERCLIP_DOT_PRINCIPAL_CLOUD_CHECKOUT;
     if(!root||!path.isAbsolute(root))throw new Error("Explicit source-qualified own Cloud checkout is required");
     const home=await mkdtemp(path.join(tmpdir(),"dot-event-authority-"));vi.stubEnv("PAPERCLIP_HOME",home);vi.stubEnv("PAPERCLIP_CONFIG",path.join(home,"config.json"));

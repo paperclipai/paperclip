@@ -79,8 +79,8 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
-        await prepareMuseReceiverAuthorityMutation(tx,{companyId:id});
         await mcpCompanyDeletion.deleteCompanyData(tx, id);
+        await prepareMuseReceiverAuthorityMutation(tx,{companyId:id});
         await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);

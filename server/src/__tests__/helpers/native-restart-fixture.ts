@@ -119,7 +119,7 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
       await db.insert(companies).values({
         id: companyId,
         name: "Native restart recovery",
-        issuePrefix: options.dedicatedDatabaseUrl || process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL
+        issuePrefix: options.dedicatedDatabaseUrl
           ? `NRR${companyId.replaceAll("-", "").slice(0, 12).toUpperCase()}` : "NRR",
         requireBoardApprovalForNewAgents: false,
       });

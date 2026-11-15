@@ -11,7 +11,7 @@ import {eq,sql} from "drizzle-orm";
 import {PgDatabase} from "drizzle-orm/pg-core";
 import {subscribeDatabaseWork} from "@paperclipai/db/work-signals";
 import {DELIVERY_QUEUES} from "../delivery-work-notifications.js";
-import {applyPendingMigrations,createDb,companies,authUsers,companyMemberships,mcpOauthClients as clients,mcpOauthClientMirrorState as state,mcpOauthClientChanges as changes,mcpOauthDeviceRequests as devices,mcpOauthGrants as grants} from "@paperclipai/db";
+import {applyPendingMigrations,createDb,companies,authUsers,companyMemberships,agents,museAgentBindings,mcpOauthClients as clients,mcpOauthClientMirrorState as state,mcpOauthClientChanges as changes,mcpOauthDeviceRequests as devices,mcpOauthGrants as grants} from "@paperclipai/db";
 import {resolveExternalTestDatabaseUrl} from "../../__tests__/helpers/external-test-database.js";
 import {createDeliveryWorkCoordinator} from "../delivery-work-coordinator.js";
 import {instanceSettingsService} from "../instance-settings.js";
@@ -231,6 +231,53 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     const proof=await readIdleMcpWakeProof(db,{stackId,ownerId:randomUUID(),capabilityGeneration:"a".repeat(64),challenge:"c".repeat(64),personalResource:origin+"/mcp/paperclip",dotResource:origin+"/mcp/runner",personalEnabled:true,dotEnabled:false,clientMirror:after.receipt!,now:Date.now(),budget});
     expect(proof.grantIds).toEqual([]);expect(proof.admission.revocationAuthorities).toEqual([]);expect(await db.select().from(changes)).toEqual([]);
   },30_000);
+  it("deletes a retained Muse company without inverting the client mirror publication locks",async()=>{
+    const agentId=randomUUID(),bindingId=randomUUID(),at=new Date();
+    await db.insert(agents).values({id:agentId,companyId,name:"Retired Muse owner",role:"engineer",
+      adapterType:"process",adapterConfig:{},status:"terminated",lifecycleState:"terminated"});
+    await db.insert(museAgentBindings).values({id:bindingId,companyId,agentId,operatorId:userId,
+      status:"revoked",pairedAt:at,receiverContactAt:at,revokedAt:at});
+    await db.insert(state).values({id:"public",revision:1,enabled:true}).onConflictDoNothing();
+    const before=(await current())!.revision;
+    let mirrorHeld=false,advisoryQueries=0,releaseMirrorRow!:()=>void;
+    const mayLockRow=new Promise<void>(resolve=>{releaseMirrorRow=resolve;});
+    const previousDebug=db.$client.options.debug;
+    expect(Reflect.set(db.$client.options,"debug",(_connection:number,query:string)=>{
+      queryCount++;
+      if(/pg_advisory_xact_lock\(736721042\)/i.test(query))advisoryQueries++;
+    })).toBe(true);
+    const mirror=db.transaction(async tx=>{
+      await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+      mirrorHeld=true;
+      await mayLockRow;
+      return tx.select().from(state).where(eq(state.id,"public")).for("update");
+    });
+    const mirrorJoined=Promise.allSettled([mirror]);
+    let deletion:ReturnType<typeof deleteCompany>|undefined;
+    try{
+      await vi.waitFor(()=>expect(mirrorHeld).toBe(true),{timeout:5_000});
+      deletion=deleteCompany(db,companyId);
+      const joined=Promise.allSettled([mirror,deletion]);
+      await vi.waitFor(()=>expect(advisoryQueries).toBe(2),{timeout:5_000});
+      releaseMirrorRow();
+      const results=await joined;
+      const rejected=results.filter((result):result is PromiseRejectedResult=>result.status==="rejected");
+      if(rejected.length)throw new AggregateError(rejected.map(result=>result.reason),"Mirror/delete concurrency failed");
+      expect(results).toEqual([
+        expect.objectContaining({status:"fulfilled"}),
+        expect.objectContaining({status:"fulfilled",value:expect.objectContaining({id:companyId})}),
+      ]);
+      expect(await db.select().from(companies).where(eq(companies.id,companyId))).toEqual([]);
+      expect(await db.select().from(museAgentBindings).where(eq(museAgentBindings.id,bindingId))).toEqual([]);
+      expect((await current())!.revision).toBe(before+1);
+    }finally{
+      releaseMirrorRow();
+      await mirrorJoined;
+      await Promise.allSettled(deletion?[deletion]:[]);
+      expect(Reflect.set(db.$client.options,"debug",previousDebug)).toBe(true);
+    }
+  },30_000);
   it("rotated local key invalidates old status and only the current bounded source publication restores it",async()=>{
     const packetStart=sent.length;
     let beforeRevision:number|undefined,afterRevision:number|undefined;
@@ -317,7 +364,19 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     await restart();const retired=await current();expect(retired?.remoteResponsibility).toBe(false);expect(retired?.receipt).toEqual(disabledRemote);
     expect(packets.filter(value=>value.operation==="disable").every(value=>value.profile===null)).toBe(true);await quiet();
     holdDotRecovery=false;
-    await instanceSettingsService(db).updateExperimental({enableOpenAiDot:true});const enabled=await acknowledged();expect(enabled.receipt?.dotProfile).toBe("hosted-dot-v1");
+    await instanceSettingsService(db).updateExperimental({enableOpenAiDot:true});
+    const enabled=await vi.waitFor(async()=>{
+      const row=await current();
+      if(!row?.receipt)throw new Error("Current hosted Dot mirror receipt is not acknowledged");
+      expect(row.enabled).toBe(true);
+      expect(row.receipt.enabled).toBe(true);
+      expect(row.receipt.revision).toBe(row.revision);
+      expect(row.receipt.dotProfile).toBe("hosted-dot-v1");
+      const remoteReceipt=await remote.readResponsibility(stackId,origin);
+      expect(remoteReceipt).toEqual(row.receipt);
+      return row;
+    },{timeout:10_000});
+    expect(enabled.receipt?.dotProfile).toBe("hosted-dot-v1");
     const cutover=enabled.dotDeviceCutover;expect(cutover).toMatchObject({version:1,profile:"hosted-dot-v1",stackId,instanceId,origin});
     await instanceSettingsService(db).updateExperimental({enablePublicMcp:true,enableOpenAiDot:false});
     await vi.waitFor(async()=>{const row=await current();expect(row?.receipt?.revision).toBe(row?.revision);expect(row?.receipt?.enabled).toBe(true);expect(row?.receipt?.dotProfile).toBeUndefined();},{timeout:10_000});

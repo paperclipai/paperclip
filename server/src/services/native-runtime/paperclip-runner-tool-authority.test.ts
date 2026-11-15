@@ -26,7 +26,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
-import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres-fixture.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
@@ -61,6 +61,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   beforeAll(async () => {
     temporary = await startRecoveryPostgres(
       "paperclip-runner-tools-",
+      { dedicatedDatabaseUrl: process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL },
     );
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({

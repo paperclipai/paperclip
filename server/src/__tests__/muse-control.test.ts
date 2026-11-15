@@ -1472,8 +1472,8 @@ describe("personal Muse control plane",()=>{
       if(failures.length)throw new AggregateError(failures,"Paired Muse owners did not all close");
     }
   }
-  it("imports above-LOW retained-history pressure through the normal App owner and preserves a lost ACK", () => coupledMuseContactRecovery(false), 120000);
-  it("keeps actual five-second Cloud presence tenant-SQL-quiet for90s before and after pressure import with exact ACK recovery", () => coupledMuseContactRecovery(true), 300000);
+  it.skipIf(!process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT)("imports above-LOW retained-history pressure through the normal App owner and preserves a lost ACK", () => coupledMuseContactRecovery(false), 120000);
+  it.skipIf(!process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT)("keeps actual five-second Cloud presence tenant-SQL-quiet for90s before and after pressure import with exact ACK recovery", () => coupledMuseContactRecovery(true), 300000);
 
   async function applyActualManagedContactIdentity() {
     expect(getCloudRuntimeIdentity()).toBeNull();

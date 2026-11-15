@@ -40,5 +40,7 @@ export function idleMuseWorkQuery(reason:string,proof:IdleMuseReceiverProof|unde
  const covered=proof.coveredBindings.filter(row=>row.retired||row.grantId!==null&&ingress.grantIds.includes(row.grantId));
  if(!covered.length)return;
  const original=idleExternalAgentHistoryChecks.find(check=>check.reason==="muse_agent_bindings");if(!original)return;
- return sql`${sql.raw(original.query)} AND NOT (${sql.join(covered.map(row=>sql`(b.id=${row.id}::uuid AND b.generation=${row.generation})`),sql` OR `)})`;
+ const detectorRemovalConfirmed=sql`((b.qualification_id IS NULL AND b.detector_removal_requested_at IS NULL)
+   OR (b.detector_removed_at IS NOT NULL AND b.detector_removed_at >= b.detector_removal_requested_at)) IS TRUE`;
+ return sql`${sql.raw(original.query)} AND NOT (${sql.join(covered.map(row=>sql`(b.id=${row.id}::uuid AND b.generation=${row.generation} AND ${row.retired?detectorRemovalConfirmed:sql`true`})`),sql` OR `)})`;
 }
