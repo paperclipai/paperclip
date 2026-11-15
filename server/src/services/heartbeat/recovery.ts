@@ -1,3 +1,4 @@
+import { registerControllerLeaseWork } from "./controller-lease-work.js";
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { isRunHandedOffForShutdown, markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
@@ -3181,7 +3182,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   function registerResidualRecoveryWork(coordinator: Parameters<typeof registerLiveRecoveryWork>[1],
     canRun: () => boolean, enabled: () => Promise<boolean>) {
-    return registerLiveRecoveryWork(db, coordinator, {
+    const live = registerLiveRecoveryWork(db, coordinator, {
       native: scope => resumeRetryableNativeProcessSessions(scope),
       question: recoverQuestionCancellationRequests,
       active: scope => recoverActiveExecutions(scope),
@@ -3202,6 +3203,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       ]), scope),
       enabled,
     }, canRun);
+    const leases = registerControllerLeaseWork(db, coordinator, scheduleBoundedRetryForRun, canRun, enabled);
+    return {ready: Promise.all([live.ready, leases.ready]), wake() {live.wake(); leases.invalidate();},
+      async stop() {await Promise.all([live.stop(), leases.stop()]);}};
   }
 
   return {

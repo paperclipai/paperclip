@@ -1,3 +1,4 @@
+import { LEASE_RESUME_REASON, isRecoverableControllerLeaseCancellation, prepareControllerLeaseRecovery, rollbackControllerLeasePreparation, exhaustControllerLeaseRecovery } from "../legacy-controller-lease-continuation.js";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
@@ -57,6 +58,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
@@ -527,7 +529,39 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     applyRunDispatchPostCommitEffects,
   } = dependencies;
 
-  async function scheduleBoundedRetryForRun(
+  async function scheduleBoundedRetryForRun(run: HeartbeatRun, agent: typeof agents.$inferSelect,
+    opts?: Parameters<typeof tryScheduleBoundedRetryForRun>[2]) {
+    if (run.contextSnapshot?.requireExistingSession === true && run.errorCode === "resume_session_unavailable")
+      return {outcome: "not_scheduled" as const, errorCode: "resume_session_unavailable", reason: "The retained session must be repaired before continuation.", issueId: run.issueId};
+    if (!isRecoverableControllerLeaseCancellation(run)) return tryScheduleBoundedRetryForRun(run, agent, opts);
+    const cutoff = await getWorktreeExecutionCutoff();
+    if (cutoff && run.createdAt < cutoff) return {outcome: "not_scheduled" as const, issueId: run.issueId,
+      errorCode: "controller_lease_resume_outside_worktree", reason: "The source predates this worktree execution scope."};
+    const prepared = await prepareControllerLeaseRecovery(db, run, agent, opts?.now);
+    if (!prepared) {
+      const [child] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, LEASE_RESUME_REASON),
+        inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]))).limit(1);
+      return child ? {outcome: "scheduled" as const, run: child, attempt: child.scheduledRetryAttempt ?? 1, maxAttempts: 3, reusedExisting: true, dueAt: child.scheduledRetryAt ?? opts?.now ?? new Date()}
+        : {outcome: "not_scheduled" as const, errorCode: "controller_lease_resume_not_admissible", reason: "Retained session, authority or cleanup needs verification.", issueId: run.issueId};
+    }
+    const attempts = executionRetryAttemptCount(prepared, LEASE_RESUME_REASON);
+    if (attempts >= 3) {
+      await exhaustControllerLeaseRecovery(db, prepared, opts?.now);
+      return {outcome: "retry_exhausted" as const, attempt: attempts + 1, maxAttempts: 3};
+    }
+    let scheduled = false;
+    try {
+      const result = await tryScheduleBoundedRetryForRun(prepared, agent, {...opts, retryReason: LEASE_RESUME_REASON,
+        wakeReason: LEASE_RESUME_REASON, maxAttempts: 3, delayMs: 30000 * 2 ** attempts});
+      scheduled = result.outcome === "scheduled";
+      return result;
+    } finally {
+      if (!scheduled) await rollbackControllerLeasePreparation(db, prepared);
+    }
+  }
+
+  async function tryScheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
     opts?: {
@@ -640,7 +674,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
-      agent.adapterType === "codex_local" && run.errorCode !== REPOSITORY_CATALOG_UNAVAILABLE_CODE &&
+      run.contextSnapshot?.requireExistingSession !== true && agent.adapterType === "codex_local" && run.errorCode !== REPOSITORY_CATALOG_UNAVAILABLE_CODE &&
       transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
@@ -859,9 +893,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       "normal_model",
     );
     // A successor resolves current assignments; the failed run retains its snapshot.
-    delete retryContextSnapshot.skillVersions;
-    delete retryContextSnapshot.skillSelectionSnapshot;
-    delete retryContextSnapshot.shadowedSkills;
+    if (retryReason !== LEASE_RESUME_REASON && contextSnapshot.requireExistingSession !== true) {
+      delete retryContextSnapshot.skillVersions;
+      delete retryContextSnapshot.skillSelectionSnapshot;
+      delete retryContextSnapshot.shadowedSkills;
+    } else {
+      if (retryReason === LEASE_RESUME_REASON) retryContextSnapshot.controllerLeaseResumptions = schedule.attempt;
+      retryContextSnapshot.requireExistingSession = true;
+      retryContextSnapshot.forceFreshSession = false;
+      const [checkpoint] = await db.select({lastRunId: agentTaskSessions.lastRunId}).from(agentTaskSessions).where(and(
+        eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.agentId, run.agentId),
+        eq(agentTaskSessions.adapterType, agent.adapterType), eq(agentTaskSessions.taskKey, issueId ?? ""))).limit(1);
+      retryContextSnapshot.controllerLeaseResume = {...parseObject(contextSnapshot.controllerLeaseResume),
+        ...(retryReason === LEASE_RESUME_REASON ? parseObject(run.resultJson?.controllerLeaseRecovery) : {}),
+        sourceRunId: checkpoint?.lastRunId ?? null};
+    }
     delete retryContextSnapshot.retryWorkspaceRefusal;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
@@ -1188,7 +1234,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             return { outcome: "not_scheduled", issueId, errorCode: "workspace_verification_cleanup_pending",
               reason: "The previous workspace verification lease still requires cleanup.", details: {} };
           }
-          const continuation = issueId && (retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
+          const continuation = issueId && (retryReason === LEASE_RESUME_REASON || retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
             || retryReason === INTERRUPTED_PREPARATION_RETRY_REASON || isPreparationWaitRetryReason(retryReason)
             || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
             ? await admitExplicitContinuationRetry({

@@ -1,3 +1,4 @@
+import { assertControllerLeaseSession } from "../legacy-controller-lease-continuation.js";
 import { isNativeSessionId } from "../native-runtime/index.js";
 import { and, desc, eq } from "drizzle-orm";
 import { agentConfigRevisions, type Db, type agents, type agentTaskSessions, type heartbeatRuns, type issues, type projects } from "@paperclipai/db";
@@ -347,6 +348,9 @@ export async function resolveHeartbeatAdapterSession(input: HeartbeatAdapterSess
       delete executionContinuation?.resumeDelta;
     }
   }
+  assertControllerLeaseSession({context, sessionId: runtimeSessionIdForAdapter,
+    sessionSourceRunId: taskSessionForRun?.lastRunId ?? null, workspaceId: persistedExecutionWorkspace?.id ?? null,
+    cwd: persistedExecutionWorkspace?.cwd ?? null, reset: resetTaskSession || !taskSessionCredentialCompatible});
   const runtimeForAdapter = {
     sessionId: runtimeSessionIdForAdapter,
     sessionParams: runtimeSessionParamsForAdapter,

@@ -1,3 +1,4 @@
+import { buildExecutionStageWakeContext } from "../services/execution-stage-wake-context.js";
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
@@ -536,16 +537,7 @@ type ActivityExecutionParticipant = Pick<
   NormalizedExecutionPolicy["stages"][number]["participants"][number],
   "type" | "agentId" | "userId"
 >;
-type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor";
-  stageId: string | null;
-  stageType: ParsedExecutionState["currentStageType"];
-  currentParticipant: ParsedExecutionState["currentParticipant"];
-  returnAssignee: ParsedExecutionState["returnAssignee"];
-  reviewRequest: ParsedExecutionState["reviewRequest"];
-  lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
-  allowedActions: string[];
-};
+
 type SuccessfulRunHandoffActivityRow = {
   entityId: string;
   action: string;
@@ -2148,22 +2140,7 @@ function isApprovalReviewComment(body: string) {
   );
 }
 
-function buildExecutionStageWakeContext(input: {
-  state: ParsedExecutionState;
-  wakeRole: ExecutionStageWakeContext["wakeRole"];
-  allowedActions: string[];
-}): ExecutionStageWakeContext {
-  return {
-    wakeRole: input.wakeRole,
-    stageId: input.state.currentStageId,
-    stageType: input.state.currentStageType,
-    currentParticipant: input.state.currentParticipant,
-    returnAssignee: input.state.returnAssignee,
-    reviewRequest: input.state.reviewRequest ?? null,
-    lastDecisionOutcome: input.state.lastDecisionOutcome,
-    allowedActions: input.allowedActions,
-  };
-}
+
 
 function summarizeIssueRelationForActivity(relation: {
   id: string;

@@ -1,3 +1,9 @@
+import { buildExecutionStageWakeContext } from "./execution-stage-wake-context.js";
+import { prepareControllerLeaseRecovery } from "./legacy-controller-lease-continuation.js";
+import { registerControllerLeaseWork } from "./heartbeat/controller-lease-work.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { controllerLeaseLossCancellation } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -19,7 +25,7 @@ import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
-  applyPendingMigrations, approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
+  agentTaskSessions, executionWorkspaces, applyPendingMigrations, approvals, issueApprovals, issueThreadInteractions, chatConversations, chatEndpoints, toolApplications, toolConnections,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, completionContracts, environmentLeases, environments, issueRelations, issueTreeHolds, issueTreeHoldMembers, workspaceOperations, type Db,
 } from "@paperclipai/db";
@@ -942,6 +948,165 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const dispatchExplicitRetry = (f: Fixture, run: typeof heartbeatRuns.$inferSelect) => buildExecutionContinuation({
     db, companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, runId: run.id,
     context: run.contextSnapshot!, summary: null, exposeLowTrustRaw: false,
+  });
+
+  it.each([false, true])("keeps legacy lease recovery quiet with no sources (enabled %s)", async enabled => {
+    const coordinator = createDeliveryWorkCoordinator({owner: db, canRun: () => true, onError: error => {throw error;}});
+    const schedule = vi.fn(async () => undefined);
+    const worker = registerControllerLeaseWork(db, coordinator, schedule, () => true, async () => enabled);
+    try {await worker.ready; await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), {timeout: 10000});
+      const reads = vi.spyOn(db, "select"), queries = vi.spyOn(db, "execute");
+      try {await new Promise(resolve => setTimeout(resolve, 50)); expect(reads).not.toHaveBeenCalled(); expect(queries).not.toHaveBeenCalled();}
+      finally {reads.mockRestore(); queries.mockRestore();}
+      expect(schedule).not.toHaveBeenCalled();
+    } finally {await worker.stop(); await coordinator.stop();}
+  });
+  async function seedLeaseCancelledTurn() {
+    const f = await seedTimedOutExplicitTurn();
+    const sessionId = randomUUID();
+    const [workspace] = await db.insert(executionWorkspaces).values({companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Original work", mode: "task_directory", strategyType: "task_directory", cwd: "/tmp/lease-" + f.issueId}).returning();
+    await db.update(agents).set({adapterType: "codex_local"}).where(eq(agents.id, f.agentId));
+    const startedAt = new Date();
+    const context = {...f.parent.contextSnapshot, executionWorkspaceId: workspace.id,
+      executionRetryAccounting: {version: 1, failureRetries: 2, maxTurnContinuations: 0}, skillVersions: {"company/retained-skill": randomUUID()}, skillSelectionSnapshot: true, shadowedSkills: [{key: "old-skill", shadowedBy: "company/retained-skill"}]};
+    const [source] = await db.update(heartbeatRuns).set({scopeKind: "issue", issueId: f.issueId, status: "cancelled", errorCode: "cancelled", processPid: 999999999,
+      processGroupId: 999999999, processStartedAt: startedAt, sessionIdAfter: sessionId,
+      runnerProfileJson: {adapterDispatch: {adapterType: "codex_local"}}, contextSnapshot: context,
+      resultJson: {cancellation: controllerLeaseLossCancellation("renewal_deadline"), controllerLeaseLoss: {cause: "renewal_deadline"}},
+    }).where(eq(heartbeatRuns.id, f.parent.id)).returning();
+    await db.update(issues).set({executionWorkspaceId: workspace.id}).where(eq(issues.id, f.issueId));
+    await db.insert(agentTaskSessions).values({companyId: f.companyId, agentId: f.agentId, adapterType: "codex_local", taskKey: f.issueId,
+      lastRunId: source.id, sessionDisplayId: sessionId, sessionParamsJson: {sessionId, cwd: workspace.cwd, __paperclipConfigFingerprint: "saved-configuration"}});
+    await appendHeartbeatRunEvent(db, {companyId: f.companyId, agentId: f.agentId, runId: source.id,
+      eventType: PROCESS_IDENTITY_RECORDED, message: "Recorded local launch", payload: {targetKind: "local", hostname: os.hostname(),
+        processPid: source.processPid, processGroupId: source.processGroupId, processStartedAt: startedAt.toISOString()}});
+    return {...f, source, sessionId, workspace, context};
+  }
+  it("recovers a stopped legacy lease cancellation with one same-session authorized successor", async () => {
+    const f = await seedLeaseCancelledTurn();
+    const {source, sessionId, workspace, context} = f;
+    const heartbeat = heartbeatService(db);
+    const [first, second] = await Promise.all([heartbeat.scheduleBoundedRetry(source.id, {retryReason: "controller_lease_resume", delayMs: 30000}),
+      heartbeat.scheduleBoundedRetry(source.id, {retryReason: "controller_lease_resume", delayMs: 30000})]);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+    expect(second).toMatchObject({outcome: "scheduled", run: {id: first.run.id}});
+    expect(first.run).toMatchObject({sessionIdBefore: sessionId, scheduledRetryReason: "controller_lease_resume",
+      contextSnapshot: {skillVersions: context.skillVersions, skillSelectionSnapshot: context.skillSelectionSnapshot,
+        executionWorkspaceId: workspace.id, explicitUserContinuation: {previousRunId: source.id, commentId: f.commentId}}});
+    await expect(dispatchExplicitRetry(f, first.run)).resolves.toMatchObject({interruptedRunId: source.id});
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
+  });
+
+  it("keeps the legacy lease checkpoint across a pre-dispatch directory wait", async () => {
+    const f = await seedLeaseCancelledTurn();
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.scheduleBoundedRetry(f.source.id);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+    await db.update(heartbeatRuns).set({status: "failed", errorCode: "agent_directory_busy", finishedAt: new Date()})
+      .where(eq(heartbeatRuns.id, first.run.id));
+    const next = await heartbeat.scheduleBoundedRetry(first.run.id, {retryReason: "agent_directory_busy", maxAttempts: 5, delayMs: 1000});
+    expect(next.outcome).toBe("scheduled");
+    if (next.outcome !== "scheduled") return;
+    expect(next.run.contextSnapshot?.controllerLeaseResume).toMatchObject({sourceRunId: f.source.id, sessionId: f.sessionId});
+    expect(next.run.contextSnapshot?.skillVersions).toEqual(f.context.skillVersions);
+  });
+  it.each(["stop", "pause", "question", "workspace", "stage", "newer_run", "missing_checkpoint", "edited_comment", "missing_authority", "missing_stop_identity", "terminal", "hidden"])(
+    "preserves the legacy lease %s boundary", async mode => {
+      const f = await seedLeaseCancelledTurn();
+      if (mode === "terminal") await db.update(issues).set({status: "cancelled"}).where(eq(issues.id, f.issueId));
+      if (mode === "hidden") await db.update(issues).set({hiddenAt: new Date()}).where(eq(issues.id, f.issueId));
+      if (mode === "stop") await db.update(heartbeatRuns).set({resultJson: {...f.source.resultJson, cancellation: {source: "operator", expected: true, initiator: {type: "user"}, reason: "Stop", recordedAt: new Date().toISOString()}}}).where(eq(heartbeatRuns.id, f.source.id));
+      if (mode === "pause") await db.update(agents).set({status: "paused"}).where(eq(agents.id, f.agentId));
+      if (mode === "question") await db.insert(issueThreadInteractions).values({companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", payload: {version: 1, prompt: "Need an answer"}});
+      if (mode === "workspace") await db.update(issues).set({executionWorkspaceId: null}).where(eq(issues.id, f.issueId));
+      if (mode === "stage") await db.update(issues).set({executionState: {status: "pending", currentStageId: randomUUID(), currentParticipant: {type: "agent", agentId: f.agentId}}}).where(eq(issues.id, f.issueId));
+      if (mode === "newer_run") await db.insert(heartbeatRuns).values({companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "queued", contextSnapshot: {issueId: f.issueId}});
+      if (mode === "missing_checkpoint") await db.delete(agentTaskSessions).where(eq(agentTaskSessions.lastRunId, f.source.id));
+      if (mode === "edited_comment") await db.update(issueComments).set({body: "Changed after the retained turn"}).where(eq(issueComments.id, f.commentId));
+      if (mode === "missing_authority") await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      if (mode === "missing_stop_identity") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+      const [before] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const result = await heartbeatService(db).scheduleBoundedRetry(f.source.id);
+      expect(result.outcome).not.toBe("scheduled");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+      const [after] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(after).toMatchObject({status: before.status, executionRunId: before.executionRunId, executionWorkspaceId: before.executionWorkspaceId});
+    });
+  it.each(["reviewer", "executor", "stale_decision", "stale_round"])("matches legacy lease %s review state", async mode => {
+    const f = await seedLeaseCancelledTurn(), stageId = randomUUID(), decisionId = randomUUID();
+    const role = mode === "reviewer" ? "reviewer" : "executor";
+    const stage = buildExecutionStageWakeContext({state: {status: role === "reviewer" ? "pending" : "changes_requested",
+      currentStageId: stageId, currentStageIndex: null, reviewRequest: null, currentStageType: "review", currentParticipant: {type: "agent", agentId: f.agentId},
+      returnAssignee: {type: "agent", agentId: f.agentId}, lastDecisionId: decisionId, lastDecisionOutcome: "changes_requested",
+      changesRequestedCount: 1, completedStageIds: []}, wakeRole: role, allowedActions: []});
+    await db.update(heartbeatRuns).set({contextSnapshot: {...f.source.contextSnapshot, executionStage: stage}}).where(eq(heartbeatRuns.id, f.source.id));
+    await db.update(issues).set({status: role === "reviewer" ? "in_review" : "in_progress", executionState: {
+      status: role === "reviewer" ? "pending" : "changes_requested", currentStageId: stageId, currentStageType: "review",
+      currentParticipant: {type: "agent", agentId: f.agentId}, returnAssignee: {type: "agent", agentId: f.agentId},
+      lastDecisionId: mode === "stale_decision" ? randomUUID() : decisionId, changesRequestedCount: mode === "stale_round" ? 2 : 1,
+    }}).where(eq(issues.id, f.issueId));
+    const result = await heartbeatService(db).scheduleBoundedRetry(f.source.id);
+    if (mode.startsWith("stale")) expect(result.outcome).not.toBe("scheduled");
+    else {
+      expect(result.outcome).toBe("scheduled");
+      if (result.outcome === "scheduled") expect(result.run.contextSnapshot).toMatchObject({executionStage: stage,
+        executionRetryAccounting: {failureRetries: 2}});
+    }
+  });
+  it("exhausts the legacy lease lane once without spending model failures", async () => {
+    const f = await seedLeaseCancelledTurn();
+    await db.update(heartbeatRuns).set({contextSnapshot: {...f.source.contextSnapshot, controllerLeaseResumptions: 3}}).where(eq(heartbeatRuns.id, f.source.id));
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.scheduleBoundedRetry(f.source.id)).toMatchObject({outcome: "retry_exhausted", maxAttempts: 3});
+    await heartbeat.scheduleBoundedRetry(f.source.id);
+    const incidents = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId), eq(issueRecoveryActions.fingerprint, "controller-lease-exhausted:" + f.source.id)));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({status: "escalated"});
+  });
+  it("reconstructs legacy lease preparation after the first controller disappears", async () => {
+    const f = await seedLeaseCancelledTurn();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(await prepareControllerLeaseRecovery(db, f.source, agent)).not.toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+    const heartbeat = heartbeatService(db), onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({owner: db, canRun: () => true, onError});
+    const worker = registerControllerLeaseWork(db, coordinator, run => heartbeat.scheduleBoundedRetry(run.id), () => true, async () => true);
+    try {await worker.ready;
+      await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(1), {timeout: 10000});
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+      expect(successor).toMatchObject({sessionIdBefore: f.sessionId, contextSnapshot: {skillVersions: f.context.skillVersions,
+        skillSelectionSnapshot: true, shadowedSkills: f.context.shadowedSkills}});
+      await expect(dispatchExplicitRetry(f, successor)).resolves.toMatchObject({interruptedRunId: f.source.id});
+      expect(onError).not.toHaveBeenCalled();
+    } finally {await worker.stop(); await coordinator.stop();}
+  });
+  it("automatically resumes a legacy lease source after eligibility and stays quiet across worker restart", async () => {
+    const f = await seedLeaseCancelledTurn(), heartbeat = heartbeatService(db), onError = vi.fn();
+    await db.update(agents).set({status: "paused"}).where(eq(agents.id, f.agentId));
+    const coordinator = createDeliveryWorkCoordinator({owner: db, canRun: () => true, onError});
+    const worker = registerControllerLeaseWork(db, coordinator, (run) => heartbeat.scheduleBoundedRetry(run.id), () => true, async () => true);
+    try {
+      await worker.ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), {timeout: 10000});
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(0);
+      await db.transaction(async tx => {await notifyDeferredExecutionEligibility(tx, {companyId: f.companyId});
+        await tx.update(agents).set({status: "idle"}).where(eq(agents.id, f.agentId));});
+      await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(1), {timeout: 10000});
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), {timeout: 10000});
+      const reads = vi.spyOn(db, "select"), queries = vi.spyOn(db, "execute");
+      try {await new Promise(resolve => setTimeout(resolve, 50)); expect(reads).not.toHaveBeenCalled(); expect(queries).not.toHaveBeenCalled();}
+      finally {reads.mockRestore(); queries.mockRestore();}
+      expect(onError).not.toHaveBeenCalled();
+    } finally {await worker.stop(); await coordinator.stop();}
+    const next = createDeliveryWorkCoordinator({owner: db, canRun: () => true, onError});
+    const restored = registerControllerLeaseWork(db, next, (run) => heartbeat.scheduleBoundedRetry(run.id), () => true, async () => true);
+    try {await restored.ready; await vi.waitFor(() => expect(next.nextWakeAt()).toBeNull(), {timeout: 10000});
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id))).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+    } finally {await restored.stop(); await next.stop();}
   });
 
   it("re-admits an explicit user turn's timeout retry with its own durable authorization", async () => {

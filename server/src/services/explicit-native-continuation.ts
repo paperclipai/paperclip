@@ -1,3 +1,5 @@
+import { parseObject } from "../adapters/utils.js";
+import { isRecoverableControllerLeaseCancellation, readControllerLeaseSession } from "./legacy-controller-lease-continuation.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
@@ -913,10 +915,16 @@ export async function admitExplicitContinuationRetry(input: {
     eq(heartbeatRuns.agentId, agentId),
   )).for("update");
   const shutdownInterrupted = Boolean(parent && isShutdownInterruptedPreparation(parent));
-  const releasedClaim = Boolean(task && task.executionRunId === null && shutdownInterrupted);
+  const leaseCheckpoint = parent && isRecoverableControllerLeaseCancellation(parent) &&
+    parseObject(parent.resultJson?.controllerLeaseRecovery).schema === "paperclip.controller-lease-recovery.v1"
+    ? await readControllerLeaseSession(db, parent) : null;
+  const leaseResume = Boolean(leaseCheckpoint && leaseCheckpoint.workspaceId === task?.executionWorkspaceId &&
+    parseObject(parent?.resultJson?.controllerLeaseRecovery).sessionId === leaseCheckpoint.sessionId &&
+    parent && await recordedLocalExecutionStopped(db, parent));
+  const releasedClaim = Boolean(task && task.executionRunId === null && (shutdownInterrupted || leaseResume));
   if (!task || task.assigneeAgentId !== agentId || (task.executionRunId !== input.parentRunId && !releasedClaim) ||
       ["done", "cancelled"].includes(task.status) || !parent ||
-      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent) && !shutdownInterrupted) ||
+      (!["failed", "timed_out"].includes(parent.status) && !isAgentDirectoryPreparationWait(parent) && !shutdownInterrupted && !leaseResume) ||
       !parent.finishedAt ||
       parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
       (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||

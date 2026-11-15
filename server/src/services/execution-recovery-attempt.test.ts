@@ -5,6 +5,14 @@ import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js
 import { RUNNER_REVISION_WAIT_RETRY_REASON as DISPATCH_RUNNER_REVISION_WAIT_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 describe("failure attempts across resource waits", () => {
+  it("retains the independent lease counter across another resource wait", () => {
+    const contextSnapshot = {controllerLeaseResumptions: 2, executionRetryAccounting: {version: 1, failureRetries: 2, maxTurnContinuations: 0}};
+    const run = {scheduledRetryReason: "controller_lease_resume", scheduledRetryAttempt: 2, contextSnapshot};
+    const waited = {scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 12,
+      contextSnapshot: {...contextSnapshot, executionRetryAccounting: accountingForScheduledRetry(run, "workspace_busy", 12)}};
+    expect(executionRetryAttemptCount(waited, "controller_lease_resume")).toBe(2);
+    expect(executionFailureRetryCount(waited)).toBe(2);
+  });
   it("preserves prior failures through subscription waits without trusting unrelated context", () => {
     expect(executionFailureRetryCount({ scheduledRetryReason: "ai_connection_busy", scheduledRetryAttempt: 12,
       contextSnapshot: { failureRetriesBeforeAiConnectionWait: 1 } })).toBe(1);
