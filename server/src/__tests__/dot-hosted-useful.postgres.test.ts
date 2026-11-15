@@ -849,7 +849,19 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       const texts=result.success&&result.data.isError===true&&Array.isArray(result.data.content)
         ? result.data.content.slice(0,2).map(item=>readRecord.safeParse(item)).flatMap(item=>item.success&&item.data.type==="text"?[readText(item.data.text)]:[])
         : [];
+      const closedRead=closedUnavailable(assigned);
+      const rawReadText=typeof assigned.text==="string"?assigned.text:undefined;
+      let safeClosedReadText:string|undefined;
+      if(closedRead&&rawReadText!==undefined&&Buffer.byteLength(rawReadText,"utf8")<=1024){
+        // Only strict known literal error envelopes; never print arbitrary raw bytes.
+        try{safeClosedReadText=JSON.stringify(JSON.parse(rawReadText));}catch{}
+      }
       lastReadAttempt={httpStatus:assigned.status,
+        contentType:typeof assigned.headers["content-type"]==="string"?assigned.headers["content-type"].slice(0,160):null,
+        retryAfter:typeof assigned.headers["retry-after"]==="string"&&/^[0-9]{1,5}$/.test(assigned.headers["retry-after"])?assigned.headers["retry-after"]:null,
+        rawTextBytes:rawReadText===undefined?undefined:Buffer.byteLength(rawReadText,"utf8"),
+        rawTextSHA256:rawReadText===undefined?undefined:createHash("sha256").update(rawReadText).digest("hex"),
+        strictClosedWireContract:closedRead?.wireContract,safeClosedWireText:safeClosedReadText,
         bodyKind:assigned.body===null?"null":Array.isArray(assigned.body)?"array":typeof assigned.body,
         envelopeKeys:Object.keys(body).filter(key=>/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(key)).slice(0,12),
         errorCode:error.success?readText(error.data.code)??(typeof error.data.code==="number"?error.data.code:undefined):readText(body.error),
