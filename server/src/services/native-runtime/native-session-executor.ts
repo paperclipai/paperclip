@@ -1122,7 +1122,7 @@ async function warmSandboxGivenUpByHost(entry: WarmNativeSession): Promise<boole
   return leases.length > 0 && leases.every(lease => lease.status !== "active" && lease.status !== "retained");
 }
 
-async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<boolean> {
+async function warmSandboxTerminated(db: Db, entry: WarmNativeSession): Promise<boolean> {
   if (!entry.providerLeaseId || !entry.environmentId) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, entry.companyId),
@@ -1130,17 +1130,21 @@ async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<b
     eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
   ));
   const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
-  return resolved.some(lease => hasRemoteTerminationReceipt(lease)
-    && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
+  return resolved.some(lease => {
+    if (!hasRemoteTerminationReceipt(lease)) return false;
+    const state = (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state;
+    return state === "destroyed" || (state === "stopped" && lease.heartbeatRunId === entry.runId);
+  });
 }
 
-/** A failed close is complete when its Runner is proven gone or its sandbox is stopped or destroyed. */
-async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb): Promise<boolean> {
+/** A failed close is complete when its Runner is proven gone, its sandbox is destroyed, or the run's own sandbox lease has a stop receipt. */
+async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb,
+  acceptHostGiveUp = false): Promise<boolean> {
   const diagnostic = readRemoteRunnerRecoveryError(error);
   if (diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running") return true;
   try {
-    if (await warmSandboxGivenUpByHost(entry)) return true;
-    return db ? await warmSandboxDestroyed(db, entry) : false;
+    if (acceptHostGiveUp && await warmSandboxGivenUpByHost(entry)) return true;
+    return db ? await warmSandboxTerminated(db, entry) : false;
   } catch (proofError) {
     logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
     return false;
@@ -8876,7 +8880,7 @@ function armWarmNativeSessionIdleTimer(
           closeAttempt: (current.idleCloseRetries ?? 0) + 1 },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
         if (released) return;
-        return warmCloseFailureProvesOwnerGone(current, error).then(gone => {
+        return warmCloseFailureProvesOwnerGone(current, error, current.sandboxLeaseDb, true).then(gone => {
           if (gone) {
             logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
               providerLeaseId: current.providerLeaseId ?? null },

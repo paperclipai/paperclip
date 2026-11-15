@@ -13320,6 +13320,48 @@ describe("native warm session supervision", () => {
       },
     );
 
+    it.each([
+      { lease: "released-stop-receipt", closed: 1 },
+      { lease: "pending_cleanup", closed: 0 },
+      { lease: "released-without-receipt", closed: 0 },
+      { lease: "stop-receipt-for-another-run", closed: 0 },
+    ] as const)("reads the warm owner's own lease rows at controller restart: $lease", async ({ lease: kind, closed }) => {
+      const { base } = fixture(`restart-lease-${kind}`);
+      const environmentId = `restart-lease-env-${kind}`, providerLeaseId = `restart-lease-sandbox-${kind}`;
+      const close = vi.fn(async (): Promise<void> => { throw new Error("owned close not yet confirmed"); });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      });
+      const leaseRunId = kind === "stop-receipt-for-another-run" ? "earlier-run" : base.binding.runId;
+      const terminal = kind !== "pending_cleanup";
+      const row = { id: `lease-${kind}`, companyId: base.binding.companyId, environmentId, heartbeatRunId: leaseRunId,
+        provider: "daytona", providerLeaseId, status: terminal ? "released" : "pending_cleanup", releasedAt: new Date(),
+        cleanupStatus: terminal ? "success" : "failed", leasePolicy: "reuse_by_environment",
+        metadata: kind === "released-stop-receipt" || kind === "stop-receipt-for-another-run"
+          ? { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: base.binding.companyId,
+            runId: leaseRunId, leaseId: `lease-${kind}`, provider: "daytona", providerLeaseId, state: "stopped",
+            confirmedAt: new Date().toISOString() } }
+          : { failureReason: "sandbox_stop_pending" } };
+      let leaseRows: unknown[] = [];
+      const ownerDb = leaseDb(base), select = ownerDb.select.bind(ownerDb);
+      ownerDb.select = ((fields?: Record<string, unknown>) => ({ from: (table: unknown) => {
+        if (table !== environmentLeases) return select(fields as never).from(table as never);
+        const query = { then: (...args: Parameters<Promise<unknown[]>["then"]>) => Promise.resolve(leaseRows).then(...args),
+          where: () => query, limit: () => query };
+        return query;
+      } })) as unknown as Db["select"];
+      try {
+        await executePaperclipNativeSession({ db: ownerDb, execution: base, runnerInstanceId: "runner",
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
+            sandboxLeaseAcquisition: { outcome: "created", providerLeaseId } } });
+        leaseRows = [row];
+        expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed, failed: 1 - closed });
+      } finally {
+        close.mockResolvedValue(undefined);
+        await closeIdleWarmNativeSessionsForRestart();
+      }
+    });
+
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
       const close = vi.fn().mockRejectedValueOnce(new Error("containment unavailable")).mockResolvedValue(undefined);
