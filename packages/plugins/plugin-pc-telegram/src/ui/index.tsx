@@ -24,6 +24,7 @@ import {
   formatListTime,
   groupThread,
   initialLetter,
+  keepShownPhoto,
   isNearBottom,
   issueRefFromPath,
   mergeThreadMessages,
@@ -1572,6 +1573,7 @@ export function TelegramInboxPage({
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [rowPatches, setRowPatches] = useState<Record<string, RowPatch>>({});
+  const shownListPhotos = useRef<Record<string, string>>({});
   const [feedRange, setFeedRange] = useState<FeedRange | null>(null);
   const [sending, setSending] = useState(false);
   const [acting, setActing] = useState(false);
@@ -1643,7 +1645,7 @@ export function TelegramInboxPage({
           preview: event.preview ?? current[ref]?.preview,
           unread: typeof event.unread === "number" ? event.unread : current[ref]?.unread,
           updatedAt: event.activityAt || current[ref]?.updatedAt,
-          photo: event.photo === undefined ? current[ref]?.photo : event.photo,
+          photo: event.photo === undefined ? current[ref]?.photo : keepShownPhoto(current[ref]?.photo, event.photo),
         },
       }));
     }
@@ -2028,13 +2030,15 @@ export function TelegramInboxPage({
   const listed = (chats.data?.chats ?? []).map((chat) => {
     const ref = chat.identifier || chat.issueId;
     const patch = rowPatches[ref];
-    if (!patch) return chat;
+    const photo = keepShownPhoto(shownListPhotos.current[ref], patch?.photo ?? chat.photo);
+    if (photo) shownListPhotos.current[ref] = photo;
+    if (!patch && photo === (chat.photo ?? null)) return chat;
     return {
       ...chat,
-      preview: patch.preview ?? chat.preview,
-      unread: patch.unread ?? chat.unread,
-      updatedAt: patch.updatedAt || chat.updatedAt,
-      photo: patch.photo ?? chat.photo,
+      preview: patch?.preview ?? chat.preview,
+      unread: patch?.unread ?? chat.unread,
+      updatedAt: patch?.updatedAt || chat.updatedAt,
+      photo,
     };
   }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const rows = filterChats(listed, query);

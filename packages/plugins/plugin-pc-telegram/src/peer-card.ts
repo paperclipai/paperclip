@@ -154,3 +154,96 @@ export function publicPhoto(value: unknown, maxLength = 480_000): string | null 
   if (/[\s"'()]/.test(value)) return null;
   return value;
 }
+
+// Telegram stripped thumbs omit the JPEG tables. The header is the one GramJS uses.
+const STRIPPED_JPEG_HEADER = Buffer.from("ffd8ffe000104a46494600010100000100010000ffdb004300281c1e231e19282321232d2b28303c64413c37373c7b585d4964918099968f808c8aa0b4e6c3a0aadaad8a8cc8ffcbdaeef5ffffff9bc1fffffffaffe6fdfff8ffdb0043012b2d2d3c353c76414176f8a58ca5f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8ffc00011080000000003012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00", "hex");
+const STRIPPED_JPEG_FOOTER = Buffer.from([0xff, 0xd9]);
+
+export type ProfilePhotoMemory = {
+  value: string | null;
+  ready: boolean;
+};
+
+function photoRecord(entity: unknown): { className: string; photoId: unknown; id: unknown; strippedThumb: unknown } | null {
+  if (!entity || typeof entity !== "object") return null;
+  const photo = (entity as { photo?: unknown }).photo;
+  if (!photo || typeof photo !== "object") return null;
+  const record = photo as { className?: unknown; photoId?: unknown; id?: unknown; strippedThumb?: unknown };
+  return {
+    className: String(record.className ?? ""),
+    photoId: record.photoId,
+    id: record.id,
+    strippedThumb: record.strippedThumb,
+  };
+}
+
+function photoIdPresent(value: unknown): boolean {
+  if (typeof value === "bigint") return value !== 0n;
+  if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+  if (typeof value === "string") return value.length > 0 && value !== "0";
+  return false;
+}
+
+export function hasProfilePhoto(entity: unknown): boolean {
+  const photo = photoRecord(entity);
+  if (!photo) return false;
+  if (/empty$/i.test(photo.className)) return false;
+  if (
+    photo.className === "UserProfilePhoto"
+    || photo.className === "ChatPhoto"
+    || photo.className === "Photo"
+    || photo.className.endsWith(".UserProfilePhoto")
+    || photo.className.endsWith(".ChatPhoto")
+    || photo.className.endsWith(".Photo")
+  ) {
+    return true;
+  }
+  const thumb = photo.strippedThumb;
+  if (thumb instanceof Uint8Array && thumb.length >= 3 && thumb[0] === 1) return true;
+  return photoIdPresent(photo.photoId) || photoIdPresent(photo.id);
+}
+
+export function expandStrippedThumb(stripped: Uint8Array): Uint8Array | null {
+  if (stripped.length < 3 || stripped[0] !== 1 || STRIPPED_JPEG_HEADER.length < 167) return null;
+  const header = Buffer.from(STRIPPED_JPEG_HEADER);
+  header[164] = stripped[1] ?? 0;
+  header[166] = stripped[2] ?? 0;
+  return Buffer.concat([header, stripped.subarray(3), STRIPPED_JPEG_FOOTER]);
+}
+
+export function inlineProfilePhoto(entity: unknown): string | null {
+  const photo = photoRecord(entity);
+  if (!photo || /empty$/i.test(photo.className)) return null;
+  const thumb = photo.strippedThumb;
+  if (!(thumb instanceof Uint8Array)) return null;
+  const bytes = expandStrippedThumb(thumb);
+  if (!bytes) return null;
+  return photoDataUrl(bytes, 80_000);
+}
+
+export function rememberProfilePhoto(
+  current: ProfilePhotoMemory | undefined,
+  input: { downloaded: string | null; fallback: string | null; knownEmpty: boolean },
+): { memory: ProfilePhotoMemory; photo: string | null } {
+  if (current?.ready) return { memory: current, photo: current.value };
+  if (input.downloaded) {
+    const memory = { value: input.downloaded, ready: true };
+    return { memory, photo: input.downloaded };
+  }
+  const fallback = current?.value || input.fallback || null;
+  if (input.knownEmpty) {
+    const memory = { value: fallback, ready: true };
+    return { memory, photo: fallback };
+  }
+  if (fallback) {
+    const memory = { value: fallback, ready: false };
+    return { memory, photo: fallback };
+  }
+  return { memory: { value: null, ready: false }, photo: null };
+}
+
+export function remainingPhotoBudget(left: number, photo: string | null, ready: boolean): number {
+  if (left <= 0) return 0;
+  if (ready && photo) return left - 1;
+  return left;
+}
