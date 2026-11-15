@@ -49,7 +49,7 @@ describe("agent file restore locking", () => {
 
   async function agentRowLocked(): Promise<boolean> {
     try {
-      await observer.transaction(async tx => { await tx.execute(sql`select id from agents where id = ${agentId} for update nowait`); });
+      await observer.transaction(async tx => { await tx.execute(sql`select id from agents where id = ${agentId} for share nowait`); });
       return false;
     } catch (error) {
       const code = (error as { code?: string; cause?: { code?: string } }).code ?? (error as { cause?: { code?: string } }).cause?.code;
@@ -104,6 +104,25 @@ describe("agent file restore locking", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await fs.rm(home, { recursive: true, force: true });
+  });
+
+  it("detects a held agent row lock, and two lock checks never block each other", async () => {
+    expect(await Promise.all([agentRowLocked(), agentRowLocked(), agentRowLocked()])).toEqual([false, false, false]);
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let holding!: () => void;
+    const held = new Promise<void>(resolve => { holding = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(agents).where(eq(agents.id, agentId)).for("update");
+      holding();
+      await released;
+    });
+    await held;
+    try {
+      expect(await agentRowLocked()).toBe(true);
+    } finally { release(); }
+    await holder;
+    expect(await agentRowLocked()).toBe(false);
   });
 
   it("downloads a stale projection without holding the agent row lock", async () => {
