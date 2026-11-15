@@ -338,8 +338,7 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {/* The header's waiting line already names the agent's queue; no second line. */}
-      {!final && currentActivityItems.length === 0 && !agentQueueWaitFor({ status, execution })
+      {!final && currentActivityItems.length === 0 && !(status === "queued" && runId && (waitingLabel || agentQueueWaitFor({ status, execution })))
         ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
     </div></ToolCallProgressRunProvider></TaskChatShimmerScope>
   );

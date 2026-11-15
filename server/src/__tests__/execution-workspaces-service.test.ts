@@ -606,7 +606,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       expect(scan.mock.calls.filter(([input]) => input.operation === "execution_workspaces.close_readiness_status"))
         .toHaveLength(3);
       expect(select.mock.calls.filter(([fields]) => fields && "completedAt" in fields && "cancelledAt" in fields))
-        .toHaveLength(4);
+        .toHaveLength(1);
     } finally {
       scan.mockRestore();
       select.mockRestore();

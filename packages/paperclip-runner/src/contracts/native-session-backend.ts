@@ -80,6 +80,7 @@ export interface PersistedNativeSession {
   pendingRuntimeRequests?: HarnessRuntimeRequest[];
   goal?: HarnessThreadGoal | null;
   lineage?: HarnessThreadLineageEntry[];
+  awaitingProviderTurn?: boolean;
 }
 
 export interface NativeSessionRecoveryResult {
@@ -151,6 +152,7 @@ export interface NativeSessionCancellation {
 export interface NativeSessionSnapshotOptions {
   /** Stop provider snapshot work that outlives the execution deadline. */
   signal: AbortSignal;
+  sourceSeq?: number;
 }
 
 /** A dispatched operation may have taken effect, but has no proven result. */

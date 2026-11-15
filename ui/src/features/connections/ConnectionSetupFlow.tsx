@@ -2834,7 +2834,7 @@ function StandardConnectionSetupFlow({
             connectApp();
           }}
           machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId
-            ? { companyId: selectedCompanyId, onConnected: acceptMachineSignInResult }
+            ? { companyId: selectedCompanyId, applicationId: prefill.applicationId, onConnected: acceptMachineSignInResult }
             : null}
         />
       )}

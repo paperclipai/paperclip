@@ -436,6 +436,7 @@ suite("automatic-run brake", () => {
     for (let index = 0; index < AUTOMATIC_RUN_BRAKE.maxRuns + 200; index += 1) {
       await brake.holdAutomaticRunStart(db, { id: randomUUID(), companyId, contextSnapshot: { wakeReason: "issue_continuation_needed" } });
     }
-    expect(brake.cacheSizes()).toEqual({ companies: AUTOMATIC_RUN_BRAKE.maxCompanies, runs: AUTOMATIC_RUN_BRAKE.maxRuns });
+    expect(brake.cacheSizes()).toMatchObject({ companies: AUTOMATIC_RUN_BRAKE.maxCompanies, runs: AUTOMATIC_RUN_BRAKE.maxRuns });
+    expect(brake.cacheSizes().wakes).toBeLessThanOrEqual(AUTOMATIC_RUN_BRAKE.maxCompanies);
   }, 180_000);
 });

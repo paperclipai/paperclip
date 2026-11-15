@@ -3429,7 +3429,10 @@ export function issueThreadInteractionService(
         woken,
       };
     },
-    listForIssue: async (issueId: string) => {
+    listForIssue: async (
+      issueId: string,
+      known?: { status: string; companyId: string; executionWorkspaceId: string | null },
+    ) => {
       const [rows, issue] = await Promise.all([
         db
           .select()
@@ -3439,7 +3442,7 @@ export function issueThreadInteractionService(
             asc(issueThreadInteractions.createdAt),
             asc(issueThreadInteractions.id),
           ),
-        db
+        known ? { status: known.status, companyId: known.companyId, executionWorkspaceId: known.executionWorkspaceId } : db
           .select({
             status: issues.status,
             companyId: issues.companyId,

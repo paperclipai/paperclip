@@ -36,8 +36,9 @@ type MachineSignInDraft = Pick<MachineSignInSetupResult, "connectionId" | "machi
  * The draft this browser tab started for a server, so switching options or
  * reloading resumes it (and its key) instead of creating another.
  */
-function draftStorageKey(companyId: string, link: string) {
-  return `paperclip.machine-sign-in-draft:${companyId}:${link}`;
+function draftStorageKey(companyId: string, applicationId: string | null | undefined, link: string) {
+  // Keyed by app too: a draft started for one app is never resumed for another.
+  return `paperclip.machine-sign-in-draft.v2:${companyId}:${applicationId ?? "new"}:${link}`;
 }
 function readDraftId(key: string): string | null {
   try { return sessionStorage.getItem(key); } catch { return null; }
@@ -66,6 +67,8 @@ export interface MachineSignInSetupProps {
   companyId: string;
   link: string;
   name?: string;
+  /** The existing app this connection belongs to, when setup was opened for one. */
+  applicationId?: string | null;
   client?: MachineSignInClient;
   /** Resume at "register the key" with a key Paperclip already created. */
   initialSetup?: MachineSignInSetupResult | null;
@@ -87,6 +90,7 @@ export function MachineSignInSetup({
   companyId,
   link,
   name,
+  applicationId,
   client = machineSignInApiClient,
   initialSetup = null,
   initialMethod = "paperclip_key",
@@ -103,7 +107,7 @@ export function MachineSignInSetup({
   const [setup, setSetup] = useState<MachineSignInDraft | null>(initialSetup);
   const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState<"creating" | "testing" | null>(null);
-  const storageKey = draftStorageKey(companyId, link);
+  const storageKey = draftStorageKey(companyId, applicationId, link);
   // While a saved draft loads, creating another would race it; wait for it.
   const [restoring, setRestoring] = useState(() => !initialSetup && Boolean(readDraftId(storageKey)));
 
@@ -141,6 +145,7 @@ export function MachineSignInSetup({
         ...(clientId.trim() ? { clientId: clientId.trim() } : {}),
         ...(method === "client_secret" && clientSecret ? { clientSecret } : {}),
         ...(trimmedScopes ? { scopes: trimmedScopes } : {}),
+        ...(applicationId ? { applicationId } : {}),
       });
       setSetup(created);
       writeDraftId(storageKey, created.connectionId);

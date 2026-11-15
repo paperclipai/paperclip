@@ -5,7 +5,7 @@ import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { createStalledQueuedRunCancel } from "./heartbeat/stalled-queued-run.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
-import { isYieldingRunStarts, refreshRunStartYieldIfStale, type RunStartHandover } from "./run-start-handover.js";
+import { isYieldingRunStarts, refreshRunStartYieldIfStale, RUN_START_YIELD_RECHECK_MS, type RunStartHandover } from "./run-start-handover.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
@@ -1868,6 +1868,10 @@ export function heartbeatService(
       const dispatchWork: Promise<void> = (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
         if (nativeRecoveryDeadlines.get(runId) !== pending) return;
+        if (options.runStartHandover ? options.runStartHandover.isYielding() : isYieldingRunStarts()) {
+          scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + RUN_START_YIELD_RECHECK_MS), mode);
+          return;
+        }
         nativeRecoveryDeadlines.delete(runId);
         if (mode === "restart") {
           await recoverNativeRunsAfterRestart(new Date(), [runId]);
@@ -4121,7 +4125,7 @@ export function heartbeatService(
           await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
-            .where(eq(heartbeatRuns.id, run.id)), { companyId: run.companyId });
+            .where(eq(heartbeatRuns.id, run.id)), { companyId: run.companyId, runId: run.id });
         }
         nativeOwnershipHeld =
           nativeOwnershipHeld ||
@@ -4725,7 +4729,8 @@ export function heartbeatService(
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
         prepareChatRetry,
       }, () => canRun() && readTaskDrain(new Date()) === null),
-    registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
+    registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean,
+      options?: Parameters<typeof registerIssueRecoveryWork>[4]) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
         orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
@@ -4739,7 +4744,7 @@ export function heartbeatService(
           checkIssue: recovery.assignedWork.checkIssue,
         },
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
-      }, () => canRun() && readTaskDrain(new Date()) === null),
+      }, () => canRun() && readTaskDrain(new Date()) === null, options),
     registerRunDispatchWork: (coordinator: Parameters<typeof registerRunDispatchWork>[0], canRun: () => boolean) =>
       registerRunDispatchWork(coordinator, {
         promoteDueScheduledRetries,

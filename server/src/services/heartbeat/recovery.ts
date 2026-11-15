@@ -39,7 +39,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, inspectSettledNativeRunProcess, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { portableTaskPreparationLeaseId } from "../plugin-task-ownership.js";
 import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
@@ -67,6 +67,7 @@ import {
   asc,
   desc,
   eq,
+  getTableColumns,
   gt,
   inArray,
   isNotNull,
@@ -136,9 +137,26 @@ import { failedRunRetryBudgetSpent, type HeartbeatRetryDependencies, type create
 import { serverRestartBudgetSpent } from "../execution-recovery-attempt.js";
 import type { CancelRunOptions } from "./run-control.js";
 import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
+import { isYieldingRunStarts, RUN_START_YIELD_RECHECK_MS } from "../run-start-handover.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRetries = ReturnType<typeof createHeartbeatRetries>;
+
+const activeRecoveryRunColumns = {
+  ...getTableColumns(heartbeatRuns),
+  contextSnapshot: sql<Record<string, unknown> | null>`jsonb_build_object(
+    'wakeReason', ${heartbeatRuns.contextSnapshot} -> 'wakeReason',
+    'issueId', ${heartbeatRuns.contextSnapshot} -> 'issueId',
+    'nativeQuestionCancellation', ${heartbeatRuns.contextSnapshot} -> 'nativeQuestionCancellation'
+  )`.as("contextSnapshot"),
+  runnerProfileJson: sql<Record<string, unknown> | null>`jsonb_build_object(
+    'nativeStartupContext', ${heartbeatRuns.runnerProfileJson} -> 'nativeStartupContext',
+    'nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson} -> 'nativeWorkspaceSync',
+    'remoteWorkspace', ${heartbeatRuns.runnerProfileJson} -> 'remoteWorkspace'
+  )`.as("runnerProfileJson"),
+  stdoutExcerpt: sql<string | null>`NULL`.as("stdoutExcerpt"),
+  stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
+} as const;
 
 /** Recovery owns reconciliation; the service retains execution and lifecycle effects. */
 export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDependencies,
@@ -212,6 +230,8 @@ export const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 
 const NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE =
   "Native execution ownership could not be verified; automatic recovery is blocked";
+
+const EARLY_NATIVE_HAND_OFF_DRAIN_WAIT_MS = 30_000;
 
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
@@ -490,12 +510,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   async function prepareHotRestartShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
+    abort?: AbortSignal,
   ) {
     enterShutdown();
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
       logger.warn({ idleSessions }, "idle native session cleanup failed before controller shutdown");
     }
+    abort?.throwIfAborted();
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
       intent = await readHotRestartIntent();
@@ -544,6 +566,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.status, "running"));
+    abort?.throwIfAborted();
     const snapshotRuns = activeRuns.map(toHotRestartIntentRun);
     const intentWithVersion = {
       ...intent,
@@ -589,8 +612,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       activeRuns: snapshotRuns,
       capturedAt: now,
     });
-
     for (const { run } of activeRuns) {
+      abort?.throwIfAborted();
       await appendRunEvent(run, {
         eventType: "lifecycle",
         stream: "system",
@@ -614,6 +637,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           isNativeSessionId(run.nativeSessionId),
       )
       .map(({ run }) => run.id);
+    abort?.throwIfAborted();
     for (const runId of nativeRunIds) markHandedOffByThisController(runId);
     const detachedNativeSessions =
       await detachNativeSessionsForRestart(nativeRunIds);
@@ -1158,10 +1182,27 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
   }
 
-  const nativeRunsHandedOffEarly = new Set<string>();
+  const nativeRunsHandedOffEarly = new Map<string, Promise<boolean>>();
+
+  async function settleEarlyNativeHandOff(runId: string, handOff: Promise<boolean>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([handOff, new Promise<"unfinished">(resolve => {
+        timer = setTimeout(() => resolve("unfinished"), EARLY_NATIVE_HAND_OFF_DRAIN_WAIT_MS);
+        timer.unref?.();
+      })]);
+      if (outcome === "unfinished") {
+        logger.warn({ runId, waitedMs: EARLY_NATIVE_HAND_OFF_DRAIN_WAIT_MS },
+          "early native run hand-off is unfinished at the shutdown drain; the drain hands it off");
+      }
+      return outcome === true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function suspendNativeRunForShutdown(run: typeof heartbeatRuns.$inferSelect, signal: "SIGINT" | "SIGTERM",
-    now: Date, controllerBootId: string) {
+    now: Date, controllerBootId: string, timing?: { detachMs: number; transactionMs: number }) {
     const [owner] = await db.select({ bootId: nativeRunFinalizations.controllerBootId })
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
     if (owner?.bootId && owner.bootId !== controllerBootId) return false;
@@ -1170,7 +1211,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // finalizer interrupt/suspend Claude while the next server is adopting
     // the same turn.
     markHandedOffByThisController(run.id);
+    const detachStartedAt = performance.now();
     await detachNativeSessionsForRestart([run.id]);
+    if (timing) timing.detachMs = Math.round(performance.now() - detachStartedAt);
     const recoveryHistoryEntry = JSON.stringify({
       at: now.toISOString(),
       restartKind: "graceful",
@@ -1183,6 +1226,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // execution lease must still be released: the detached executor will
     // not finalize, and the next controller's reconciler skips leased rows.
     // A finalizer lease belongs to finalization already in progress here.
+    const transactionStartedAt = performance.now();
     const released = await db.transaction(async tx => {
       await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
       await notifyReattachHandOver(tx, run.id);
@@ -1217,6 +1261,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       )
       .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
     });
+    if (timing) timing.transactionMs = Math.round(performance.now() - transactionStartedAt);
     const resultAccepted = Boolean(released[0]?.resultId);
     const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
     await appendRunEvent(run, {
@@ -1243,25 +1288,40 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   async function handOffNativeRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+    const startedAt = performance.now();
+    const elapsed = (from: number) => Math.round(performance.now() - from);
     const intent = await readHotRestartIntent().catch(() => null);
+    const intentReadMs = elapsed(startedAt);
     if (intent && !intent.drainRequired && shouldHonorHotRestartIntentForProcess(intent)) return [];
+    const identityStartedAt = performance.now();
     const nativeController = await currentNativeControllerIdentity();
+    const controllerIdentityMs = elapsed(identityStartedAt);
+    const selectStartedAt = performance.now();
     const liveRuns = await db.select({ run: heartbeatRuns }).from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.runtimeMode, "native"),
         eq(agents.adapterType, "paperclip_runner")));
+    const selectMs = elapsed(selectStartedAt);
     const handedOff: string[] = [];
+    let maxDetachMs = 0, maxTransactionMs = 0, failed = 0;
     await Promise.allSettled(liveRuns.map(async ({ run }) => {
       if (isNativeRunnerOwnershipHeld(run) || nativeRunsHandedOffEarly.has(run.id)) return;
-      nativeRunsHandedOffEarly.add(run.id);
-      try {
-        if (await suspendNativeRunForShutdown(run, signal, now, nativeController.bootId)) handedOff.push(run.id);
-        else nativeRunsHandedOffEarly.delete(run.id);
-      } catch (error) {
-        nativeRunsHandedOffEarly.delete(run.id);
+      const timing = { detachMs: 0, transactionMs: 0 };
+      const handOff = suspendNativeRunForShutdown(run, signal, now, nativeController.bootId, timing).catch(error => {
+        failed += 1;
         logger.warn({ err: error, runId: run.id }, "early native run hand-off failed; the shutdown drain retries it");
-      }
+        return false;
+      });
+      nativeRunsHandedOffEarly.set(run.id, handOff);
+      const suspended = await handOff;
+      maxDetachMs = Math.max(maxDetachMs, timing.detachMs);
+      maxTransactionMs = Math.max(maxTransactionMs, timing.transactionMs);
+      if (suspended) handedOff.push(run.id);
+      else if (nativeRunsHandedOffEarly.get(run.id) === handOff) nativeRunsHandedOffEarly.delete(run.id);
     }));
+    logger.info({ signal, liveRuns: liveRuns.length, handedOff: handedOff.length, failed, intentReadMs,
+      controllerIdentityMs, selectMs, maxDetachMs, maxTransactionMs, totalMs: elapsed(startedAt) },
+    "native run shutdown hand-off phase timings");
     return handedOff;
   }
 
@@ -1311,8 +1371,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         run.runtimeMode === "native" &&
         agent.adapterType === "paperclip_runner"
       ) {
-        if (nativeRunsHandedOffEarly.has(run.id)
-          || await suspendNativeRunForShutdown(run, signal, now, nativeController.bootId)) restartSuspendedRunIds.push(run.id);
+        const earlyHandOff = nativeRunsHandedOffEarly.get(run.id);
+        if (earlyHandOff && await settleEarlyNativeHandOff(run.id, earlyHandOff)) {
+          restartSuspendedRunIds.push(run.id);
+          return;
+        }
+        if (await suspendNativeRunForShutdown(run, signal, now, nativeController.bootId)) restartSuspendedRunIds.push(run.id);
         return;
       }
       if (agent.adapterType === "paperclip_runner" && run.runtimeMode === "legacy" && run.scopeKind === "issue" &&
@@ -2301,6 +2365,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
 
     await beforeDispatch?.();
+    if (isYieldingRunStarts()) {
+      if (remoteRetryRunIds.length || claimableNativeRunIds.size) scope.onDeferredDeadline?.(Date.now() + RUN_START_YIELD_RECHECK_MS);
+      return new Set<string>();
+    }
 
     const remoteRetryClaims = remoteRetryRunIds.length
       ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true, trigger: "same_run_retry" })).claims
@@ -2413,6 +2481,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   }
 
+  async function readActiveRecoverySettlement(run: Pick<HeartbeatRun, "id" | "companyId">) {
+    const [settlement] = await db.select({
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      adapterConfig: agents.adapterConfig,
+    }).from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+      .limit(1);
+    return settlement ?? null;
+  }
+
   async function recoverActiveExecutions(scope: RecoveryScope = {}, options: {
     staleThresholdMs?: number; resumedRunIds?: Set<string>;
   } = {}) {
@@ -2422,9 +2502,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({
-        run: heartbeatRuns,
+        run: activeRecoveryRunColumns,
         adapterType: agents.adapterType,
-        adapterConfig: agents.adapterConfig,
         nativeCoordinatorPhase: nativeRunFinalizations.phase,
         nativeRecoveryState: nativeRunFinalizations.recoveryState,
         nativeControllerBootId: nativeRunFinalizations.controllerBootId,
@@ -2525,7 +2604,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     for (const {
       run,
       adapterType,
-      adapterConfig,
       nativeCoordinatorPhase,
       nativeRecoveryState,
       nativeControllerBootId,
@@ -2785,6 +2863,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         scope.onDeferredDeadline?.(Math.max(refTime + staleThresholdMs, Date.now() + 60_000));
         continue;
       }
+      const settlement = await readActiveRecoverySettlement(run);
+      if (!settlement) continue;
+      const settledRun = { ...run, contextSnapshot: settlement.contextSnapshot, runnerProfileJson: settlement.runnerProfileJson };
       // A legacy controller persists "dispatching" in the same lease renewal
       // that admits the adapter. An expired lease that is still "preparing"
       // proves setup stopped before provider work.
@@ -2803,12 +2884,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // budget, and a conversation adapter continues with a fresh turn.
       const controllerReplaced = run.runtimeMode === "legacy" && !!run.controllerBootId
         && run.controllerBootId !== legacyControllerBootId;
-      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, settledRun);
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         // Process loss spends the durable failure retry budget that
-        // enqueueProcessLossRetry schedules against (execution-semantics
-        // "Shutdown, process loss, and provider failure"). Checking it here
+        // enqueueProcessLossRetry schedules against. Checking it here
         // keeps "retrying once" honest and lets an exhausted chain fall
         // through to the interaction continuation path below.
         // A conversation run that a restart ended draws on the server-restart
@@ -2819,15 +2899,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // names its owner process (isReplacedPreparation).
         !(controllerReplaced && (conversationContinuationEligible
           || restartInterruptedBeforeDispatch && readControllerProcess(run.controllerProcess) !== null)
-          ? serverRestartBudgetSpent(run, now) : failedRunRetryBudgetSpent(run)) &&
+          ? serverRestartBudgetSpent(settledRun, now) : failedRunRetryBudgetSpent(settledRun)) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           restartInterruptedBeforeDispatch ||
           monitorDispatchLostWithoutFutureWake ||
           (controllerReplaced && conversationContinuationEligible));
-      const baseMessage = buildProcessLossMessage(run);
+      const baseMessage = buildProcessLossMessage(settledRun);
       const processLossDiagnostic = buildProcessLossDiagnostic({
-        run,
+        run: settledRun,
         nowMs: Date.now(),
         observerStartedAtMs: performance.timeOrigin,
         checksPersistedChildLiveness,
@@ -2846,7 +2926,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           ...(restartInterruptedBeforeDispatch && legacyControllerGone ? { controllerLeaseExpiresAt: now } : {}),
           resultJson: (() => {
             const result = mergeRunStopMetadataForAgent(
-              { adapterType, adapterConfig },
+              { adapterType, adapterConfig: settlement.adapterConfig },
               "failed",
               {
                 conversationContinuationEligible,
@@ -2935,7 +3015,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       });
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
-        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(settledRun),
       });
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
@@ -3109,10 +3189,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (!scope.runId || activeRunExecutions.has(scope.runId) || runningProcesses.has(scope.runId)
           || adapterExecutionControls.has(scope.runId)) {
           scope.onDeferredDeadline(Date.now() + 30_000);
-          return;
+          return "deferred";
         }
-        const outcome = await releaseSettledNativeRunProcess(db, scope.runId, scope);
-        if (outcome !== "pending") await acknowledgeRemoteStop(scope.runId, scope.companyId);
+        const { outcome, remoteStop } = await inspectSettledNativeRunProcess(db, scope.runId, scope);
+        if (outcome !== "pending" && remoteStop) await acknowledgeRemoteStop(scope.runId, scope.companyId);
+        return outcome;
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
       shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),

@@ -1,10 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
-import { installPreparedQueries } from "./prepared-queries.js";
+import { createPreparedQueryState, installPreparedQueries, preparedQueryStats, type PreparedQueryState, type PreparedQueryStats } from "./prepared-queries.js";
 import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
 
@@ -168,6 +169,8 @@ export interface DatabaseClientOptions {
    * parameter (no extra round trip). For dedicated single-purpose pools only.
    */
   statementTimeoutMs?: number;
+  dedicatedConnectionMax?: number;
+  dedicatedConnectionWaitMs?: number;
 }
 
 /**
@@ -236,6 +239,10 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
   const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
   if (applicationName !== undefined) options.applicationName = applicationName;
+  const dedicatedConnectionMax = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_MAX");
+  if (dedicatedConnectionMax !== undefined) options.dedicatedConnectionMax = dedicatedConnectionMax;
+  const dedicatedConnectionWaitMs = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_WAIT_MS");
+  if (dedicatedConnectionWaitMs !== undefined) options.dedicatedConnectionWaitMs = dedicatedConnectionWaitMs;
   return options;
 }
 
@@ -271,8 +278,135 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // A long advisory-lock transaction must not borrow the normal pool that its
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
-const dedicatedDbFactories = new WeakMap<object, () => Db>();
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+export const DEDICATED_CONNECTION_IDLE_MAX = 4;
+export const DEFAULT_DEDICATED_CONNECTION_MAX = 24;
+export const DEFAULT_DEDICATED_CONNECTION_WAIT_MS = 30_000;
+
+type DedicatedConnectionWaiter = { grant(): void; timer: ReturnType<typeof setTimeout> };
+type DedicatedConnectionSet = {
+  create(): Db;
+  idle: Db[];
+  ended: WeakSet<Db>;
+  closed: boolean;
+  limit: number;
+  waitMs: number;
+  inUse: number;
+  waiters: DedicatedConnectionWaiter[];
+  stats: DedicatedDbConnectionStats;
+};
+export type DedicatedDbConnectionStats = { limit: number; inUse: number; peakInUse: number; waiting: number;
+  queued: number; overLimit: number; nestedOverLimit: number };
+const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
+type DedicatedConnectionHold = { set: DedicatedConnectionSet; active: boolean };
+const heldDedicatedConnections = new AsyncLocalStorage<readonly DedicatedConnectionHold[]>();
+const openTransactions = new AsyncLocalStorage<{ active: boolean }>();
+
+function dedicatedConnectionSet(create: DedicatedConnectionSet["create"], resolved: DatabaseClientOptions): DedicatedConnectionSet {
+  const limit = resolved.dedicatedConnectionMax ?? DEFAULT_DEDICATED_CONNECTION_MAX;
+  return { create, idle: [], ended: new WeakSet(), closed: false, limit, inUse: 0, waiters: [],
+    waitMs: resolved.dedicatedConnectionWaitMs ?? DEFAULT_DEDICATED_CONNECTION_WAIT_MS,
+    stats: { limit, inUse: 0, peakInUse: 0, waiting: 0, queued: 0, overLimit: 0, nestedOverLimit: 0 } };
+}
+
+function takeDedicatedSlot(set: DedicatedConnectionSet) {
+  set.inUse++;
+  set.stats.inUse = set.inUse;
+  set.stats.peakInUse = Math.max(set.stats.peakInUse, set.inUse);
+}
+
+function releaseDedicatedSlot(set: DedicatedConnectionSet) {
+  set.inUse--;
+  set.stats.inUse = set.inUse;
+  while (set.waiters.length && set.inUse < set.limit) set.waiters.shift()!.grant();
+  set.stats.waiting = set.waiters.length;
+}
+
+function holdsLiveDedicatedOrTransaction(set: DedicatedConnectionSet): boolean {
+  return Boolean(heldDedicatedConnections.getStore()?.some(hold => hold.active && hold.set === set)
+    || openTransactions.getStore()?.active);
+}
+
+async function admitDedicatedConnection(set: DedicatedConnectionSet, nested: boolean): Promise<void> {
+  if (nested || (set.inUse < set.limit && set.waiters.length === 0)) {
+    if (nested && set.inUse >= set.limit) set.stats.nestedOverLimit++;
+    takeDedicatedSlot(set);
+    return;
+  }
+  set.stats.queued++;
+  await new Promise<void>(resolve => {
+    const waiter: DedicatedConnectionWaiter = {
+      grant: () => { clearTimeout(waiter.timer); takeDedicatedSlot(set); resolve(); },
+      timer: setTimeout(() => {
+        const index = set.waiters.indexOf(waiter);
+        if (index < 0) return;
+        set.waiters.splice(index, 1);
+        set.stats.waiting = set.waiters.length;
+        set.stats.overLimit++;
+        takeDedicatedSlot(set);
+        resolve();
+      }, set.waitMs),
+    };
+    set.waiters.push(waiter);
+    set.stats.waiting = set.waiters.length;
+  });
+}
+
+function markOpenTransactions(db: Db) {
+  const transaction = db.transaction.bind(db) as (...args: unknown[]) => Promise<unknown>;
+  db.transaction = ((fn: (tx: unknown) => Promise<unknown>, ...rest: unknown[]) => transaction(async (tx: unknown) => {
+    const open = { active: true };
+    try { return await openTransactions.run(open, () => fn(tx)); }
+    finally { open.active = false; }
+  }, ...rest)) as Db["transaction"];
+}
+
+export const DRIVER_DEFAULT_POOL_MAX_CONNECTIONS = 10;
+export const PRIVATE_POOL_MAX_CONNECTIONS = {
+  liveness: 2, legacyControllerLease: 1, controllerInstanceLease: 1, checkpoint: 3, fileStorage: 2,
+} as const;
+export const DATABASE_LISTENER_CONNECTIONS = 2;
+
+export function databaseConnectionBudget(options: DatabaseClientOptions = {}) {
+  const main = options.maxConnections ?? DRIVER_DEFAULT_POOL_MAX_CONNECTIONS;
+  const privatePools = Object.values(PRIVATE_POOL_MAX_CONNECTIONS).reduce((sum, value) => sum + value, 0);
+  const dedicatedLimit = options.dedicatedConnectionMax ?? DEFAULT_DEDICATED_CONNECTION_MAX;
+  const dedicated = 2 * dedicatedLimit + DEDICATED_CONNECTION_IDLE_MAX;
+  return { main, privatePools, listeners: DATABASE_LISTENER_CONNECTIONS, dedicatedLimit, dedicated,
+    total: main + privatePools + DATABASE_LISTENER_CONNECTIONS + dedicated };
+}
+
+const preparedQueryStates = new WeakMap<object, PreparedQueryState>();
+
+export function preparedStatementStats(db: Db): PreparedQueryStats | null {
+  const state = preparedQueryStates.get(db);
+  return state ? preparedQueryStats(state) : null;
+}
+
+export function dedicatedDbConnectionStats(db: Db): DedicatedDbConnectionStats | null {
+  const set = dedicatedConnectionSets.get(db);
+  return set ? { ...set.stats } : null;
+}
+
+function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {
+  const sql = client.$client;
+  const end = sql.end;
+  sql.end = async (options?: { timeout?: number }) => {
+    await Promise.all([onEnd(options?.timeout), end(options)]);
+  };
+}
+
+async function endDedicatedConnections(clients: Db[], timeoutSeconds: number): Promise<void> {
+  await Promise.all(clients.map(client => client.$client.end({ timeout: timeoutSeconds }).catch(() => undefined)));
+}
+
+export async function closeDedicatedDbConnections(db: Db, timeoutSeconds: number): Promise<void> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) return;
+  set.closed = true;
+  await endDedicatedConnections(set.idle.splice(0), timeoutSeconds);
+}
 
 export interface OwnedDatabaseListener {
   listen: Db["$client"]["listen"];
@@ -289,12 +423,38 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
-export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
-  const factory = dedicatedDbFactories.get(db);
-  if (!factory) throw new Error("dedicated_connection_requires_create_db");
-  const dedicated = factory();
-  try { return await action(dedicated); }
-  finally { await dedicated.$client.end({ timeout: 1 }); }
+export type DedicatedDbConnectionOptions = { admitWithoutWaiting?: boolean };
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>,
+  options: DedicatedDbConnectionOptions = {}): Promise<T> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) throw new Error("dedicated_connection_requires_create_db");
+  await admitDedicatedConnection(set, options.admitWithoutWaiting === true || holdsLiveDedicatedOrTransaction(set));
+  const hold: DedicatedConnectionHold = { set, active: true };
+  let dedicated: Db | undefined;
+  let completed = false;
+  try {
+    while (!dedicated && set.idle.length) {
+      const candidate = set.idle.pop()!;
+      if (!set.ended.has(candidate)) dedicated = candidate;
+    }
+    dedicated ??= set.create();
+    const connection = dedicated;
+    const result = await heldDedicatedConnections.run([...(heldDedicatedConnections.getStore() ?? []), hold], () => action(connection));
+    completed = true;
+    return result;
+  } finally {
+    hold.active = false;
+    try {
+      if (dedicated && completed && !set.closed && !set.ended.has(dedicated) && set.idle.length < DEDICATED_CONNECTION_IDLE_MAX) {
+        set.idle.push(dedicated);
+      } else if (dedicated && !set.ended.has(dedicated)) {
+        await dedicated.$client.end({ timeout: 1 });
+      }
+    } finally {
+      releaseDedicatedSlot(set);
+    }
+  }
 }
 
 // postgres.js pipelines a query onto a busy connection when none is idle, so
@@ -303,7 +463,6 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
 // private pool, created on first use and shared for the owner's lifetime.
 const livenessDbFactories = new WeakMap<object, () => Db>();
 const livenessDbs = new WeakMap<object, Db>();
-const LIVENESS_POOL_MAX_CONNECTIONS = 2;
 
 /** The private liveness pool for a `createDb` client; other clients (test
  * doubles, transactions) are returned unchanged. */
@@ -372,7 +531,6 @@ export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<v
 // during an aligned burst. Share at most three lazy connections per owner.
 const checkpointDbFactories = new WeakMap<object, () => Db>();
 const checkpointDbs = new WeakMap<object, Db>();
-const CHECKPOINT_POOL_MAX_CONNECTIONS = 3;
 const closedCheckpointOwners = new WeakSet<object>();
 
 /** The bounded controller checkpoint pool; transactions and test doubles keep
@@ -420,9 +578,12 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   return createDbClient(url, resolved);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, dedicatedSet?: DedicatedConnectionSet) {
   const sql = postgres(url, postgresJsOptions(resolved));
-  if (resolved.prepare === true) installPreparedQueries(sql);
+  const preparedState = resolved.prepare === true
+    ? (owner && preparedQueryStates.get(owner)) || createPreparedQueryState()
+    : undefined;
+  if (preparedState) installPreparedQueries(sql, preparedState);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
   // A disconnect can lose the response after a statement has committed.
@@ -431,27 +592,39 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
-  dedicatedDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  markOpenTransactions(db);
+  if (preparedState) preparedQueryStates.set(db, preparedState);
+  const ownerSet = owner ? dedicatedConnectionSets.get(owner) : undefined;
+  if (dedicatedSet) {
+    trackClientEnd(db, () => { dedicatedSet.ended.add(db); });
+    dedicatedConnectionSets.set(db, dedicatedSet);
+  } else if (ownerSet) {
+    dedicatedConnectionSets.set(db, ownerSet);
+  } else {
+    const set: DedicatedConnectionSet = dedicatedConnectionSet(() => createDbClient(url, {
+      ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+    }, db, set), resolved);
+    dedicatedConnectionSets.set(db, set);
+    trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
+  }
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
   }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.liveness, applicationName: "paperclip-controller-lease",
   }, db));
   controllerLeaseDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.legacyControllerLease, applicationName: "paperclip-legacy-controller-lease",
   }, db));
   controllerInstanceLeaseDbFactories.set(db, statementTimeoutMs => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-controller-instance-lease",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.controllerInstanceLease, applicationName: "paperclip-controller-instance-lease",
     ...(statementTimeoutMs !== null ? { statementTimeoutMs } : {}),
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.checkpoint, applicationName: "paperclip-runner-checkpoint",
   }, db));
   fileStorageDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.fileStorage, applicationName: "paperclip-file-storage",
   }, db));
   return db;
 }
@@ -692,6 +865,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0472_runner_api_capture_pending_deletes.sql",
   "0476_wakeup_request_run_index.sql",
   "0486_heartbeat_runs_company_finished_index.sql",
+  "0487_heartbeat_runs_settled_process_indexes.sql",
   "0469_zippy_photon.sql",
 
 

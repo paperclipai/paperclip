@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { chatTaskHandoffs, issueComments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
+import { chatCompletionDeliveries, chatTaskHandoffs, issueComments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import type { AttentionItem, ConversationTaskHandoff, ConversationTaskHandoffPage, DecisionHistoryPage, DecisionHistoryQuery } from "@paperclipai/shared";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { attentionService } from "./attention.js";
@@ -81,6 +81,11 @@ export function conversationDecisionReceiptsService(db: Db) {
           and ${issueThreadInteractions.kind} = 'suggest_tasks' and ${issueThreadInteractions.status} = 'accepted'
           and ${issueThreadInteractions.result}->'createdTasks' @> jsonb_build_array(jsonb_build_object('issueId', ${issues.id}::text))
           order by ${issueThreadInteractions.resolvedAt} desc limit 1)`,
+        // The latest completion of this task, and only once it was delivered.
+        completionReportCommentId: sql<string | null>`(select case when ${chatCompletionDeliveries.status} = 'delivered'
+          then ${chatCompletionDeliveries.responseCommentId} end from ${chatCompletionDeliveries}
+          where ${chatCompletionDeliveries.companyId} = ${companyId} and ${chatCompletionDeliveries.taskId} = ${issues.id}
+          order by ${chatCompletionDeliveries.statusVersion} desc limit 1)`,
       }).from(chatTaskHandoffs).innerJoin(issues, and(eq(issues.id, chatTaskHandoffs.taskId), eq(issues.companyId, companyId)))
         .where(and(eq(chatTaskHandoffs.companyId, companyId), eq(chatTaskHandoffs.conversationId, conversationId),
           eq(chatTaskHandoffs.agentId, conversation.conversationAgentId!),

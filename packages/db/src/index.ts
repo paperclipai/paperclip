@@ -1,6 +1,16 @@
 export {
   createDb,
   withDedicatedDbConnection,
+  closeDedicatedDbConnections,
+  DEDICATED_CONNECTION_IDLE_MAX,
+  DEFAULT_DEDICATED_CONNECTION_MAX,
+  DEFAULT_DEDICATED_CONNECTION_WAIT_MS,
+  dedicatedDbConnectionStats,
+  type DedicatedDbConnectionStats,
+  type DedicatedDbConnectionOptions,
+  preparedStatementStats,
+  databaseConnectionBudget,
+  PRIVATE_POOL_MAX_CONNECTIONS,
   createOwnedDatabaseListener,
   type OwnedDatabaseListener,
   livenessDb,
@@ -56,3 +66,4 @@ export * from "./schema/index.js";
 
 export { databaseWorkScopeKey, primeDatabaseWorkTransactionId, signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";
 export { withDatabaseOperation } from "./response-capture.js";
+export { databaseStatementCount } from "./statement-count.js";

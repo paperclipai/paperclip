@@ -359,6 +359,23 @@ attention request. A true conflict includes the call and operation IDs and both
 result digests in its error; full arguments belong to the canonical semantic
 input record, not the error message.
 
+When the tool bridge rejects a recorded result for a call it still holds, for
+example a result envelope that names another operation or a value over the
+retained limit, the runner still settles that call. It returns a bounded,
+non-retryable error to the provider and records
+`semantic_tool_result_undeliverable` with warning severity, call ID, operation
+ID, the rejection reason, and the rejected result's digest. The provider is not
+left waiting for its own client timeout, and the call does not block later
+turns or runs.
+
+`run.attach` settles calls that a closed provider turn left pending. The
+provider stopped waiting when that turn ended, and the new run's controller
+never delivers the old run's results. Each such call is recorded as a
+non-retryable failure with an unknown outcome, and the attachment records one
+`semantic_tool_result_expired` diagnostic with the call and operation IDs. A
+call that a live provider turn still waits on keeps blocking attachment as
+`durable_pending_tool_calls`.
+
 Incomplete close emits the bounded `native_session_settlement_incomplete`
 runner diagnostic. Its evidence includes runner suspension, provider drain,
 final provider state, pending call/operation/source-event IDs and input digests,
@@ -445,7 +462,7 @@ runner lifecycle, `other` for an unknown value, or `unavailable` when the state 
 none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
 provider cleanup or warm transition is pending. These fields explain how the runner
 stopped. The event is not recorded when a scheduled retry resumes a runner that
-exited after a settled suspension; see `doc/execution-semantics.md`.
+exited after a settled suspension.
 
 `native.interrupted_turn_outcome_unknown` (level `warn`) is recorded once on a
 failed run whose reattachment proved the Runner process gone
@@ -706,7 +723,7 @@ run phases:
 | `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
 | `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
 | `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
-| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. |
+| `storage.snapshot.encrypt` | Hash the archive, encrypt it and hash the encrypted file, in one pass on a worker thread. This is the only full read of a downloaded archive: one whose digest or size differs from the sandbox's receipt fails here, before any upload is recorded. |
 | `storage.snapshot.digest` | Record the digest of the encrypted file. The `encrypt` pass computes it, so this step takes no time. |
 | `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
 | `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
@@ -1225,3 +1242,22 @@ statement and its parameters, or unwrapped statement text with `$n`
 placeholders, is replaced with "Database query failed (<cause>)". The wrapper
 text before the statement is kept.
 
+
+## Chat outcome read receipts
+
+Two run-log events record what the conversation agent saw before it replied.
+`chat_handoff.completed_read` records that a run read a task it handed off, in
+the done state, with the task ID and status version. `chat_interaction.declined_read`
+records that a run listed its conversation's interactions and saw a declined tool
+action, with the issue ID, interaction ID and status. Neither carries task text,
+tool arguments or results.
+
+A completion or decline continuation that an earlier reply already reported
+creates no run. The server checks for a reply by the same agent in the same
+conversation, posted after the outcome, from a run that has one of these receipts
+for that exact outcome. A completion reply must also link the task. The
+completion delivery is then marked delivered with that reply as its response,
+and a deferred wake ends `skipped` with the reason "Already reported by an
+earlier reply in this conversation".
+The conversation's handoff listing (`GET /api/issues/{id}/chat-handoffs`) shows
+that reply as `completionReportCommentId` once the latest completion is delivered.

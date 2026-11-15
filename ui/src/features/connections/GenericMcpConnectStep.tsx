@@ -141,7 +141,7 @@ export function GenericMcpConnectStep({
   onBack: () => void;
   onConnect: () => void;
   /** Offered only for organization connections: personal connections sign in as the person. */
-  machineSignIn?: { companyId: string; onConnected: (result: ConnectToolAppResult) => void } | null;
+  machineSignIn?: { companyId: string; applicationId?: string | null; onConnected: (result: ConnectToolAppResult) => void } | null;
 }) {
   const [clientFieldsOpen, setClientFieldsOpen] = useState(false);
   // Machine sign-in runs its own setup and test, so it is a choice beside the modes, not one of them.
@@ -417,6 +417,7 @@ export function GenericMcpConnectStep({
                   <div className="px-4 pb-2 pt-3">
                     <MachineSignInSetup
                       companyId={machineSignIn.companyId}
+                      applicationId={machineSignIn.applicationId}
                       link={link}
                       name={name}
                       onBack={onBack}
