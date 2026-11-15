@@ -39,6 +39,7 @@ import {
   isForbiddenConfigEnvKey,
   launchWindowsProcessTreeKill,
   signalRunningProcess,
+  type WindowsProcessTreeKillOutcome,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
@@ -947,6 +948,50 @@ describe("runChildProcess", () => {
       signalRunningProcess({ child, processGroupId: null }, "SIGKILL");
       expect(killed).toBe("SIGKILL");
     },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "launchWindowsProcessTreeKill reports an unsuccessful outcome when the tree kill fails",
+    async () => {
+      const outcome = await new Promise<WindowsProcessTreeKillOutcome | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), 20_000);
+        const started = launchWindowsProcessTreeKill(2147483647, (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        });
+        if (!started) {
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+      expect(outcome).not.toBeNull();
+      expect(outcome?.succeeded).toBe(false);
+      expect(outcome?.exitCode).not.toBe(0);
+    },
+    30_000,
+  );
+
+  it.runIf(process.platform === "win32")(
+    "signalRunningProcess runs the direct-child fallback after an unsuccessful tree kill",
+    async () => {
+      let killed: NodeJS.Signals | null = null;
+      const child = {
+        pid: 2147483647,
+        exitCode: null,
+        signalCode: null,
+        kill: (signal: NodeJS.Signals) => {
+          killed = signal;
+          return true;
+        },
+      } as unknown as ChildProcess;
+      signalRunningProcess({ child, processGroupId: null }, "SIGKILL");
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline && killed === null) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(killed).toBe("SIGKILL");
+    },
+    45_000,
   );
 
   it.skipIf(process.platform === "win32")(

@@ -122,9 +122,14 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
+export interface WindowsProcessTreeKillOutcome {
+  succeeded: boolean;
+  exitCode: number | null;
+}
+
 export function launchWindowsProcessTreeKill(
   liveRootPid: number | null | undefined,
-  onUnavailable?: () => void,
+  onSettled?: (outcome: WindowsProcessTreeKillOutcome) => void,
 ): boolean {
   if (process.platform !== "win32") return false;
   if (
@@ -144,10 +149,20 @@ export function launchWindowsProcessTreeKill(
   } catch {
     return false;
   }
+  let settled = false;
+  const settle = (succeeded: boolean, exitCode: number | null) => {
+    if (settled) return;
+    settled = true;
+    killer.unref();
+    onSettled?.({ succeeded, exitCode });
+  };
   killer.on("error", () => {
-    onUnavailable?.();
+    settle(false, null);
   });
-  killer.unref();
+  killer.on("exit", (code) => {
+    settle(code === 0, code);
+  });
+  if (!onSettled) killer.unref();
   return true;
 }
 
@@ -173,7 +188,8 @@ export function signalRunningProcess(
   // `exitCode`/`signalCode` are null until the child actually closes.
   if (running.child.exitCode === null && running.child.signalCode === null) {
     if (
-      launchWindowsProcessTreeKill(running.child.pid, () => {
+      launchWindowsProcessTreeKill(running.child.pid, (outcome) => {
+        if (outcome.succeeded) return;
         if (running.child.exitCode === null && running.child.signalCode === null) {
           try {
             running.child.kill(signal);

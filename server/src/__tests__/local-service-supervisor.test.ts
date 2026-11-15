@@ -211,4 +211,50 @@ describe("local service supervision", () => {
       } catch {}
     }
   }, 45_000);
+
+  it("terminates an orphaned descendant on Windows after the root process already exited", async () => {
+    if (process.platform !== "win32") return;
+    const wrapper = spawn(process.execPath, ["-e", [
+      "const { spawn } = require('node:child_process');",
+      "const c = spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], { detached:true, stdio:['ignore','inherit','inherit'] });",
+      "process.stdout.write(String(c.pid));",
+      "setInterval(()=>{},1000);",
+    ].join(" ")], { stdio: ["ignore", "pipe", "pipe"] });
+    let grandchildPid: number | null = null;
+    try {
+      grandchildPid = await new Promise<number>((resolve, reject) => {
+        wrapper.stdout!.on("data", (d) => {
+          const pid = Number.parseInt(String(d).trim(), 10);
+          if (Number.isInteger(pid) && pid > 0) resolve(pid);
+        });
+        wrapper.on("error", reject);
+      });
+      expect(isPidAlive(grandchildPid)).toBe(true);
+
+      wrapper.kill("SIGKILL");
+      const rootDeadline = Date.now() + 15_000;
+      while (Date.now() < rootDeadline && isPidAlive(wrapper.pid!)) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(isPidAlive(wrapper.pid!)).toBe(false);
+      expect(isPidAlive(grandchildPid)).toBe(true);
+
+      await terminateLocalService({ pid: wrapper.pid!, processGroupId: wrapper.pid! });
+
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && isPidAlive(grandchildPid)) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(isPidAlive(grandchildPid)).toBe(false);
+    } finally {
+      if (grandchildPid) {
+        try {
+          process.kill(grandchildPid, "SIGKILL");
+        } catch {}
+      }
+      try {
+        wrapper.kill("SIGKILL");
+      } catch {}
+    }
+  }, 120_000);
 });
