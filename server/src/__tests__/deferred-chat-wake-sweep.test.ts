@@ -22,6 +22,7 @@ import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 120_000 });
 const RESUME_FAILED = "saved chat source could not resume after recovery";
+const HOUR_MS = 60 * 60_000;
 
 describe("deferred chat wake sweep", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -245,8 +246,8 @@ describe("deferred chat wake sweep", () => {
 
   it("closes old saved messages silently and tells a recent watcher once, across passes and restarts", async () => {
     const c = await company();
-    const old = await wake(c, { status: "done", ageMs: 3 * 24 * 60 * 60_000 });
-    const recent = await wake(c, { status: "done", ageMs: 3 * 60 * 60_000 });
+    const old = await wake(c, { status: "done", ageMs: 72 * HOUR_MS });
+    const recent = await wake(c, { status: "done", ageMs: 3 * HOUR_MS });
     await visibleQueuedNotice(c, old);
     await visibleQueuedNotice(c, recent);
     const noticeSignals: string[] = [];
