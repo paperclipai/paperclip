@@ -18,18 +18,34 @@ export type LeaseReleaseDeferral = {
   retryAt: string;
   failingSince: string;
   triggers?: string[];
-  attemptedByBootId?: string;
+  attemptedByBootIds?: string[];
   providerResourceDisposition: ProviderResourceDisposition | null;
 };
 
 const LEASE_RELEASE_TRIGGER_LIMIT = 20;
 
-export function currentLeaseReleaseBootId() {
-  return currentControllerBootId();
-}
+const LEASE_RELEASE_BOOT_LIMIT = 10;
 
 export function leaseReleaseAttemptedByThisBoot(deferral: LeaseReleaseDeferral | null) {
-  return deferral?.attemptedByBootId === currentControllerBootId();
+  return Boolean(deferral?.attemptedByBootIds?.includes(currentControllerBootId()));
+}
+
+export function leaseReleaseRetryDueAt(deferral: LeaseReleaseDeferral, now = Date.now()) {
+  if (!leaseReleaseAttemptedByThisBoot(deferral)) return now;
+  const retryAt = Date.parse(deferral.retryAt);
+  return Number.isFinite(retryAt) ? retryAt : now;
+}
+
+export function nextLeaseReleaseBootIds(previous: LeaseReleaseDeferral | null) {
+  const current = currentControllerBootId();
+  const bootIds = (previous?.attemptedByBootIds ?? []).filter(bootId => bootId !== current);
+  return [...bootIds, current].slice(-LEASE_RELEASE_BOOT_LIMIT);
+}
+
+export function nextLeaseReleaseRetryAt(previous: LeaseReleaseDeferral | null, attempts: number, now = Date.now()) {
+  const scheduled = now + leaseReleaseRetryDelayMs(attempts);
+  const saved = previous ? Date.parse(previous.retryAt) : Number.NaN;
+  return new Date(Number.isFinite(saved) && saved > scheduled ? saved : scheduled).toISOString();
 }
 
 export function nextLeaseReleaseTriggers(previous: LeaseReleaseDeferral | null, trigger: string | undefined) {

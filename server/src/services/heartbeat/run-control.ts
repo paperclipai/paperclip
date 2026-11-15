@@ -7,8 +7,8 @@ import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifi
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
-import { LEASE_RELEASE_DEFERRAL_KEY, leaseReleaseRetryDelayMs, nativeRunNeverLaunchedRunner, readLeaseReleaseDeferral,
-  settleUnchangedNativeWorkspace, wakeStoppingAgentLifecycle, nextLeaseReleaseTriggers, currentLeaseReleaseBootId,
+import { LEASE_RELEASE_DEFERRAL_KEY, nativeRunNeverLaunchedRunner, readLeaseReleaseDeferral,
+  settleUnchangedNativeWorkspace, wakeStoppingAgentLifecycle, nextLeaseReleaseTriggers, nextLeaseReleaseBootIds, nextLeaseReleaseRetryAt,
   type LeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
@@ -571,9 +571,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const previous = readLeaseReleaseDeferral(lease.metadata);
       const attempts = (previous?.attempts ?? 0) + 1;
       const deferral: LeaseReleaseDeferral = { reason, attempts,
-        retryAt: new Date(Date.now() + leaseReleaseRetryDelayMs(attempts)).toISOString(),
+        retryAt: nextLeaseReleaseRetryAt(previous, attempts),
         failingSince: previous?.failingSince ?? new Date().toISOString(),
-        triggers: nextLeaseReleaseTriggers(previous, input.trigger), attemptedByBootId: currentLeaseReleaseBootId(),
+        triggers: nextLeaseReleaseTriggers(previous, input.trigger), attemptedByBootIds: nextLeaseReleaseBootIds(previous),
         providerResourceDisposition: providerResourceDisposition ?? null };
       const recorded = await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.orphanActiveLeases,

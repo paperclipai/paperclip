@@ -2,7 +2,7 @@ import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { isRunHandedOffForShutdown, markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
-import { leaseReleaseAttemptedByThisBoot, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
+import { leaseReleaseRetryDueAt, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -1681,9 +1681,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     localRuns: { has(runId: string): boolean }, onDeferredDeadline?: (at: number) => void): Promise<boolean> {
     if (!lease.heartbeatRunId || localRuns.has(lease.heartbeatRunId)) return false;
     const deferral = readLeaseReleaseDeferral(lease.metadata);
-    const retryAt = deferral ? Date.parse(deferral.retryAt) : Number.NaN;
-    if (deferral && retryAt > Date.now() && leaseReleaseAttemptedByThisBoot(deferral)) {
-      onDeferredDeadline?.(retryAt);
+    const dueAt = deferral ? leaseReleaseRetryDueAt(deferral) : Number.NaN;
+    if (deferral && dueAt > Date.now()) {
+      onDeferredDeadline?.(dueAt);
       return false;
     }
     const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
