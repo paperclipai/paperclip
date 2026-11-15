@@ -10,6 +10,8 @@ import {
   issueUpdatedTimeRange,
   issueUpdatedWithinPatch,
   normalizeIssueFilterState,
+  readIssueUpdatedParams,
+  writeIssueUpdatedParams,
   resolveIssueFilterWorkspaceId,
   searchIssueFilterOptions,
   shouldIncludeIssueFilterWorkspaceOption,
@@ -378,5 +380,20 @@ describe("Updated filter", () => {
     expect(issueUpdatedWithinPatch("3d")).toEqual({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
     expect(issueUpdatedWithinPatch(null)).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
     expect(issueUpdatedWithinPatch("custom")).toEqual({ updatedWithin: "custom" });
+  });
+
+  it("reads and writes the page address values", () => {
+    const params = new URLSearchParams("view=all&updated=custom&updatedFrom=2026-11-01&updatedTo=bad");
+    expect(readIssueUpdatedParams(params)).toEqual({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: null });
+    expect(readIssueUpdatedParams(new URLSearchParams("updated=3d&updatedFrom=2026-11-01")))
+      .toEqual({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+    expect(readIssueUpdatedParams(new URLSearchParams("updated=90d"))).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+
+    writeIssueUpdatedParams(params, { updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-12" });
+    expect(params.toString()).toBe("view=all&updated=custom&updatedFrom=2026-11-01&updatedTo=2026-11-12");
+    writeIssueUpdatedParams(params, { updatedWithin: "7d", updatedFrom: "2026-11-01", updatedTo: null });
+    expect(params.toString()).toBe("view=all&updated=7d");
+    writeIssueUpdatedParams(params, { updatedWithin: null, updatedFrom: null, updatedTo: null });
+    expect(params.toString()).toBe("view=all");
   });
 });

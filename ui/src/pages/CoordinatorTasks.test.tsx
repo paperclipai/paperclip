@@ -333,6 +333,27 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(params.getAll("label")).toEqual(["qa"]);
     expect(Object.fromEntries(params)).toMatchObject({ view: "all", status: "done", assignee: "chosen", workspace: "team", q: "release", keep: "value", sortField: "taskId", sortDir: "desc" });
   });
+  it("keeps the Updated filter in the URL so it stays after a reload", async () => {
+    mocks.realFilters = true;
+    const hoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000);
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "fresh", companyId: "company", parentId: null, updatedAt: hoursAgo(2), lastActivityAt: hoursAgo(2) }),
+      createIssue({ id: "stale", companyId: "company", parentId: null, updatedAt: hoursAgo(100), lastActivityAt: hoursAgo(100) }),
+    ]);
+    await mount("/issues?view=all");
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    await vi.waitFor(() => expect(taskIds()).toEqual(["fresh", "stale"]));
+    flushSync(() => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="Last 3 days"]')!.click());
+    await vi.waitFor(() => expect(taskIds()).toEqual(["fresh"]));
+    await vi.waitFor(() => expect(host.querySelector("output")!.textContent).toContain("updated=3d"));
+    const search = host.querySelector("output")!.textContent!;
+    flushSync(() => root.unmount());
+    root = createRoot(host);
+    client.clear();
+    await mount(`/issues${search}`);
+    await vi.waitFor(() => expect(taskIds()).toEqual(["fresh"]));
+    expect(host.querySelector('[role="checkbox"][aria-label="Last 3 days"]')!.getAttribute("aria-checked")).toBe("true");
+  });
   it("restores repeated labels from label-only links and follows history without clearing other filters", async () => {
     mocks.realFilters = true;
     mocks.labels = [{ id: "qa", name: "qa-task", color: "var(--accent)" }, { id: "review", name: "review-task", color: "var(--accent)" }];

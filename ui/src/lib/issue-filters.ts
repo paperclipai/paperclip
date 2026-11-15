@@ -147,6 +147,30 @@ export function issueUpdatedServerBefore(
   return end == null ? undefined : new Date(end).toISOString();
 }
 
+type IssueUpdatedFilter = Pick<IssueFilterState, "updatedWithin" | "updatedFrom" | "updatedTo">;
+
+/** Read the Updated filter from `updated`, `updatedFrom` and `updatedTo` page address values. */
+export function readIssueUpdatedParams(params: URLSearchParams): IssueUpdatedFilter {
+  const { updatedWithin, updatedFrom, updatedTo } = normalizeIssueFilterState({
+    updatedWithin: params.get("updated"),
+    updatedFrom: params.get("updatedFrom"),
+    updatedTo: params.get("updatedTo"),
+  });
+  return updatedWithin === "custom"
+    ? { updatedWithin, updatedFrom, updatedTo }
+    : { updatedWithin, updatedFrom: null, updatedTo: null };
+}
+
+/** Write the Updated filter into page address values; the default removes them. */
+export function writeIssueUpdatedParams(params: URLSearchParams, state: IssueUpdatedFilter): void {
+  for (const key of ["updated", "updatedFrom", "updatedTo"]) params.delete(key);
+  if (!state.updatedWithin) return;
+  params.set("updated", state.updatedWithin);
+  if (state.updatedWithin !== "custom") return;
+  if (state.updatedFrom) params.set("updatedFrom", state.updatedFrom);
+  if (state.updatedTo) params.set("updatedTo", state.updatedTo);
+}
+
 export const externalObjectFilterOrder = [
   "failed",
   "waiting",
