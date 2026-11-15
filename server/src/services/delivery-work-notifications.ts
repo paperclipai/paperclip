@@ -13,6 +13,7 @@ export const DELIVERY_QUEUES = {
   nativeQuestionCancellations: "native-question-cancellations",
   activeExecutionRecovery: "active-execution-recovery",
   ownershipInvariantReport: "ownership-invariant-report",
+  legacyControllerLease: "legacy-controller-lease-continuations",
   settledNativeProcesses: "settled-native-processes",
   orphanActiveLeases: "orphan-active-leases",
   legacyShutdownSettlement: "legacy-shutdown-settlement",

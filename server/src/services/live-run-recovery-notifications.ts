@@ -15,7 +15,7 @@ export async function notifyActiveExecutionRecovery(tx: object, scope: { company
 export async function notifyLiveRunRecovery(tx: object, scope?: LiveRunRecoveryScope) {
   const hint = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId }) : "*";
   for (const queue of [DELIVERY_QUEUES.nativeProcessSessions, DELIVERY_QUEUES.nativeQuestionCancellations,
-    DELIVERY_QUEUES.activeExecutionRecovery, DELIVERY_QUEUES.settledNativeProcesses])
+    DELIVERY_QUEUES.activeExecutionRecovery, DELIVERY_QUEUES.settledNativeProcesses, DELIVERY_QUEUES.legacyControllerLease])
     await notifyDeliveryWork(tx, queue, hint);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus, scope
     ? JSON.stringify({ companyId: scope.companyId, agentId: scope.agentId }) : "*");
@@ -25,6 +25,7 @@ export async function notifyLiveRunRecovery(tx: object, scope?: LiveRunRecoveryS
 export type LiveResourceRecoveryScope = { companyId: string; runId?: string; leaseId?: string };
 
 export async function notifyLiveResourceRecovery(tx: object, scope?: LiveResourceRecoveryScope) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.legacyControllerLease, scope ? JSON.stringify({companyId: scope.companyId, runId: scope.runId}) : "*");
   const hint = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId, leaseId: scope.leaseId }) : "*";
   for (const queue of [DELIVERY_QUEUES.orphanActiveLeases, DELIVERY_QUEUES.legacyShutdownSettlement])
     await notifyDeliveryWork(tx, queue, hint);

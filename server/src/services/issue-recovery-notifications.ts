@@ -21,7 +21,7 @@ export async function notifyIssueRecovery(transaction: object, scope?: IssueReco
   const companyHint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   const issueHint = scope ? JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }) : "*";
   for (const queue of [DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.assignedWorkInvariant, DELIVERY_QUEUES.resolvedDependencies,
-    DELIVERY_QUEUES.taskWatchdogs, DELIVERY_QUEUES.staleIssueLocks]) {
+    DELIVERY_QUEUES.taskWatchdogs, DELIVERY_QUEUES.staleIssueLocks, DELIVERY_QUEUES.legacyControllerLease]) {
     await notifyDeliveryWork(transaction, queue,
       queue === DELIVERY_QUEUES.strandedAssignments || queue === DELIVERY_QUEUES.staleIssueLocks ? issueHint : companyHint);
   }

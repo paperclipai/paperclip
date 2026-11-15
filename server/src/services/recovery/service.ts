@@ -610,6 +610,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "resume_session_unavailable",
   INTERACTION_DELIVERY_DENIED,
   "project_access_denied",
   "native_provider_model_rejected",

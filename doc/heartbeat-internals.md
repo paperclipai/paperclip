@@ -80,6 +80,16 @@ When effective run config changes, Paperclip may intentionally skip a saved adap
 
 An explicit `reuse_existing` Git workspace keeps its recorded source repository, including after its project-workspace row is deleted or the project primary changes. The server verifies the original company, project, repository origin, and worktree registration before reuse. It does not attach a deleted association to the new primary. A conflicting explicit project-workspace selection, missing source identity, or an unverified legacy local checkout blocks the run. Restore the original source. Before intentionally clearing the existing-workspace binding to choose a new repository, review and preserve its retained work. Missing worktrees may be reconstructed only from the verified original source; current project defaults are not a fallback.
 
+## Legacy controller-lease continuation
+
+A legacy Codex or Cursor conversation cancelled by a recorded controller-lease loss can use the existing bounded retry queue. Recovery needs the same company, agent, task, adapter, saved session and workspace, plus verified local process exit. Current review decisions and return-to-executor rounds must match. It keeps pending questions, approvals, Stop, pause and cleanup gates. An explicit user turn gets a new retry receipt only after its original authority is rechecked.
+
+The `legacy-controller-lease-continuations` obligation uses the shared delivery coordinator. Run settlement, resource cleanup, task changes and restored eligibility notify it. Startup reconstructs candidates from current task-session pointers, in pages of 100. It adds no independent timer or model polling. No candidate or a held gate leaves the worker quiet; the existing gate owner must publish its next eligibility change.
+
+The lease lane has three resumptions with base delays of 30, 60 and 120 seconds. Its durable counter survives other resource waits and does not spend model-failure attempts. An exhausted chain leaves one visible recovery incident. A restart after durable preparation can reconstruct the same obligation.
+
+These retries retain the admitted Skills snapshot. Session preparation checks configuration, credentials, session identity and workspace identity again. Required-session CLI execution refuses a missing or different conversation instead of opening a fresh one. A refusal uses the permanent `resume_session_unavailable` code. Unknown process identity, unsupported adapters and unsupported Codex engines keep their existing holds. This does not prove that an interrupted external action completed, and it does not replay that action.
+
 ## Heartbeat Service Extractions
 
 Routine and issue-monitor dispatch uses saved future deadlines through

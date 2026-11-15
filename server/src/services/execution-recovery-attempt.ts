@@ -14,6 +14,8 @@ export const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
 export const AGENT_DIRECTORY_WAIT_RETRY_REASON = AGENT_DIRECTORY_BUSY_RETRY_REASON;
 
+export const CONTROLLER_LEASE_RETRY_REASON = "controller_lease_resume";
+
 /**
  * A run that ended only because its server process was replaced or restarted
  * (a deploy's graceful shutdown, or a run found without its owner after a
@@ -29,7 +31,7 @@ export const SERVER_RESTART_RETRY_WINDOW_MS = 60 * 60_000;
 
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
-  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", AGENT_DIRECTORY_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
+  CONTROLLER_LEASE_RETRY_REASON, "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", AGENT_DIRECTORY_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, SERVER_RESTART_RETRY_REASON,
 ]);
 
@@ -85,6 +87,7 @@ function savedAccounting(run: RetryRun): ExecutionRetryAccounting | null {
 }
 
 function historicalFailureCount(run: RetryRun): number {
+  if (run.scheduledRetryReason === CONTROLLER_LEASE_RETRY_REASON) return 0;
   if (run.scheduledRetryReason === "max_turns_continuation" || run.scheduledRetryReason === "issue_disposition_repair") return 0;
   if (run.scheduledRetryReason === "ai_connection_busy" || run.scheduledRetryReason === "ai_connection_pool_wait") {
     const saved = count(run.contextSnapshot?.failureRetriesBeforeAiConnectionWait);
@@ -140,6 +143,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 }
 
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
+  if (reason === CONTROLLER_LEASE_RETRY_REASON) return count(run.contextSnapshot?.controllerLeaseResumptions) ?? 0;
   if (reason === INTERRUPTED_PREPARATION_RETRY_REASON) return executionRetryAccounting(run).interruptedPreparations ?? 0;
   if (reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) return executionRetryAccounting(run).storageWaits ?? 0;
   if (reason === AGENT_DIRECTORY_WAIT_RETRY_REASON) return executionRetryAccounting(run).agentDirectoryWaits ?? 0;

@@ -50,6 +50,7 @@ export async function notifyTaskRetrySettlement(tx: object, scope: DeferredExecu
 }
 
 export async function notifyDeferredExecutionEligibility(tx: object, scope?: { companyId: string }) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.legacyControllerLease, scope ? JSON.stringify({companyId: scope.companyId}) : "*");
   // Only an actual continuation obligation may wake this passive worker.
   // Empty eligibility hints during idle drain must not keep maintenance active.
   const pending = await (tx as Pick<Db, "execute">).execute<{ pendingPreparationContinuation: boolean }>(sql`

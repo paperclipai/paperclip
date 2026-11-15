@@ -595,6 +595,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  if (engineSelection.engine === "acp" && ctx.context.requireExistingSession === true) return {exitCode: 1, signal: null, timedOut: false,
+    errorCode: "resume_session_unavailable", errorMessage: "Required legacy CLI session continuation is not qualified for this engine."};
   if (engineSelection.engine === "acp") {
     return executeCodexAcp(ctx);
   }
@@ -1712,7 +1714,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       };
 
+      if (context.requireExistingSession === true && !sessionId) return {exitCode: 1, signal: null, timedOut: false,
+        errorCode: "resume_session_unavailable", errorMessage: "The required existing session cannot be resumed in this execution context."};
       const initial = await runAttempt(sessionId);
+      if (context.requireExistingSession === true && initial.parsed.sessionId &&
+          initial.parsed.sessionId !== sessionId && !initial.proc.signal && !initial.proc.timedOut) {
+        return {...toResult(initial, false, false), exitCode: 1, errorCode: "resume_session_unavailable",
+          errorMessage: "The CLI returned a different conversation; the retained session was not replaced.",
+          sessionId: runtimeSessionId, sessionParams: runtimeSessionParams, sessionDisplayId: runtimeSessionId, clearSession: false};
+      }
       if (
         sessionId &&
         !initial.proc.timedOut &&
@@ -1723,6 +1733,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (initial.proc.exitCode ?? 0) !== 0 &&
         isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
+        if (context.requireExistingSession === true) return {...toResult(initial, false, false),
+          errorCode: "resume_session_unavailable", errorMessage: "The required Codex conversation is unavailable; no fresh session was started."};
         await onLog(
           "stdout",
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,

@@ -792,13 +792,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    if (context.requireExistingSession === true && !sessionId) return {exitCode: 1, signal: null, timedOut: false,
+        errorCode: "resume_session_unavailable", errorMessage: "The required existing session cannot be resumed in this execution context."};
     const initial = await runAttempt(sessionId);
+      if (context.requireExistingSession === true && initial.parsed.sessionId &&
+          initial.parsed.sessionId !== sessionId && !initial.proc.signal && !initial.proc.timedOut) {
+        return {...toResult(initial), exitCode: 1, errorCode: "resume_session_unavailable",
+          errorMessage: "The CLI returned a different conversation; the retained session was not replaced.",
+          sessionId: runtimeSessionId, sessionParams: runtimeSessionParams, sessionDisplayId: runtimeSessionId, clearSession: false};
+      }
     if (
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       isCursorUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
     ) {
+      if (context.requireExistingSession === true) return {...toResult(initial),
+        errorCode: "resume_session_unavailable", errorMessage: "The required Cursor conversation is unavailable; no fresh session was started."};
       await onLog(
         "stdout",
         `[paperclip] Cursor resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
