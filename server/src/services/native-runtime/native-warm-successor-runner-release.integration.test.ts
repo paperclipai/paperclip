@@ -45,7 +45,7 @@ import { closeIdleWarmNativeSessionsForRestart, closeWarmNativeSessionsForEnviro
   readNativeSessionIdleWork } from "./native-session-executor.js";
 import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 
-type Successor = "own_runner" | "other_sandbox" | "start_requested_only" | "inherited_events" | "events_before_owner_finished";
+type Successor = "own_runner" | "own_runner_resumed" | "own_runner_reconciled" | "other_sandbox" | "start_requested_only" | "inherited_events" | "events_before_owner_finished";
 
 describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", () => {
   const environment = nativeRestartFixture();
@@ -138,7 +138,8 @@ describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", (
       { companyId, runId: successorRunId, agentId, seq: 1, createdAt: eventAt,
         eventType: successorKind === "start_requested_only" ? PROCESS_START_REQUESTED : PROCESS_IDENTITY_RECORDED,
         sourceEventId: successorKind === "inherited_events" ? `inherited-${randomUUID()}` : null },
-      { companyId, runId: successorRunId, agentId, seq: 2, eventType: "session.started", createdAt: eventAt,
+      { companyId, runId: successorRunId, agentId, seq: 2, createdAt: eventAt,
+        eventType: successorKind === "own_runner_resumed" ? "session.resumed" : successorKind === "own_runner_reconciled" ? "session.reconciled" : "session.started",
         sourceInstanceId: successorRunner, sourceEventId: `session-${successorRunId}`, sourceSeq: 1 },
     ]);
     return {
@@ -156,6 +157,8 @@ describeEmbeddedPostgres("idle warm owner superseded by a successor's Runner", (
 
   it.each<{ successor: Successor; released: boolean }>([
     { successor: "own_runner", released: true },
+    { successor: "own_runner_resumed", released: true },
+    { successor: "own_runner_reconciled", released: false },
     { successor: "other_sandbox", released: false },
     { successor: "start_requested_only", released: false },
     { successor: "inherited_events", released: false },

@@ -1146,7 +1146,7 @@ async function warmRunnerPortTakenBySuccessor(db: Db, entry: WarmNativeSession):
           and launch.created_at > ${ownerFinishedAt}::timestamptz)`,
       sql`exists (select 1 from ${heartbeatRunEvents} started
         where started.company_id = ${entry.companyId} and started.run_id = ${heartbeatRuns.id}
-          and started.event_type = 'session.started' and started.source_instance_id = ${heartbeatRuns.runnerInstanceId}::text
+          and started.event_type in ('session.started', 'session.resumed') and started.source_instance_id = ${heartbeatRuns.runnerInstanceId}::text
           and started.created_at > ${ownerFinishedAt}::timestamptz)`,
     )).limit(1);
   return Boolean(successor);
