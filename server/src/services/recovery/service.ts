@@ -1056,28 +1056,26 @@ export function recoveryService(
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
-  async function readPassStrandedAgent(pass: RecoveryPassReads, agentId: string, companyId: string) {
-    const key = `agent:${agentId}`;
-    const cached = pass.get(key) as { agent: StrandedAgent; invokable: true } | undefined;
-    if (cached?.agent.companyId === companyId) return cached;
-    const agent = await db.select(strandedAgentFields).from(agents).where(eq(agents.id, agentId))
+  async function readStrandedAgent(agentId: string, companyId: string) {
+    const agent: StrandedAgent | null = await db.select(strandedAgentFields).from(agents).where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
     const invokable = agent && agent.companyId === companyId && !isAgentAwaitingSetup(agent)
       ? await isAgentInvokable(agent) : false;
-    if (agent && invokable) pass.set(key, { agent, invokable });
     return { agent, invokable };
   }
 
-  async function readPassInvocationBudgetBlock(pass: RecoveryPassReads, issue: RecoveryIssue, agentId: string) {
-    const key = `budget:${issue.companyId}:${agentId}:${issue.projectId ?? ""}`;
-    if (pass.has(key)) return null;
-    const block = await readInvocationBudgetBlock(issue, agentId);
-    if (!block) pass.set(key, null);
-    return block;
-  }
-
-  async function isPassInvocationBudgetBlocked(pass: RecoveryPassReads, issue: RecoveryIssue, agentId: string) {
-    return Boolean(await readPassInvocationBudgetBlock(pass, issue, agentId));
+  async function hasExternalReviewWait(issue: RecoveryIssue, pass?: RecoveryPassReads) {
+    if (pass?.issueIds.has(issue.id)) {
+      const key = `external-review-waits:${issue.companyId}`;
+      let waiting = pass.reads.get(key) as Promise<Set<string>> | undefined;
+      if (!waiting) {
+        waiting = listExternalReviewWaits(db, issue.companyId, [...pass.issueIds])
+          .then((waits) => new Set(waits.map((wait) => wait.issueId)));
+        pass.reads.set(key, waiting);
+      }
+      if ((await waiting).has(issue.id)) return true;
+    }
+    return (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0;
   }
 
   async function getLatestIssueRun(
@@ -1598,10 +1596,11 @@ export function recoveryService(
   async function hasPersistedDurableWaitPath(
     issue: RecoveryIssue,
     latestRun: LatestIssueRun,
+    pass?: RecoveryPassReads,
   ) {
     if (issue.monitorNextCheckAt) return true;
     if (issue.status === "in_review" && latestRun?.status === "succeeded" &&
-      (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0) return true;
+      await hasExternalReviewWait(issue, pass)) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
       await hasCommittedNativePlanWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
@@ -4790,7 +4789,6 @@ export function recoveryService(
     skipRelatedRecovery?: boolean;
     pass?: RecoveryPassReads;
   }) {
-    const pass = opts?.pass ?? createRecoveryPassReads();
     const candidates = await db
       .select(recoveryIssueFields)
       .from(issues)
@@ -4839,6 +4837,8 @@ export function recoveryService(
       issueIds: [] as string[],
     };
 
+    const pass = opts?.pass ?? (candidates.length > 1
+      ? createRecoveryPassReads(candidates.filter((issue) => issue.status === "in_review").map((issue) => issue.id)) : undefined);
     const handledIssueIds = await resumeShutdownStoppedRetryPreparations(candidates, result, opts?.onDeferredDeadline);
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
@@ -4993,7 +4993,7 @@ export function recoveryService(
         }
       }
 
-      const { agent, invokable: agentInvokable } = await readPassStrandedAgent(pass, agentId, issue.companyId);
+      const { agent, invokable: agentInvokable } = await readStrandedAgent(agentId, issue.companyId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
         result.skipped += 1;
         continue;
@@ -5168,7 +5168,7 @@ export function recoveryService(
           continue;
         }
       }
-      const budgetBlock = await readPassInvocationBudgetBlock(pass, issue, agentId);
+      const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
       // A temporary hold (accounting still settling) only delays the task's
       // start or continuation; it is not a reason to escalate. Leave the task
       // as it is: settling accounting wakes this recovery again, which then
@@ -5238,7 +5238,7 @@ export function recoveryService(
       }
       if (
         latestRun?.status === "succeeded" &&
-        (await hasPersistedDurableWaitPath(issue, latestRun))
+        (await hasPersistedDurableWaitPath(issue, latestRun, pass))
       ) {
         result.skipped += 1;
         continue;
@@ -5385,7 +5385,7 @@ export function recoveryService(
             continue;
           }
 
-          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5623,7 +5623,7 @@ export function recoveryService(
           continue;
         }
 
-        if (await isPassInvocationBudgetBlocked(pass, issue, participantAgentId)) {
+        if (await isInvocationBudgetBlocked(issue, participantAgentId)) {
           result.skipped += 1;
           continue;
         }
@@ -5695,7 +5695,7 @@ export function recoveryService(
             continue;
           }
 
-          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5741,7 +5741,7 @@ export function recoveryService(
           continue;
         }
 
-        if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
         }
@@ -5830,7 +5830,7 @@ export function recoveryService(
         // reconciled by their own finalizer), so the recovery enqueue
         // returns null for them and they escalate exactly as before.
         if (latestRun?.status === "interrupted") {
-          if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
             result.skipped += 1;
             continue;
           }
@@ -5913,7 +5913,7 @@ export function recoveryService(
           result.recentProgressExempted += 1;
         }
 
-        if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
         }
@@ -6035,7 +6035,7 @@ export function recoveryService(
         }
       }
 
-      if (await isPassInvocationBudgetBlocked(pass, issue, agentId)) {
+      if (await isInvocationBudgetBlocked(issue, agentId)) {
         result.skipped += 1;
         continue;
       }

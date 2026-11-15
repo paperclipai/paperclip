@@ -1,5 +1,5 @@
-export type RecoveryPassReads = Map<string, unknown>;
+export type RecoveryPassReads = { issueIds: ReadonlySet<string>; reads: Map<string, Promise<unknown>> };
 
-export function createRecoveryPassReads(): RecoveryPassReads {
-  return new Map();
+export function createRecoveryPassReads(issueIds: Iterable<string> = []): RecoveryPassReads {
+  return { issueIds: new Set(issueIds), reads: new Map() };
 }

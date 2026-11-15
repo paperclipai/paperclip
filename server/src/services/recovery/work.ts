@@ -88,7 +88,8 @@ export function registerIssueRecoveryWork(
       queue,
       reconstructionIntervalMs,
       backstop: passes.backstop,
-      beforePass: async () => { pass = createRecoveryPassReads(); enabled = !(await owner.schedulingSuppressed()); },
+      beforePass: async () => { enabled = !(await owner.schedulingSuppressed()); },
+      beforeChecks: entries => { pass = createRecoveryPassReads(entries.map(entry => entry.id)); },
       decodeScope: decodeIssueRecoveryHint,
       matches: issueRecoveryScopeMatches,
       load: async scope => {

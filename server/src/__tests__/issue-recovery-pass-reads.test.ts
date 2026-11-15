@@ -7,7 +7,7 @@ import { seedRecoveryPopulation } from "./helpers/recovery-population.js";
 
 const PASS = 25;
 
-describeIssueRecovery("stranded-task checks read each company and agent fact once per pass", () => {
+describeIssueRecovery("stranded-task check reads", () => {
   const state = issueRecoveryFixture({ meter: true });
 
   async function measure(work: () => Promise<unknown>) {
@@ -26,35 +26,28 @@ describeIssueRecovery("stranded-task checks read each company and agent fact onc
     return { ...f, population };
   }
 
-  it("reads the agent, its reporting chain and the budget once per pass for a 50-agent, 200-task company", async () => {
+  it("reads a lean agent row and the agent's own reporting chain for a 50-agent, 200-task company", async () => {
     const { companyId } = await seed();
-    const ordered = await state.db.select({ id: issues.id, agentId: issues.assigneeAgentId }).from(issues)
+    const ordered = await state.db.select({ id: issues.id }).from(issues)
       .where(eq(issues.companyId, companyId)).orderBy(asc(issues.id));
     const tasks = ordered.map(row => row.id);
-    const check = (issueId: string, pass: Map<string, unknown>) =>
-      state.heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId, pass, skipExternalConversationSettlement: true,
-        skipRelatedRecovery: true } as Parameters<typeof state.heartbeat.reconcileStrandedAssignedIssues>[0]);
+    const check = (issueId: string) => state.heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId,
+      skipExternalConversationSettlement: true, skipRelatedRecovery: true });
 
-    await check(tasks[0]!, new Map());
-    const single = await measure(() => check(tasks[1]!, new Map()));
-    const pass = new Map<string, unknown>();
-    const passReads = await measure(async () => { for (const issueId of tasks.slice(0, PASS)) await check(issueId, pass); });
+    await check(tasks[0]!);
+    const single = await measure(() => check(tasks[1]!));
+    const passReads = await measure(async () => { for (const issueId of tasks.slice(0, PASS)) await check(issueId); });
     const companyAgentLists = passReads.log.filter(entry => /from "agents" where "agents"\."company_id" = \$1$/.test(entry.sql.trim()));
-    const agentRows = passReads.log.filter(entry => /^select "id", "company_id", "name", "reports_to", "status".* from "agents" where "agents"\."id" = \$1$/.test(entry.sql.trim()));
-    const budgetSnapshots = passReads.log.filter(entry => /^set transaction isolation level repeatable read read only/i.test(entry.sql.trim()));
+    const fullAgentRows = passReads.log.filter(entry => /^select "id", "company_id", "name", "role"/.test(entry.sql.trim()));
     const writes = passReads.log.filter(entry => /^(insert|update|delete)/i.test(entry.sql.trim()));
-    const distinctAgents = new Set(ordered.slice(0, PASS).map(row => row.agentId)).size;
     console.info(JSON.stringify({ singleCheck: { statements: single.statements, bytes: single.bytes, rows: single.rows },
       pass: { checks: PASS, statements: passReads.statements, bytes: passReads.bytes, rows: passReads.rows,
         perCheckStatements: passReads.statements / PASS, perCheckBytes: Math.round(passReads.bytes / PASS) },
-      distinctAgents, companyAgentLists: companyAgentLists.length, agentRows: agentRows.length,
-      budgetSnapshots: budgetSnapshots.length }));
+      companyAgentLists: companyAgentLists.length, fullAgentRows: fullAgentRows.length }));
 
     expect(writes).toEqual([]);
     expect(companyAgentLists).toEqual([]);
-    expect(agentRows.length).toBeLessThanOrEqual(distinctAgents);
-    expect(budgetSnapshots.length).toBeLessThanOrEqual(distinctAgents);
-    expect(passReads.statements).toBeLessThan(single.statements * PASS);
+    expect(fullAgentRows).toEqual([]);
     expect(passReads.bytes / PASS).toBeLessThan(10_000);
   }, 300_000);
 
