@@ -739,8 +739,6 @@ export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
   const range = document.createRange();
   let end: Node = target;
   while (end.lastChild) end = end.lastChild;
-  // A root-element selection can make Lexical insert a new paragraph. Keep
-  // typing in the final text node when the editable ends with text.
   range.selectNodeContents(end.nodeType === Node.TEXT_NODE ? end : target);
   range.collapse(false);
   selection.removeAllRanges();
@@ -750,8 +748,6 @@ export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
 
 /** Replace the active autocomplete token in the markdown string with the selected token. */
 function applyMention(markdown: string, state: MentionState, option: AutocompleteOption): string {
-  // The visible query contains ordinary spaces even when the editor copy
-  // encodes its final spaces. Match and replace in that same text form.
   const source = restoreTrailingMarkdownSpaces(markdown);
   const search = `${state.marker}${state.query}`;
   const replacement = autocompleteMarkdown(option);
