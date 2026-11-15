@@ -166,7 +166,11 @@ export async function settleObsoleteWatchdogReview(
    )}) and a.status in ('pending','revision_requested'))`);
     if (
       guard ||
-      (await getConversationOwnershipBlocker(tx, watchdog.companyId, review.id))
+      (await getConversationOwnershipBlocker(
+        tx as unknown as Db,
+        watchdog.companyId,
+        review.id,
+      ))
     )
       return { settled: false };
     const [paused] = await tx
@@ -199,6 +203,7 @@ export async function settleObsoleteWatchdogReview(
       .update(issues)
       .set({
         status: "done",
+        completedAt: now,
         unblockDescriptor: null,
         statusVersion: sql`${issues.statusVersion}+1`,
         updatedAt: now,
@@ -221,7 +226,7 @@ export async function settleObsoleteWatchdogReview(
         updatedAt: now,
       })
       .where(eq(issueWatchdogs.id, current.id));
-    const receipt = await persistActivity(tx, {
+    const receipt = await persistActivity(tx as unknown as Db, {
       companyId: watchdog.companyId,
       actorType: "system",
       actorId: "task-watchdog-settlement",
@@ -244,7 +249,60 @@ export async function settleObsoleteWatchdogReview(
       settled: true,
       reviewId: review.id,
       reviewStatusVersion: updated.statusVersion,
-      receiptId: receipt?.id ?? null,
+      receiptId: receipt.activity.id,
     };
   });
+}
+
+export async function readTerminalWatchdogSettlement(
+  db: Reader,
+  watchdog: Watchdog,
+  classification: TaskWatchdogClassifierResult,
+  businessIssues: Array<{ id: string; status: string }>,
+) {
+  if (
+    !watchdog.watchdogIssueId ||
+    classification.state !== "stopped" ||
+    !classification.includedIssueIds.length ||
+    classification.includedIssueIds.length > 100 ||
+    classification.includedIssueIds.some(
+      (id) =>
+        !["done", "cancelled"].includes(
+          businessIssues.find((issue) => issue.id === id)?.status ?? "",
+        ),
+    )
+  )
+    return null;
+  const [review] = await db
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, watchdog.companyId),
+        eq(issues.id, watchdog.watchdogIssueId),
+        eq(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
+        eq(issues.originId, watchdog.issueId),
+        eq(issues.status, "done"),
+      ),
+    )
+    .limit(1);
+  if (!review || review.assigneeAgentId !== watchdog.watchdogAgentId || review.assigneeUserId ||
+      review.executionRunId || review.checkoutRunId || review.executionState) return null;
+  const [pending] = await db.execute(sql`select 1 where
+    exists(select 1 from issue_thread_interactions where company_id=${watchdog.companyId} and issue_id=${review.id} and status='pending')
+    or exists(select 1 from issue_approvals ia join approvals a on a.id=ia.approval_id and a.company_id=ia.company_id
+      where ia.company_id=${watchdog.companyId} and ia.issue_id=${review.id} and a.status in ('pending','revision_requested'))
+    or exists(select 1 from heartbeat_runs where company_id=${watchdog.companyId}
+      and (issue_id=${review.id} or context_snapshot->>'issueId'=${review.id}) and status in ('running','queued','scheduled_retry'))
+    or exists(select 1 from agent_wakeup_requests where company_id=${watchdog.companyId}
+      and (payload->>'issueId'=${review.id} or payload->'_paperclipWakeContext'->>'issueId'=${review.id})
+      and status in ('queued','deferred_issue_execution'))`);
+  if (pending) return null;
+  const receipt = await watchdogSettlementReceipt(
+    db,
+    watchdog.companyId,
+    review.id,
+    review.statusVersion,
+  );
+  return receipt ? { review, receipt } : null;
 }

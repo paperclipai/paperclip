@@ -1,4 +1,4 @@
-import { settleObsoleteWatchdogReview, watchdogSettlementReceipt } from "./task-watchdog-settlement.js";
+import { readTerminalWatchdogSettlement, settleObsoleteWatchdogReview, watchdogSettlementReceipt } from "./task-watchdog-settlement.js";
 import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -1780,7 +1780,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             issues: shared.issues.filter(issue => includedIds.has(issue.id)) };
           state.push({ watchdog: input.watchdog, issueIds: [...includedIds] });
           const classification = classifyTaskWatchdogSubtree(input);
-          if (classification.state === "incomplete" || classification.state === "stopped") return blocked();
+          if (classification.state === "incomplete") return blocked();
+          if (classification.state === "stopped") {
+            const pending = [...(input.activeRuns ?? []), ...(input.queuedWakeRequests ?? []),
+              ...(input.pendingInteractions ?? []), ...(input.pendingApprovals ?? [])]
+              .some(path => path.issueId && includedIds.has(path.issueId));
+            const settlement = pending ? null : await readTerminalWatchdogSettlement(tx, row, classification, input.issues);
+            if (!settlement) return blocked();
+            state.push(settlement);
+          }
           if (classification.state === "pending_first_run") {
             for (const issue of input.issues) if (classification.pendingIssueIds.includes(issue.id)) {
               const created = toEpochMs(issue.createdAt);

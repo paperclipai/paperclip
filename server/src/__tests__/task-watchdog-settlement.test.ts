@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   approvals,
@@ -173,20 +173,40 @@ describe.skipIf(!support.supported)("obsolete task watchdog settlement", () => {
     await f.service.reconcileTaskWatchdogs({ companyId: f.company.id });
     expect(await one(f.reviewId)).toMatchObject({ status: "done" });
     expect(f.wakes).toHaveLength(1);
+    expect((await one(f.reviewId)).completedAt).toBeInstanceOf(Date);
+    await db
+      .update(issueWatchdogs)
+      .set({ status: "disabled" })
+      .where(ne(issueWatchdogs.id, f.watchdog.id));
+    const owner = () => ({ revision: "stable", reconciled: true });
+    expect(
+      (await f.service.readIdleSchedule(db, Date.now(), owner)).blocked,
+    ).toBe(false);
+    await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId: f.company.id,
+        issueId: f.reviewId,
+        kind: "question",
+        status: "pending",
+        title: "New human wait",
+        payload: {},
+      });
+    expect(
+      (await f.service.readIdleSchedule(db, Date.now(), owner)).blocked,
+    ).toBe(true);
   });
   it("leaves a wide subtree for its existing review instead of locking unbounded work", async () => {
     const f = await fixture();
-    await db
-      .insert(issues)
-      .values(
-        Array.from({ length: 100 }, (_, index) => ({
-          companyId: f.company.id,
-          parentId: f.source.id,
-          title: "Completed child " + index,
-          status: "done" as const,
-          createdAt: new Date(Date.now() - 3600000),
-        })),
-      );
+    await db.insert(issues).values(
+      Array.from({ length: 100 }, (_, index) => ({
+        companyId: f.company.id,
+        parentId: f.source.id,
+        title: "Completed child " + index,
+        status: "done" as const,
+        createdAt: new Date(Date.now() - 3600000),
+      })),
+    );
     await f.service.reconcileTaskWatchdogs({ companyId: f.company.id });
     expect((await one(f.reviewId)).status).toBe("blocked");
   });
