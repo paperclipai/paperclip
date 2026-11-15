@@ -13,6 +13,8 @@ export function assertRootDatabase(db: Db) {
 type LifecycleRow = typeof agents.$inferSelect;
 type ChangeOptions = { version?: number; owner?: string; reason?: string };
 
+const PENDING_BACKOFF_AFTER_ATTEMPTS = 30;
+
 // Prepared drafts wait for the wizard; they have no background verification obligation.
 export const pendingLifecycleWork = and(
   inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
@@ -268,9 +270,10 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
           sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
         return rows.length > 0;
       }
+      const retryDelayMs = error || (agent.lifecycleOperation?.attempts ?? 0) > PENDING_BACKOFF_AFTER_ATTEMPTS ? 60_000 : 2_000;
       const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && ["verifying", "resuming"].includes(agent.lifecycleState)
         ? { retryRequired: true }
-        : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+        : { retryAt: new Date(now.getTime() + retryDelayMs).toISOString() };
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
         retry.verificationFailures = options.verificationFailures;
       }
