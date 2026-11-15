@@ -170,7 +170,8 @@ function firstTurnDeliveredSql(companyId: string, issueId: string, agentId: stri
  * The comment ids a run's own first-turn receipt sealed, once that run's
  * provider accepted the turn. A receipt alone proves nothing: the run may
  * have failed before acceptance, and a retry copies its predecessor's
- * receipt. Same evidence as `firstTurnDeliveredSql`.
+ * receipt. A message edited after the seal is still undelivered. Same
+ * evidence as `firstTurnDeliveredSql`.
  */
 export function acceptedFirstTurnCommentIdsSql(run: { id: typeof heartbeatRuns.id; companyId: typeof heartbeatRuns.companyId;
   contextSnapshot: typeof heartbeatRuns.contextSnapshot }) {
@@ -182,7 +183,13 @@ export function acceptedFirstTurnCommentIdsSql(run: { id: typeof heartbeatRuns.i
       and exists (select 1 from ${heartbeatRunEvents} accepted
         where accepted.company_id = ${run.companyId} and accepted.run_id = ${run.id}
           and accepted.event_type in ('turn.accepted', 'turn.started'))
-    then ${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}' end`;
+    then (select jsonb_agg(sealed.id order by sealed.position)
+      from jsonb_array_elements_text(${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}')
+        with ordinality as sealed(id, position)
+      join ${issueComments} sealed_comment on sealed_comment.company_id = ${run.companyId}
+        and sealed_comment.id::text = sealed.id
+      where (${run.contextSnapshot} #>> '{firstTurnQueuedInput,claimedAt}')::timestamptz
+        >= date_trunc('milliseconds', sealed_comment.updated_at)) end`;
 }
 
 /** Ids that an accepted first provider turn already received (see `deliveredQueuedCommentIds`). */
