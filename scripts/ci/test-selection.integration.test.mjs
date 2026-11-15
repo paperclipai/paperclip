@@ -89,7 +89,11 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
   mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
   for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {
-    write(file, readFileSync(path.join(root, file), "utf8"));
+    // Exercise the exact reviewed setup contract, independently of later product setup edits.
+    const source = file === "server/src/__tests__/setup-supertest.ts"
+      ? new URL("./fixtures/setup-supertest.reviewed.txt", import.meta.url)
+      : new URL("./fixtures/isolated-test-home.reviewed.txt", import.meta.url);
+    write(file, readFileSync(source, "utf8"));
   }
   write("ui/setup.ts", 'import "../server/src/__tests__/setup-supertest.ts";');
   const reviewed = await select(["ui/src/leaf.ts"]);
@@ -227,4 +231,52 @@ test("mixed audited documentation stays graph eligible and large complete source
   assert.equal(selectionEligibility({ ...plan, changed: Array(350).fill(plan.changed[0]) }), null);
   assert.ok(selectionEligibility({ ...plan, changed: ["doc/DEVELOPING.md"] }));
   assert.ok(selectionEligibility({ ...plan, changed: [...plan.changed, "docs/api/issues.md"] }));
+});
+
+
+test("the CLI retains every coarse lane and shard when real Vitest setup is opaque", (t) => {
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "ci-opaque-setup-")));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const write = (file, source) => {
+    mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+    writeFileSync(path.join(directory, file), source);
+  };
+  symlinkSync(path.join(root, "node_modules"), path.join(directory, "node_modules"), "dir");
+  write(".gitignore", "node_modules/\n");
+  write("vitest.config.mjs", 'export default {test:{projects:["ui"]}}');
+  write("ui/vitest.config.mjs", 'export default {test:{name:"fixture",include:["src/**/*.test.ts"],setupFiles:["./setup.ts"]}}');
+  write("ui/setup.ts", 'import {readFileSync} from "node:fs"; readFileSync(process.env.INPUT);');
+  write("ui/src/input.ts", "export const value = 1;");
+  write("ui/src/input.test.ts", 'import {value} from "./input"; throw new Error("selection must not execute tests " + value);');
+  // Supply only the fixture's coarse inventory; the real graph worker still has to inspect its setup.
+  write("scripts/run-vitest-stable.mjs", 'console.log(JSON.stringify({workspaceProjects:["fixture"]}));');
+  const git = (...args) => execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+  const commit = () => git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid", "commit", "-qam", "fixture");
+  git("init", "-q"); git("add", "."); commit();
+  const base = git("rev-parse", "HEAD");
+  git("checkout", "-qb", "pr"); write("ui/src/input.ts", "export const value = 2;"); commit();
+  const prHead = git("rev-parse", "HEAD");
+  git("checkout", "--detach", base);
+  git("-c", "user.name=CI", "-c", "user.email=ci@example.invalid", "merge", "--no-ff", "pr", "-m", "merge");
+  const merge = git("rev-parse", "HEAD");
+  const plan = { version: 1, mode: "enabled", forceReason: null, ...mergeDiff(merge, prHead, directory),
+    jobs: {
+      general_tests: { run: true, selected: 2, total: 2, matrix: { include: [0, 1].map(shard_index => ({
+        group: "general-workspaces-a", task: "ci:workspaces-a", shard_index, shard_count: 2,
+      })) } },
+      verify_serialized_server: { run: false, matrix: { include: [{ task: "ci:serialized" }] } },
+      untouched_native_lane: { run: true, matrix: { include: [{ task: "ci:native", shard_index: 0 }] } },
+    } };
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/ci/select-tests.mjs")], {
+    cwd: directory, encoding: "utf8", env: { ...process.env, CI_PLAN: JSON.stringify(plan), BASE_SHA: base,
+      GITHUB_SHA: merge, GITHUB_OUTPUT: "", GITHUB_STEP_SUMMARY: "" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const fallback = JSON.parse(readFileSync(path.join(directory, ".ci-test-selection/plan.json"), "utf8"));
+  assert.match(fallback.testSelectionFallback, /^Opaque setup builtin: node:fs$/);
+  assert.deepEqual(fallback, { ...plan, testSelectionFallback: fallback.testSelectionFallback });
+  assert.deepEqual(fallback.jobs, plan.jobs);
+  assert.equal(fallback.testSelection, undefined);
+  assert.throws(() => readFileSync(path.join(directory, ".ci-test-selection/manifest.json")), { code: "ENOENT" });
+  assert.throws(() => readFileSync(path.join(directory, ".ci-test-selection/audit.json")), { code: "ENOENT" });
 });

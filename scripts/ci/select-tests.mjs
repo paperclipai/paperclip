@@ -80,6 +80,11 @@ export async function createTestSelection(plan, head) {
   return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations() }), graphs };
 }
 
+// An unavailable graph cannot remove any lane or shard from the coarse task plan.
+export function completeTestSelectionFallback(plan, error) {
+  return { plan: { ...plan, testSelectionFallback: error.message } };
+}
+
 async function main() {
   const plan = JSON.parse(process.env.CI_PLAN || "null");
   const output = (key, value) => {
@@ -111,7 +116,7 @@ async function main() {
     output("selected", "true");
   } catch (error) {
     console.warn(`Using the complete task plan: ${error.message}`);
-    result = { plan: { ...plan, testSelectionFallback: error.message } };
+    result = completeTestSelectionFallback(plan, error);
     output("selected", "false");
   }
   writeFileSync(`${directory}/plan.json`, JSON.stringify(result.plan));
