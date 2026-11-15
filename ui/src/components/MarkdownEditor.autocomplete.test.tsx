@@ -55,14 +55,16 @@ describe("MarkdownEditor autocomplete separators", () => {
   });
 
   it.each([
-    ["skill", "/dep", "/deploy", true],
-    ["routine", "/routine:Nigh", "/routine:Nightly", true],
-    ["action", "/go", "/goal", false],
-    ["agent", "@Ada", "@Ada", true],
-    ["user", "@Pat", "@Pat", true],
-    ["project", "@Paper", "@Paperclip", true],
-    ["task", "@TST", "TST-123", true],
-  ])("keeps a space after a completed %s and types outside its link", async (_kind, value, completion, linked) => {
+    ["skill", "/dep", "/deploy", true, ""],
+    ["routine", "/routine:Nigh", "/routine:Nightly", true, ""],
+    ["action", "/go", "/goal", false, ""],
+    ["agent", "@Ada", "@Ada", true, ""],
+    ["user", "@Pat", "@Pat", true, ""],
+    ["project", "@Paper", "@Paperclip", true, ""],
+    ["task", "@TST", "TST-123", true, ""],
+    ["project after a typed space", "@Paperclip", "@Paperclip", true, " "],
+    ["routine after typed spaces", "/routine:Nightly", "/routine:Nightly", true, "  "],
+  ])("keeps a space after a completed %s and types outside its link", async (_kind, value, completion, linked, typedSuffix) => {
     const onChange = vi.fn();
     function ControlledEditor() {
       const [markdown, setMarkdown] = useState(value);
@@ -87,6 +89,17 @@ describe("MarkdownEditor autocomplete separators", () => {
       selection.addRange(range);
       document.dispatchEvent(new Event("selectionchange"));
     });
+    if (typedSuffix) {
+      const editor = getNearestEditorFromDOMNode(editable)!;
+      await act(async () => {
+        editor.update(() => {
+          const selection = $getSelection();
+          expect($isRangeSelection(selection)).toBe(true);
+          if ($isRangeSelection(selection)) selection.insertText(typedSuffix);
+        });
+      });
+      await act(async () => document.dispatchEvent(new Event("selectionchange")));
+    }
     await vi.waitFor(() => expect(document.querySelector('[data-testid="mention-autocomplete-menu"]')).not.toBeNull());
 
     await act(async () => {
@@ -94,6 +107,7 @@ describe("MarkdownEditor autocomplete separators", () => {
     });
     await vi.waitFor(() => {
       expect(editable.textContent).toBe(`${completion} `);
+      expect(editable.querySelector("a")?.textContent ?? null).toBe(linked ? completion : null);
       const caretPrefix = document.createRange();
       caretPrefix.selectNodeContents(editable);
       const selection = window.getSelection()!;

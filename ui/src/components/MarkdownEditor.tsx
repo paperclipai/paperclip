@@ -750,11 +750,14 @@ export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
 
 /** Replace the active autocomplete token in the markdown string with the selected token. */
 function applyMention(markdown: string, state: MentionState, option: AutocompleteOption): string {
+  // The visible query contains ordinary spaces even when the editor copy
+  // encodes its final spaces. Match and replace in that same text form.
+  const source = restoreTrailingMarkdownSpaces(markdown);
   const search = `${state.marker}${state.query}`;
   const replacement = autocompleteMarkdown(option);
-  const idx = markdown.lastIndexOf(search);
+  const idx = source.lastIndexOf(search);
   if (idx === -1) return markdown;
-  return markdown.slice(0, idx) + replacement + markdown.slice(idx + search.length);
+  return source.slice(0, idx) + replacement + source.slice(idx + search.length);
 }
 
 /* ---- Component ---- */
