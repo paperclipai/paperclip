@@ -107,8 +107,10 @@ describe("remote provider pack reuse", () => {
       trace,
       verifyStaged: async () => { throw new Error("missing"); },
       usePreinstalled: onRejected => useVerifiedPreinstalledRemoteProviderPack({
-        candidates: ["/opt/paperclip-runner/provider-pack"], onRejected,
-        verifyAndLink: async () => { throw rejected; },
+        candidates: ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"], onRejected,
+        verifyAndLink: async root => {
+          throw root.startsWith("/opt/") ? rejected : Object.assign(new Error("missing"), { failureCheck: "manifest_unreadable" });
+        },
       }),
       stageAndVerify: async () => {},
     })).resolves.toBe("uploaded");

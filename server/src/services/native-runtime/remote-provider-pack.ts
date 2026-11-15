@@ -66,7 +66,8 @@ export async function prepareVerifiedRemoteProviderPack(input: {
       await input.verifyStaged();
       return "staged" as const;
     } catch {}
-    if (await input.usePreinstalled(check => { preinstalledCheck = check; })) return "preinstalled" as const;
+    let rejected = false;
+    if (await input.usePreinstalled(check => { if (!rejected) preinstalledCheck = check; rejected = true; })) return "preinstalled" as const;
     await input.stageAndVerify();
     return "uploaded" as const;
   };
