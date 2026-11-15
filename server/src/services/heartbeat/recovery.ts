@@ -2,6 +2,7 @@ import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { isRunHandedOffForShutdown, markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
+import { leaseReleaseRetryDueAt, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -1676,6 +1677,40 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       );
   }
 
+  async function retryTerminalRunLeaseRelease(lease: typeof environmentLeases.$inferSelect,
+    localRuns: { has(runId: string): boolean }, onDeferredDeadline?: (at: number) => void): Promise<boolean> {
+    if (!lease.heartbeatRunId || localRuns.has(lease.heartbeatRunId)) return false;
+    const deferral = readLeaseReleaseDeferral(lease.metadata);
+    const dueAt = deferral ? leaseReleaseRetryDueAt(deferral) : Number.NaN;
+    if (deferral && dueAt > Date.now()) {
+      onDeferredDeadline?.(dueAt);
+      return false;
+    }
+    const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status, error: heartbeatRuns.error, runtimeMode: heartbeatRuns.runtimeMode,
+      controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId)));
+    if (!run || !HEARTBEAT_RUN_TERMINAL_STATUSES.some(status => status === run.status)) return false;
+    if (!deferral && !(run.runtimeMode === "native" && run.status === "cancelled")) return false;
+    const [owner] = await db.select({ leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
+      .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId)));
+    const heldUntil = Math.max(run.controllerLeaseExpiresAt?.getTime() ?? 0,
+      owner?.leaseOwner ? owner.leaseExpiresAt?.getTime() ?? 0 : 0);
+    if (heldUntil > Date.now()) {
+      onDeferredDeadline?.(heldUntil);
+      return false;
+    }
+    await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId, agentId: run.agentId,
+      status: run.status, failureReason: run.error ?? undefined,
+      providerResourceDisposition: deferral ? deferral.providerResourceDisposition ?? undefined : "destroy" });
+    const [after] = await db.select({ status: environmentLeases.status, metadata: environmentLeases.metadata })
+      .from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    if (after?.status !== "active") return true;
+    const next = readLeaseReleaseDeferral(after.metadata);
+    if (next) onDeferredDeadline?.(Date.parse(next.retryAt));
+    return false;
+  }
+
   // A run's active lease outlives a crash between the terminal run write and
   // the lease release, or a release that skipped the lease (for example when
   // its environment row is gone). No production query finds such a lease by
@@ -1729,6 +1764,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (lease.heartbeatRunId && !localRuns.has(lease.heartbeatRunId)
         && await nativeWorkspaceExportPendingForLease(db, lease)
         && await preserveOrphanedNativeWorkspace(db, lease, { onDeferredDeadline: opts.onDeferredDeadline })) recovered += 1;
+    }
+    for (const { lease } of scoped) {
+      if (await retryTerminalRunLeaseRelease(lease, localRuns, opts.onDeferredDeadline)) recovered += 1;
     }
 
     const runIds = [...new Set(scoped.flatMap(({ lease }) => lease.heartbeatRunId ? [lease.heartbeatRunId] : []))];
