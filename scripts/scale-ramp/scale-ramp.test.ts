@@ -349,6 +349,176 @@ describe("ramp against the fake API", () => {
     assert.equal(result.cleanup!.activeSandboxLeases, 0);
   });
 
+  it("stops within minutes with Paperclip's reason when the agents never finish setup", async () => {
+    const out = await tempDir();
+    const reason = "Execution configuration check failed. This agent's environment requires a managed AI connection and an isolated Runner home. "
+      + "Check both in Configuration, then retry. Automatic verification is paused. Update Configuration or choose Retry now.";
+    const h = harness({ agentSetupError: reason });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "10,50", "--hold-minutes", "20", "--confirm-spend", "100"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "agents_ready");
+    assert.ok(result.stop!.reason.includes(reason), result.stop!.reason);
+    assert.match(result.stop!.reason, /setup state verifying/);
+    assert.ok(h.clock.now() - started < 5 * 60_000, "the step is not held while nothing can run");
+    const agents = h.fake.requests.filter(request => request.method === "POST" && new URL(request.url).pathname.endsWith("/agents"));
+    assert.equal(agents.length, 1, "only the preflight agent is created");
+    assert.equal(h.fake.issues.size, 0);
+    assertCleanedUp(h.fake);
+  });
+
+  it("stops at the preflight with the task, run and agent state when the first task never starts", async () => {
+    const out = await tempDir();
+    const h = harness({ capacity: 0 });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "10,50", "--hold-minutes", "20", "--confirm-spend", "100", "--start-timeout-minutes", "3"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.criterion, "run_started");
+    assert.match(result.stop!.reason, /no run started within 3 min/);
+    assert.match(result.stop!.reason, /is todo/);
+    assert.match(result.stop!.reason, /is queued/);
+    assert.match(result.stop!.reason, /setup state ready/);
+    assert.ok(h.clock.now() - started < 5 * 60_000);
+    assert.equal(h.fake.issues.size, 1, "only the preflight task is created");
+    assert.equal(result.cleanup!.runsCancelled, 1);
+    assertCleanedUp(h.fake);
+  });
+
+  it("creates the rest of the step only after the preflight task starts", async () => {
+    const out = await tempDir();
+    const h = harness();
+    await main(baseArgs(out, ["--steps", "3"]), h.deps);
+    const posts = h.fake.requests.map(request => request.method === "POST" ? new URL(request.url).pathname : "");
+    const firstTask = posts.findIndex(route => route.endsWith("/issues"));
+    const secondAgent = posts.findIndex((route, index) => route.endsWith("/agents") && posts.slice(0, index).some(earlier => earlier.endsWith("/agents")));
+    assert.ok(firstTask >= 0 && secondAgent > firstTask, "the second agent is created after the first task");
+    const result = await readResult(out);
+    assert.equal(result.steps[0]!.metrics.peakRunning, 3);
+  });
+
+  const preflightCases: Array<{ name: string; mutate: (issue: Record<string, any>, run: { status: string; finishedAt: number | null }, now: number) => void;
+    criterion: string; reason: RegExp }> = [
+    { name: "cancelled", criterion: "run_started", reason: /ended before any run started.*is cancelled.*is cancelled/,
+      mutate: (issue, run, now) => { issue.status = "cancelled"; run.status = "cancelled"; run.finishedAt = now; } },
+    { name: "blocked", criterion: "run_started", reason: /ended before any run started.*is blocked.*is queued/,
+      mutate: issue => { issue.status = "blocked"; } },
+    { name: "failed before it started", criterion: "failed_runs_zero", reason: /failed_runs_zero failed/,
+      mutate: (_issue, run, now) => { run.status = "failed"; run.finishedAt = now; } },
+  ];
+  for (const preflight of preflightCases) {
+    it(`stops at once and creates nothing more when the preflight task is ${preflight.name}`, async () => {
+      const out = await tempDir();
+      const h = harness({ capacity: 0 });
+      const original = h.deps.fetcher;
+      h.deps.fetcher = async (url, init) => {
+        const response = await original(url, init);
+        if (init.method === "POST" && new URL(url).pathname.endsWith("/issues")) {
+          const issue = h.fake.issues.get((await response.clone().json() as { id: string }).id)!;
+          const run = [...h.fake.runs.values()].find(candidate => candidate.issueId === issue.id)!;
+          preflight.mutate(issue, run, h.clock.now());
+        }
+        return response;
+      };
+      const started = h.clock.now();
+      const code = await main(baseArgs(out, ["--steps", "3", "--hold-minutes", "20", "--confirm-spend", "100"]), h.deps);
+      const result = await readResult(out);
+      assert.equal(code, EXIT.fail);
+      assert.equal(result.stop!.criterion, preflight.criterion);
+      assert.match(result.stop!.reason, preflight.reason);
+      assert.ok(h.clock.now() - started < 2 * 60_000, "it does not wait for the start timeout");
+      assert.equal(h.fake.issues.size, 1);
+      const agents = h.fake.requests.filter(request => request.method === "POST" && new URL(request.url).pathname.endsWith("/agents"));
+      assert.equal(agents.length, 1);
+      assertCleanedUp(h.fake);
+    });
+  }
+
+  it("passes the preflight when its task starts and finishes between two polls", async () => {
+    const out = await tempDir();
+    const h = harness({ startDelayMs: 0, runDurationMs: 1_000 });
+    await main(baseArgs(out, ["--steps", "3"]), h.deps);
+    const result = await readResult(out);
+    assert.notEqual(result.stop?.criterion, "run_started");
+    const agents = h.fake.requests.filter(request => request.method === "POST" && new URL(request.url).pathname.endsWith("/agents"));
+    assert.equal(agents.length, 3);
+    assert.ok(result.steps[0]!.metrics.tasksFinished > 1);
+  });
+
+  it("keeps reading runs while it waits for the next step's agents, and stops on a run that fails then", async () => {
+    const out = await tempDir();
+    const h = harness({ failWhenRunningAbove: 0, runDurationMs: 3 * 60_000, agentReadyDelayMs: index => index === 0 ? 3_000 : 10 * 60_000 });
+    const started = h.clock.now();
+    const code = await main(baseArgs(out, ["--steps", "1,3", "--min-concurrency-ratio", "0.5"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.stop!.stepIndex, 1);
+    assert.equal(result.stop!.criterion, "failed_runs_zero");
+    assert.equal(result.steps[0]!.metrics.runsFailed, 1);
+    assert.ok(h.clock.now() - started < 6 * 60_000, "the failure is seen during the agent wait, not after it");
+    assertCleanedUp(h.fake);
+  });
+
+  it("reports a step window equal to its hold when the step takes minutes to prepare", async () => {
+    const out = await tempDir();
+    const h = harness({ agentReadyDelayMs: index => index === 0 ? 3_000 : 5 * 60_000 });
+    const started = h.clock.now();
+    await main(baseArgs(out, ["--steps", "3", "--drain-minutes", "0"]), h.deps);
+    const result = await readResult(out);
+    const metrics = result.steps[0]!.metrics;
+    assert.ok(metrics.startedAt - started >= 5 * 60_000, "the hold starts after the agents finish setup");
+    assert.equal(metrics.endedAt! - metrics.startedAt, 2 * 60_000);
+  });
+
+  it("keeps waiting for agent setup through a few failed agent list reads", async () => {
+    const out = await tempDir();
+    const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/agents") && count <= 3
+      ? { status: 500, body: "{\"error\":\"database busy\"}" } : null });
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.notEqual(result.stop?.criterion, "agents_ready");
+    assert.equal(result.error, null);
+    assert.equal(result.steps[0]!.metrics.peakRunning, 2);
+  });
+
+  it("stops with the status it saw when the agent list keeps failing during setup", async () => {
+    const out = await tempDir();
+    const h = harness({ failRequest: (method, route, count) => method === "GET" && route.endsWith("/agents") && count <= 5
+      ? { status: 500, body: "{\"error\":\"database busy\"}" } : null });
+    const code = await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(code, EXIT.fail);
+    assert.equal(result.error, null);
+    assert.equal(result.stop!.criterion, "agents_ready");
+    assert.match(result.stop!.reason, /could not be read 5 times in a row.*returned 500/);
+    assertCleanedUp(h.fake);
+  });
+
+  it("starts cleanup at once when interrupted while agent list reads fail", async () => {
+    const out = await tempDir();
+    let cleaning = false;
+    let failed = 0;
+    const h = harness({ failRequest: (method, route) => {
+      if (cleaning || method !== "GET" || !route.endsWith("/agents")) return null;
+      failed += 1;
+      if (failed === 2) h.interrupt();
+      return { status: 500, body: "{\"error\":\"database busy\"}" };
+    } });
+    const out0 = h.deps.out;
+    h.deps.out = line => {
+      if (line.startsWith("Cleaning up")) cleaning = true;
+      out0(line);
+    };
+    const started = h.clock.now();
+    await main(baseArgs(out, ["--steps", "2"]), h.deps);
+    const result = await readResult(out);
+    assert.equal(failed, 2, "no agent list read is retried after the interrupt");
+    assert.match(result.stop!.reason, /interrupted/);
+    assert.ok(h.clock.now() - started < 15_000, "cleanup starts within one poll interval");
+    assertCleanedUp(h.fake);
+  });
+
   it("reports missing optional sources as not measured", async () => {
     const out = await tempDir();
     const h = harness();
