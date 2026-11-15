@@ -107,6 +107,21 @@ describe("bundleRuntime", () => {
     expect(JSON.parse(stdout)).toEqual({ migrated: 42, enrollmentReady: false });
   });
 
+  it("packages the writer thread as a plain-Node worker entry", async () => {
+    const writerThreadEntry = path.join(root, "server", "dist", "writer-thread.js");
+    write(writerThreadEntry, [
+      'import { isMainThread, parentPort } from "node:worker_threads";',
+      'import { values } from "@paperclipai/fixture";',
+      'if (!isMainThread) parentPort.postMessage({ written: values.doubled });',
+    ].join("\n"));
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, writerThreadEntry });
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e",
+      `import { Worker } from "node:worker_threads"; const worker = new Worker(new URL(${JSON.stringify(pathToFileURL(path.join(outdir, "writer-thread.mjs")).href)}), { execArgv: [] }); worker.once("message", message => { console.log(JSON.stringify(message)); worker.terminate(); });`],
+    { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ written: 42 });
+  });
+
   it("bundles workspace TypeScript and runs with plain node", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });

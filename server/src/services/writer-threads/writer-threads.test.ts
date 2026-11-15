@@ -1,4 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, checkpointDb, closeCheckpointDb, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints,
@@ -7,7 +11,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { nativeRunnerCheckpointWriter } from "../native-runtime/native-runner-checkpoint.js";
 import { ROUTINE_CHECKPOINT_SAVE_SQL } from "../native-runtime/native-runner-checkpoint-routine-save.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
-import { closeWriterThreads, installWriterThreads, readWriterThreadSettings, WriterThreadsClosedError, writerThreadsFor,
+import { closeWriterThreads, installWriterThreads, readWriterThreadSettings, writerThreadEntry, WriterThreadsClosedError, writerThreadsFor,
   type WriterThreadSettings } from "./writer-threads.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 
@@ -36,6 +40,21 @@ describe("writer thread settings", () => {
     expect(() => readWriterThreadSettings({ PAPERCLIP_WRITER_THREADS: "yes" })).toThrow(/PAPERCLIP_WRITER_THREADS/);
     expect(() => readWriterThreadSettings({ PAPERCLIP_WRITER_THREADS: "9" })).toThrow(/PAPERCLIP_WRITER_THREADS/);
     expect(() => readWriterThreadSettings({ PAPERCLIP_WRITER_THREAD_POOL_MAX: "0" })).toThrow(/PAPERCLIP_WRITER_THREAD_POOL_MAX/);
+  });
+});
+
+describe("writer thread entry", () => {
+  it("runs the source with a loader, the runtime bundle when it exists, and the compiled file otherwise", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "paperclip-writer-entry-"));
+    try {
+      const compiled = pathToFileURL(path.join(root, "server", "dist", "services", "writer-threads", "writer-threads.js")).href;
+      expect(writerThreadEntry(compiled)).toEqual({ url: new URL("./writer-thread.js", compiled), source: false });
+      mkdirSync(path.join(root, "server", "dist-runtime"), { recursive: true });
+      writeFileSync(path.join(root, "server", "dist-runtime", "writer-thread.mjs"), "");
+      expect(writerThreadEntry(compiled)).toEqual({ url: pathToFileURL(path.join(root, "server", "dist-runtime", "writer-thread.mjs")), source: false });
+      const source = pathToFileURL(path.join(root, "server", "src", "services", "writer-threads", "writer-threads.ts")).href;
+      expect(writerThreadEntry(source)).toEqual({ url: new URL("./writer-thread.ts", source), source: true });
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

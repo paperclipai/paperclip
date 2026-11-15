@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { SHARE_ENV, Worker } from "node:worker_threads";
 import type { Db } from "@paperclipai/db";
 import { databaseClientOptionsFromEnv } from "@paperclipai/db/client";
@@ -56,9 +57,10 @@ function partition(key: string, size: number): number {
   return (hash >>> 0) % size;
 }
 
-function workerEntry(): { url: URL; source: boolean } {
-  const source = new URL(import.meta.url).pathname.endsWith(".ts");
-  return { url: new URL(source ? "./writer-thread.ts" : "./writer-thread.js", import.meta.url), source };
+export function writerThreadEntry(moduleUrl: string = import.meta.url): { url: URL; source: boolean } {
+  if (new URL(moduleUrl).pathname.endsWith(".ts")) return { url: new URL("./writer-thread.ts", moduleUrl), source: true };
+  const bundled = new URL("../../../dist-runtime/writer-thread.mjs", moduleUrl);
+  return { url: existsSync(bundled) ? bundled : new URL("./writer-thread.js", moduleUrl), source: false };
 }
 
 export type WriterThreadStats = { submitted: number; completed: number; failed: number; lost: number; respawned: number };
@@ -130,7 +132,7 @@ export class WriterThreads {
       clientOptions: { ...databaseClientOptionsFromEnv(), maxConnections: this.#settings.poolMax, applicationName: slot.applicationName },
       control: this.#control.buffer,
     };
-    const { url, source } = workerEntry();
+    const { url, source } = writerThreadEntry();
     const worker = source
       ? new Worker(`import(${JSON.stringify(import.meta.resolve("tsx/esm/api"))}).then(({ tsImport }) => tsImport(${
         JSON.stringify(url.href)}, ${JSON.stringify(import.meta.url)}));`, { eval: true, workerData, env: SHARE_ENV })
@@ -191,7 +193,7 @@ export class WriterThreads {
     slot.fence = new Promise(resolve => { release = resolve; });
     let fenced = false;
     try {
-      await worker.terminate().catch(() => undefined);
+      await Promise.race([worker.terminate().catch(() => undefined), new Promise(resolve => setTimeout(resolve, FENCE_DEADLINE_MS).unref())]);
       fenced = verified && await this.#fenceBackends(slot.applicationName);
     } finally {
       for (const request of pending) request.reject(new WriterThreadUnavailableError(fenced, reason));
@@ -203,13 +205,20 @@ export class WriterThreads {
   async #fenceBackends(applicationName: string): Promise<boolean> {
     const deadline = Date.now() + FENCE_DEADLINE_MS;
     while (Date.now() < deadline) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const rows = await this.#db.$client.unsafe<{ pid: number }[]>(
-          `select pid, pg_terminate_backend(pid) as terminated from pg_stat_activity
-           where application_name = $1 and pid <> pg_backend_pid()`, [applicationName]);
+        const rows = await Promise.race([
+          this.#db.$client.unsafe<{ pid: number }[]>(
+            `select pid, pg_terminate_backend(pid) as terminated from pg_stat_activity
+             where application_name = $1 and pid <> pg_backend_pid()`, [applicationName]),
+          new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); }),
+        ]);
+        if (rows === null) return false;
         if (rows.length === 0) return true;
       } catch {
         return false;
+      } finally {
+        clearTimeout(timer);
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     }
@@ -227,6 +236,7 @@ export class WriterThreads {
     const fences = this.#slots.flatMap(slot => slot.fence ? [slot.fence] : []);
     await Promise.race([Promise.all([...inFlight, ...fences]), new Promise(resolve => setTimeout(resolve, budgetMs).unref())]);
     Atomics.store(this.#control, 0, 1);
+    await Promise.all(this.#slots.flatMap(slot => slot.fence ? [slot.fence] : []));
     await Promise.all(this.#slots.map(async slot => {
       const worker = slot.worker;
       if (!worker) return;
