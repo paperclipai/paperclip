@@ -904,12 +904,31 @@ second-line\" status=401`,
     });
   });
 
-  it.each(["devicePrivateKeyPem", "PRIVATE_KEY_PEM", "device-private-key-pem", "signingPrivateKeyDer", "clientPem"])("redacts private material in %s recursively", (key) => {
+  it.each(["devicePrivateKeyPem", "PRIVATE_KEY_PEM", "device-private-key-pem", "signingPrivateKeyDer", "privateKey", "private_key", "private-key", "privateKeyPem", "DEVICE_PRIVATEKEY_DER", "PAPERCLIP_AGENT_PRIVATE_KEY"])("redacts private material in %s recursively", (key) => {
     const config = { command: "agent", nested: [{ [key]: "synthetic-private-material", enabled: true }] };
     expect(redactAgentAdapterConfig(config)).toEqual({
       command: "agent", nested: [{ [key]: REDACTED_EVENT_VALUE, enabled: true }],
     });
     expect(config.nested[0][key]).toBe("synthetic-private-material");
+  });
+
+  it.each(["publicKeyPem", "public_key_pem", "pem", "clientPem", "scopeMode", "signingKeyPem"])("keeps non-private value under %s", (key) => {
+    const publicPem = "-----BEGIN PUBLIC KEY-----\nsynthetic-public-body\n-----END PUBLIC KEY-----";
+    const config = { command: "agent", nested: [{ [key]: publicPem, enabled: true }] };
+    expect(redactAgentAdapterConfig(config)).toEqual(config);
+    expect(sanitizeRecord({ [key]: publicPem, scopeMode: "explicit" })).toEqual({ [key]: publicPem, scopeMode: "explicit" });
+  });
+
+  it("masks private key names in sanitizeRecord but keeps public key fields", () => {
+    const publicPem = "-----BEGIN PUBLIC KEY-----\nsynthetic-public-body\n-----END PUBLIC KEY-----";
+    expect(sanitizeRecord({ privateKeyPem: "synthetic-private-material", publicKeyPem: publicPem, scopeMode: "omitted_initial" })).toEqual({
+      privateKeyPem: REDACTED_EVENT_VALUE, publicKeyPem: publicPem, scopeMode: "omitted_initial",
+    });
+  });
+
+  it("redacts private PEM content under a name that does not say private key", () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----";
+    expect(sanitizeRecord({ signingKeyPem: pem })).toEqual({ signingKeyPem: REDACTED_EVENT_VALUE });
   });
 
   it("preserves validated secret references and redacts PEM content under arbitrary names", () => {

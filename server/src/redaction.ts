@@ -5,7 +5,7 @@ const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access
 const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
-const PRIVATE_KEY_PAYLOAD_KEY_RE = /private[-_]?key|pem/i;
+const PRIVATE_KEY_PAYLOAD_KEY_RE = /private[-_]?key(?:[-_]?(?:pem|der|material|data|value|base64|b64|bytes|contents?|text))?$/i;
 const PRIVATE_KEY_PEM_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/i;
 const PRIVATE_KEY_PEM_BLOCK_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/gi;
 // Authorization reasons are policy decision codes, not credentials. They must
