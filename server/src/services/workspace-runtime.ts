@@ -7061,6 +7061,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         processGroupId: child.pid,
         port,
         ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+        ...(record.command ? { command: record.command } : {}),
+        ...(record.serviceName ? { serviceName: record.serviceName } : {}),
       });
     }
     await cleanupRecordExposure(record, { preserveFailure: true });
@@ -7320,6 +7322,8 @@ async function stopRuntimeServiceRecord(serviceId: string) {
       processGroupId: record.processGroupId ?? record.child.pid,
       port: record.port,
       ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+      ...(record.command ? { command: record.command } : {}),
+      ...(record.serviceName ? { serviceName: record.serviceName } : {}),
     });
   } else if (record.providerRef) {
     const pid = Number.parseInt(record.providerRef, 10);
@@ -7329,6 +7333,8 @@ async function stopRuntimeServiceRecord(serviceId: string) {
         processGroupId: record.processGroupId,
         port: record.port,
         ...(record.processCreatedAt ? { processCreatedAt: record.processCreatedAt } : {}),
+        ...(record.command ? { command: record.command } : {}),
+        ...(record.serviceName ? { serviceName: record.serviceName } : {}),
       });
     }
   }

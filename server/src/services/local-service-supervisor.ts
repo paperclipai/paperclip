@@ -212,6 +212,27 @@ export async function listLocalServiceRegistryRecords(filter?: {
   }
 }
 
+export async function readLocalServiceProcessCommandLine(pid: number): Promise<string | null> {
+  if (process.platform !== "win32") return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+      ],
+      { timeout: 15_000, maxBuffer: 1024 * 1024, windowsHide: true },
+    );
+    const commandLine = stdout.trim();
+    return commandLine ? commandLine : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function readLocalServiceProcessCreatedAt(pid: number): Promise<string | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const createdAtMs = await readWindowsProcessCreatedAtMs(pid);
@@ -557,7 +578,12 @@ export async function touchLocalServiceRegistryRecord(
 
 export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> &
-    Partial<Pick<LocalServiceRegistryRecord, "port" | "processCreatedAt">>,
+    Partial<
+      Pick<
+        LocalServiceRegistryRecord,
+        "port" | "processCreatedAt" | "command" | "serviceName"
+      >
+    >,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; verifyAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
@@ -586,10 +612,23 @@ export async function terminateLocalService(
 
   if (process.platform === "win32" && Number.isInteger(record.pid) && record.pid > 0) {
     let rootCreatedAtMs = parseProcessCreatedAtMs(record.processCreatedAt ?? null);
-    if (rootCreatedAtMs === null && record.port) {
+    if (rootCreatedAtMs === null && record.port && record.command) {
       const ownerPid = await readLocalServicePortOwner(record.port);
       if (ownerPid === record.pid) {
-        rootCreatedAtMs = parseProcessCreatedAtMs(await readLocalServiceProcessCreatedAt(record.pid));
+        const commandLine = await readLocalServiceProcessCommandLine(record.pid);
+        const matchesCommand =
+          commandLine !== null &&
+          isLocalServiceCommandLineComparable(record.command) &&
+          doesLocalServiceCommandLineMatch({
+            commandLine,
+            recordedCommand: record.command,
+            serviceName: record.serviceName ?? record.command,
+          });
+        if (matchesCommand) {
+          rootCreatedAtMs = parseProcessCreatedAtMs(
+            await readLocalServiceProcessCreatedAt(record.pid),
+          );
+        }
       }
     }
     const result = await terminateWindowsOwnedTree({

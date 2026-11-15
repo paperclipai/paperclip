@@ -288,12 +288,13 @@ describe("local service supervision", () => {
         probe.close(() => resolvePort(resolved));
       });
     });
+    const marker = "paperclip-supervisor-probe";
     const wrapper = spawn(process.execPath, ["-e", [
       "const { spawn } = require('node:child_process');",
       "const c = spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], { detached:true, stdio:['ignore','inherit','inherit'] });",
       `require('node:http').createServer(()=>{}).listen(${port}, '127.0.0.1', () => { process.stdout.write(String(c.pid)); });`,
       "setInterval(()=>{},1000);",
-    ].join(" ")], { stdio: ["ignore", "pipe", "pipe"] });
+    ].join(" "), marker], { stdio: ["ignore", "pipe", "pipe"] });
     let grandchildPid: number | null = null;
     try {
       grandchildPid = await new Promise<number>((resolve, reject) => {
@@ -309,6 +310,8 @@ describe("local service supervision", () => {
         pid: wrapper.pid!,
         processGroupId: wrapper.pid!,
         port,
+        command: marker,
+        serviceName: marker,
       });
 
       const deadline = Date.now() + 60_000;
