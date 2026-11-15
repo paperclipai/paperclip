@@ -214,6 +214,7 @@ import {
   applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { assertQualityReviewPolicyMutation, assertQualityReviewPolicyReuse, assertRequiredQualityReviewComplete, requiredQualityReview } from "./required-quality-review.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -11586,6 +11587,7 @@ export function issueService(db: Db) {
         /** Server-owned transfer being applied; never accepted from HTTP input. */
         caseHandoffId?: string;
         actorRunStopId?: string | null;
+        preserveActorExecutionOnHandoff?: boolean;
         actorUserId?: string | null;
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
@@ -11685,6 +11687,7 @@ export function issueService(db: Db) {
         actorRunId,
         caseHandoffId,
         actorRunStopId,
+        preserveActorExecutionOnHandoff,
         actorUserId,
         companyGuard,
         workspaceSelectionActor,
@@ -12090,7 +12093,26 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
+          assertHandedOffRunTaskOwnership(actorRun && { ...actorRun, id: actorRunId }, receiptExisting);
+          if (preserveActorExecutionOnHandoff) {
+            const state = parseIssueExecutionState(patch.executionState);
+            if (!actorRun || actorRun.runtimeMode !== "legacy" || actorRun.status !== "running" ||
+                receiptExisting.executionRunId !== actorRunId || receiptExisting.assigneeAgentId !== actorAgentId ||
+                actorRun.contextSnapshot?.issueId !== receiptExisting.id || (patch.status ?? receiptExisting.status) !== "in_review" ||
+                state?.status !== "pending" || state.currentParticipant?.type !== "agent" ||
+                state.currentParticipant.agentId !== patch.assigneeAgentId || patch.assigneeAgentId === actorAgentId ||
+                patch.assigneeUserId) {
+              throw conflict("The handoff execution owner changed", { code: "workflow_handoff_owner_changed" });
+            }
+            await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
+              || jsonb_build_object('governedSelfHandoff', ${JSON.stringify({ runId: actorRunId, issueId: receiptExisting.id })}::jsonb)` })
+              .where(and(eq(heartbeatRuns.id, actorRunId), eq(heartbeatRuns.companyId, receiptExisting.companyId), eq(heartbeatRuns.agentId, actorAgentId)));
+            patch.executionRunId = receiptExisting.executionRunId;
+            patch.executionAgentNameKey = receiptExisting.executionAgentNameKey;
+            patch.executionLockedAt = receiptExisting.executionLockedAt;
+          }
+        } else if (preserveActorExecutionOnHandoff) {
+          throw forbidden("A governed handoff requires its running agent");
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {

@@ -5962,8 +5962,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (req.actor.source === "agent_jwt" && req.actor.runId &&
-        issue.assigneeAgentId === null && issue.assigneeUserId) {
+    if (req.actor.source === "agent_jwt" && req.actor.runId) {
       const run = await heartbeat.getRun(req.actor.runId);
       if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
     }
@@ -15332,6 +15331,7 @@ export function issueRoutes(
         return;
       }
       let interruptedRunId: string | null = null;
+      let preserveActorExecutionOnHandoff = false;
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(existing);
       const isAgentWorkUpdate =
@@ -15791,7 +15791,21 @@ export function issueRoutes(
             runId: runToStopForReassignment.id,
           });
         }
-        if (runToStopForReassignment && !isHumanSelfHandoff) {
+        const isGovernedSelfHandoff = transition.workflowControlledAssignment &&
+          transition.patch.executionState?.status === "pending" && existing.executionRunId === req.actor.runId &&
+          req.actor.type === "agent" && req.actor.source === "agent_jwt" &&
+          req.actor.agentId === existing.assigneeAgentId &&
+          typeof nextAssigneeAgentId === "string" && nextAssigneeAgentId !== req.actor.agentId &&
+          nextAssigneeUserId === null && runToStopForReassignment?.runtimeMode === "legacy" &&
+          runToStopForReassignment.status === "running" && runToStopForReassignment.id === req.actor.runId &&
+          runToStopForReassignment.agentId === req.actor.agentId &&
+          runToStopForReassignment.companyId === existing.companyId &&
+          runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        if (isGovernedSelfHandoff) {
+          interruptedRunId = runToStopForReassignment.id;
+          preserveActorExecutionOnHandoff = true;
+        }
+        if (runToStopForReassignment && !isHumanSelfHandoff && !isGovernedSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
             cancelled = await heartbeat.cancelRun(
@@ -15935,7 +15949,8 @@ export function issueRoutes(
         ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
-        actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+        actorRunStopId: !preserveActorExecutionOnHandoff && actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+        ...(preserveActorExecutionOnHandoff ? { preserveActorExecutionOnHandoff: true } : {}),
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
       const shouldCollectCompletionPublication =
