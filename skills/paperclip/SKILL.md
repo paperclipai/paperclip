@@ -660,6 +660,8 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
+Write these links, and attachment links such as `/api/attachments/<id>/content`, as relative paths. Never add a hostname you were not given, such as `https://paperclip`, `https://paperclip.local` or `http://localhost`: that host does not open for the reader.
+
 **Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
