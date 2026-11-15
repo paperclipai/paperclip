@@ -19,7 +19,7 @@ export interface FakeConfig {
   token: string;
   origin: string;
   cloudManaged: boolean;
-  agentReadyDelayMs: number;
+  agentReadyDelayMs: number | ((index: number) => number);
   agentSetupError: string | null;
   startDelayMs: number;
   runDurationMs: number;
@@ -65,6 +65,7 @@ export class FakePaperclip {
   readonly memberCompanyIds: string[] = [];
   readonly environmentId = "00000000-0000-4000-8000-0000000000e1";
   private seq = 0;
+  private agentsCreated = 0;
   private counts = new Map<string, number>();
 
   readonly clock: VirtualClock;
@@ -127,7 +128,8 @@ export class FakePaperclip {
   advance(): void {
     const now = this.clock.now();
     for (const agent of this.agents.values()) {
-      if (!["preparing", "verifying"].includes(agent.lifecycleState) || now < agent.createdAt + this.config.agentReadyDelayMs) continue;
+      const delay = typeof this.config.agentReadyDelayMs === "function" ? this.config.agentReadyDelayMs(agent.index) : this.config.agentReadyDelayMs;
+      if (!["preparing", "verifying"].includes(agent.lifecycleState) || now < agent.createdAt + delay) continue;
       if (this.config.agentSetupError) {
         agent.lifecycleState = "verifying";
         agent.lifecycleError = this.config.agentSetupError;
@@ -229,7 +231,7 @@ export class FakePaperclip {
         if (method === "GET") return json(200, [...this.agents.values()].filter(agent => agent.companyId === companyId));
         const id = this.id();
         this.agents.set(id, { id, companyId, name: body.name, status: "paused", lifecycleState: "preparing", lifecycleHolds: [], lifecycleError: null,
-          pauseReason: null, createdAt: now, payload: body });
+          pauseReason: null, createdAt: now, index: this.agentsCreated++, payload: body });
         return json(201, this.agents.get(id));
       }
       if (c === "issues") {

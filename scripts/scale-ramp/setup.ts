@@ -172,7 +172,8 @@ export async function waitForAgentsReady(input: {
   pollMs: number;
   shouldStop: () => boolean;
   log: (line: string) => void;
-}): Promise<void> {
+  tick?: () => Promise<boolean>;
+}): Promise<boolean> {
   const { api, clock } = input;
   const started = clock.now();
   const erroredSince = new Map<string, number>();
@@ -183,8 +184,9 @@ export async function waitForAgentsReady(input: {
     const waiting = input.agentIds.map(id => byId.get(id) ?? { id, status: null }).filter(agent => !agentReady(agent));
     if (!waiting.length) {
       if (logged) input.log(`All ${input.agentIds.length} agents finished setup after ${Math.round((clock.now() - started) / 1_000)} s`);
-      return;
+      return true;
     }
+    if (input.shouldStop() || await input.tick?.()) return false;
     const now = clock.now();
     for (const agent of waiting) {
       const id = String(agent.id);
@@ -199,7 +201,6 @@ export async function waitForAgentsReady(input: {
     if (now - started >= input.timeoutMs) {
       throw new AgentsNotReady(`${waiting.length} of ${input.agentIds.length} agents did not finish setup within ${Math.round(input.timeoutMs / 60_000)} min: ${describeAgent(waiting[0]!)}`);
     }
-    if (input.shouldStop()) return;
     if (!logged) {
       input.log(`Waiting for ${waiting.length} agents to finish setup (${describeAgent(waiting[0]!)})`);
       logged = true;

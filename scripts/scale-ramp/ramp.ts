@@ -19,6 +19,7 @@ export const BOARD_MIX = [
 
 const FAILED_RUN = new Set(["failed", "timed_out"]);
 const RESTING_NOT_DONE = new Set(["cancelled", "blocked", "in_review"]);
+const ENDED_RUN = new Set(["failed", "timed_out", "cancelled", "succeeded", "interrupted"]);
 const RUN_PAGE = 1_000;
 const IDS_PER_READ = 100;
 const RETRY_CHECK_AFTER_MS = 60_000;
@@ -265,8 +266,7 @@ export class Ramp {
       }
       if (this.deps.shouldStop()) return { stepIndex: step.index, reason: "interrupted before the step", criterion: null };
       await ensureAgents({ api: this.deps.api, options: this.deps.options, state: this.deps.state, store: this.deps.store, count: step.concurrency });
-      await this.awaitAgents(step.concurrency);
-      return null;
+      return await this.awaitAgents(step.concurrency, step.index);
     } catch (error) {
       if (!(error instanceof AgentsNotReady)) throw error;
       this.deps.log(`Stopping: ${error.message}`);
@@ -274,29 +274,45 @@ export class Ramp {
     }
   }
 
-  private async awaitAgents(count: number): Promise<void> {
+  private async awaitAgents(count: number, stepIndex: number): Promise<StopReason | null> {
     const { api, clock, options, state, log, shouldStop } = this.deps;
+    let stop: StopReason | null = null;
     await waitForAgentsReady({ api, clock, companyId: this.companyId, agentIds: state.agentIds.slice(0, count), timeoutMs: options.agentReadyTimeoutMs,
-      pollMs: Math.min(options.pollMs, 5_000), shouldStop, log });
+      pollMs: Math.min(options.pollMs, 5_000), shouldStop, log,
+      tick: async () => {
+        if (!this.tasks.size) return false;
+        await this.poll(false);
+        stop = this.immediateStop(stepIndex);
+        return stop !== null;
+      } });
+    return stop;
   }
 
   private async preflight(): Promise<StopReason | null> {
     const { api, clock, options, state, store, log } = this.deps;
     await ensureAgents({ api, options, state, store, count: 1 });
-    await this.awaitAgents(1);
+    const notReady = await this.awaitAgents(1, 0);
+    if (notReady) return notReady;
     if (this.deps.shouldStop()) return { stepIndex: 0, reason: "interrupted before the step", criterion: null };
     log(`Preflight: one task on one agent must start within ${Math.round(options.startTimeoutMs / 60_000)} min before the rest are created`);
     await this.topUp(1, 0, Number.POSITIVE_INFINITY);
-    const createdAt = clock.now();
+    const task = [...this.tasks.values()][0];
+    if (!task) return { stepIndex: 0, reason: "the preflight task was not created", criterion: "run_started" };
     for (;;) {
       if (this.deps.shouldStop()) return { stepIndex: 0, reason: "interrupted", criterion: null };
       await this.poll();
+      const immediate = this.immediateStop(0);
+      if (immediate) return immediate;
       if (this.anyStarted()) {
-        log(`Preflight passed: the first task started ${Math.round((clock.now() - createdAt) / 1_000)} s after it was created`);
+        log(`Preflight passed: the first task started ${Math.round((clock.now() - task.createdAt) / 1_000)} s after it was created`);
         this.current().runningSamples.length = 0;
         return null;
       }
-      const stop = this.immediateStop(0) ?? await this.noStartStop(0);
+      const ended = this.runsOf(task.id).find(run => run.finishedAt !== null || ENDED_RUN.has(run.status));
+      if (task.outcome !== "open" || ended) {
+        return this.stall(0, task, `the preflight task ended before any run started`);
+      }
+      const stop = await this.noStartStop(0);
       if (stop) return stop;
       await clock.sleep(options.pollMs);
     }
@@ -304,27 +320,31 @@ export class Ramp {
 
   private anyStarted(): boolean {
     for (const run of this.runs.values()) if (run.startedAt !== null || run.status === "running") return true;
-    for (const task of this.tasks.values()) if (task.outcome !== "open") return true;
     return false;
   }
 
   private async noStartStop(stepIndex: number): Promise<StopReason | null> {
-    const { api, clock, options, log } = this.deps;
+    const { clock, options } = this.deps;
     if (!this.tasks.size || this.anyStarted()) return null;
     const first = [...this.tasks.values()].sort((a, b) => a.createdAt - b.createdAt)[0]!;
     if (clock.now() - first.createdAt < options.startTimeoutMs) return null;
+    return this.stall(stepIndex, first, `no run started within ${Math.round(options.startTimeoutMs / 60_000)} min of the first task`);
+  }
+
+  private async stall(stepIndex: number, task: TaskRecord, headline: string): Promise<StopReason> {
+    const { api, log } = this.deps;
     const [view, agents] = await Promise.all([
-      api.get<Json>(`/api/issues/${first.id}`).catch(() => null),
+      api.get<Json>(`/api/issues/${task.id}`).catch(() => null),
       api.get<Json[]>(`/api/companies/${this.companyId}/agents`).catch(() => [] as Json[]),
     ]);
-    const run = this.runsOf(first.id).at(-1);
-    const agent = agents.find(candidate => String(candidate.id) === first.agentId);
+    const run = this.runsOf(task.id).at(-1);
+    const agent = agents.find(candidate => String(candidate.id) === task.agentId);
     const runLine = run
       ? `its run ${run.id} is ${run.status}${run.errorCode ? ` (${run.errorCode})` : ""}${run.error ? `: ${run.error.slice(0, 300)}` : ""}${run.liveness ? `; liveness: ${run.liveness}` : ""}`
       : "Paperclip lists no run for it";
     const blocker = view?.executionBlocker ? `; execution blocker: ${JSON.stringify(view.executionBlocker).slice(0, 300)}` : "";
-    const reason = `no run started within ${Math.round(options.startTimeoutMs / 60_000)} min of the first task. Task ${first.nonce} is ${view?.status ?? first.status}`
-      + `${blocker}; ${runLine}; ${agent ? describeAgent(agent) : `agent ${first.agentId} is not listed`}`;
+    const reason = `${headline}. Task ${task.nonce} is ${view?.status ?? task.status}`
+      + `${blocker}; ${runLine}; ${agent ? describeAgent(agent) : `agent ${task.agentId} is not listed`}`;
     log(`Stopping: ${reason}`);
     return { stepIndex, reason, criterion: "run_started" };
   }
@@ -413,13 +433,14 @@ export class Ramp {
     }
   }
 
-  private async poll(): Promise<void> {
+  private async poll(recordSample = true): Promise<void> {
     await this.readRuns();
     await this.readTasks();
     await this.checkRetry();
     await this.sampleEvents();
     let running = 0;
     for (const run of this.runs.values()) if (run.status === "running") running += 1;
+    if (!recordSample) return;
     this.current().runningSamples.push(running);
     if (this.deps.options.metricsUrl) {
       const sample = await readMetrics(this.deps.fetcher, this.deps.options.metricsUrl, this.deps.metricsToken, this.deps.clock);
