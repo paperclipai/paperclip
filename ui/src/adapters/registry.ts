@@ -4,6 +4,7 @@ import { codexLocalUIAdapter } from "./codex-local";
 import { paperclipRunnerUIAdapter } from "./paperclip-runner";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
+import { distillLocalUIAdapter } from "./distill-local";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { grokLocalUIAdapter } from "./grok-local";
 import { kimiLocalUIAdapter } from "./kimi-local";
@@ -59,6 +60,7 @@ function registerBuiltInUIAdapters() {
     paperclipRunnerUIAdapter,
     cursorCloudUIAdapter,
     geminiLocalUIAdapter,
+    distillLocalUIAdapter,
     grokLocalUIAdapter,
     kimiLocalUIAdapter,
     hermesGatewayUIAdapter,

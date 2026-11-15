@@ -1457,7 +1457,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : harnessType === "grok_local" ? "reasoningEffort"
+          : harnessType === "grok_local" || adapterType === "distill_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     isCodexHarness
@@ -1471,6 +1471,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
+            : adapterType === "distill_local"
+              ? [{ id: "", label: "Auto" }, ...["none", "minimal", "low", "medium", "high", "xhigh", "max"].map(id => ({ id, label: id }))]
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
               : harnessType === "claude_local" || harnessType === "grok_local"
@@ -2149,6 +2151,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ({
                         claude_local: "claude",
                         codex_local: "codex",
+                        distill_local: "distill",
                         gemini_local: "gemini",
                         kimi_local: "kimi",
                         pi_local: "pi",

@@ -96,6 +96,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Gemini CLI harness",
     icon: Gem,
   },
+  distill_local: {
+    label: "Distill",
+    description: "Distill coding agent harness",
+    icon: Bot,
+  },
   grok_local: {
     label: "Grok Build",
     description: "Grok Build harness",

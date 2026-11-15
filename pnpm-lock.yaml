@@ -98,6 +98,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
+      '@paperclipai/adapter-distill-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/distill-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
@@ -249,6 +252,22 @@ importers:
         version: 7.0.2
 
   packages/adapters/cursor-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/adapters/distill-local:
     dependencies:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
@@ -977,6 +996,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
+      '@paperclipai/adapter-distill-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/distill-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
@@ -1243,6 +1265,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
+      '@paperclipai/adapter-distill-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/distill-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local

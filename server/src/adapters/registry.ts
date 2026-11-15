@@ -77,6 +77,18 @@ import {
   models as geminiModels,
 } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as distillExecute,
+  listDistillSkills,
+  syncDistillSkills,
+  testEnvironment as distillTestEnvironment,
+  sessionCodec as distillSessionCodec,
+  discoverDistillModels,
+} from "@paperclipai/adapter-distill-local/server";
+import {
+  agentConfigurationDoc as distillAgentConfigurationDoc,
+  models as distillModels,
+} from "@paperclipai/adapter-distill-local";
+import {
   execute as grokExecute,
   listGrokSkills,
   syncGrokSkills,
@@ -894,6 +906,31 @@ const geminiLocalAdapter: ServerAdapterModule = {
   getConfigSchema: getGeminiConfigSchema,
 };
 
+const distillLocalAdapter: ServerAdapterModule = {
+  type: "distill_local",
+  runtimeToolDelivery: "environment",
+  execute: distillExecute,
+  testEnvironment: distillTestEnvironment,
+  listSkills: listDistillSkills,
+  syncSkills: syncDistillSkills,
+  sessionCodec: distillSessionCodec,
+  sessionManagement: getAdapterSessionManagement("distill_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
+  models: distillModels,
+  listModels: () => discoverDistillModels(false),
+  refreshModels: () => discoverDistillModels(true),
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "distill"),
+    detectCommand: readConfiguredCommand(config, "distill"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: distillAgentConfigurationDoc,
+};
+
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
   runtimeToolDelivery: "environment",
@@ -1031,6 +1068,7 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    distillLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,
     hermesGatewayAdapter,
