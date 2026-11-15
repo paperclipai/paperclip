@@ -3,7 +3,7 @@ import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -1299,7 +1299,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           eq(agentWakeupRequests.companyId, companyId),
           or(eq(agentWakeupRequests.status, "queued"), and(
             eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            gte(agentWakeupRequests.requestedAt, new Date(Date.now() - TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS)),
+            gt(agentWakeupRequests.requestedAt, new Date(Date.now() - TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS)),
           )),
           sql`(${agentWakeupRequests.payload}->>'issueId' = ${issueId}
             OR ${agentWakeupRequests.payload}->>'taskId' = ${issueId}

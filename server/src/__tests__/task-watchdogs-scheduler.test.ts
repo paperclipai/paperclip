@@ -359,6 +359,27 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(2);
   });
 
+  it("expires a watchdog handoff at the exact grace boundary", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const companyId = await seedCompany();
+      const sourceId = await seedIssue(companyId, { status: "done" });
+      const agentId = await seedAgent(companyId);
+      await seedWatchdog(companyId, sourceId, agentId);
+      const { service, wakes } = createService();
+      expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({ triggered: 1 });
+      const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+      const watchdogIssueId = watchdog!.watchdogIssueId!;
+      await db.update(issues).set({ status: "in_review", assigneeAgentId: null, assigneeUserId: null,
+        executionState: null, monitorNextCheckAt: null }).where(eq(issues.id, watchdogIssueId));
+      await db.insert(agentWakeupRequests).values({ companyId, agentId, status: "deferred_issue_execution",
+        source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId: watchdogIssueId }, requestedAt: new Date(Date.now() - 60_000) });
+      expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({ triggered: 1 });
+      expect(wakes).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("does not trigger while a non-watchdog descendant has live work", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-2", status: "in_progress" });
