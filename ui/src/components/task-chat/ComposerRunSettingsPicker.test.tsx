@@ -285,6 +285,13 @@ describe("composer assignee picker", () => {
 
     await typeModelSearch("anthropic/Claude Sonnet 5.5");
     expect(exactIdButton()?.disabled).toBe(false);
+
+    await typeModelSearch("acme/x");
+    expect(exactIdButton()?.disabled).toBe(false);
+
+    await typeModelSearch("acme/");
+    expect(exactIdButton()?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Use provider/model.");
   });
 
   it("still rejects spaces in OpenRouter model IDs", async () => {
@@ -302,6 +309,13 @@ describe("composer assignee picker", () => {
 
     await typeModelSearch("openrouter/anthropic/claude-sonnet-5.5");
     expect(exactIdButton()?.disabled).toBe(false);
+
+    await typeModelSearch("openrouter/acme/x");
+    expect(exactIdButton()?.disabled).toBe(false);
+
+    await typeModelSearch("openrouter/acme/");
+    expect(exactIdButton()?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Use openrouter/provider/model with no spaces.");
   });
 
   it("rejects spaces in OpenRouter model IDs on a native OpenCode agent", async () => {

@@ -175,8 +175,8 @@ export function ComposerRunSettingsPicker({
     || (agent.adapterType === "paperclip_runner" && provider === "opencode"));
   const openRouterId = provider === "openrouter" || query.startsWith("openrouter/");
   const manualValid = query.length > 0
-    && (!needsProvider || /^[^/]+\/.+[^/]$/.test(query))
-    && (!openRouterId || (/^openrouter\/[^/]+\/.+[^/]$/.test(query) && !/\s/.test(query)));
+    && (!needsProvider || /^[^/]+\/.*[^/]$/.test(query))
+    && (!openRouterId || (/^openrouter\/[^/]+\/.*[^/]$/.test(query) && !/\s/.test(query)));
 
   const previousAgentId = useRef(agentId);
   useEffect(() => {
