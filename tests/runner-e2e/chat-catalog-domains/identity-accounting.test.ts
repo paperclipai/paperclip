@@ -71,7 +71,8 @@ describe("actual saved native accounting contexts", () => {
     // form, a from equal to the run's startedAt, and an all-time read. The cost event is at 11:43:40Z.
     for (const query of [{ from: "2026-11-09", to: "2026-11-15T23:59:59Z" }, { from: "2026-11-15T00:00Z" }, { to: "2026-11-16" },
       { from: "2026-11-15T00:00:00-03:00", to: "2026-11-16T00:00:00-03:00" }, { from: "2026-11-15T11:41:02.000Z", to: "2026-11-15T11:43:40.000Z" },
-      { from: "2026-11-15T11:41:02Z" }, { period: "all" }])
+      { from: "2026-11-15T11:41:02Z" }, { period: "all" }, { from: "2026-11-15T00:00:00+00:00" }, { from: "2026-11-09T00:00:00-00:00", to: "2026-11-16T00:00:00-00:00" },
+      { period: "month", from: "2026-11-09T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" }, { from: "2026-11-01" }, { from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z" }])
       expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(true);
     expect(grade(cohort16([ranged(week, "answer", 200, "GET /api/companies/{companyId}/costs/summary", {})])).passed).toBe(true);
     // Negative controls: no read, run-list pages whose inputs prove nothing, a range that excludes the run, another
@@ -103,6 +104,13 @@ describe("actual saved native accounting contexts", () => {
       expect(grade(pendingTarget([ranged(week, "answer", 200, operationId)])).passed, operationId).toBe(true);
     const targetRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "original" } }));
     expect(grade(pendingTarget([targetRecord])).passed).toBe(true);
+    // A late-month event (Nov 29) read with a month-start from (28 days earlier) or an end-of-month to counts.
+    for (const query of [{ from: "2026-11-01" }, { from: "2026-11-01T00:00:00Z", to: "2026-11-30T23:59:59.999Z" }, { from: "2026-11-01T00:00:00+00:00", to: "2026-12-01T00:00:00+00:00" }]) {
+      const late = cohort16([ranged(query)]);
+      Object.assign(late.state.originalRun as object, { startedAt: "2026-11-29T10:00:00.000Z", finishedAt: "2026-11-29T10:02:00.000Z" });
+      late.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-29T10:02:00.000Z" }] };
+      expect(grade(late).passed, JSON.stringify(query)).toBe(true);
+    }
     // A report ending at 11:43:40Z excludes an event at 11:43:40.598Z (bounds are compared as parsed instants).
     const subSecond = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:43:40Z" })]);
     subSecond.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-15T11:43:40.598Z" }] };

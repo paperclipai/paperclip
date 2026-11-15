@@ -150,9 +150,13 @@ export function coveringCostReportDigests(companyId: string, window: { startedAt
   const cached = coveringCache.get(key); if (cached) return cached;
   const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt), digests = new Set<string>();
   if (!Number.isFinite(started) || !Number.isFinite(finished)) return digests;
-  const day = 86_400_000, hour = 3_600_000, first = Math.floor(started / day) * day - 14 * day;
+  // The span covers the whole calendar month(s) of the window plus 14 days on each side, so a month-start `from` or a
+  // month-end `to` is generated for a late- or early-month event.
+  const day = 86_400_000, hour = 3_600_000, startDate = new Date(started), endDate = new Date(finished);
+  const first = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1) - 14 * day;
+  const last = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth() + 1, 1) + 14 * day;
   const utc: Array<{ text: string; at: number }> = [];
-  for (let at = first; at <= first + 30 * day; at += day) {
+  for (let at = first; at <= last; at += day) {
     const iso = new Date(at).toISOString();
     utc.push({ text: iso, at }, { text: iso.replace(".000Z", "Z"), at }, { text: iso.replace(":00.000Z", "Z"), at }, { text: iso.slice(0, 10), at },
       { text: new Date(at + day - 1).toISOString(), at: at + day - 1 }, { text: new Date(at + day - 1000).toISOString().replace(".000Z", "Z"), at: at + day - 1000 });
@@ -161,14 +165,14 @@ export function coveringCostReportDigests(companyId: string, window: { startedAt
     const at = Date.parse(text); if (!Number.isFinite(at)) continue;
     const iso = new Date(at).toISOString(); utc.push({ text: iso, at }, { text: iso.replace(/\.\d{3}Z$/, "Z"), at });
   }
+  // Local midnights at each whole-hour offset, one family per offset and format (bounds are paired within a family);
+  // UTC is also written +00:00 and -00:00.
   const families: Array<Array<{ text: string; at: number }>> = [utc];
-  for (let offset = -12; offset <= 14; offset++) {
-    if (offset === 0) continue;
-    const sign = offset < 0 ? "-" : "+", zone = `${sign}${String(Math.abs(offset)).padStart(2, "0")}:00`, local: Array<{ text: string; at: number }> = [];
-    for (let midnight = first; midnight <= first + 30 * day; midnight += day) {
-      const at = midnight - offset * hour, date = new Date(midnight).toISOString().slice(0, 10);
-      local.push({ text: `${date}T00:00:00${zone}`, at }, { text: `${date}T00:00${zone}`, at });
-    }
+  const zones = [...Array.from({ length: 27 }, (_, index) => index - 12).filter(offset => offset !== 0)
+    .map(offset => ({ offset, zone: `${offset < 0 ? "-" : "+"}${String(Math.abs(offset)).padStart(2, "0")}:00` })), { offset: 0, zone: "+00:00" }, { offset: 0, zone: "-00:00" }];
+  for (const { offset, zone } of zones) for (const format of ["T00:00:00", "T00:00"]) {
+    const local: Array<{ text: string; at: number }> = [];
+    for (let midnight = first; midnight <= last; midnight += day) local.push({ text: `${new Date(midnight).toISOString().slice(0, 10)}${format}${zone}`, at: midnight - offset * hour });
     families.push(local);
   }
   // Bounds are compared as the costs route reads them: each string re-parsed (new Date), both bounds inclusive
@@ -182,6 +186,9 @@ export function coveringCostReportDigests(companyId: string, window: { startedAt
     for (const to of tos) queries.push({ to: to.text });
     for (const from of froms) for (const to of tos) queries.push({ from: from.text, to: to.text });
   }
+  // Explicit bounds take precedence over period=month (only period=all rejects bounds), so the same ranges with
+  // period=month read the same rows.
+  for (const query of [...queries]) queries.push({ ...query, period: "month" });
   for (const segment of segments) for (const pathParams of [{ companyId }, {}, undefined]) for (const query of queries)
     digests.add(callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query }));
   coveringCache.set(key, digests);
@@ -221,7 +228,10 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
     && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
   // A from equal to the run's own startedAt (copied from its record) is a natural covering bound too.
-  const rangedDigests = companyId && window ? coveringCostReportDigests(companyId, window, segments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : []) : new Set<string>();
+  // Generated per report actually read by this run, since the covering set is large.
+  const readSegments = segments.filter(segment => calls.some(call => call.runId === runId && call.operationId === `GET /api/companies/{companyId}/costs/${segment}`));
+  const rangedDigests = companyId && window && readSegments.length
+    ? coveringCostReportDigests(companyId, window, readSegments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : []) : new Set<string>();
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
