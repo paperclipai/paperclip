@@ -84,6 +84,23 @@ POST /api/companies/{companyId}/archive
 
 Archives a company. Archived companies are hidden from default listings.
 
+## Get Agent Trace Export Status
+
+```
+GET /api/companies/{companyId}/observability/status
+```
+
+Returns whether agent trace export is set up for the company. Every member of the company and every agent in it can read this. It never returns the destination or any credential. Reading or changing the full settings at `/api/companies/{companyId}/observability` stays with board users who can manage connections.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `configured` | boolean | Whether a destination is saved |
+| `enabled` | boolean | Whether export is on |
+| `provider` | string \| null | Destination provider, for example `otlp` |
+| `credentialsConfigured` | boolean | Whether credentials are saved for the destination |
+| `updatedAt` | string \| null | When the settings last changed |
+| `lastTest` | object \| null | Latest connection test: `status` and `finishedAt` |
+
 ## Company Fields
 
 | Field | Type | Description |

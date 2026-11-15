@@ -34,6 +34,26 @@ export function prefetchIssueIdBatches<T>(
   }))).then(() => undefined);
 }
 
+/**
+ * Store one already-fetched batch under the keys `useIssueIdBatches` reads.
+ * Only when no batch is cached for this key yet, so it never replaces or
+ * splits batches a page has already read.
+ */
+export function seedIssueIdBatch<T>(
+  client: QueryClient,
+  key: readonly unknown[],
+  ids: readonly string[],
+  data: T[],
+  updatedAt: number,
+) {
+  if (!ids.length || ids.length > ISSUE_ID_BATCH_SIZE) return false;
+  if (client.getQueryData<string[][]>([...key, "batch-ids"])?.length) return false;
+  const batch = [...ids];
+  client.setQueryData<string[][]>([...key, "batch-ids"], [batch]);
+  client.setQueryData([...key, "batch", batch], data, { updatedAt });
+  return true;
+}
+
 export function useIssueIdBatches<T>(key: readonly unknown[], ids: string[], fetchBatch: (ids: string[]) => Promise<T[]>, enabled: boolean) {
   const client = useQueryClient();
   const serializedKey = JSON.stringify(key);

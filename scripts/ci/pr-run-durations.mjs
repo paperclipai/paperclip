@@ -15,6 +15,20 @@ export const runnerPackageRoot = "packages/paperclip-runner";
 export const e2eManifest = "scripts/e2e-shard-durations.json";
 export const runnerManifest = `${runnerPackageRoot}/scripts/vitest-lane-durations.json`;
 
+// The source record shape every timing manifest may carry. Protected-master
+// sources have run, attempt, sha and url; merged-PR sources (written by
+// collectMergedPrSamples below) add a leading pull number. Rejecting that key
+// failed the 2026-11-09 weekly refresh and froze the shard weights.
+export function assertManifestSource(source) {
+  const keys = Object.keys(source);
+  assert.deepEqual(keys[0] === "pull" ? keys.slice(1) : keys, ["run", "attempt", "sha", "url"]);
+  if (keys[0] === "pull") assert.ok(Number.isSafeInteger(source.pull) && source.pull > 0);
+  assert.ok(Number.isSafeInteger(source.run) && source.run > 0);
+  assert.ok(Number.isSafeInteger(source.attempt) && source.attempt > 0);
+  assert.match(source.sha, /^[a-f0-9]{40}$/);
+  assert.equal(typeof source.url, "string");
+}
+
 export function validatePull(pull) {
   assert.equal(pull.base?.ref, "master");
   assert.equal(pull.base?.repo?.id, repositoryId);
@@ -205,7 +219,7 @@ export async function collectMergedPrSamples({ gh, lanes, maxRuns = 3, pullLimit
   const pulls = await gh(`${api}/pulls?state=closed&base=master&sort=updated&direction=desc&per_page=${pullLimit}`);
   const merged = pulls.filter(pull => pull.merged_at).sort((a, b) => b.merged_at.localeCompare(a.merged_at));
   for (const pull of merged) {
-    const pending = lanes.filter(lane => result[lane.name].samples.length < maxRuns);
+    const pending = lanes.filter(lane => result[lane.name].samples.length < (lane.maxRuns ?? maxRuns));
     if (!pending.length) break;
     validatePull(pull);
     // Only measure code present in this checkout.
@@ -235,6 +249,7 @@ export async function collectMergedPrSamples({ gh, lanes, maxRuns = 3, pullLimit
         log(`::warning::${lane.name}: skipped run ${run.id} for PR #${pull.number}: ${error.message.split("\n")[0]}`);
         continue;
       }
+      if (lane.minFiles && sample.size < lane.minFiles) continue;
       result[lane.name].samples.push(sample);
       result[lane.name].sources.push({ pull: pull.number, run: run.id, attempt: run.run_attempt, sha: run.head_sha, url: run.html_url });
     }

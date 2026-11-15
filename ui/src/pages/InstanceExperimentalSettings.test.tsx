@@ -125,6 +125,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,

@@ -24,17 +24,45 @@ export function remoteTerminationReceipt(lease: LeaseIdentity, value: unknown) {
   };
 }
 
-export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
+type ReceiptLease = LeaseIdentity & {
   releasedAt: unknown; cleanupStatus: string | null; status: string;
   metadata: Record<string, unknown> | null;
-}): boolean {
+};
+
+/** The lease carries a provider stop receipt bound to its exact company, run,
+ * lease, provider and physical task. It proves execution there stopped, not
+ * that the lease's resources were released. */
+export function hasBoundRemoteStopReceipt(lease: Pick<ReceiptLease, keyof LeaseIdentity | "metadata">): boolean {
   const receipt = lease.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
-  return Boolean(lease.releasedAt && lease.cleanupStatus === "success" &&
-    ["released", "expired", "failed"].includes(lease.status) && receipt &&
-    receipt.schema === "paperclip.remote-termination.v1" &&
+  return Boolean(receipt && receipt.schema === "paperclip.remote-termination.v1" &&
     receipt.companyId === lease.companyId && receipt.runId === lease.heartbeatRunId &&
     receipt.leaseId === lease.id && receipt.provider === lease.provider &&
     remoteTerminationReceipt(lease, receipt));
+}
+
+/** The lease was released with successful cleanup and its bound stop receipt.
+ * Resource cleanup gates use this; it never accepts an unreleased lease. */
+export function hasRemoteTerminationReceipt(lease: ReceiptLease): boolean {
+  return Boolean(lease.releasedAt && lease.cleanupStatus === "success" &&
+    ["released", "expired", "failed"].includes(lease.status) && hasBoundRemoteStopReceipt(lease));
+}
+
+/** Release or destroy of this lease has started: plugin release and destroy
+ * record their cleanup method first, and task settlement, startup cleanup and
+ * interrupted-creation cleanup mark the task retiring. The provider can then be
+ * releasing the task's resources while the lease row is still active. */
+function leaseReleaseStarted(lease: Pick<ReceiptLease, "metadata">): boolean {
+  return lease.metadata?.pluginLeaseCleanupMethod !== undefined || lease.metadata?.runnerTaskRetiring === true;
+}
+
+/** Execution on this lease has stopped: it was released with its termination
+ * receipt, or it is still active, its release has not started, and its plugin
+ * task recorded the provider's stop when it settled. Release can be held long
+ * after that stop (for example by a pending workspace export); once release
+ * starts, it owns the receipt until the lease is released. */
+function remoteLeaseExecutionStopped(lease: ReceiptLease): boolean {
+  return hasRemoteTerminationReceipt(lease) ||
+    lease.status === "active" && !lease.releasedAt && !leaseReleaseStarted(lease) && hasBoundRemoteStopReceipt(lease);
 }
 
 /** Workspace recovery saved this run's files, re-stopped its sandbox, and then
@@ -77,16 +105,27 @@ export async function resolveRemoteTerminationLease(db: Db, lease: Lease): Promi
   } } };
 }
 
-export async function stoppedRemoteCleanupScopes(db: Db, companyId: string, runId: string) {
+async function runRemoteLeases(db: Db, companyId: string, runId: string) {
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
   ));
-  if (leases.length === 0) return null;
-  const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
-  if (!resolved.every(hasRemoteTerminationReceipt)) return null;
-  return [...new Set(resolved.map(lease => remoteLeaseCleanupScope(lease)!))];
+  return Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
 }
 
+/** Cleanup scopes of a run whose every lease has stopped execution, or null. */
+export async function stoppedRemoteCleanupScopes(db: Db, companyId: string, runId: string) {
+  const leases = await runRemoteLeases(db, companyId, runId);
+  if (leases.length === 0 || !leases.every(remoteLeaseExecutionStopped)) return null;
+  return [...new Set(leases.map(lease => remoteLeaseCleanupScope(lease)!))];
+}
+
+/** Every lease of the run has stopped execution. Its resources can still be held. */
 export async function remoteExecutionHasStopped(db: Db, companyId: string, runId: string) {
   return await stoppedRemoteCleanupScopes(db, companyId, runId) !== null;
+}
+
+/** Every lease of the run was released with its termination receipt. */
+export async function remoteExecutionHasReleased(db: Db, companyId: string, runId: string) {
+  const leases = await runRemoteLeases(db, companyId, runId);
+  return leases.length > 0 && leases.every(hasRemoteTerminationReceipt);
 }

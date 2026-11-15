@@ -15,6 +15,19 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
+  it("does not count agent directory waits as failed attempts in the batched projection", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Directory wait", issuePrefix: "DW" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Coder", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "scheduled_retry", runtimeMode: "legacy",
+      scheduledRetryReason: "agent_directory_busy", scheduledRetryAttempt: 30, scheduledRetryAt: new Date(Date.now() + 10_000),
+      contextSnapshot: { retryReason: "agent_directory_busy",
+        executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0, agentDirectoryWaits: 30 } } });
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({
+      phase: "retry_scheduled", label: "Waiting for agent files", attempt: 1,
+    });
+  });
+
   it("names failed setup for an unstarted queued run and removes the label after readiness", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Setup wait", issuePrefix: "SW" });

@@ -17,6 +17,7 @@ import type { Agent, HeartbeatRun, IssueWorkMode } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
   loadDraftAttachments,
@@ -25,6 +26,7 @@ import {
   saveDraftSubmission,
 } from "../../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
+import { ApiError } from "../../api/api-error";
 import { queryKeys } from "../../lib/queryKeys";
 import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
 import { waitForStoppedRuns } from "../../lib/wait-for-stopped-runs";
@@ -214,7 +216,7 @@ afterEach(() => {
 });
 
 function render(ui: ReactElement) {
-  flushSync(() => root!.render(ui));
+  flushSync(() => root!.render(<ThemeProvider>{ui}</ThemeProvider>));
 }
 
 async function flushAsync() {
@@ -310,6 +312,65 @@ function renderComposer(props: ComponentProps<typeof TaskChatComposer>) {
 }
 
 describe("TaskChatComposer", () => {
+  describe("plain HTTP without randomUUID", () => {
+    beforeEach(() => {
+      vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it.each([false, true])("sends repeated messages with distinct receipts (conversation=%s)", async (conversationMode) => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      renderComposer({ onAdd, conversationMode, workMode: "standard", draftKey: "http-repeated" });
+      for (let turn = 0; turn < 5; turn++) {
+        typeText(`Message ${turn}`);
+        if (turn % 2) pressKey("Enter", { metaKey: true });
+        else flushSync(() => sendButton().click());
+        await flushAsync();
+        expect(onAdd).toHaveBeenCalledTimes(turn + 1);
+        expect(onAdd.mock.calls[turn][0]).toBe(`Message ${turn}`);
+        expect(onAdd.mock.calls[turn][4]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(editable().textContent).toBe("");
+        expect(loadDraftSubmission("http-repeated")).toBeNull();
+      }
+      expect(new Set(onAdd.mock.calls.map(call => call[4])).size).toBe(5);
+    });
+
+    it("keeps the request identity and next draft after a lost receipt", async () => {
+      let rejectSend!: (error: Error) => void;
+      const onAdd = vi.fn()
+        .mockReturnValueOnce(new Promise<void>((_, reject) => { rejectSend = reject; }))
+        .mockResolvedValue(undefined);
+      renderComposer({ onAdd, workMode: "standard", draftKey: "http-retry" });
+      typeText("Keep this request");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledOnce();
+      const attemptId = onAdd.mock.calls[0][4];
+      expect(loadDraftSubmission("http-retry")?.attemptId).toBe(attemptId);
+      typeText("Next draft");
+      await act(async () => rejectSend(new CommentSubmissionUnknownError()));
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+      await act(async () => resend.click());
+      expect(onAdd).toHaveBeenNthCalledWith(2, "Keep this request", undefined, undefined, undefined, attemptId);
+      expect(editable().textContent).toBe("Next draft");
+      expect(loadDraftSubmission("http-retry")).toBeNull();
+    });
+
+    it("uploads an image and submits its receipt on plain HTTP", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const attachmentId = "cdd72566-48f4-4996-8899-285101990a30";
+      const contentPath = `/api/attachments/${attachmentId}/content`;
+      const onAttachImage = vi.fn().mockResolvedValue({ id: attachmentId, contentPath });
+      renderComposer({ onAdd, onAttachImage, workMode: "standard" });
+      typeText("Inspect this image");
+      pasteFiles([new File(["synthetic image"], "sample.png", { type: "image/png" })]);
+      await flushAsync();
+      expect(onAttachImage).toHaveBeenCalledOnce();
+      expect(sendButton().disabled).toBe(false);
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith(`Inspect this image\n\n![sample.png](${contentPath})`, undefined, undefined, [attachmentId], expect.any(String));
+    });
+  });
+
   it("stages creation images above the editor without changing the text", async () => {
     const creation = {
       value: "Before the screenshot",
@@ -2626,6 +2687,37 @@ describe("TaskChatComposer", () => {
         expect(editable().textContent).toBe("Keep this replacement text");
         expect(container.textContent).toContain("Editing queued message");
       });
+    });
+
+    it("shows why a concurrent queue change rejected the save and keeps the edit", async () => {
+      const onSave = vi.fn().mockRejectedValue(new ApiError(
+        "The queued messages changed in another session",
+        409,
+        { error: "The queued messages changed in another session", details: { code: "queued_comment_revision_conflict" } },
+      ));
+      render(<Harness onSave={onSave} />);
+      await flushAsync();
+      typeText("Make the website blue");
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      await vi.waitFor(() => {
+        const alert = container.querySelector('[data-testid="task-chat-queued-edit-error"]');
+        expect(alert?.getAttribute("role")).toBe("alert");
+        expect(alert?.textContent).toBe(
+          "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+        );
+        expect(editable().textContent).toBe("Make the website blue");
+        expect(container.textContent).toContain("Editing queued message");
+      });
+
+      onSave.mockResolvedValueOnce(undefined);
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      await flushAsync();
+      expect(onSave).toHaveBeenLastCalledWith("queued-1", "Make the website blue");
+      expect(container.querySelector('[data-testid="task-chat-queued-edit-error"]')).toBeNull();
     });
 
     it("offers a stale edit as a new queued message and preserves its Markdown source", async () => {

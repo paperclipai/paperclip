@@ -95,7 +95,7 @@ describe("issueRecoveryActionService", () => {
     const error: Error & { cause?: unknown } = new Error("Wrapped database failure");
     error.cause = kind === "unrelated unique constraint" ? { code: "23505", constraint_name: "other_unique_constraint" }
       : kind === "other SQLSTATE" ? { code: "23503", constraint_name: constraint } : error;
-    const query = { from() { return this; }, where() { return this; }, orderBy() { return this; },
+    const query = { from() { return this; }, innerJoin() { return this; }, where() { return this; }, orderBy() { return this; },
       limit() { return Promise.resolve([]); } };
     const fakeDb = {
       async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> { return fn(fakeDb); },
@@ -106,7 +106,7 @@ describe("issueRecoveryActionService", () => {
     await expect(issueRecoveryActionService(fakeDb as never).upsertSourceScoped({ companyId: "company", sourceIssueId: "issue",
       kind: "missing_disposition", cause: "saved-debt", fingerprint: "same-source", nextAction: "Restore existing work." }))
       .rejects.toBe(error);
-    expect(fakeDb.select).toHaveBeenCalledOnce();
+    expect(fakeDb.select).toHaveBeenCalledTimes(2);
     expect(fakeDb.insert).toHaveBeenCalledOnce();
   });
   it("does not reactivate an action resolved between the active read and update", async () => {
@@ -116,6 +116,9 @@ describe("issueRecoveryActionService", () => {
 
     const makeSelectQuery = (rows: unknown[]) => ({
       from() {
+        return this;
+      },
+      innerJoin() {
         return this;
       },
       where() {
@@ -1856,7 +1859,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           cleanliness: "dirty",
         }),
       }),
-      nextAction: expect.stringContaining("git worktree branch incoherence"),
+      nextAction: expect.stringContaining("workspace no longer matches its branch"),
       wakePolicy: expect.objectContaining({
         type: "board_escalation",
         reason: "workspace_validation_failed",

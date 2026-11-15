@@ -615,6 +615,26 @@
       "keyPermissions": "Use an API key for an account with write access to the meetings your agents need to share, rename, move or turn into soundbites. Paperclip cannot increase the key\u2019s permissions."
     },
     {
+      "app": "circleback",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "user",
+        "user:write"
+      ],
+      "capability": "write",
+      "supportedActions": "Search and read meetings, notes, transcripts, action items, calendar events, connected email threads, people and company profiles, tags, folders, teams and support articles; show meetings, action items and calendar events as MCP Apps cards; create, update and delete action items, tags and folders; update meeting notes, tags and folders and upcoming calendar events' private notes and tags; share meetings and folders with people, teams, the workspace or anyone with the link, or remove access; send feedback to Circleback. Access is bounded by the signed-in user's Circleback permissions.",
+      "evidence": [
+        "https://circleback.ai/docs/support/platform/circleback-mcp",
+        "https://circleback.ai/.well-known/oauth-protected-resource/api/mcp",
+        "https://circleback.ai/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-11-12",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public metadata and the provider's tool reference only. Circleback documents scope=user user:write as its default grant and scope=user as read-only; write tools then fail and ask the user to reconnect. The unauthenticated 401 challenge also names scope=\"user user:write\". No Paperclip account connection, discovery, governed write or revocation was run."
+    },
+    {
       "app": "gauge",
       "method": "mcp-oauth",
       "auth": "oauth",
@@ -2015,6 +2035,22 @@
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run",
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
+    },
+    {
+      "app": "sentry",
+      "method": "mcp-user-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Sentry API actions allowed by the token's scopes and its creator's organization role, including issue triage and project/team changes.",
+      "evidence": [
+        "https://github.com/getsentry/sentry-mcp#remote-server",
+        "https://docs.sentry.io/account/auth-tokens/"
+      ],
+      "reviewedAt": "2026-11-11",
+      "liveProof": "not-run",
+      "keyPermissions": "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator; Paperclip cannot increase an existing token's permissions."
     },
     {
       "app": "shopify",

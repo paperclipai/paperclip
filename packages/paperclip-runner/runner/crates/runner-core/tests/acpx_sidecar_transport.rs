@@ -91,11 +91,60 @@ fn a_poisoned_transport_discards_events_buffered_before_failure() {
 
 #[test]
 fn bounds_events_while_waiting_for_a_response() {
-    let mut transport = transport("flood", Duration::from_secs(2));
+    let mut transport = transport("flood", Duration::from_secs(10));
     let error = transport
         .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
         .expect_err("event flood must fail");
     assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn bounds_tiny_events_by_count_while_waiting_for_a_response() {
+    let mut transport = transport("count-flood", Duration::from_secs(20));
+    let error = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect_err("a flood of tiny events must fail");
+    assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn buffers_a_backlog_of_small_events_before_a_response() {
+    let mut transport = transport("backlog", Duration::from_secs(10));
+    transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("a backlog within the byte budget should not fail the request");
+    for expected in 1..=2_048 {
+        let event = transport
+            .poll_event(Duration::ZERO)
+            .expect("buffered event should parse")
+            .expect("buffered event should exist");
+        assert_eq!(event.sequence, expected);
+    }
+    assert!(transport
+        .poll_event(Duration::ZERO)
+        .expect("drained buffer should not fail")
+        .is_none());
+    transport.shutdown().expect("fake sidecar should stop");
+}
+
+#[test]
+fn frees_the_byte_budget_as_buffered_events_drain() {
+    let mut transport = transport("large-backlog", Duration::from_secs(10));
+    let mut expected = 1;
+    for _ in 0..2 {
+        transport
+            .request(GeneratedAcpxSidecarCommand::SessionRead, json!({}))
+            .expect("a drained buffer should admit the next backlog");
+        for _ in 0..192 {
+            let event = transport
+                .poll_event(Duration::ZERO)
+                .expect("buffered event should parse")
+                .expect("buffered event should exist");
+            assert_eq!(event.sequence, expected);
+            expected += 1;
+        }
+    }
+    transport.shutdown().expect("fake sidecar should stop");
 }
 
 #[test]
@@ -324,13 +373,13 @@ fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
 }
 
 #[test]
-fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets() {
+fn previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar() {
     const CHILD: &str = "PAPERCLIP_TEST_MCP_ENV_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets",
+                "previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -386,11 +435,11 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
         let response = sidecar
             .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
             .unwrap();
-        assert_eq!(response["name"], "paperclip-assigned");
-        assert_eq!(response["url"], "http://127.0.0.1:3100/mcp");
+        assert_eq!(response["name"], serde_json::Value::Null);
+        assert_eq!(response["url"], serde_json::Value::Null);
         assert_eq!(
-            response["hasToken"], true,
-            "assigned gateway credential was dropped"
+            response["hasToken"], false,
+            "previous-release gateway credential reached the sidecar"
         );
         assert_eq!(response["hasUnrelatedSecret"], false);
         let expected = match agent {

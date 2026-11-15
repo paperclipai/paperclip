@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeRunFailureCause } from "@paperclipai/shared";
-import { failureCauseFromAdapterResult, failureCauseFromError } from "./run-failure-cause.js";
+import { failureCauseFromAdapterResult, failureCauseFromError, isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
 
 describe("run failure cause", () => {
   it("reads the first safe code from the error and at most three nested causes", () => {
@@ -34,5 +34,21 @@ describe("run failure cause", () => {
     expect(failureCauseFromAdapterResult({ ...base, exitCode: 2 })).toBe("exit_code_2");
     expect(failureCauseFromAdapterResult({ ...base, errorMessage: "select * from secrets where id = $1" })).toBe("adapter_reported_error");
     expect(failureCauseFromAdapterResult(base)).toBe("unknown_error");
+  });
+
+  it("re-queues only a recorded native pre-dispatch failure with a transient database cause", () => {
+    const record = { version: 1, providerWorkStarted: false };
+    const run = { runtimeMode: "native", status: "failed", errorCode: "adapter_failed",
+      resultJson: { failureCause: "40001", nativePreDispatchFailure: record } };
+    expect(isNativePreDispatchTransientFailure(run)).toBe(true);
+    expect(isNativePreDispatchTransientFailure({ ...run, errorCode: "setup_failed", resultJson: { failureCause: "57P01", nativePreDispatchFailure: record } })).toBe(true);
+    // A row saved by an older server has no record and keeps the native hold.
+    expect(isNativePreDispatchTransientFailure({ ...run, resultJson: { failureCause: "40001" } })).toBe(false);
+    expect(isNativePreDispatchTransientFailure({ ...run, resultJson: { failureCause: "40001",
+      nativePreDispatchFailure: { version: 1, providerWorkStarted: true } } })).toBe(false);
+    expect(isNativePreDispatchTransientFailure({ ...run, resultJson: { failureCause: "Error", nativePreDispatchFailure: record } })).toBe(false);
+    expect(isNativePreDispatchTransientFailure({ ...run, errorCode: "native_session_interrupted" })).toBe(false);
+    expect(isNativePreDispatchTransientFailure({ ...run, runtimeMode: "legacy" })).toBe(false);
+    expect(isNativePreDispatchTransientFailure({ ...run, status: "cancelled" })).toBe(false);
   });
 });

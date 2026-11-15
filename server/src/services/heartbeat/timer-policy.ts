@@ -9,6 +9,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+const SINGLE_RUN_RUNNER_PROVIDERS = ["openai_dot", "grok_bot", "muse"];
 
 function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(
@@ -19,6 +20,17 @@ function normalizeMaxConcurrentRuns(value: unknown) {
     HEARTBEAT_MAX_CONCURRENT_RUNS_MIN,
     Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed),
   );
+}
+
+/** The same limit as `parseHeartbeatPolicy(agent).maxConcurrentRuns`, read in SQL. */
+export function maxConcurrentRunsSql(): SQL<number> {
+  const configured = sql`${agents.runtimeConfig}->'heartbeat'->'maxConcurrentRuns'`;
+  return sql<number>`(case
+    when ${agents.adapterType} = 'paperclip_runner'
+      and ${agents.adapterConfig}->>'provider' in (${sql.join(SINGLE_RUN_RUNNER_PROVIDERS.map(provider => sql`${provider}`), sql`, `)}) then 1
+    when jsonb_typeof(${configured}) = 'number' then greatest(${HEARTBEAT_MAX_CONCURRENT_RUNS_MIN},
+      least(${HEARTBEAT_MAX_CONCURRENT_RUNS_MAX}, floor((${configured})::text::numeric)))
+    else ${HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT} end)`;
 }
 
 export function heartbeatTimerPolicyIsWellFormed(agent: typeof agents.$inferSelect): boolean {
@@ -48,7 +60,7 @@ export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
     wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
     maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
-      ["openai_dot", "grok_bot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
+      SINGLE_RUN_RUNNER_PROVIDERS.includes(String(parseObject(agent.adapterConfig).provider))
       ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     skipTimerWhenNoActionableWork: asBoolean(
       heartbeat.skipTimerWhenNoActionableWork ??

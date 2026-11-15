@@ -714,6 +714,23 @@ describe("Cursor Cloud native driver", () => {
     expect((await f.session.read?.())?.providerStatus).toBe("CANCELLED");
   });
 
+  it("records a runner bridge input coercion as a run diagnostic", async () => {
+    const f = await fixture();
+    await f.session.startTurn({ message: { role: "user", text: "Wait for a reply" } }); await f.peer.created.promise;
+    await waitFor(() => f.events.some(event => event.eventType === "item.delta"));
+    const initialized = await rpc(f.options.relay.socketPath, { id: 0, method: "initialize" }, relayHeaders(f.peer));
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    const args = { reportedWorkDisposition: "yielded", summary: "Waiting.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] }, continuation: JSON.stringify(continuation) };
+    await rpc(f.options.relay.socketPath, { id: "coerced", method: "tools/call", params: { name: "paperclip_finish", arguments: args } }, relayHeaders(f.peer), initialized.session);
+    expect(f.handler).toHaveBeenCalledWith(expect.objectContaining({ arguments: { ...args, continuation } }));
+    const recorded = f.events.filter(event => event.eventType === "harness.diagnostic" && event.payload.code === "runner_tool_bridge_diagnostic");
+    expect(recorded.map(event => JSON.parse(String(event.payload.message)))).toEqual([
+      expect.objectContaining({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "paperclip_finish", paths: ["/continuation"] }),
+    ]);
+    await f.session.interrupt!({});
+  });
+
   it("retains only an accepted semantic receipt and waits for actual provider termination", async () => {
     const f = await fixture();
     await f.session.startTurn({ message: { role: "user", text: "Finish semantically" } }); await f.peer.created.promise;

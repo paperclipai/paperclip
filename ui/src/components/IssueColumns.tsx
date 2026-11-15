@@ -1,4 +1,6 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
+import { AgentQueueWaitChip } from "./AgentQueueWait";
+import type { IssueWaiting } from "../lib/liveIssueIds";
 import type { AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
@@ -183,6 +185,7 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
+  waiting = null,
   subtreeLiveCount = 0,
   showSubtreeLiveChip = true,
   showStatus = true,
@@ -192,6 +195,8 @@ export function InboxIssueMetaLeading({
 }: {
   issue: Issue;
   isLive: boolean;
+  /** Set when every live run of the task is still waiting to start. */
+  waiting?: IssueWaiting | null;
   subtreeLiveCount?: number;
   showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
@@ -216,7 +221,9 @@ export function InboxIssueMetaLeading({
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
-      {isLive && (
+      {isLive && waiting ? (
+        <AgentQueueWaitChip queue={waiting.queue} />
+      ) : isLive && (
         <Badge variant="ghost"
           className={cn(
             "px-1.5 sm:gap-1.5 sm:px-2",
@@ -332,7 +339,7 @@ export function InboxIssueTrailingColumns({
                 <AgentIdentity
                   agent={assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName ?? issue.assigneeAgentId.slice(0, 8) }}
                   size="sm"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -345,7 +352,7 @@ export function InboxIssueTrailingColumns({
                   name={userLabel}
                   avatarUrl={assigneeUserAvatarUrl}
                   size="sm"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -368,7 +375,7 @@ export function InboxIssueTrailingColumns({
                     <AgentIdentity
                       agent={creatorAgent ?? { id: originatingActor.id, name }}
                       size="sm"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>
@@ -387,7 +394,7 @@ export function InboxIssueTrailingColumns({
                       name={creatorUserLabel}
                       avatarUrl={creatorUserAvatarUrl}
                       size="sm"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>

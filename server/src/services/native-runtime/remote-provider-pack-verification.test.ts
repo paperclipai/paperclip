@@ -114,6 +114,16 @@ describe("installed provider pack compatibility", () => {
     pack.payload.acpxProfileDigests = { codex: sha("different-codex") };
     await expect(check(reseal(pack))).resolves.toEqual(reseal(pack));
   });
+  it("treats the Runner image inputs digest as provenance", async () => {
+    // A pack built in the Runner image records which image it came from. The
+    // controller's own pack may record another image, or none.
+    const pack = manifest("a");
+    pack.payload.runnerInputsDigest = "c".repeat(64);
+    await expect(check(reseal(pack))).resolves.toEqual(reseal(pack));
+    // The field is part of the sealed payload, so it cannot change unnoticed.
+    await expect(check({ ...reseal(pack), payload: { ...pack.payload, runnerInputsDigest: "d".repeat(64) } }))
+      .rejects.toThrow("runner_remote_provider_artifact_incompatible");
+  });
   it("checks only the selected ACPX profile", async () => {
     const current = manifest("b"), installed = manifest("a");
     current.payload.acpxProfileDigests = { claude: sha("claude"), codex: sha("codex") };

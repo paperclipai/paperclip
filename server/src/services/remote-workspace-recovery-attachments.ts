@@ -16,6 +16,21 @@ import { assertExecutionWorkspaceRecordAccess } from "./task-workspace-access.js
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { getStorageService, type StorageService } from "../storage/index.js";
+import { logger } from "../middleware/logger.js";
+
+/** A source whose recovery receipt cannot be verified is skipped, never fatal.
+ * The run then starts from its workspace's newest verified save, as a run with
+ * no predecessor does. Nothing unverified is imported, and the source keeps its
+ * saved snapshot, restore hold, receipts and recovery action, so workspace
+ * recovery can still settle it. A refusal here could not change that saved
+ * state, so every Retry failed the same way, including on rows that an earlier
+ * release saved. */
+function skipUnverifiedRecoverySource(input: { companyId: string; issueId?: string | null; runId: string },
+  sourceRunId: string, reason: string) {
+  logger.warn({ companyId: input.companyId, issueId: input.issueId, runId: input.runId, sourceRunId,
+    code: "remote_workspace_recovery_receipt_invalid", reason },
+  "Saved work of a previous run was not attached because its recovery receipt could not be verified");
+}
 
 /** Import verified canonical recovery as a sidecar. The selected workspace and
  * its own files stay intact; this does not grant execution or replay authority. */
@@ -43,21 +58,26 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
   const result: Array<{ operationId: string; path: string; sourceRunId: string }> = [];
   for (const source of sources) {
     if (source.runnerProfileJson?.remoteWorkspace == null) {
-      if (canonicalSources.has(source.id)) throw new Error("remote_workspace_recovery_receipt_invalid");
+      if (canonicalSources.has(source.id)) skipUnverifiedRecoverySource(input, source.id, "receipt_without_reference");
       continue;
     }
     const parsed = remoteWorkspaceRunReferenceSchema.safeParse(source.runnerProfileJson.remoteWorkspace);
     if (!parsed.success) {
-      if (hasRequiredWorkspaceRecovery(source.resultJson)) throw new Error("remote_workspace_recovery_receipt_invalid");
+      if (hasRequiredWorkspaceRecovery(source.resultJson)) skipUnverifiedRecoverySource(input, source.id, "reference_unreadable");
       continue;
     }
     const remote = parsed.data;
-    if (canonicalSources.has(source.id) && (remote.state !== "saved" || !remote.snapshotId))
-      throw new Error("remote_workspace_recovery_receipt_invalid");
+    if (canonicalSources.has(source.id) && (remote.state !== "saved" || !remote.snapshotId)) {
+      skipUnverifiedRecoverySource(input, source.id, "receipt_on_unsaved_reference");
+      continue;
+    }
     if (remote.workspaceId === input.workspaceId || remote.state !== "saved" || !remote.snapshotId) continue;
     const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
     if (!proof) {
-      if (hasRequiredWorkspaceRecovery(source.resultJson)) throw new Error("remote_workspace_recovery_receipt_invalid");
+      // A source that saved only the snapshot its own restore loaded left no
+      // unsaved files; any other unverified source is reported and skipped.
+      if (hasRequiredWorkspaceRecovery(source.resultJson) && !await savedOnlyItsRestoredSnapshot(input.db, source, remote))
+        skipUnverifiedRecoverySource(input, source.id, "receipt_unverified");
       continue;
     }
     const operationId = proof.operationId;
@@ -68,8 +88,10 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     input.companyId, remote.workspaceId);
     const saved = await getWorkspaceSnapshot(input.db, { companyId: input.companyId,
       workspaceId: remote.workspaceId, snapshotId: remote.snapshotId });
-    if (!saved || saved.sha256 !== proof.sha256 || saved.generation !== proof.generation)
-      throw new Error("remote_workspace_recovery_snapshot_missing");
+    if (!saved || saved.sha256 !== proof.sha256 || saved.generation !== proof.generation) {
+      skipUnverifiedRecoverySource(input, source.id, "receipt_snapshot_missing");
+      continue;
+    }
     const provenance = JSON.stringify({ schema: "paperclip.remote-workspace-recovery-attachment.v1",
       operationId, sourceRunId: source.id, workspaceId: remote.workspaceId,
       snapshotId: remote.snapshotId, sha256: saved.sha256 });
@@ -99,6 +121,29 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     result.push({ operationId, path: destination, sourceRunId: source.id });
   }
   return result;
+}
+
+/** A run that restored a committed save and then failed (for example before
+ * provider work, after a restart) can keep a restore hold that never received a
+ * recovery receipt. When its saved reference names the very snapshot that its
+ * own succeeded restore loaded, at the same epoch, it saved nothing else: no
+ * unsaved file exists to attach, and the last save already holds its files.
+ * Any other saved snapshot still needs the canonical receipt. */
+async function savedOnlyItsRestoredSnapshot(db: Db, source: typeof heartbeatRuns.$inferSelect,
+  remote: { workspaceId: string; snapshotId?: string | null; epoch: number }): Promise<boolean> {
+  if (!remote.snapshotId) return false;
+  const [restore] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.heartbeatRunId, source.id),
+    eq(workspaceOperations.phase, "remote_workspace_restore"), eq(workspaceOperations.status, "succeeded"),
+    sql`${workspaceOperations.metadata}->>'snapshotId' = ${remote.snapshotId}`,
+    sql`${workspaceOperations.metadata}->>'epoch' = ${String(remote.epoch)}`,
+  )).limit(1);
+  if (!restore) return false;
+  const [snapshot] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+    eq(executionWorkspaceSnapshots.companyId, source.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
+    eq(executionWorkspaceSnapshots.id, remote.snapshotId), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"]),
+  )).limit(1);
+  return Boolean(snapshot);
 }
 
 /** Verify a sidecar already inside an authorized shared workspace. This only
@@ -228,7 +273,13 @@ export async function retainRemoteRecoveryAttachments(input: {
         provenance = await retainedRecoveryAttachmentProvenance({ db: input.db, companyId: input.workspace.companyId,
           workspace: input.workspace, issueIds: [issueId, input.workspace.sourceIssueId].filter((id): id is string => typeof id === "string"),
           sourceRunId: item.sourceRunId, operationId: item.operationId, verifySelectedSnapshot });
-        if (!provenance) throw new Error("remote_workspace_recovery_receipt_invalid");
+        // An unverifiable record is not published again. Its files stay where
+        // they are in the workspace; only the recovered-copy claim is dropped.
+        if (!provenance) {
+          skipUnverifiedRecoverySource({ companyId: input.workspace.companyId,
+            issueId: input.workspace.sourceIssueId, runId: input.runId }, item.sourceRunId, "retained_copy_unverified");
+          continue;
+        }
       }
       await input.assertOwned?.();
       const location = { target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance };

@@ -373,8 +373,31 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
   });
 
-  it.each(["terminating", "cleaning_up"] as const)("keeps the detail page open during %s", async lifecycleState => {
+  it.each([
+    ["terminating", false],
+    ["cleaning_up", false],
+    ["terminating", true],
+    ["cleaning_up", true],
+  ] as const)("leaves the detail page after termination is accepted during %s (work actions in menu: %s)", async (lifecycleState, workActionsInMenu) => {
     mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated", lifecycleState }));
+    const onTerminateSuccess = vi.fn();
+    render(makeAgent(), { onTerminateSuccess, workActionsInMenu });
+    await flushReact();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')!.click(); });
+    await flushReact();
+    await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
+    await flushReact();
+    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(onTerminateSuccess).toHaveBeenCalledWith(expect.objectContaining({
+      id: "agent-1",
+      lifecycleState,
+    }));
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+  });
+
+  it("keeps the detail page open and reports a failed termination", async () => {
+    mockAgentsApi.terminate.mockRejectedValue(new Error("Termination failed"));
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });
     await flushReact();
@@ -382,9 +405,13 @@ describe("AgentActionButtons", () => {
     await flushReact();
     await act(async () => { Array.from(document.body.querySelectorAll("button")).find(button => button.textContent?.includes("Terminate"))!.click(); });
     await flushReact();
-    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+
     expect(onTerminateSuccess).not.toHaveBeenCalled();
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
+    expect(invalidateQueries).not.toHaveBeenCalled();
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      body: "Termination failed",
+      tone: "error",
+    }));
   });
 
   it("calls the terminate success handler after terminating an agent", async () => {
@@ -437,7 +464,7 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
   });
 
-  it("rechecks navigation when the form becomes dirty while termination is pending", async () => {
+  it.each([undefined, "terminating", "cleaning_up"] as const)("rechecks unsaved changes before leaving after termination returns %s", async lifecycleState => {
     let resolveTermination!: (agent: Agent) => void;
     mockAgentsApi.terminate.mockReturnValue(new Promise((resolve) => {
       resolveTermination = resolve;
@@ -469,7 +496,7 @@ describe("AgentActionButtons", () => {
       onTerminateSuccess,
     });
     await flushReact();
-    resolveTermination(makeAgent({ status: "terminated" }));
+    resolveTermination(makeAgent({ status: "terminated", lifecycleState }));
     await flushReact();
 
     expect(onBeforeNavigate).toHaveBeenCalledTimes(2);

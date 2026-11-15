@@ -543,6 +543,12 @@ require_clean_worktree() {
   fi
 }
 
+require_runner_lockfile_current() {
+  if ! node "$REPO_ROOT/scripts/check-release-runner-lockfile.mjs"; then
+    release_fail "a beta or stable release needs a pnpm-lock.yaml that matches the Runner's manifests at HEAD."
+  fi
+}
+
 require_on_master_branch() {
   local current_branch
   current_branch="$(git_current_branch)"

@@ -17,7 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { runInNewContext } from "node:vm";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
@@ -42,7 +41,7 @@ function esbuildFixture(t) {
     writeFileSync(join(location, "package.json"), JSON.stringify(metadata));
     return location;
   };
-  const acpx = writePackage(join(graph, "acpx"), { name: "acpx", version: "0.13.1" });
+  const acpx = writePackage(join(graph, "acpx"), { name: "acpx", version: "0.22.0" });
   const esbuild = writePackage(join(acpx, "node_modules/esbuild"), {
     name: "esbuild", version: "0.28.2", scripts: { postinstall: "node install.js" },
     optionalDependencies: Object.fromEntries([...nativeTargets, "win32-x64"].map(target => [`@esbuild/${target}`, "0.28.2"])),
@@ -52,7 +51,7 @@ function esbuildFixture(t) {
   });
   writePackage(join(graph, "unrelated-linux-x64"), { name: "unrelated-linux-x64", version: "1.0.0" });
   const publish = { name: "@paperclipai/adapter-utils", version: "0.3.1", bundleDependencies: ["acpx"],
-    dependencies: { acpx: "0.13.1" }, optionalDependencies: { unrelated: "1.0.0" } };
+    dependencies: { acpx: "0.22.0" }, optionalDependencies: { unrelated: "1.0.0" } };
   return { directory, graph, esbuild, producerBinary, publish, writePackage };
 }
 const codexTargets = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
@@ -121,7 +120,7 @@ const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), 
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
 
 const acpxRuntimePatch = await readFile(
-  new URL("../patches/acpx@0.13.1.patch", import.meta.url),
+  new URL("../patches/acpx@0.22.0.patch", import.meta.url),
   "utf8",
 );
 const claudeAcpPatch = await readFile(
@@ -129,7 +128,7 @@ const claudeAcpPatch = await readFile(
   "utf8",
 );
 
-for (const version of ["0.12.0", "0.13.1"]) {
+for (const version of ["0.22.0"]) {
   test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
     const patch = await readFile(
       new URL(`../patches/acpx@${version}.patch`, import.meta.url),
@@ -189,16 +188,12 @@ for (const version of ["0.12.0", "0.13.1"]) {
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.12.0"],
-    "patches/acpx@0.12.0.patch",
+    rootPackage.pnpm.patchedDependencies["acpx@0.22.0"],
+    "patches/acpx@0.22.0.patch",
   );
-  assert.equal(
-    rootPackage.pnpm.patchedDependencies["acpx@0.13.1"],
-    "patches/acpx@0.13.1.patch",
-  );
-  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
+  assert.equal(adapterUtilsPackage.dependencies.acpx, "0.22.0");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
-  assert.equal(serverPackage.dependencies.acpx, "0.13.1");
+  assert.equal(serverPackage.dependencies.acpx, "0.22.0");
   assert.ok(serverPackage.bundleDependencies.includes("acpx"));
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
@@ -413,19 +408,22 @@ test("bundled esbuild cannot follow a platform payload or package namespace outs
 });
 
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
-  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
+  assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.22.0"], "patches/acpx@0.22.0.patch");
   assert.equal(
     rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"],
     "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
   );
-  assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
+  assert.equal(runnerPackage.dependencies.acpx, "0.22.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.73.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
   for (const callback of [
-    "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
-    "onAgentSpawn", "onAgentStderr", "onAgentExit",
-    "onSessionNotification", "onClientOperation",
+    "spawnAgent", "requestExtension", "protocolGuardFactory",
   ]) assert.match(acpxRuntimePatch, new RegExp(callback));
+  // Moved to stock 0.22 hooks (spawnAgent, processLifecycle, onAcpMessage).
+  const added = acpxRuntimePatch.split("\n").filter(line => line.startsWith("+")).join("\n");
+  for (const removed of ["spawnCwd", "onAgentSpawn", "onAgentStderr", "onSessionNotification", "onClientOperation", "spawnEnvironment", "agentGoalCapability", "onAgentInitialize"]) {
+    assert.doesNotMatch(added, new RegExp(removed));
+  }
   assert.match(claudeAcpPatch, /usage: \{/);
   assert.match(claudeAcpPatch, /cache_creation_input_tokens/);
 });
@@ -628,7 +626,7 @@ node -e 'const fs=require("node:fs");fs.cpSync(process.env.FAKE_NATIVE_ARTIFACTS
 mkdir -p node_modules/acpx/dist
 node -e 'const fs=require("node:fs");fs.mkdirSync("node_modules/esbuild",{recursive:true});fs.writeFileSync("node_modules/esbuild/package.json",JSON.stringify({name:"esbuild",version:"0.28.2",scripts:{postinstall:"node install.js"},optionalDependencies:Object.fromEntries(["linux-x64","darwin-arm64","darwin-x64"].map(target=>["@esbuild/"+target,"0.28.2"]))}));fs.mkdirSync("node_modules/@esbuild/linux-x64",{recursive:true});fs.writeFileSync("node_modules/@esbuild/linux-x64/package.json",JSON.stringify({name:"@esbuild/linux-x64",version:"0.28.2",os:["linux"],cpu:["x64"]}));'
 printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
-printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
+printf '{"name":"acpx","version":"0.22.0"}\\n' > node_modules/acpx/package.json
 `,
   );
   writeExecutable(
@@ -650,10 +648,9 @@ printf '%s\\n' "$patch_input" > "$target/applied.patch"
 if [[ "$target" != */acpx ]]; then
   exit 0
 fi
-grep -q spawnEnvironment <<< "$patch_input"
+grep -q requestExtension <<< "$patch_input"
 grep -q spawnAgent <<< "$patch_input"
-grep -q onAgentStderr <<< "$patch_input"
-printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
+printf 'patched requestExtension runtime\\n' > "$target/dist/runtime.js"
 `,
   );
 
@@ -697,7 +694,7 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   assert.equal(JSON.parse(readFileSync(join(destinationDir, "node_modules/esbuild/package.json"))).scripts.postinstall, "node install.js");
   assert.match(
     readFileSync(join(stagedAcpxDir, "dist/runtime.js"), "utf8"),
-    /spawnEnvironment/,
+    /requestExtension/,
   );
   assert.match(
     readFileSync(callLog, "utf8"),
@@ -747,21 +744,3 @@ test("npm builds use corepack instead of requiring a global pnpm", () => {
 });
 
 
-test("installed ACPX runtime persists and restores optional goal capabilities", () => {
-  const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));
-  const runtimeSource = readFileSync(requireRunner.resolve("acpx/runtime"), "utf8");
-  const start = runtimeSource.indexOf("function persistedGoalCapability(");
-  const end = runtimeSource.indexOf("function planUpdateEvent(", start);
-  assert.ok(start >= 0 && end > start, "the installed patch must define both goal helpers");
-  const helpers = runInNewContext(runtimeSource.slice(start, end) + ";({ persistedGoalCapability, restoredGoalCapability })", {
-    isRecord: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
-  });
-  assert.equal(helpers.persistedGoalCapability(undefined), undefined);
-  assert.equal(helpers.restoredGoalCapability(undefined), undefined);
-  const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "pause", "clear"] };
-  const saved = JSON.parse(JSON.stringify(helpers.persistedGoalCapability(goal)));
-  assert.equal(saved.control_method, "_session/goal");
-  assert.deepEqual(JSON.parse(JSON.stringify(helpers.restoredGoalCapability(saved))), goal);
-  assert.equal(helpers.persistedGoalCapability({ ...goal, version: 2 }), undefined);
-  assert.equal(helpers.persistedGoalCapability({ ...goal, actions: ["set"] }), undefined);
-});

@@ -700,6 +700,12 @@ export const chatActions = pgTable(
       table.endpointId,
       table.providerActionId,
     ),
+    // Chat-admission checks read an issue's inbound input and its failed-run
+    // retries by company and payload issue id.
+    index("chat_actions_company_issue_kind_idx")
+      .on(table.companyId, sql`(${table.payload}->>'issueId')`, table.kind, table.status)
+      .where(sql`${table.kind} IN ('inbound_wakeup', 'failed_run_retry')`)
+      .concurrently(),
     index("chat_actions_github_stale_head_idx").on(table.companyId, table.endpointId,
       sql`(${table.payload}->'event'->>'deliveryId')`).where(sql`${table.kind} = 'github_review_check'
         and ${table.status} = 'cancelled' and ${table.result}->>'code' = 'stale_head'`),

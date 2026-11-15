@@ -1,3 +1,8 @@
+import express from "express";
+import request from "supertest";
+import {
+  createRunnerAttachmentGrant, RUNNER_ATTACHMENT_DOWNLOAD_PATH, runnerAttachmentDownloadRoutes,
+} from "./runner-attachment-download.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, symlink, stat } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -333,6 +338,64 @@ describe("native same-conversation historical attachment reading", () => {
     return { sourceCommentId, attachmentId: sourceAttachmentId };
   }
 
+  it("opens an authorized historical attachment at the Runner-local path", async () => {
+    const env = { PAPERCLIP_AGENT_JWT_SECRET: randomUUID() };
+    const app = express();
+    app.use(runnerAttachmentDownloadRoutes(db, storage, env));
+    const downloadRemoteAttachment = vi.fn(async (source: Parameters<typeof createRunnerAttachmentGrant>[1]) => {
+      const grant = createRunnerAttachmentGrant(binding, source, "test-turn", "https://tenant.example/file", env);
+      let lockAcquired!: () => void;
+      let unlock!: () => void;
+      const acquired = new Promise<void>(resolve => { lockAcquired = resolve; });
+      const released = new Promise<void>(resolve => { unlock = resolve; });
+      const holder = db.transaction(async tx => {
+        await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+        lockAcquired();
+        await released;
+      });
+      await acquired;
+      const releaseTimer = setTimeout(unlock, 150);
+      try {
+        const response = await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
+          .set("Authorization", `Bearer ${grant.token}`).expect(200);
+        expect(response.body).toEqual(sourceBody);
+      } finally {
+        clearTimeout(releaseTimer);
+        unlock();
+        await holder;
+      }
+      const mismatched = createRunnerAttachmentGrant(binding, { ...source, sourceCommentId: randomUUID() }, "test-turn", grant.url, env);
+      await request(app).get(RUNNER_ATTACHMENT_DOWNLOAD_PATH)
+        .set("Authorization", `Bearer ${mismatched.token}`).expect(404);
+      return "/run/attachment-downloads/history.txt";
+    });
+    const reader = scope({ executionTargetKind: "remote", downloadRemoteAttachment });
+    await expect(reader.read(selection())).resolves.toMatchObject({
+      runnerLocalPath: "/run/attachment-downloads/history.txt", selectedForPublication: false,
+    });
+    expect(downloadRemoteAttachment).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      kind: "history", sourceCommentId, attachmentId: sourceAttachmentId,
+    }));
+    await reader.close();
+  });
+
+  it("stages authorized historical bytes through the bound remote writer and cleans them on close", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const stageRemoteAttachment = vi.fn(async () => ({ workspaceRelativePath: ".paperclip-inbound/remote-history/content", cleanup }));
+    const reader = scope({ executionTargetKind: "remote", workspaceRoot: "/remote/workspace", stageRemoteAttachment });
+    const result = await reader.read(selection());
+    expect(stageRemoteAttachment).toHaveBeenCalledExactlyOnceWith({ body: sourceBody, contentType: "text/plain" });
+    expect(result).toMatchObject({ contentAccess: "staged_workspace_file", workspaceRelativePath: ".paperclip-inbound/remote-history/content", selectedForPublication: false });
+    await reader.close();
+    expect(cleanup).toHaveBeenCalledOnce();
+
+    stageRemoteAttachment.mockClear();
+    const denied = scope({ binding: { ...binding, issueId: randomUUID() }, executionTargetKind: "remote", stageRemoteAttachment });
+    await expect(denied.read(selection())).rejects.toThrow();
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+    await denied.close();
+  });
+
   it("opens verified historical bytes without creating a publication or deliverable, then clears its exact inode", async () => {
     const reader = scope();
     const before = await db.select().from(issueAttachments);
@@ -345,7 +408,7 @@ describe("native same-conversation historical attachment reading", () => {
     });
     expect(result).not.toHaveProperty("objectKey");
     expect(result.workspaceRelativePath).toMatch(/^\.paperclip-inbound\//);
-    const stagedPath = path.join(workspaceRoot, result.workspaceRelativePath);
+    const stagedPath = path.join(workspaceRoot, result.workspaceRelativePath!);
     expect(await readFile(stagedPath)).toEqual(sourceBody);
     expect(await db.select().from(issueAttachments)).toEqual(before);
     expect(await db.select().from(chatPublications)).toEqual([]);
@@ -731,7 +794,7 @@ describe("native same-conversation historical attachment reading", () => {
         filename: "pixel.png",
       });
       expect(
-        await readFile(path.join(workspaceRoot, result.workspaceRelativePath)),
+        await readFile(path.join(workspaceRoot, result.workspaceRelativePath!)),
       ).toEqual(imageBytes);
     } finally {
       await reader.close();
@@ -771,7 +834,7 @@ describe("native same-conversation historical attachment reading", () => {
     try {
       const result = await reader.read(selection());
       expect(
-        await readFile(path.join(workspaceRoot, result.workspaceRelativePath)),
+        await readFile(path.join(workspaceRoot, result.workspaceRelativePath!)),
       ).toEqual(sourceBody);
       expect(result.selectedForPublication).toBe(false);
     } finally {
@@ -927,7 +990,7 @@ describe("native same-conversation historical attachment reading", () => {
       const result = await reader.read(selection());
       expect(checked).toBe(true);
       expect(
-        await readFile(path.join(workspaceRoot, result.workspaceRelativePath)),
+        await readFile(path.join(workspaceRoot, result.workspaceRelativePath!)),
       ).toEqual(sourceBody);
     } finally {
       stagingControl.beforeStage = undefined;

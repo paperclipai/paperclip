@@ -1,4 +1,4 @@
-import { ArtifactFront } from "./ArtifactFront";
+import { IconSheet } from "./ArtifactSheet";
 import { ArtifactStack } from "./ArtifactStack";
 import type { ArtifactKind, ArtifactSubject } from "./kinds";
 import brandPreview from "./assets/empty-brand.svg";
@@ -8,5 +8,5 @@ export function ArtifactEmptyGraphic({ kind = "file", stack = false }: { kind?: 
   const subject: ArtifactSubject = stack
     ? { kind: "image", title: "", thumbnailUrl: brandPreview, aspect: 1.5 }
     : { kind, title: "", ...(kind === "document" ? { ext: "md" } : {}) };
-  return stack ? <ArtifactStack front={subject} /> : <ArtifactFront subject={subject} />;
+  return stack ? <ArtifactStack front={subject} /> : <IconSheet subject={subject} showLabel={false} />;
 }

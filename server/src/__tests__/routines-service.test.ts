@@ -251,6 +251,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(f.wakeups).toEqual([]);
   });
 
+  it("lets only a person choose an unauthenticated public webhook trigger", async () => {
+    const f = await seedFixture();
+    const webhook = { kind: "webhook", enabled: true, replayWindowSec: 300 } as const;
+    const agent = { agentId: f.agentId };
+    await expect(f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, agent))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("Agents can only create authenticated webhook triggers") });
+    const signed = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "bearer" }, agent);
+    expect(signed.trigger.signingMode).toBe("bearer");
+    await expect(f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, agent)).rejects.toMatchObject({ status: 403 });
+    const open = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, { userId: "board-user" });
+    expect(open.trigger.signingMode).toBe("none");
+    await expect(f.svc.updateTrigger(open.trigger.id, { label: "Inbound", signingMode: "none" }, agent))
+      .resolves.toMatchObject({ trigger: { label: "Inbound", signingMode: "none" } });
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, { userId: "board-user" });
+    const unsafeRevision = (await f.svc.listRevisions(f.routine.id))[0]!.id;
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "bearer" }, { userId: "board-user" });
+    await expect(f.svc.restoreRevision(f.routine.id, unsafeRevision, agent)).rejects.toMatchObject({ status: 403 });
+    expect((await f.svc.getTrigger(signed.trigger.id))!.signingMode).toBe("bearer");
+  });
+
   it("preserves creation ancestry through regular webhooks, child tasks, and standalone follow-ups", async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
     const f = await seedFixture();
@@ -1176,6 +1196,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain(sentinelSecret);
     expect(serialized).not.toContain("adapterConfig");
     expect(serialized).not.toContain("runtimeConfig");
+  });
+
+  it("returns only the same agent's earlier api receipt when it retries its key as a manual run", async () => {
+    const { companyId, routine, svc, agentId } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const boardApi = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "shared-key" }, { userId: "operator" });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "operator", action: "routine.run_triggered", entityType: "routine_run", entityId: boardApi.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, boardApi.linkedIssueId!));
+    const agentRun = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "shared-key" }, { agentId });
+    expect(agentRun.id).not.toBe(boardApi.id);
+    const earlier = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "agent-retry" }, { agentId });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, agentId, action: "routine.run_triggered", entityType: "routine_run", entityId: earlier.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, earlier.linkedIssueId!));
+    const retry = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { agentId });
+    expect(retry.id).toBe(earlier.id);
+    const board = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { userId: "operator" });
+    expect(board.id).not.toBe(earlier.id);
   });
 
   it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
