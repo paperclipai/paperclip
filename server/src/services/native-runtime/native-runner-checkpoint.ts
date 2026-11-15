@@ -9,20 +9,16 @@ import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
+import { encryptCheckpointParts, isRoutineCheckpointSave, ROUTINE_CHECKPOINT_SAVE_SQL, routineCheckpointSaveParameters,
+  type RoutineCheckpointSaveResult } from "./native-runner-checkpoint-routine-save.js";
+import { WriterThreadUnavailableError, writerThreadsFor } from "../writer-threads/writer-threads.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
 export const NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
 export type NativeRunnerCheckpointOwner = Binding & { bootId: string; leaseOwner: string; generation: number; authorityRunId: string };
 export type NativeRunnerCheckpointFenceOwner = Omit<NativeRunnerCheckpointOwner, "leaseOwner"> & { leaseOwner: string | null };
-function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
-  if (!records.size) return [];
-  const cipher = createLocalEncryptedCipher("write");
-  return [...records].map(([part, contents]) => ({
-    companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part,
-    material: cipher.encrypt(JSON.stringify({ companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part, contents })),
-  }));
-}
+const encryptParts = encryptCheckpointParts;
 
 export async function insertMigratedNativeRunnerCheckpoint(tx: CheckpointTransaction, binding: Binding, checkpoint: DurablePrpCheckpoint) {
   if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
@@ -128,34 +124,30 @@ export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransactio
   await validateNativeRunnerCheckpointOwner(tx, owner, locked, newWork);
 }
 
-const ROUTINE_CHECKPOINT_SAVE_SQL = `
-  with locked_owner as (
-    select lease_expires_at from native_run_finalizations
-    where company_id = $1::uuid and issue_id = $2::uuid and run_id = $3::uuid and controller_boot_id = $4::text
-      and controller_generation = $5::integer and lease_owner = $6::text
-    for update
-  ), owner as (
-    select 1 from locked_owner where lease_expires_at > clock_timestamp()
-  ), written as (
-    insert into "native_runner_checkpoints" (company_id, issue_id, run_id, part, material)
-    select $1::uuid, $2::uuid, $7::uuid, part.value ->> 'part', part.value -> 'material'
-    from owner cross join jsonb_array_elements($8::jsonb) as part(value)
-    on conflict (run_id, part) do update set material = excluded.material, updated_at = now()
-    returning 1
-  )
-  select (select count(*)::int from owner) as owned, (select count(*)::int from written) as written`;
-
 export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpointOwner) {
   const persistenceDb = checkpointDb(db);
+  const writerThreads = writerThreadsFor(db);
   let previousWork = new Set<string>();
   return async (checkpoint: DurablePrpCheckpoint): Promise<void> => {
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
+    let offloaded = false;
+    if (writerThreads && isRoutineCheckpointSave(checkpoint, owner)) {
+      try {
+        const saved = await writerThreads.saveRoutineCheckpoint(owner, checkpoint.changedRecords);
+        offloaded = true;
+        if (saved.owned === 1 && saved.written === checkpoint.changedRecords.size) {
+          previousWork = new Set(checkpoint.workCommandIds);
+          return;
+        }
+      } catch (error) {
+        if (!(error instanceof WriterThreadUnavailableError) || !error.fenced) throw error;
+      }
+    }
     const changed = encryptParts(owner, checkpoint.changedRecords);
-    if (changed.length > 0 && !checkpoint.reset && checkpoint.removedRecords.length === 0 && !checkpoint.changedRecords.has("header")
+    if (!offloaded && changed.length > 0 && !checkpoint.reset && checkpoint.removedRecords.length === 0 && !checkpoint.changedRecords.has("header")
       && !checkpoint.predecessor && owner.runId === owner.authorityRunId) {
-      const [saved] = await persistenceDb.$client.unsafe<{ owned: number; written: number }[]>(ROUTINE_CHECKPOINT_SAVE_SQL, [
-        owner.companyId, owner.issueId, owner.authorityRunId, owner.bootId, String(owner.generation), owner.leaseOwner, owner.runId,
-        JSON.stringify(changed.map(part => ({ part: part.part, material: part.material })))]);
+      const [saved] = await persistenceDb.$client.unsafe<RoutineCheckpointSaveResult[]>(ROUTINE_CHECKPOINT_SAVE_SQL,
+        routineCheckpointSaveParameters(owner, changed));
       if (saved?.owned === 1 && saved.written === changed.length) {
         previousWork = new Set(checkpoint.workCommandIds);
         return;

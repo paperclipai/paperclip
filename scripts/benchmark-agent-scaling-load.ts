@@ -48,11 +48,13 @@
  * PROFILE (recorded), DELTAS_PER_S, EVENTS_PER_S, API_PER_S, LEASE_S (20),
  * EVENT_MIX (recorded, or one event type for all other events),
  * DELTA_BYTES (120), EVENT_KIB (2), SPAN_BYTES (600), DELTA_BATCH_MS (250),
- * LEASE_MODE (batch), DATABASE_POOL_MAX (driver default 10).
+ * LEASE_MODE (batch), DATABASE_POOL_MAX (driver default 10), WRITER_THREADS (0: routine controller
+ * checkpoint saves on the main thread; k: on k writer threads), WRITER_THREAD_POOL_MAX (2).
  */
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { loadavg } from "node:os";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createRequire } from "node:module";
 import { agents, checkpointDb, companies, createDb, heartbeatRuns, issues, livenessDb, nativeRunFinalizations,
@@ -65,6 +67,7 @@ import { renewNativeExecutionLeasesNow, renewNativeSessionExecutionLease, startN
   from "../server/src/services/native-runtime/native-execution-lease.js";
 import { nativeRunnerCheckpointWriter } from "../server/src/services/native-runtime/native-runner-checkpoint.js";
 import { initializeRunIdentity } from "../server/src/services/run-identity.js";
+import { closeWriterThreads, installWriterThreads, readWriterThreadSettings } from "../server/src/services/writer-threads/writer-threads.js";
 
 const serverRequire = createRequire(new URL("../server/package.json", import.meta.url));
 const express = serverRequire("express") as typeof import("express");
@@ -120,6 +123,8 @@ const round = (value: number, digits = 1) => Number(value.toFixed(digits));
 
 const temporary = await startEmbeddedPostgresTestDatabase("agent-scaling-load-");
 const db = createDb(temporary.connectionString);
+const writerThreads = installWriterThreads(db, temporary.connectionString, readWriterThreadSettings({
+  PAPERCLIP_WRITER_THREADS: process.env.WRITER_THREADS ?? "0", PAPERCLIP_WRITER_THREAD_POOL_MAX: process.env.WRITER_THREAD_POOL_MAX }));
 // Checkpoint saves and lease renewals use their own pools; meter all three.
 const POOLS = ["main", "checkpoint", "lease"] as const;
 const meters = [db, checkpointDb(db), livenessDb(db)].map(client => meterDatabaseStatements(client, temporary.connectionString));
@@ -172,6 +177,7 @@ try {
 
   type Agent = (typeof fleet)[number];
   let checkpointFailures = 0, firstCheckpointError = "";
+  const checkpointAck = { open: false, ms: [] as number[] };
   // One runner connection delivers a run's events in order, and the server
   // awaits each append before it reads the next. So deltas and other events
   // of one agent share one queue and never append at the same time.
@@ -256,7 +262,10 @@ try {
       const changed = new Map([[`event:${seq}`, JSON.stringify(event)], ["cursor", JSON.stringify({ ackedSourceSeq: seq })]]);
       for (const [key, value] of changed) agent.records.set(key, value);
       // The save is serial per controller and does not block the next frame.
-      agent.checkpointTail = agent.checkpointTail.then(() => agent.write(agent.checkpoint(changed, false))).catch(error => {
+      const queuedAt = performance.now();
+      agent.checkpointTail = agent.checkpointTail.then(() => agent.write(agent.checkpoint(changed, false))).then(() => {
+        if (checkpointAck.open) checkpointAck.ms.push(performance.now() - queuedAt);
+      }).catch(error => {
         checkpointFailures += 1;
         firstCheckpointError ||= String((error as Error)?.message ?? error).slice(0, 200);
       });
@@ -275,12 +284,14 @@ try {
   await fleet[0]!.checkpointTail;
   assert.equal(checkpointFailures, 0, `checkpoint save failed during warm-up: ${firstCheckpointError}`);
   for (const eventType of Object.keys(eventsByType)) delete eventsByType[eventType];
+  await Promise.all(fleet.map(agent => agent.write(agent.checkpoint(new Map([["cursor", JSON.stringify({ ackedSourceSeq: 0 })]]), false))));
+  const loadAverageAtStart = round(loadavg()[0]!);
 
   const stats = Object.fromEntries(SOURCES.map(source => [source, { done: 0, failed: 0, late: [] as number[], firstError: "" }])) as
     Record<Source, { done: number; failed: number; late: number[]; firstError: string }>;
   const delay = monitorEventLoopDelay({ resolution: 10 });
   const [commitsBefore] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
-  const poolsBefore = poolStatements(), statementsBefore = { ...meter.read() }, cpuBefore = process.cpuUsage(), loopBefore = performance.eventLoopUtilization();
+  const poolsBefore = poolStatements(), statementsBefore = { ...meter.read() }, cpuBefore = process.cpuUsage(), threadCpuBefore = process.threadCpuUsage(), loopBefore = performance.eventLoopUtilization();
   const heapBefore = process.memoryUsage().heapUsed;
   let allocated = 0, lastHeap = heapBefore;
   const sampler = setInterval(() => { const heap = process.memoryUsage().heapUsed; if (heap > lastHeap) allocated += heap - lastHeap; lastHeap = heap; }, 20);
@@ -288,6 +299,7 @@ try {
   const started = performance.now(), deadline = started + SECONDS * 1000;
   // Set when the window closes: an operation that settles later is not done.
   let windowClosed = false;
+  checkpointAck.open = true;
 
   // With the shared schedule every lease of the process renews in one tick,
   // so the lease source is one stream for the fleet, not one per agent.
@@ -335,12 +347,13 @@ try {
   // Freeze the per-source counts with the other measurements below. A delta
   // that commits after this, while the queued work drains, is not done.
   windowClosed = true;
+  checkpointAck.open = false;
   await Promise.all(renewals.map(renewal => renewal.stop()));
   for (const agent of fleet) if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
   const elapsedMs = performance.now() - started;
   delay.disable();
   clearInterval(sampler);
-  const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), statementsAfter = meter.read(), poolsAfter = poolStatements();
+  const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), threadCpu = process.threadCpuUsage(threadCpuBefore), statementsAfter = meter.read(), poolsAfter = poolStatements();
   // Read the commit counter before the checkpoint saves still queued drain,
   // so it covers the same window as the statement totals.
   const [commitsAfter] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
@@ -354,6 +367,7 @@ try {
       eventLoopUtilization: round(loop.utilization, 3),
       eventLoopDelayMs: { p50: round(delay.percentile(50) / 1e6), p99: round(delay.percentile(99) / 1e6), max: round(delay.max / 1e6) },
       cpuCores: round((cpu.user + cpu.system) / 1e6 / seconds, 2),
+      mainThreadCpuCores: round((threadCpu.user + threadCpu.system) / 1e6 / seconds, 2),
       heapGrowthSampledMBPerSecond: round(allocated / 1e6 / seconds),
     },
     database: {
@@ -371,11 +385,15 @@ try {
           max: stat.late.length ? round(stat.late.reduce((max, value) => Math.max(max, value), -Infinity)) : null } }];
     })),
     profile: PROFILE, eventsIssuedByType: eventsByType, deltaBatchMs: DELTA_BATCH_MS, leaseMode: LEASE_BATCHED ? "batch" : "single", leasesLost,
-    checkpointSaves: { failed: checkpointFailures, firstError: firstCheckpointError || undefined },
+    checkpointSaves: { failed: checkpointFailures, firstError: firstCheckpointError || undefined,
+      ackMs: { p50: quantile(checkpointAck.ms, 0.5), p99: quantile(checkpointAck.ms, 0.99) } },
+    writerThreads: writerThreads ? { threads: writerThreads.threads, stats: writerThreads.stats() } : null,
+    loadAverage: { start: loadAverageAtStart, end: round(loadavg()[0]!) },
   }, null, 2));
 } finally {
   server?.closeAllConnections();
   server?.close();
+  await closeWriterThreads(db, 5_000);
   // The side pools keep the process alive unless they are ended as well. An
   // end can wait on a connection that is still closing, so it is bounded.
   await Promise.race([sleep(6_000), Promise.all([db, checkpointDb(db), livenessDb(db)]
