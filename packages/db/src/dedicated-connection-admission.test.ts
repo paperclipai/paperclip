@@ -125,6 +125,31 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection admission", () =>
     expect(dedicatedDbConnectionStats(db)).toMatchObject({ inUse: 0, waiting: 0, overLimit: 0 });
   }, 120_000);
 
+  it("admits queued callers in arrival order as slots free one at a time", async () => {
+    const db = owner({ dedicatedConnectionMax: 1 });
+    const releases: Array<() => void> = [];
+    const admitted: string[] = [];
+    const hold = (label: string) => withDedicatedDbConnection(db, async dedicated => {
+      admitted.push(label);
+      await dedicated.execute(sql`select 1`);
+      await new Promise<void>(resolve => { releases.push(resolve); });
+    });
+    const first = hold("first");
+    await expect.poll(() => releases.length).toBe(1);
+    const queued = ["a", "b", "c", "d"].map(label => hold(label));
+    await expect.poll(() => dedicatedDbConnectionStats(db)!.waiting).toBe(4);
+    for (let expected = 2; expected <= 5; expected++) {
+      releases.shift()!();
+      await expect.poll(() => releases.length).toBe(1);
+      expect(admitted).toHaveLength(expected);
+      expect(dedicatedDbConnectionStats(db)!.inUse).toBe(1);
+    }
+    releases.shift()!();
+    await Promise.all([first, ...queued]);
+    expect(admitted).toEqual(["first", "a", "b", "c", "d"]);
+    expect(dedicatedDbConnectionStats(db)).toMatchObject({ inUse: 0, waiting: 0, queued: 4, overLimit: 0 });
+  });
+
   it("lets every holder take its nested connection while the limit is full and others queue", async () => {
     const db = owner({ dedicatedConnectionMax: 2 });
     let release!: () => void;
