@@ -125,7 +125,7 @@ describe("heartbeat run-control module boundary", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it("defers destruction when a warm session remains busy", async () => {
+  it("defers destruction and records a retry when a warm session remains busy", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     deps.getRunCleanupState.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
@@ -133,7 +133,7 @@ describe("heartbeat run-control module boundary", () => {
     await createHeartbeatRunControl(database.db, deps).releaseEnvironmentLeasesForRun({ runId: "busy", companyId: "company", agentId: "agent", status: "failed", providerResourceDisposition: "destroy" });
     expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledWith({ runId: "busy", reason: "terminal heartbeat run destroyed its environment lease" });
     expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
-    expect(database.access).not.toHaveBeenCalled();
+    expect(database.access).toHaveBeenCalledWith(expect.anything(), "select", expect.anything());
   });
 });
 
@@ -869,6 +869,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, heartbeatRunId: runId,
       issueId: issue.id, provider: "daytona", providerLeaseId, status: "active", leasePolicy,
       metadata: { driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true, remoteCwd: "/work" } });
+    await db.insert(heartbeatRunEvents).values({ companyId: company.id, runId, agentId: agent.id, seq: 1,
+      eventType: "native.process_start_requested", stream: "system", level: "info", message: "Runner launch requested" });
     const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
     let ready!: () => void, release!: () => void;
     const acquired = new Promise<void>(resolve => { ready = resolve; });

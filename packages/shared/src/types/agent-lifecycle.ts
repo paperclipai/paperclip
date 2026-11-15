@@ -23,6 +23,8 @@ export interface AgentLifecycleOperation {
   retryRequired?: boolean;
   /** Failed generic host verification tests for this saved configuration. */
   verificationFailures?: number;
+  pendingReason?: string;
+  pendingPasses?: number;
   attempts: number;
   responsibleUserId?: string | null;
   /** Why a pause started: its holds and the company's pause reason at that moment. Runs the
