@@ -116,6 +116,42 @@ export const LIFECYCLE_CLI_GENERIC_ERROR_MESSAGES: Record<string, string> = {
   get payload_user_id_mismatch(): string {
     return this.PAYLOAD_USER_ID_MISMATCH;
   },
+
+  MANIFEST_HASH_MISMATCH:
+    "JSONL SHA-256 checksum does not match manifest jsonl_sha256.",
+  get manifest_hash_mismatch(): string {
+    return this.MANIFEST_HASH_MISMATCH;
+  },
+
+  MANIFEST_RECORD_COUNT_MISMATCH:
+    "JSONL record count does not match manifest record_count.",
+  get manifest_record_count_mismatch(): string {
+    return this.MANIFEST_RECORD_COUNT_MISMATCH;
+  },
+
+  RECORD_MANIFEST_MISMATCH:
+    "JSONL record metadata does not match manifest.",
+  get record_manifest_mismatch(): string {
+    return this.RECORD_MANIFEST_MISMATCH;
+  },
+
+  FILTER_BUDGET_EXCEEDED:
+    "Estimated or actual filter cost exceeds --max-cost-usd budget.",
+  get filter_budget_exceeded(): string {
+    return this.FILTER_BUDGET_EXCEEDED;
+  },
+
+  FILTER_INVALID_CLASSIFICATION:
+    "LLM classifier returned unparseable or invalid classification.",
+  get filter_invalid_classification(): string {
+    return this.FILTER_INVALID_CLASSIFICATION;
+  },
+
+  FILTER_KEY_REQUIRED:
+    "OpenAI API key required for non-dry-run execution.",
+  get filter_key_required(): string {
+    return this.FILTER_KEY_REQUIRED;
+  },
 };
 
 export const LIFECYCLE_SAFE_STATE_MISMATCH_MESSAGES = [
@@ -143,4 +179,15 @@ export const LIFECYCLE_SAFE_INVALID_ARGUMENT_EXACT_MESSAGES = [
   "Flag --company <uuid> is required for export.",
   "Flag --agent <uuid> is required for export.",
   "Flag --output-dir is required when --confirm is supplied.",
+  "Flag --manifest <path> is required for filter.",
+  "Flag --jsonl <path> is required for filter.",
+  "Manifest file is not valid JSON.",
+  "Manifest must be a JSON object.",
+  "Manifest contains invalid UUID identifiers.",
+  "Manifest jsonl_sha256 is missing or invalid SHA-256 hex string.",
+  "Manifest record_count must be a non-negative integer.",
+  "Flag --company does not match manifest company_id.",
+  "Flag --agent does not match manifest agent_id.",
+  "Flag --upgrade-id does not match manifest upgrade_id.",
+  "Invalid --concurrency. Must be an integer between 1 and 16.",
 ] as const;

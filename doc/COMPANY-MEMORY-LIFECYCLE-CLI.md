@@ -15,6 +15,7 @@ Confirmed mutations require `--confirm <company-uuid>`, matching `--company` whe
 | `rollback` | Clear marker and revert/terminate the upgrade state. | Yes: marker/state/lease; never deletes live rows. | Yes. | Yes, `--dry-run`. | `--table`, `--prod`. | `sweeping`, `needs_recovery`, or `pruning`/`completed`; refused once pruning starts. |
 | `recover` | Recover `needs_recovery` to recorded prior state and release the lease. | Yes, atomically: state/error/lease. Never changes marker. | Yes. | Yes, `--dry-run`. | `--control-plane-url`, `--prod`. | State is not `needs_recovery`, deletion admission fails, invalid recovery target, or lease/CAS conflict. |
 | `export` | Export converted memories for a single agent from tenant staging to JSONL and manifest files for `rh-memory-mcp` import. | No DB writes; writes external files only with `--confirm`. | Yes (`--confirm <company-uuid>`). | Yes (default is dry run). | `--company`, `--agent`, `--upgrade-id`, `--output-dir`, `--confirm`, `--database-url`, `--control-plane-url`, `--format`, `--table`, `--prod`. | Needs recovery, terminal state aborted, missing staging/ledger tables, unknown agent or non-hermes_local / terminated agent, payload user_id mismatch or malformed payload, missing `--output-dir`, or file path rejection. |
+| `filter` | Filter low-value (transient/operational) records from an already-exported JSONL+manifest pair (TECH-8572). | No DB writes; writes filtered external files only with `--confirm`. | Yes (`--confirm <company-uuid>`). | Yes (`--dry-run` or omitting `--confirm`). | `--manifest`, `--jsonl`, `--output-dir`, `--company`, `--agent`, `--upgrade-id`, `--openai-key-file`, `--model`, `--max-cost-usd`, `--concurrency`, `--chat-rpm`, `--chat-tpm`, `--keep-import-keys`, `--dry-run`, `--confirm`, `--prod`. | Checksum/count mismatch, record metadata mismatch, budget exceeded, missing API key on real run, or file path rejection. |
 
 `status` and `prune` are not built. Do not substitute manual SQL or attempt those commands.
 
@@ -63,3 +64,35 @@ When run with `--confirm`:
 - Does NOT prune or delete staging, ledger, or live rows.
 - Does NOT modify control-plane records, lease tokens, or counters.
 - Does NOT import memories into `rh-memory-mcp` (downstream import is performed separately).
+
+## Filter subcommand (`pnpm memory:upgrade filter`)
+
+The `filter` subcommand removes low-value (transient/operational) records from an already-exported memory JSONL+manifest pair prior to import into `rh-memory-mcp` (TECH-8572).
+
+### Two-stage classification
+1. **Deterministic prefilter (Stage 1)**: Evaluates a versioned rule list of 10 rules (`rule_run_identifier_or_uuid`, `rule_run_id_statement`, `rule_api_base_url`, `rule_wake_trigger_reason`, `rule_status_complete_marked_done`, `rule_ticket_marked_done`, `rule_no_assigned_tasks`, `rule_made_no_changes`, `rule_no_new_memories_saved`, `rule_agent_instruction_echo`). Drops matching records with zero model cost.
+2. **LLM classifier (Stage 2)**: Classifies remaining records with strict structured output (`gpt-5.4-mini`, temperature 0, pinned prompt SHA-256) into a closed set of reasons:
+   - Keep reasons: `durable_fact`, `durable_preference`, `decision`, `lesson`, `procedure`.
+   - Drop reasons: `run_status`, `transient_id`, `environment_detail`, `uninformative`.
+   - Concurrency: `--concurrency <int>` (default 4, range 1..16). Bounded retries (max 4) on 429/5xx/network errors with 60-second per-request timeout. Terminal 400/401/403/insufficient_quota abort the run promptly.
+
+### Budget and key resolution
+- Preflight worst-case projection check: calculated conservatively from serialized request body bytes (body bytes / 3 + 100 max completion tokens). Refuses to start if projected cost exceeds `--max-cost-usd` (default $2).
+- In-flight reservation: reserves cost before dispatching each concurrent request and settles upon completion, ensuring concurrent in-flight requests never jointly exceed `--max-cost-usd`.
+- Operational cost guidance:
+  - **Talent** (~368 records): ~$0.10 USD (well within default $2).
+  - **CTO** (~1,100 records): ~$0.31 USD (well within default $2).
+  - **Chief** (~15.9k records): ~$4.45 USD. Chief will exceed the default `--max-cost-usd 2`, so operators must pass `--max-cost-usd 5` or higher. At default concurrency 4 (and 500 RPM), Chief takes approximately 1.5–2 hours (or multiple hours at concurrency 2).
+- Key resolution: reads from external `--openai-key-file` (0600, outside repository) or `company_secrets` via the control plane when `--company` is provided. Never reads `process.env.OPENAI_API_KEY`.
+- `--dry-run` without an API key runs Stage 1 deterministic prefiltering only and reports counts needing classification.
+
+### Output files, COMPLETE marker, and audit report
+All output files are written to an exclusive temporary staging directory (mode `0700`) next to the target destination. Upon writing all artifacts and the `COMPLETE` marker, the directory is atomically renamed to `<output-dir>`. If a failure occurs, the temporary directory is cleaned up and no destination directory is created. Operators and downstream ingestion tooling must only consume output directories containing `COMPLETE`.
+
+When run with `--confirm <company-uuid>`:
+- `<output-dir>/<jsonl-filename>`: Rewritten JSONL retaining kept records in original input order and key structure (mode `0600`).
+- `<output-dir>/<manifest-filename>`: Rewritten manifest conforming strictly to export manifest schema (containing only the 11 export keys, no extra top-level keys) with updated `record_count`, recomputed `jsonl_sha256`, and `skipped_counts_by_outcome.dropped_low_value`.
+- `<output-dir>/filter-metadata.json`: Contains the full filter metadata block (`filter_id`, `filter_version`, `prompt_sha256`, `model`, counts, rule breakdowns, timestamps).
+- `<output-dir>/filter-audit.txt` & `<output-dir>/filter-audit.json`: Audit reports listing `(import_key, decision, stage, reason)` only — never containing memory text.
+- `<output-dir>/COMPLETE`: Written last before directory atomic publication.
+- `--keep-import-keys <file>` allows force-keeping specific records to reverse incorrect classifications without re-running the model across all records. Dropped records are not deleted from the old store.

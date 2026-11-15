@@ -83,6 +83,12 @@ import {
   type RunExportCliDependencies,
 } from "./memory-upgrade-export.js";
 import {
+  ALLOWED_FILTER_FLAGS,
+  BOOLEAN_FILTER_FLAGS,
+  runFilterCli,
+  type RunFilterCliDependencies,
+} from "./memory-upgrade-filter.js";
+import {
   LIFECYCLE_CLI_GENERIC_ERROR_MESSAGES,
   LIFECYCLE_SAFE_INVALID_ARGUMENT_EXACT_MESSAGES,
   LIFECYCLE_SAFE_STATE_MISMATCH_MESSAGES,
@@ -97,6 +103,7 @@ export {
   ALLOWED_STATUS_FLAGS, BOOLEAN_STATUS_FLAGS,
   ALLOWED_RECOVER_FLAGS, BOOLEAN_RECOVER_FLAGS, runRecoverCli, type RunRecoverCliDependencies,
   ALLOWED_EXPORT_FLAGS, BOOLEAN_EXPORT_FLAGS, runExportCli, type RunExportCliDependencies,
+  ALLOWED_FILTER_FLAGS, BOOLEAN_FILTER_FLAGS, runFilterCli, type RunFilterCliDependencies,
 };
 
 export const VALUE_FLAGS = new Set([
@@ -134,6 +141,10 @@ export const VALUE_FLAGS = new Set([
   "--max-drain-hours",
   "--probe-interval-minutes",
   "--blocking-run-limit",
+  "--manifest",
+  "--jsonl",
+  "--keep-import-keys",
+  "--concurrency",
 ]);
 
 export const ALLOWED_CENSUS_FLAGS = new Set([
@@ -698,6 +709,13 @@ const SAFE_INVALID_ARGUMENT_REGEXES = [
   /^Invalid --[a-z0-9-]+\. Must be a non-negative number\.$/,
   /^Flag '--[a-z0-9-]+' exceeds the operational cap of \$[0-9,]+\.$/,
   /^Invalid --[a-z0-9-]+\. Exceeds the operational cap of \$[0-9,]+\.$/,
+  /^(?:Manifest|JSONL|Keep-import-keys) file (?:does not exist|could not be read) at path: .+\.$/,
+  /^Invalid import_key in keep-import-keys file at line \d+: .+\.$/,
+  /^Unsupported manifest format_version: .+\. Expected 1\.$/,
+  /^JSONL line \d+ is not valid JSON\.$/,
+  /^JSONL line \d+ is not an object\.$/,
+  /^JSONL record at line \d+ metadata does not match manifest\.$/,
+  /^JSONL record at line \d+ (?:has invalid UUID keys|has invalid text length|has invalid confidence|has invalid created_at timestamp|has invalid type metadata|has invalid subject metadata)\.$/,
 ];
 
 const SAFE_INVALID_ARGUMENT_EXACT_MESSAGES = new Set([
@@ -1095,7 +1113,7 @@ export async function main(argv: string[] = process.argv): Promise<number> {
 
   if (!subcommand) {
     console.error("Usage: pnpm memory:upgrade <subcommand> [options]");
-    console.error("Available subcommands: census, sweep, publish, flip, drain, verify, rollback, recover, export");
+    console.error("Available subcommands: census, sweep, publish, flip, drain, verify, rollback, recover, export, filter");
     return 1;
   }
 
@@ -1135,6 +1153,10 @@ export async function main(argv: string[] = process.argv): Promise<number> {
     return await runExportCli(args.slice(1));
   }
 
+  if (subcommand === "filter") {
+    return await runFilterCli(args.slice(1));
+  }
+
   if (STUB_SUBCOMMANDS.has(subcommand)) {
     console.error(`Error: Subcommand '${subcommand}' is not implemented yet.`);
     return 1;
@@ -1146,7 +1168,7 @@ export async function main(argv: string[] = process.argv): Promise<number> {
     console.error("Error: Unknown subcommand.");
   }
   console.error("Usage: pnpm memory:upgrade <subcommand> [options]");
-  console.error("Available subcommands: census, sweep, publish, flip, drain, verify, rollback, recover, export");
+  console.error("Available subcommands: census, sweep, publish, flip, drain, verify, rollback, recover, export, filter");
   return 1;
 }
 

@@ -5,6 +5,22 @@
 export const EXPORT_MAX_TEXT_CHARS = 2000;
 export const EXPORT_MAX_METADATA_CHARS = 200;
 
+export const EXPORT_MANIFEST_ALLOWED_KEYS = [
+  "format_version",
+  "company_id",
+  "agent_id",
+  "upgrade_id",
+  "converter_id",
+  "converter_version",
+  "record_count",
+  "skipped_counts_by_outcome",
+  "jsonl_sha256",
+  "created_at",
+  "tool",
+] as const;
+
+export type ExportManifestKey = (typeof EXPORT_MANIFEST_ALLOWED_KEYS)[number];
+
 const ISO_WITH_TZ_REGEX =
   /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)$/i;
 

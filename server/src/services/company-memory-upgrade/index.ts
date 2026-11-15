@@ -32,3 +32,8 @@ export * from "./recover-report.js";
 export * from "./recover.js";
 export * from "./export.js";
 export * from "./export-contract.js";
+export * from "./filter.js";
+export * from "./filter-contract.js";
+export * from "./filter-rules.js";
+export * from "./filter-classifier.js";
+export * from "./filter-paths.js";

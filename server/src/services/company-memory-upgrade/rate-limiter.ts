@@ -19,6 +19,7 @@ export interface RateLimiterOptions {
   rpm: number;
   tpm: number;
   concurrency?: number;
+  maxConcurrencyCap?: number;
   clock: MonotonicClock;
   sleeper: Sleeper;
 }
@@ -53,7 +54,8 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       "INVALID_ARGUMENT",
     );
   }
-  const maxConcurrency = Math.min(rawConcurrency, 2);
+  const maxConcurrencyCap = options.maxConcurrencyCap ?? 2;
+  const maxConcurrency = Math.min(rawConcurrency, maxConcurrencyCap);
 
   let inFlight = 0;
   const waiters: Array<() => void> = [];
