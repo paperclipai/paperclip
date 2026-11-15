@@ -40,7 +40,7 @@ const pending = (id: string) => ({ id, sourceKind: "issue_thread_interaction", s
   createdAt: "2026-10-20T12:00:00Z", activityAt: "2026-10-20T12:00:00Z" }) as AttentionItem;
 function feed(items: AttentionItem[]): AttentionFeed {
   return { companyId: "company", generatedAt: "2026-10-27T12:00:00Z", totalCount: items.length, deskBadgeCount: 0,
-    nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
+    viewCounts: { mine: items.length, unassigned: 0, company: 0, archived: 0, all: items.length }, nextCursor: null, countsBySourceKind: {} as AttentionFeed["countsBySourceKind"], items };
 }
 
 function summary(items: AttentionItem[]) {
@@ -58,6 +58,79 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("shows every task once in a four-level recent chain", async () => {
+    fixture.recentTasks = ["a", "b", "c", "d"].map((id, index) => ({
+      id, companyId: "company", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo", recordedAt: index,
+      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
+    }));
+    fixture.projectTasks.mockImplementation(async (_company, filters) => fixture.recentTasks.filter(task => task.parentId === filters.parentId));
+    await renderSidebar();
+    const region = container.querySelector('[aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(4);
+    for (const id of ["a", "b", "c", "d"]) expect(region.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
+  });
+  it("nests recent children once, limits the first page to ten, and keeps folding separate from read state", async () => {
+    fixture.recentTasks = [
+      { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: false },
+      { id: "child-00", companyId: "company", identifier: "TASK-2", title: "Child 0", status: "todo", recordedAt: 2, parentId: "parent", isUnreadForMe: true },
+    ];
+    fixture.projectTasks.mockImplementation(async (_company, filters) => Array.from({ length: filters.afterId ? 4 : 10 }, (_, index) => ({
+      id: `child-${String(index + (filters.afterId ? 10 : 0)).padStart(2, "0")}`, companyId: "company", parentId: "parent",
+      identifier: `CHILD-${index + (filters.afterId ? 10 : 0)}`, title: `Child ${index + (filters.afterId ? 10 : 0)}`, status: "todo", isUnreadForMe: true,
+    })));
+    await renderSidebar();
+    const region = () => container.querySelector('[aria-label="Recents"]')!;
+    expect(region().querySelectorAll("a")).toHaveLength(11);
+    expect(region().textContent?.match(/Child 0/g)).toHaveLength(1);
+    const collapse = region().querySelector<HTMLButtonElement>('[aria-label="Collapse subtasks of Parent"]')!;
+    await act(async () => collapse.click());
+    expect(region().querySelectorAll("a")).toHaveLength(1);
+    expect(region().textContent).toContain("12 unread");
+    await act(async () => region().querySelector<HTMLButtonElement>('[aria-label="Expand subtasks of Parent"]')!.click());
+    await act(async () => Array.from(region().querySelectorAll("button")).find(button => button.textContent?.includes("Show more"))!.click());
+    await flush();
+    expect(region().querySelectorAll("a")).toHaveLength(15);
+    expect(region().textContent).toContain("Show less");
+    expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ parentId: "parent", limit: 10, afterId: "child-09", includeReadState: true }), expect.anything());
+  });
+  it("keeps the selected child beyond ten visible within the ten-row preview", async () => {
+    fixture.pathname = "/COO/issues/TASK-12";
+    fixture.recentTasks = [
+      { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 14 },
+      { id: "child-12", companyId: "company", identifier: "TASK-12", title: "Selected child", status: "todo", recordedAt: 2, parentId: "parent", isUnreadForMe: true },
+    ];
+    fixture.projectTasks.mockResolvedValue(Array.from({ length: 10 }, (_, index) => ({
+      id: `child-${index}`, companyId: "company", parentId: "parent", identifier: `PAGE-${index}`, title: `Page child ${index}`, status: "todo",
+    })));
+    await renderSidebar();
+    expect(container.querySelectorAll('[role="group"][aria-label="Subtasks of Parent"] a')).toHaveLength(10);
+    expect(container.querySelector('a[href="/issues/TASK-12"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/TASK-12"] [aria-label="Unread"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/TASK-1"] [aria-label="Unread"]')).toBeNull();
+  });
+  it("keeps the parent link on a failed child read and retries without navigation", async () => {
+    fixture.recentTasks = [{ id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 }];
+    fixture.projectTasks.mockRejectedValueOnce(new Error("Unavailable")).mockResolvedValueOnce([
+      { id: "child", companyId: "company", parentId: "parent", identifier: "CHILD", title: "Recovered child", status: "todo" },
+    ]);
+    await renderSidebar();
+    expect(container.querySelector('a[href="/issues/TASK-1"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+    await flush();
+    expect(container.textContent).toContain("Recovered child");
+    expect(fixture.pathname).toBe("/COO/issues");
+  });
+  it("keeps cached children visible during a temporary refetch failure", async () => {
+    fixture.recentTasks = [{ id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 }];
+    fixture.projectTasks.mockResolvedValue([{ id: "child", companyId: "company", parentId: "parent", identifier: "CHILD", title: "Cached child", status: "todo" }]);
+    await renderSidebar();
+    fixture.projectTasks.mockRejectedValue(Object.assign(new Error("Gateway unavailable"), { status: 503 }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["issues", "company", "recent-subtasks"] }); });
+    expect(container.textContent).toContain("Cached child");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('a[href="/issues/CHILD"]')).not.toBeNull();
+  });
   it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
     fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
       id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
@@ -95,6 +168,28 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
+    fixture.chats = [chat];
+    fixture.recentTasks = [{ id: "task", companyId: "company", identifier: "TASK-1", title: "Recent task", status: "todo", recordedAt: 1 }];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["agent-chat:company:cto"]));
+
+    await renderSidebar();
+
+    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img')];
+    const taskIcon = container.querySelector('a[href="/issues/TASK-1"] [data-slot="sidebar-nav-icon"] svg');
+    expect(avatars).toHaveLength(2);
+    expect(taskIcon).not.toBeNull();
+    const width = Number(taskIcon!.getAttribute("width"));
+    const height = Number(taskIcon!.getAttribute("height"));
+    expect(width).toBeGreaterThan(0);
+    expect(height).toBeGreaterThan(0);
+    for (const avatar of avatars) {
+      expect(avatar.width).toBe(width);
+      expect(avatar.height).toBe(height);
+    }
+  });
   it("builds hundreds of agent pins with input reads proportional to list size", () => {
     const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
     const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
@@ -123,6 +218,48 @@ describe("Coordinator pinned pages", () => {
     const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
     act(() => links[1].dispatchEvent(nativeDrag));
     expect(nativeDrag.defaultPrevented).toBe(true);
+  });
+  it("reorders mixed pins with the keyboard while preserving hidden slots and saved order", async () => {
+    const storageKey = "paperclip.coordinator.pinned-nav.v1:reviewer";
+    const saved = ["/artifacts", "agent-chat:another-company:hidden", "/dashboard"];
+    localStorage.setItem(storageKey, JSON.stringify(saved));
+    await renderSidebar();
+    const order = () => [...navigation().querySelectorAll(".group\\/coordinator-pin a")].map(link => link.getAttribute("href"));
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const rows = [...container.querySelectorAll(".group\\/coordinator-pin")];
+      const index = rows.indexOf(this);
+      if (index < 0) return nativeRect.call(this);
+      const top = index * 40;
+      return { x: 0, y: top, top, bottom: top + 40, left: 0, right: 240, width: 240, height: 40, toJSON() {} };
+    });
+    const key = async (target: Element, code: string) => {
+      await act(async () => {
+        target.dispatchEvent(new KeyboardEvent("keydown", { code, key: code === "Space" ? " " : code, bubbles: true, cancelable: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+    };
+    try {
+      const handle = navigation().querySelector<HTMLButtonElement>('[aria-label="Reorder pinned Artifacts"]')!;
+      handle.focus();
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Escape");
+      expect(order()).toEqual(["/artifacts", "/dashboard"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(saved);
+      await key(handle, "Space");
+      await key(handle, "ArrowDown");
+      await key(handle, "Space");
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual([saved[2], saved[1], saved[0]]);
+      await act(async () => root.unmount()); root = createRoot(container);
+      await renderSidebar();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+      fixture.collapsed = true;
+      await renderSidebar();
+      expect(navigation().querySelector('[aria-label^="Reorder pinned"]')).toBeNull();
+      expect(order()).toEqual(["/dashboard", "/artifacts"]);
+    } finally { rect.mockRestore(); }
   });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
     fixture.enableCases = enabled;

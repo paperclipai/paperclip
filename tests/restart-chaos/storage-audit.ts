@@ -24,10 +24,11 @@ export function unexercisedFaults(kinds: readonly string[], injectedBy: Record<s
   const hit = (prefixes: readonly string[]) => Object.entries(injectedBy).some(([cause, count]) => count > 0 && prefixes.some(prefix => cause.startsWith(prefix)));
   return [...new Set(kinds)].filter(kind =>
     (kind === "ST4" && !hit(["UploadPart:", "CompleteMultipartUpload:"]))
-    || (kind === "ST7" && !hit(["GetObject:read_after_write_lag", "HeadObject:read_after_write_lag"])));
+    || (kind === "ST7" && !hit(["GetObject:read_after_write_lag", "HeadObject:read_after_write_lag"]))
+    || (kind === "ST8" && !hit(["PutObject:throttle", "UploadPart:throttle"])));
 }
 
-export const AUDITED_STORAGE_FAULTS = ["ST4", "ST7"] as const;
+export const AUDITED_STORAGE_FAULTS = ["ST4", "ST7", "ST8"] as const;
 
 export function auditsStorage(options: { storage?: string; storageFaults?: readonly string[];
   storageWindows?: ReadonlyArray<{ kind: string }> }): boolean {

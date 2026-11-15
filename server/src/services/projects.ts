@@ -149,7 +149,7 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
   return project;
 }
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "legacyEnvironmentId"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
@@ -201,8 +201,9 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
+    const { legacyEnvironmentId: _legacyEnvironmentId, ...project } = r;
     return {
-      ...r,
+      ...project,
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
@@ -325,10 +326,16 @@ function pickPrimaryWorkspace(
 }
 
 /** Batch-load workspace refs for a set of projects. */
-async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+async function attachWorkspaces(
+  db: Db,
+  rows: ProjectWithGoals[],
+  options: { workspaceProvider?: boolean } = {},
+): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
-  const providerCatalog = await listProjectWorkspaceProviders(db, rows[0]!.companyId);
+  const providerCatalog = options.workspaceProvider === false
+    ? null
+    : await listProjectWorkspaceProviders(db, rows[0]!.companyId);
   const projectIds = rows.map((r) => r.id);
   const workspaceRows = await db
     .select()
@@ -411,8 +418,10 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       workspaces,
       primaryWorkspace,
       managedByPlugin: managedByProjectId.get(row.id) ?? null,
-      workspaceProvider: resolveProjectWorkspaceProvider(row.executionWorkspacePolicy, providerCatalog,
-        workspaces.some(workspace => Boolean(workspace.repoUrl))),
+      ...(providerCatalog ? {
+        workspaceProvider: resolveProjectWorkspaceProvider(row.executionWorkspacePolicy, providerCatalog,
+          workspaces.some(workspace => Boolean(workspace.repoUrl))),
+      } : {}),
     };
   });
 }
@@ -707,7 +716,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     });
   };
 
-  const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+  const getProjectById = async (
+    id: string,
+    options: { workspaceProvider?: boolean } = {},
+  ): Promise<ProjectWithGoals | null> => {
     const row = await db
       .select()
       .from(projects)
@@ -716,7 +728,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     if (!row) return null;
     const [withGoals] = await attachGoals(db, [row]);
     if (!withGoals) return null;
-    const [enriched] = await attachWorkspaces(db, [withGoals]);
+    const [enriched] = await attachWorkspaces(db, [withGoals], options);
     return enriched ?? null;
   };
 
@@ -1115,7 +1127,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+      if (!row) return null;
+      const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;
+      return { ...publicProject, urlKey: deriveProjectUrlKey(row.name, row.id) };
     }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {

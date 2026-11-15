@@ -1,6 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -290,7 +290,7 @@ export function documentService(db: Db) {
                   .where(eq(issueDocuments.issueId, issue.id));
                 const fallbackKey = nextAvailableDocumentKey(key, issueDocumentKeys.map((row) => row.key));
 
-                await notifyIssueRecovery(tx, { companyId: issue.companyId });
+                await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
                 const [document] = await tx
                   .insert(documents)
                   .values({
@@ -392,7 +392,7 @@ export function documentService(db: Db) {
               });
             }
 
-            await notifyIssueRecovery(tx, { companyId: issue.companyId });
+            await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
             const nextRevisionNumber = existing.latestRevisionNumber + 1;
             const [revision] = await tx
               .insert(documentRevisions)
@@ -455,7 +455,7 @@ export function documentService(db: Db) {
             throw conflict("Document does not exist yet", { key });
           }
 
-          await notifyIssueRecovery(tx, { companyId: issue.companyId });
+          await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
           const [document] = await tx
             .insert(documents)
             .values({

@@ -1,5 +1,5 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
-import { executionWorkspaceSnapshots, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import type { RemoteWorkspaceRunReference } from "@paperclipai/shared";
 
 type Snapshot = typeof executionWorkspaceSnapshots.$inferSelect;
@@ -47,4 +47,31 @@ export async function verifiedWorkspaceSnapshotReuse(db: Pick<Db, "select">, inp
     || !Array.isArray(settled.activeIds) || settled.activeIds.length !== 0
     || typeof settled.quiescedAt !== "string" || !Number.isFinite(Date.parse(settled.quiescedAt))) return null;
   return receipt.id;
+}
+
+export async function verifiedUnchangedRestoredSnapshot(db: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; runId: string; reference: RemoteWorkspaceRunReference; snapshot: Snapshot;
+}): Promise<string | null> {
+  const { reference, snapshot } = input;
+  if (reference.state !== "saved" || reference.snapshotId !== snapshot.id || snapshot.companyId !== input.companyId
+    || snapshot.executionWorkspaceId !== reference.workspaceId || !["committed", "superseded"].includes(snapshot.status)
+    || !snapshot.sha256) return null;
+  const [run] = await db.select({ resultJson: heartbeatRuns.resultJson, executionStage: heartbeatRuns.executionStage })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  if (run?.executionStage !== "preparing" || recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false) return null;
+  const operations = await db.select({ id: workspaceOperations.id, phase: workspaceOperations.phase,
+    status: workspaceOperations.status, metadata: workspaceOperations.metadata, issueId: workspaceOperations.issueId,
+    workspaceId: workspaceOperations.executionWorkspaceId }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.heartbeatRunId, input.runId),
+    inArray(workspaceOperations.phase, ["remote_workspace_restore", "remote_workspace_snapshot"])));
+  if (operations.some(operation => operation.phase === "remote_workspace_snapshot")) return null;
+  const restores = operations.filter(operation => {
+    const cleanup = operation.metadata?.exportCleanup as Record<string, unknown> | undefined;
+    return operation.status === "succeeded" && operation.issueId === input.issueId
+      && operation.workspaceId === reference.workspaceId && operation.metadata?.epoch === reference.epoch
+      && operation.metadata?.snapshotId === snapshot.id && cleanup?.leaseId === reference.leaseId
+      && cleanup?.providerLeaseId === reference.providerLeaseId && cleanup?.remoteCwd === reference.remoteCwd;
+  });
+  return restores.length === 1 ? restores[0]!.id : null;
 }

@@ -425,7 +425,10 @@ describe("personal Muse control plane",()=>{
         expect(read.comments.find(row=>row.id===standardId)).toMatchObject({body:"Ordinary coordination",sourceTrust:null});
         expect(await db.select().from(issueComments).where(eq(issueComments.issueId,f.issue.id)).orderBy(issueComments.id)).toEqual(stored);
       }
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]).toEqual(committed.run);
+      const {nextEventSeq:readEventSeq,updatedAt:_readAt,...readRun}=(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]!;
+      const {nextEventSeq:committedEventSeq,updatedAt:_committedAt,...committedRun}=committed.run;
+      expect(readRun).toEqual(committedRun);
+      expect(readEventSeq).toBe(committedEventSeq+1);
       expect(committed.run.contextSnapshot).toEqual(writerContext);
       expect(await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id))).toEqual(beforeHolds);
       expect((await db.select({status:assignments.status,acceptedResultAt:assignments.acceptedResultAt,finalizedAt:assignments.finalizedAt}).from(assignments).where(eq(assignments.id,f.assignment.id)))[0]).toEqual({status:"accepted",acceptedResultAt:null,finalizedAt:null});
@@ -1394,7 +1397,7 @@ describe("personal Muse control plane",()=>{
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"agent",principalId:f.agent.id,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.agent.id)));
-    await expect(f.broker.act(f.subject,command)).rejects.toThrow("Authorizing user");
+    await expect(f.broker.act(f.subject,command)).rejects.toThrow(/the person who authorized this agent/i);
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"user",principalId:f.operatorId,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.operatorId)));

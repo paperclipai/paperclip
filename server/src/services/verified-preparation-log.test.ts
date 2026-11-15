@@ -65,6 +65,50 @@ describe("verified host preparation output", () => {
     expect(await hasVerifiedPreparationLog(f.run)).toBe(false);
   });
 
+  it("verifies a log made only of the host's workspace notices written before the adapter starts", async () => {
+    const f = source();
+    const issueId = randomUUID(), ts = f.run.lastOutputAt!;
+    const chunks = [f.record.chunk,
+      "[paperclip] Execution workspace reuse freshness action \"replace\" because execution workspace configuration changed: repo/base ref, environment.\n",
+      `[paperclip] Skipping saved session resume for task "${issueId}" because effective run configuration changed: environment.\n`];
+    const content = chunks.map((chunk, index) => JSON.stringify({ ...f.record, chunk, seq: index + 1, ts: ts.toISOString() }) + "\n").join("");
+    Object.assign(f.run, { lastOutputSeq: 3, stdoutExcerpt: chunks.join(""), logBytes: Buffer.byteLength(content),
+      lastOutputBytes: Buffer.byteLength(content), logSha256: createHash("sha256").update(content).digest("hex") });
+    fixture.read.mockResolvedValue({ content });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
+    const notices = chunks.slice(1);
+    const withoutSkills = notices.map((chunk, index) => JSON.stringify({ ...f.record, chunk, seq: index + 1, ts: ts.toISOString() }) + "\n").join("");
+    Object.assign(f.run, { contextSnapshot: null, lastOutputSeq: 2, stdoutExcerpt: notices.join(""), logBytes: Buffer.byteLength(withoutSkills),
+      lastOutputBytes: Buffer.byteLength(withoutSkills), logSha256: createHash("sha256").update(withoutSkills).digest("hex") });
+    fixture.read.mockResolvedValue({ content: withoutSkills });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
+  });
+
+  it("accepts two notices of the same attempt", async () => {
+    const f = source();
+    const notice = "[paperclip] Skipping saved session resume because effective run configuration changed: environment.\n";
+    const content = [1, 2].map(seq => JSON.stringify({ ...f.record, chunk: notice, seq }) + "\n").join("");
+    Object.assign(f.run, { lastOutputSeq: 2, stdoutExcerpt: notice + notice, logBytes: Buffer.byteLength(content),
+      lastOutputBytes: Buffer.byteLength(content), logSha256: createHash("sha256").update(content).digest("hex") });
+    fixture.read.mockResolvedValue({ content });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(true);
+  });
+
+  it.each(["provider_line", "other_attempt", "skills_after_notice"] as const)("keeps a log with other output held: %s", async state => {
+    const f = source();
+    const notice = "[paperclip] Skipping saved session resume because effective run configuration changed: environment.\n";
+    const records = [{ ...f.record, chunk: notice, seq: 1 }, { ...f.record, seq: 2 }];
+    if (state !== "skills_after_notice") records[1]!.chunk = notice;
+    if (state === "provider_line") records[1]!.chunk = "[paperclip] Provider wrote a file\n";
+    if (state === "other_attempt") records[1]!.attemptId = randomUUID();
+    const content = records.map(record => JSON.stringify(record) + "\n").join("");
+    Object.assign(f.run, { lastOutputSeq: 2, stdoutExcerpt: records.map(record => record.chunk).join(""),
+      logBytes: Buffer.byteLength(content), lastOutputBytes: Buffer.byteLength(content),
+      logSha256: createHash("sha256").update(content).digest("hex") });
+    fixture.read.mockResolvedValue({ content });
+    expect(await hasVerifiedPreparationLog(f.run)).toBe(false);
+  });
+
   it("cancels a slow read, fails closed, and leaves an unrelated recovery responsive", async () => {
     const slow = source(), fast = source();
     let signal: AbortSignal | undefined;

@@ -25,9 +25,11 @@ export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
 export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
 export const PROVIDER_FAULT_ACTIONS: Record<ProviderFaultKind, "delay" | "drop" | "duplicate"> = { PV1: "delay", PV2: "drop", PV3: "duplicate" };
 
-/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. */
-export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack"] as const;
+/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. `tool_completed`: Codex's item/completed for the first non-terminal Paperclip tool call. */
+export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack", "tool_completed"] as const;
 export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
+export const UNINTERRUPTED_PROVIDER_MESSAGES: readonly ProviderMessage[] = ["tool_completed"];
+export const TOOL_COMPLETED_WORKLOADS: readonly WorkloadId[] = ["A1", "C1"];
 
 /** Restarts a provider fault may straddle: K1 kill -9, K2 SIGTERM graceful restart, K4 kill -9 then an outage hold. */
 export const PROVIDER_RESTART_KINDS = ["K1", "K2", "K4"] as const;
@@ -126,7 +128,8 @@ export function parseProviderMessages(raw: string | undefined): { message?: Prov
       if (result.message) throw new Error("--provider-fault-message takes one default message");
       result.message = right as ProviderMessage;
     } else {
-      if (!PROVIDER_FAULT_WORKLOADS.includes(left as WorkloadId)) throw new Error(`--provider-fault-message: ${left} is not one of ${PROVIDER_FAULT_WORKLOADS.join(", ")}`);
+      const allowed = UNINTERRUPTED_PROVIDER_MESSAGES.includes(right as ProviderMessage) ? TOOL_COMPLETED_WORKLOADS : PROVIDER_FAULT_WORKLOADS;
+      if (!allowed.includes(left as WorkloadId)) throw new Error(`--provider-fault-message: ${left} is not one of ${allowed.join(", ")}`);
       result.byWorkload = { ...result.byWorkload, [left]: right as ProviderMessage };
     }
   }

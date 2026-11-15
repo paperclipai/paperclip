@@ -722,7 +722,6 @@ export function TaskChatComposer({
   }
 
   async function uploadImage(file: File): Promise<string> {
-    // A local attachment id. crypto.randomUUID throws on plain HTTP before the upload starts.
     const id = createUuid();
     setAttachments((prev) => [
       ...prev,
@@ -1078,7 +1077,6 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      // crypto.randomUUID throws on plain HTTP. This catch then puts the text back and shows no error.
       attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // IDs come only from this composer's upload receipts, never from parsing

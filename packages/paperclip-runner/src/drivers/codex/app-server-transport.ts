@@ -1,4 +1,4 @@
-import { configuredEnvironment } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../../configured-environment.js";
 import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
@@ -39,6 +39,7 @@ export type CodexServerRequestHandler = (
 export interface CodexAppServerTransport {
   settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: HarnessSession["downloadAttachment"];
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
@@ -75,11 +76,15 @@ export interface CodexAppServerTransport {
    * Close the provider transport. The optional reason is controller-owned
    * diagnostic context; transports must not forward it to the provider.
    */
-  close(reason?: string): Promise<void>;
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void>;
+  /** After close: the runner settled and its process exit was observed. */
+  runnerExitConfirmed?(): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
+  /** True when this transport recovers a session only to stop it. */
+  recoversForStop?(): boolean;
   processInfo?(): CodexTransportProcessInfo;
   beginRunAttachment?(input: { runId: string }): boolean;
   attachRun?(input: {
@@ -225,6 +230,7 @@ class BoundedLineDecoder {
 }
 
 const SAFE_ENVIRONMENT_KEYS = [
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "AGENT_HOME",
   "ALL_PROXY",
@@ -237,7 +243,6 @@ const SAFE_ENVIRONMENT_KEYS = [
   "LANG",
   "LC_ALL",
   "NO_PROXY",
-  "NODE_EXTRA_CA_CERTS",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_RUNNER_HOME_MODE",
   "XDG_CONFIG_HOME",
@@ -245,7 +250,6 @@ const SAFE_ENVIRONMENT_KEYS = [
   "XDG_CACHE_HOME",
   "PATH",
   "PATHEXT",
-  "SSL_CERT_FILE",
   "SystemRoot",
   "TEMP",
   "TMP",

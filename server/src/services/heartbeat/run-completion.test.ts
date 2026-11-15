@@ -12,7 +12,7 @@ import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.
 import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
@@ -642,6 +642,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
+  it.each(["completeRun", "failRun"] as const)("finalizes the run log in %s only after a reattach's deferred log recovery settles", async operation => {
+    const f = await fixture();
+    let finishRecovery!: () => void;
+    const recovery = new Promise<void>(resolve => { finishRecovery = resolve; });
+    let recovered = false;
+    const output = { ...f.input.output, settleDeferredLogRecovery: () => recovery.then(() => { recovered = true; }) };
+    const finalizedAfterRecovery: boolean[] = [];
+    f.deps.runLogStore.finalize.mockImplementation(async () => {
+      finalizedAfterRecovery.push(recovered);
+      return { bytes: 123, sha256: "log-hash", compressed: true };
+    });
+    const completion = operation === "completeRun" ? f.completion.completeRun({ ...f.input, output })
+      : f.completion.failRun({ ...f.failure(new Error("reattach preparation failed")), output });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const finalizedEarly = f.deps.runLogStore.finalize.mock.calls.length;
+    finishRecovery();
+    await completion;
+    expect(finalizedEarly).toBe(0);
+    expect(finalizedAfterRecovery).toEqual([true]);
+  });
+
   it("attributes an adapter stop caused by a lost controller lease", async () => {
     const f = await fixture();
     Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
@@ -720,6 +741,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.completeRun(f.input);
     expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: providerSessionId, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the committed native finalization record when the stored result is larger than the read projection", async () => {
+    const decisionId = randomUUID();
+    const diagnostics = randomBytes(120_000).toString("base64");
+    const f = await fixture({ runtimeMode: "native", resultJson: { finalizationPhase: "committed",
+      finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics } });
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = "paperclip_runner";
+    f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+    const nativeSessionId = randomUUID(), providerSessionId = randomUUID();
+    f.input.adapterResult.sessionId = nativeSessionId;
+    delete f.input.adapterResult.sessionParams;
+    f.input.adapterResult.sessionDisplayId = providerSessionId;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "yielded" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: nativeSessionId, providerSessionId, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    expect((await f.deps.getRun(f.run.id))?.resultJson).toMatchObject({ truncated: true });
+    await f.completion.completeRun(f.input);
+    const completed = await read(f.run.id);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.resultJson).toMatchObject({ finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics });
+    expect(completed.resultJson).not.toHaveProperty("truncated");
   });
 
   it("reports trace completion before a later write throws and reads output after log finalization", async () => {
@@ -1771,7 +1813,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
       kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
     expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
-    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+    expect(actions[0]!.nextAction).toContain("The saved version was kept");
   });
 
   it("keeps an active recovery action that another writer created for the task", async () => {

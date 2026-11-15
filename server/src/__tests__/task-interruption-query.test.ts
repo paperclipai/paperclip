@@ -97,6 +97,35 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .toMatchObject({ state: "failed", canRetry: true });
   });
 
+  it("a blocked parent whose run awaits its exact same-run resume shows retry_scheduled with no Retry", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Blocked parent", issuePrefix: `B${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Parent agent", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Wait for subtasks",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    await db.insert(issues).values({ companyId, title: "Open subtask", status: "todo", parentId: issue.id, assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", finishedAt: new Date(),
+      processPid: 16675, processStartedAt: new Date() });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issue.id));
+    const resumeAt = new Date(Date.now() + 30_000);
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId, phase: "retryable_failure",
+      attempt: 1, nextAttemptAt: resumeAt, failureCode: "native_session_interrupted",
+      failureDetail: { recoverable: true, recoveryMode: "exact_checkpoint_resume", checkpointExists: true } });
+    for (const presentation of [(await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id),
+      await taskInterruptionPresentation(db, issue)]) {
+      expect(presentation).toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
+    }
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issue.id));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "failed", canRetry: true });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issue.id));
+    await db.update(nativeRunFinalizations).set({ failureDetail: { recoverable: true, recoveryMode: "fresh_session" } })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+
   it("explains a saved Retry held by unfinished blockers instead of offering Retry again (restart chaos t05)", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Waiting parent", issuePrefix: `W${companyId.slice(0, 7)}` });
@@ -235,7 +264,8 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       observedRunId: otherRunId });
   });
 
-  it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
+  // A user's message can join an earlier automatic wake that keeps its system requester.
+  it.each(["user", "system"] as const)("shows a queued-message Interrupt as handing off, not as a failed attempt (queue started by %s)", async (queueStartedBy) => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
     await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Researcher", adapterType: "paperclip_runner" });
@@ -243,7 +273,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       status: "todo", assigneeAgentId: agentId }).returning();
     // The message was queued well before the user clicked Interrupt.
     const [wake] = await db.insert(agentWakeupRequests).values({
-      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: queueStartedBy,
       requestedAt: new Date(Date.now() - 60_000), payload: { issueId: issue.id },
     }).returning();
     const interrupt = async (requestedAt: Date) => {

@@ -7,6 +7,7 @@ import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
 import { enableTaskWorkspaceView, savedTaskWorkspace } from "./runtime-workspaces.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
+import { waitForTurnReplyLinks } from "./identity-support.js";
 import type { WorkspaceRuntimeService } from "../../../packages/shared/src/types/workspace-runtime.js";
 import type { WorkspaceOperation } from "../../../packages/shared/src/types/workspace-operation.js";
 import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-product.js";
@@ -63,8 +64,8 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
   if (saved.runtimeServices?.some(row => row.status === "running")) throw new Error("Preview setup must not start the target service");
   return { ...state, workspace: saved, websiteBytes, failureFlag };
 }, gradePreview, {
-  oracleVersion: "paperclip.chat-catalog.preview-service.v4",
-  sourceFiles: ["chat-catalog-domains/runtime-preview.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml"],
+  oracleVersion: "paperclip.chat-catalog.preview-service.v5",
+  sourceFiles: ["chat-catalog-domains/runtime-preview.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts", "chat-scenarios/workspaces.yaml"],
   expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000,
   async act(ctx, state) {
     await pollUntil({ label: "Actual canonical preview service readiness", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000),
@@ -77,6 +78,8 @@ export const runtimePreviewCases = [runtimeDefinition("workspaces.preview-servic
     const url = new URL(service.url); if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || Number(url.port) !== service.port) throw new Error("Preview endpoint escaped its owned loopback service");
     const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(10_000) });
     state.initialHttpStatus = response.status; state.initialHttpBody = await response.text(); state.healthyService = service;
+    // The service and finished runs precede the saved reply's render; read its links only after it renders.
+    await waitForTurnReplyLinks(ctx);
     const o = await observeRuntime(ctx, state); state.queryLinks = o.links;
     const products = [];
     for (const id of [(state.task as Entity).id, ctx.issue()!.id]) products.push(...await ctx.input.api.get<IssueWorkProduct[]>(`/api/issues/${id}/work-products`));

@@ -61,10 +61,11 @@ export async function projectEnvironmentOptions(db: Db, companyId: string, actor
   for (const group of groups) group.environments.sort((a, b) => a.name.localeCompare(b.name));
   groups.sort((a, b) => a.environments[0].name.localeCompare(b.environments[0].name));
   const defaultAvailable = preferred && groups.some(group => group.environments.some(environment => environment.id === preferred.id));
+  const defaultEnvironmentId = defaultAvailable ? preferred!.id : groups.length === 1 ? groups[0].environments[0].id : null;
   return {
     groups,
-    defaultEnvironmentId: defaultAvailable ? preferred?.id ?? null : null,
-    error: !defaultAvailable && (preferredEnvironmentId || forcedKubernetes || managedOnly || environments.length > 0)
+    defaultEnvironmentId,
+    error: !defaultEnvironmentId && (preferredEnvironmentId || forcedKubernetes || managedOnly || environments.length > 0)
       ? "The default environment cannot use project workspace storage. Select an available environment or repair the default environment configuration."
       : null,
   };

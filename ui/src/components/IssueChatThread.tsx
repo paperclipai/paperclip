@@ -5183,7 +5183,6 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      // crypto.randomUUID throws on plain HTTP. This catch then puts the text back and shows no error.
       attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
@@ -6231,7 +6230,6 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      // The composer normally supplies this id. The fallback must still work on plain HTTP.
       clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
@@ -6928,7 +6926,9 @@ export function IssueChatThread({
                 mentions={mentions}
                 agentMap={agentMap}
                 hasActiveRun={!!hasActiveRun}
-                onStop={hasActiveRun ? onCancelRun : undefined}
+                // A run still waiting in line is stoppable too: Stop takes the
+                // task out of the agent's queue before it ever starts.
+                onStop={activeRunIds.size > 0 ? onCancelRun : undefined}
                 stopPending={stopPending}
                 stopScope={stopScope}
                 currentUserId={currentUserId}

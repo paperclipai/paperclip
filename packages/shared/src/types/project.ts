@@ -129,6 +129,7 @@ export interface Project {
   id: string;
   companyId: string;
   urlKey: string;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   /** @deprecated Use goalIds / goals instead */
   goalId: string | null;
   goalIds: string[];
@@ -143,6 +144,13 @@ export interface Project {
   privacyOwnerUserId?: string | null;
   status: ProjectStatus;
   leadAgentId: string | null;
+  /**
+   * PAP-749 task 1d: the project's decision owner. A Needs You card on this
+   * project's work that names no person goes to this user's "For you" list,
+   * before the company's default decision owner. Placement only — the resolver
+   * policy still gates who may act. Omitted by older servers/fixtures.
+   */
+  decisionOwnerUserId?: string | null;
   targetDate: string | null;
   color: string | null;
   icon: string | null;

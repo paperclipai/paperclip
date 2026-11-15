@@ -25,7 +25,7 @@ describe("task document reopen navigation", () => {
             expect(hasText).toBe(issue.title);
             return { first: () => ({ click }) };
           } }
-          : { isVisible: async () => true, first: () => ({ isVisible: async () => true }) },
+          : (() => { const visible = { isVisible: async () => true, filter: () => visible, first: () => visible }; return visible; })(),
       },
     } as unknown as JourneyContext;
     await reopenTaskDocument(context, issue);

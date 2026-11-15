@@ -38,13 +38,14 @@ const TYPED_SESSION_FAILURE_CATEGORIES = new Set(["connection", "access", "limit
 /** Advertised on initialize so ACP agents report terminal failures as typed JetBrains AIR metadata. */
 export function acpxTypedSessionFailureClientCapabilities(
   extra?: Record<string, unknown>,
+  airCapabilities: readonly string[] = [],
 ): Record<string, unknown> {
   const meta = extra?._meta !== null && typeof extra?._meta === "object" && !Array.isArray(extra._meta)
     ? extra._meta as Record<string, unknown>
     : {};
   return {
     ...structuredClone(extra ?? {}),
-    _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure"] } }, ...structuredClone(meta) },
+    _meta: { jetbrains: { air: { version: 1, capabilities: ["sessionFailure", ...airCapabilities] } }, ...structuredClone(meta) },
   };
 }
 
