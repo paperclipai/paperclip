@@ -92,7 +92,7 @@ describe.skipIf(!support.supported)("recovery passes over settled records (censu
   type Rows = { runs: Array<ReturnType<typeof runRow>>; workspaces: Array<ReturnType<typeof workspaceRow>>;
     operations: Array<typeof workspaceOperations.$inferInsert>; snapshots: Array<typeof executionWorkspaceSnapshots.$inferInsert> };
 
-  function ledgerRow(rows: Rows, input: { workspaceId: string; runId: string; epoch: number; status: string; objectKey?: string | null }) {
+  function ledgerRow(rows: Rows, input: { workspaceId: string; runId: string; epoch: number; status: "pending" | "uploaded"; objectKey?: string | null }) {
     const operationId = randomUUID(), snapshotId = randomUUID();
     rows.operations.push({ id: operationId, companyId, executionWorkspaceId: input.workspaceId,
       heartbeatRunId: input.runId, phase: "remote_workspace_snapshot", status: "failed",
