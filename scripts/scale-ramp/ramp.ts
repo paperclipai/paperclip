@@ -1,9 +1,9 @@
-import { readMetrics, type Clock, type Fetcher, type PaperclipClient } from "./client.ts";
+import { pathClass, readMetrics, type Clock, type Fetcher, type PaperclipClient } from "./client.ts";
 import type { Options, Step } from "./config.ts";
 import { evaluate, firstFailure, type CriterionResult, type ServerMetrics, type StepMetrics } from "./criteria.ts";
 import { LIVE_RUN_STATUSES } from "./cleanup.ts";
 import { AgentsNotReady, describeAgent, ensureAgents, waitForAgentsReady } from "./setup.ts";
-import { distribution } from "./stats.ts";
+import { distribution, type Distribution } from "./stats.ts";
 import { mapLimit, taskTag, type RunState, type StateStore } from "./state.ts";
 import { runTiming, taskBrief, taskNonce, taskTitle, type RunEvent } from "./workload.ts";
 
@@ -27,6 +27,7 @@ const RETRY_RECHECK_MS = 30_000;
 const EVENT_FETCHES_PER_TICK = 10;
 const EVENT_PAGES = 4;
 const SINGLE_READS_PER_TICK = 50;
+const SPEND_READ_FAILURES_TO_STOP = 3;
 const AGENT_RUN_PAGE = 20;
 const AGENT_RUN_READ_PARALLELISM = 8;
 
@@ -50,7 +51,8 @@ interface RunRecord {
   createdAt: number | null;
   startedAt: number | null;
   finishedAt: number | null;
-  costUsd: number;
+  everFailed: boolean;
+  everEnded: boolean;
   sampled: boolean;
   error: string | null;
   errorCode: string | null;
@@ -63,12 +65,14 @@ interface StepAccumulator {
   endedAt: number | null;
   runningSamples: number[];
   boardMs: number[];
+  boardByRoute: Record<string, number[]>;
   boardRequests: number;
   boardFailures: number;
   serverSamples: Array<Record<string, unknown>>;
   ttftMs: number[];
   firstActivityMs: number[];
   sampled: number;
+  spendAtStartUsd: number;
 }
 
 export interface StepResult {
@@ -93,7 +97,9 @@ export interface RampOutcome {
   openTasksAtEnd: number;
   tasksCreated: number;
   taskCapReached: boolean;
-  recordedSpendUsd: number;
+  recordedSpendUsd: number | null;
+  spendReadError: string | null;
+  unpricedCostEvents: number;
   runsListTruncated: boolean;
   metricsSource: "endpoint" | "not provided" | "unavailable";
 }
@@ -192,6 +198,10 @@ export class Ramp {
   private nextBoardAt = 0;
   private nextPollAt = 0;
   private taskCapReached = false;
+  private spendUsd: number | null = null;
+  private spendReadFailures = 0;
+  private spendReadError: string | null = null;
+  private unpricedCostEvents = 0;
   private fallbackCursor = 0;
   private runsListTruncated = false;
   private metricsSource: RampOutcome["metricsSource"];
@@ -220,8 +230,8 @@ export class Ramp {
         break;
       }
       log(`Step ${step.index + 1}/${options.steps.length}: ${step.concurrency} agents for ${Math.round(step.holdMs / 60_000)} min`);
-      const accumulator: StepAccumulator = { step, startedAt: clock.now(), endedAt: null, runningSamples: [], boardMs: [], boardRequests: 0,
-        boardFailures: 0, serverSamples: [], ttftMs: [], firstActivityMs: [], sampled: 0 };
+      const accumulator: StepAccumulator = { step, startedAt: clock.now(), endedAt: null, runningSamples: [], boardMs: [], boardByRoute: {}, boardRequests: 0,
+        boardFailures: 0, serverSamples: [], ttftMs: [], firstActivityMs: [], sampled: 0, spendAtStartUsd: this.spendUsd ?? 0 };
       this.accumulators.push(accumulator);
       stop = await this.prepareStep(step);
       if (!stop) {
@@ -249,13 +259,15 @@ export class Ramp {
       const last = this.current();
       last.endedAt = clock.now();
     }
+    const finalSpendRead = await this.readSpend();
     for (const result of results) {
       result.metrics = this.metrics(result.index);
       result.criteriaFinal = evaluate(result.metrics, options.thresholds);
     }
     return {
       steps: results, stop, drained, openTasksAtEnd: this.openTasks().length, tasksCreated: this.tasks.size, taskCapReached: this.taskCapReached,
-      recordedSpendUsd: this.recordedSpend(), runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
+      recordedSpendUsd: finalSpendRead ? this.spendUsd : null, spendReadError: finalSpendRead ? null : this.spendReadError,
+      unpricedCostEvents: this.unpricedCostEvents, runsListTruncated: this.runsListTruncated, metricsSource: this.metricsSource,
     };
   }
 
@@ -374,8 +386,17 @@ export class Ramp {
   }
 
   private immediateStop(stepIndex: number): StopReason | null {
-    if (this.recordedSpend() > this.deps.spendCapUsd) {
-      return { stepIndex, reason: `recorded model spend $${this.recordedSpend().toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
+    if ((this.spendUsd ?? 0) > this.deps.spendCapUsd) {
+      return { stepIndex, reason: `recorded model spend $${this.spendUsd!.toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
+    }
+    const bound = this.unpricedSpendBoundUsd();
+    if (bound !== null && bound > this.deps.spendCapUsd) {
+      return { stepIndex, reason: `${this.unpricedCostEvents} cost events have no known price, so the spend cap uses tasks created x $${this.deps.options.pricing.modelUsdPerTask}`
+        + ` per task: $${bound.toFixed(2)} passed the cap of $${this.deps.spendCapUsd}`, criterion: "spend_cap" };
+    }
+    if (this.spendReadFailures >= SPEND_READ_FAILURES_TO_STOP) {
+      return { stepIndex, reason: `recorded model spend could not be read ${this.spendReadFailures} times in a row, so the spend cap cannot be enforced: ${this.spendReadError}`,
+        criterion: "spend_unreadable" };
     }
     for (const accumulator of this.accumulators) {
       const failed = firstFailure(evaluate(this.metrics(accumulator.step.index), this.deps.options.thresholds, true));
@@ -388,10 +409,39 @@ export class Ramp {
     return [...this.tasks.values()].filter(task => task.outcome === "open");
   }
 
-  private recordedSpend(): number {
-    let total = 0;
-    for (const run of this.runs.values()) total += run.costUsd;
-    return Math.round(total * 100) / 100;
+  private unpricedSpendBoundUsd(): number | null {
+    if (this.unpricedCostEvents === 0) return null;
+    return Math.round(this.tasks.size * this.deps.options.pricing.modelUsdPerTask * 100) / 100;
+  }
+
+  private async readSpend(): Promise<boolean> {
+    const agentIds = new Set(this.deps.state.agentIds);
+    if (!agentIds.size) return this.spendReadFailures === 0;
+    let rows: unknown;
+    try {
+      rows = await this.deps.api.get<unknown>(`/api/companies/${this.companyId}/costs/by-agent?period=all`);
+      if (!Array.isArray(rows)) throw new Error("costs by agent did not return a list");
+    } catch (error) {
+      this.spendReadFailures += 1;
+      this.spendReadError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+    this.spendReadFailures = 0;
+    this.spendReadError = null;
+    let cents = 0;
+    let unpriced = 0;
+    for (const row of rows as Json[]) {
+      if (!agentIds.has(String(row.agentId))) continue;
+      cents += num(row.costCents) ?? 0;
+      unpriced += num(row.unpricedEventCount) ?? 0;
+    }
+    if (unpriced > 0 && this.unpricedCostEvents === 0) {
+      this.deps.log(`Warning: ${unpriced} cost events of this run have no known price. Recorded spend is a lower bound, so the spend cap now uses`
+        + ` tasks created x $${this.deps.options.pricing.modelUsdPerTask} per task (PAPERCLIP_SCALE_MODEL_USD_PER_TASK)`);
+    }
+    this.unpricedCostEvents = unpriced;
+    this.spendUsd = Math.round(cents) / 100;
+    return true;
   }
 
   private async topUp(concurrency: number, stepIndex: number, until: number): Promise<void> {
@@ -425,12 +475,18 @@ export class Ramp {
     const accumulator = this.current();
     for (const route of BOARD_MIX) {
       const before = this.deps.api.records.length;
-      await this.deps.api.get(route(this.companyId), "board").catch(() => null);
+      const path = route(this.companyId);
+      await this.deps.api.get(path, "board").catch(() => null);
       const record = this.deps.api.records[before];
       if (!record) continue;
       accumulator.boardRequests += 1;
-      if (record.ok) accumulator.boardMs.push(record.ms);
-      else accumulator.boardFailures += 1;
+      if (!record.ok) {
+        accumulator.boardFailures += 1;
+        continue;
+      }
+      accumulator.boardMs.push(record.ms);
+      const name = pathClass(path).split("/").at(-1)!;
+      (accumulator.boardByRoute[name] ??= []).push(record.ms);
     }
   }
 
@@ -439,6 +495,7 @@ export class Ramp {
     await this.readTasks();
     await this.checkRetry();
     await this.sampleEvents();
+    await this.readSpend();
     let running = 0;
     for (const run of this.runs.values()) if (run.status === "running") running += 1;
     if (!recordSample) return;
@@ -457,9 +514,11 @@ export class Ramp {
     if (!this.tasks.has(taskId)) return;
     const id = String(row.id ?? row.runId);
     const previous = this.runs.get(id);
+    const status = String(row.status);
     this.runs.set(id, {
-      id, taskId, agentId: String(row.agentId), status: String(row.status), createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
-      finishedAt: ms(row.finishedAt), costUsd: num(row.costUsd) ?? previous?.costUsd ?? 0, sampled: previous?.sampled ?? false,
+      id, taskId, agentId: String(row.agentId), status, createdAt: ms(row.createdAt), startedAt: ms(row.startedAt),
+      finishedAt: ms(row.finishedAt), everFailed: (previous?.everFailed ?? false) || FAILED_RUN.has(status),
+      everEnded: (previous?.everEnded ?? false) || ENDED_RUN.has(status), sampled: previous?.sampled ?? false,
       error: typeof row.error === "string" && row.error ? row.error : null,
       errorCode: typeof row.errorCode === "string" && row.errorCode ? row.errorCode : null,
       liveness: typeof row.livenessReason === "string" && row.livenessReason ? row.livenessReason : null,
@@ -532,7 +591,9 @@ export class Ramp {
       if (task.outcome === "failed" && task.lastRetryCheckAt !== null) continue;
       task.lastRetryCheckAt = now;
       const view = await this.deps.api.get<Json>(`/api/issues/${task.id}`).catch(() => null);
-      if (view && view.status !== "done" && view.interruption?.canRetry === true && !view.interruption?.retryWait) {
+      const interruption = view?.interruption;
+      const systemRetrying = interruption?.state === "retry_scheduled" || Boolean(interruption?.nextRetryAt) || Boolean(interruption?.retryWait);
+      if (view && view.status !== "done" && interruption?.canRetry === true && !systemRetrying) {
         task.neededRetry = true;
         this.deps.log(`Task ${task.nonce} offers Retry`);
       }
@@ -576,8 +637,10 @@ export class Ramp {
       if (known === undefined || run.startedAt < known) firstStart.set(run.taskId, run.startedAt);
     }
     const samples = accumulator.runningSamples;
-    let spend = 0;
-    for (const run of runs) spend += run.costUsd;
+    const failed = this.classifyFailedRuns(runs);
+    const spendAtEnd = this.accumulators[stepIndex + 1]?.spendAtStartUsd ?? this.spendUsd ?? 0;
+    const byRoute: Record<string, Distribution> = {};
+    for (const [name, values] of Object.entries(accumulator.boardByRoute)) byRoute[name] = distribution(values);
     return {
       step: accumulator.step,
       startedAt: accumulator.startedAt,
@@ -587,7 +650,11 @@ export class Ramp {
       tasksFinished: tasks.filter(task => task.outcome === "done").length,
       tasksFailed: tasks.filter(task => task.outcome === "failed").length,
       tasksNeedingRetry: tasks.filter(task => task.neededRetry).length,
-      runsFailed: runs.filter(run => FAILED_RUN.has(run.status)).length,
+      runsEnded: runs.filter(run => run.everEnded).length,
+      runsFailed: failed.recovered + failed.unrecovered + failed.pending,
+      runsFailedRecovered: failed.recovered,
+      runsFailedUnrecovered: failed.unrecovered,
+      runsFailedPending: failed.pending,
       runsInterrupted: runs.filter(run => run.status === "interrupted").length,
       runsCancelled: runs.filter(run => run.status === "cancelled").length,
       peakRunning: samples.length ? Math.max(...samples) : 0,
@@ -597,12 +664,27 @@ export class Ramp {
       ttftMs: distribution(accumulator.ttftMs),
       firstActivityMs: distribution(accumulator.firstActivityMs),
       runDurationMs: distribution(runs.flatMap(run => run.startedAt !== null && run.finishedAt !== null ? [run.finishedAt - run.startedAt] : [])),
-      board: { requests: accumulator.boardRequests, failures: accumulator.boardFailures, ms: distribution(accumulator.boardMs) },
+      board: { requests: accumulator.boardRequests, failures: accumulator.boardFailures, ms: distribution(accumulator.boardMs), byRoute },
       server: serverMetrics(accumulator.serverSamples, {
         earlier: this.accumulators.slice(0, stepIndex).flatMap(earlier => earlier.serverSamples),
         runStartedAt: this.accumulators[0]?.startedAt ?? null,
       }),
-      recordedSpendUsd: Math.round(spend * 100) / 100,
+      recordedSpendUsd: Math.round(Math.max(0, spendAtEnd - accumulator.spendAtStartUsd) * 100) / 100,
     };
+  }
+
+  private classifyFailedRuns(runs: readonly RunRecord[]): { recovered: number; unrecovered: number; pending: number } {
+    const now = this.deps.clock.now();
+    const out = { recovered: 0, unrecovered: 0, pending: 0 };
+    for (const run of runs) {
+      if (!run.everFailed) continue;
+      const task = this.tasks.get(run.taskId)!;
+      const live = this.runsOf(task.id).some(candidate => LIVE_RUN_STATUSES.has(candidate.status));
+      if (task.outcome === "done") out.recovered += 1;
+      else if (task.outcome === "failed" || task.neededRetry) out.unrecovered += 1;
+      else if (!live && run.finishedAt !== null && now - run.finishedAt >= this.deps.options.thresholds.recoveryGraceMs) out.unrecovered += 1;
+      else out.pending += 1;
+    }
+    return out;
   }
 }

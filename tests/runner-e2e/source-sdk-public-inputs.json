@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "package.json": "2d2a4abebb6a5931be1a8f0c8fb2615890324d21",
+    "package.json": "b6a185b015b2ec9ffc80564f0970916b65b7d6ba",
     "packages/plugins/sdk/package.json": "b7a4936e2803fd0d3b32dd7f17fc1ea86609ead0",
     "packages/plugins/sdk/src/bundlers.ts": "883bf3d9f2bd42877cfc0c3707cd882a6f6248d0",
     "packages/plugins/sdk/src/define-plugin.ts": "a99e07ce77ef72fcf1df1347346aacb8ba12e284",
@@ -351,7 +351,7 @@
     "packages/shared/src/slack-tools.ts": "c53a75cd3099c6d8dcd1475e755aae589d4c88f6",
     "packages/shared/src/subscriptions.ts": "ef70e63395ca967bbc30776b71560e96eb354a75",
     "packages/shared/src/summary-slot.test.ts": "5f8e222dea425f0d5bff0adb5c683087bd7cf7fb",
-    "packages/shared/src/telemetry/README.md": "e792827b9f1e629ccdb66eecaad014cd02e532e8",
+    "packages/shared/src/telemetry/README.md": "28125b5ab542abc46c4bb6c044636a093f13584f",
     "packages/shared/src/telemetry/client-types.test.ts": "3b630edda4972b929ba4decd7457f226eb9cfc5b",
     "packages/shared/src/telemetry/client.test.ts": "3ba900cdab5a1ac1dcc1dcea382bb790af32d895",
     "packages/shared/src/telemetry/client.ts": "03a10a5550b542487543fbfd4a417e6eb316e11e",
