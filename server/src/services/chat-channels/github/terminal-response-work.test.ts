@@ -7,6 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../../task-admission.js";
+import { registerGitHubAcknowledgementWork } from "./acknowledgement-work.js";
 import { registerGitHubTerminalResponseWork } from "./terminal-response-work.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -40,7 +41,9 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
   type Request = { issueId: string; deliveryId: string; actionId: string; commentId: string };
-  async function seed() {
+  /** `waiting`: processed, non-final responses as on staging. `received`: every
+   * request still owes its first acknowledgement. */
+  async function seed(shape: "waiting" | "received" = "waiting") {
     const client = db.$client;
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "GitHub backlog", issuePrefix: `G${companyId.slice(0, 7)}` });
@@ -75,13 +78,14 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
         const latest = request === STALE_PER_ISSUE;
         const [action] = await db.insert(chatActions).values({ companyId, endpointId: endpoint, conversationId: conversation,
           deliveryId: delivery, kind: "github_response_comment", providerActionId: `github_response:${delivery}`,
-          payload: { agentId }, status: "processed",
-          result: { id: String(1_000 + index), url: `https://github.com/paperclipai/paperclip/pull/${issueNumber}#c${index}`,
+          payload: { agentId }, status: shape === "received" ? "received" : "processed",
+          result: shape === "received" ? null : { id: String(1_000 + index),
+            url: `https://github.com/paperclipai/paperclip/pull/${issueNumber}#c${index}`,
             final: latest, versionAt: new Date(base).toISOString(), ...(latest ? {} : { code: code(index) }) },
           updatedAt: new Date(base + index * 60_000) }).returning();
         requests.push({ issueId: issue, deliveryId: delivery, actionId: action!.id, commentId: comment });
       }
-      stale.push(...requests.slice(0, STALE_PER_ISSUE));
+      stale.push(...(shape === "received" ? requests : requests.slice(0, STALE_PER_ISSUE)));
       // The latest run answered the newest request, through its identity context.
       const runId = randomUUID(), contextId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue, issueId: issue,
@@ -95,13 +99,14 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     return { companyId, agentId, endpointId: endpoint as string, stale, runs };
   }
 
-  async function start() {
+  async function start(register: typeof registerGitHubTerminalResponseWork = registerGitHubTerminalResponseWork) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true,
       onError: error => errors.push(error) });
-    const worker = registerGitHubTerminalResponseWork(db, coordinator, async deliveryId => {
+    const worker = register(db, coordinator, async deliveryId => {
       acknowledged.push(deliveryId);
       // Stand in for the real acknowledgement, which records a final response.
-      await db.update(chatActions).set({ result: sql`${chatActions.result} || '{"final": true}'::jsonb`, updatedAt: new Date() })
+      await db.update(chatActions).set({ status: "processed", updatedAt: new Date(),
+        result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || '{"final": true}'::jsonb` })
         .where(and(eq(chatActions.deliveryId, deliveryId), eq(chatActions.kind, "github_response_comment")));
     }, () => true);
     await worker.ready;
@@ -148,6 +153,31 @@ describe.skipIf(!support.supported)("GitHub terminal response sweep backlog", ()
     expect(acknowledged).toEqual([]);
     // No GitHub comment changed and no row was finalized.
     expect(await finals(f.stale.map(request => request.actionId))).toBe(0);
+  }, 300_000);
+
+  it("reads a page of waiting responses in a constant number of statements", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    await seed();
+    const first = await observe(async () => { await start(); await advance(5_000); });
+    console.info(`terminal response sweep, first pass: ${first.statements} statements `
+      + `(${first.provenance} run identity reads) for ${STALE} rows in 2 pages`);
+    expect(acknowledged).toEqual([]);
+    // Per page: the page, its latest runs, the batched context and link reads, and the wait keys.
+    expect(first.provenance).toBeLessThanOrEqual(2);
+    expect(first.statements).toBeLessThanOrEqual(2 * 5);
+  }, 300_000);
+
+  it("acknowledges every owed request of a page when one run's requester provenance changed", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed("received");
+    // One task's latest run lost its accepted identity context, so reading its
+    // requester provenance is forbidden. Only that task's requests are affected.
+    await db.update(runIdentityContexts).set({ status: "revoked" }).where(eq(runIdentityContexts.runId, f.runs[3]!.runId));
+    const first = await observe(async () => { await start(registerGitHubAcknowledgementWork); await advance(30_000); });
+    console.info(`acknowledgement sweep: ${first.statements} statements (${first.provenance} run identity reads) `
+      + `for ${f.stale.length} owed requests`);
+    expect(new Set(acknowledged)).toEqual(new Set(f.stale.map(request => request.deliveryId)));
+    expect(acknowledged).toHaveLength(f.stale.length);
   }, 300_000);
 
   it("still settles a waiting response once a run that owns it ends", async () => {
