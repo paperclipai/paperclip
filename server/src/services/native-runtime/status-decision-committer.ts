@@ -1,4 +1,5 @@
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { forbidden, HttpError } from "../../errors.js";
 import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_DELIVERY_DENIED, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
@@ -795,7 +796,7 @@ async function materializeDecisionEffect(input: {
     if (
       effect.idempotencyKey.startsWith(
         `connection-intent:tools:${input.runId}:`,
-      )
+      ) || effect.idempotencyKey === toolCallLoopContinuationKey(input.runId)
     ) {
       const [refresh] = await input.tx
         .select({ id: agentWakeupRequests.id })

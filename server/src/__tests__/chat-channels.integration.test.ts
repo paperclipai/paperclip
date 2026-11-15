@@ -7850,7 +7850,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await f.pass("*");
       expect(f.pulls()).toBe(pulls);
       await db.update(chatGitHubReviews).set({ runId: f.run.id }).where(eq(chatGitHubReviews.id, f.review.id));
-      await f.pass(JSON.stringify({ companyId: f.companyId }));
+      // A run change notifies its task, as run milestones do.
+      await f.pass(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }));
       expect(f.writes.at(-1)).toMatchObject({ status: "in_progress" });
       expect(await f.action()).toMatchObject({ status: "received", result: { state: "running", unchangedPolls: 0 } });
       await f.window(400);
@@ -7860,7 +7861,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
     }, 120_000);
 
-    it("rebuilds GitHub review checks for company-wide hints at most once per interval", async () => {
+    it("reads no GitHub review check status for company-wide hints and still reads it for the check's task", async () => {
       const f = await unresolvedReviewCheckPasses();
       await f.window(400);
       const reads = async (hint: string) => {
@@ -7868,12 +7869,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.pass(hint);
         return f.states() - before;
       };
+      // A company-wide rebuild keeps the saved poll deadline; dispatch reads
+      // the status when it comes.
       const company = JSON.stringify({ companyId: f.companyId });
       const repeated = [];
       for (let index = 0; index < 10; index++) repeated.push(await reads(company));
-      expect(repeated).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      expect(repeated).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
       for (let index = 0; index < GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS / 1000 - 10; index++) await f.pass();
-      expect(await reads(company)).toBe(1);
+      expect(await reads(company)).toBe(0);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: randomUUID() }))).toBe(0);

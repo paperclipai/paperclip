@@ -301,7 +301,8 @@ const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
 /** A reconciliation hold that blocks the task and that this decision settles. */
 function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect) {
   if (hold.kind === "stranded_assigned_issue") return false;
-  if (!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) || !blocksExecution(hold)) return false;
+  const interruption = hold.kind === "active_run_watchdog" && (RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(hold.cause);
+  if ((!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) && !interruption) || !blocksExecution(hold)) return false;
   if (isHumanGate(hold)) return false;
   // A restore hold is owned only once its saved-work recovery completed.
   return !isRestoreHold(hold) || readSystemRecovery(hold.evidence)?.state === "complete";
