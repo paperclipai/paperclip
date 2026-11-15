@@ -3,6 +3,8 @@ import { runSharedStorageWork, sendThroughStorageOutage } from "../storage/stora
 import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
+import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
+import { assertActiveRunSlotBounds, slotsForActiveRuns } from "../lib/active-run-slots.js";
 
 const MAX_INDEX_LEVEL = 52;
 const MAX_OBJECT_BYTES = 4 * 1024 * 1024;
@@ -217,20 +219,90 @@ export function isObjectJournalBusyError(error: unknown): error is ObjectJournal
 }
 
 export type ObjectJournalIOPriority = "background" | "interactive";
-const MAX_ACTIVE_IO = 8;
+export const OBJECT_JOURNAL_READ_IO_RESERVE = 4;
+export const OBJECT_JOURNAL_IO_CEILING = Math.floor(S3_CLIENT_MAX_SOCKETS / 2);
+export const OBJECT_JOURNAL_UPLOAD_SLOTS = assertActiveRunSlotBounds({
+  runsPerSlot: 10,
+  floor: 4,
+  ceiling: OBJECT_JOURNAL_IO_CEILING - OBJECT_JOURNAL_READ_IO_RESERVE,
+});
 const MAX_WAITING_INTERACTIVE_IO = 32;
+let openWriters = 0;
 let activeIO = 0;
 const waitingIO: Record<ObjectJournalIOPriority, Array<() => void>> = {
   background: [],
   interactive: [],
 };
+export function objectJournalUploadSlots() {
+  return slotsForActiveRuns(openWriters, OBJECT_JOURNAL_UPLOAD_SLOTS);
+}
+export function objectJournalIOSlots() {
+  return objectJournalUploadSlots() + OBJECT_JOURNAL_READ_IO_RESERVE;
+}
+export function trackObjectJournalWriter(): () => void {
+  openWriters++;
+  grantWaitingUploads();
+  grantWaitingIO();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    openWriters--;
+  };
+}
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+export function objectJournalUploadActivity() {
+  return { active: activeUploads, waiting: uploadWaiters.length };
+}
+function grantWaitingUploads() {
+  while (activeUploads < objectJournalUploadSlots()) {
+    const next = uploadWaiters.shift();
+    if (!next) return;
+    activeUploads++;
+    next();
+  }
+}
+export async function acquireObjectJournalUpload(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  if (activeUploads >= objectJournalUploadSlots())
+    await new Promise<void>((resolve, reject) => {
+      const enter = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = uploadWaiters.indexOf(enter);
+        if (index !== -1) uploadWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      uploadWaiters.push(enter);
+    });
+  else activeUploads++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeUploads--;
+    grantWaitingUploads();
+  };
+}
+function grantWaitingIO() {
+  while (activeIO < objectJournalIOSlots()) {
+    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
+    if (!next) return;
+    activeIO++;
+    next();
+  }
+}
 async function objectIO<T>(
   operation: () => Promise<T>,
   priority: ObjectJournalIOPriority = "background",
   signal?: AbortSignal,
 ): Promise<T> {
   signal?.throwIfAborted();
-  if (activeIO >= MAX_ACTIVE_IO) {
+  if (activeIO >= objectJournalIOSlots()) {
     const queue = waitingIO[priority];
     if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
       throw new ObjectJournalBusyError();
@@ -251,9 +323,8 @@ async function objectIO<T>(
   try {
     return await operation();
   } finally {
-    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
-    if (next) next();
-    else activeIO--;
+    activeIO--;
+    grantWaitingIO();
   }
 }
 
