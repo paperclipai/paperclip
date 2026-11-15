@@ -95,7 +95,7 @@ async function waitUntil(check: () => Promise<boolean>, timeoutMs: number) {
   it("never shares cached rows with callers that mutate them", async () => {
     const settings = instanceSettingsService(db);
     const first = await settings.get();
-    (first.experimental as Record<string, unknown>).enableIsolatedWorkspaces = true;
+    (first.experimental as unknown as Record<string, unknown>).enableIsolatedWorkspaces = true;
     expect((await settings.get()).experimental.enableIsolatedWorkspaces).toBe(false);
   });
 
