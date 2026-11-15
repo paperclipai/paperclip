@@ -150,12 +150,43 @@ function previousStatus(details: Record<string, unknown>): string | null {
 }
 
 function changedToDone(details: Record<string, unknown>): boolean {
-  const previous = previousStatus(details);
-  return details.status === "done" && previous !== null && previous !== "done";
+  const status = typeof details.toStatus === "string" ? details.toStatus : details.status;
+  const previous = typeof details.fromStatus === "string" ? details.fromStatus : previousStatus(details);
+  return status === "done" && previous !== null && previous !== "done";
+}
+
+export const CLOUD_PRODUCT_EVENT_ENTITY_TYPES = [
+  "agent",
+  "approval",
+  "company_skill",
+  "goal",
+  "issue",
+  "project",
+  "routine",
+  "routine_run",
+  "tool_connection",
+] as const;
+export const CLOUD_PRODUCT_EVENT_ACTOR_TYPES = ["user", "agent", "system", "board", "plugin"] as const;
+export const CLOUD_PRODUCT_EVENT_OTHER_ACTOR = "other";
+export const CLOUD_PRODUCT_EVENT_PLUGIN_ACTOR = "plugin";
+
+function describesListedEntity(source: CloudProductEventSource): boolean {
+  return (CLOUD_PRODUCT_EVENT_ENTITY_TYPES as readonly string[]).includes(source.entityType) && isUuidLike(source.entityId);
+}
+
+function eventActor(source: CloudProductEventSource): { actorType: string; actorId: string } {
+  if (!(CLOUD_PRODUCT_EVENT_ACTOR_TYPES as readonly string[]).includes(source.actorType)) {
+    return { actorType: CLOUD_PRODUCT_EVENT_OTHER_ACTOR, actorId: CLOUD_PRODUCT_EVENT_OTHER_ACTOR };
+  }
+  if (source.actorType === "plugin" && !isUuidLike(source.actorId)) {
+    return { actorType: source.actorType, actorId: CLOUD_PRODUCT_EVENT_PLUGIN_ACTOR };
+  }
+  return { actorType: source.actorType, actorId: source.actorId };
 }
 
 export function draftCloudProductEvent(source: CloudProductEventSource): CloudProductEventDraft | null {
   if (source.actorId === CLOUD_CONTROL_ACTOR_ID) return null;
+  if (!describesListedEntity(source)) return null;
   const details = source.details ?? {};
   switch (source.action) {
     case "ai_connection.connected":
@@ -277,8 +308,7 @@ export async function recordCloudProductEvent(
   await db.insert(cloudProductEvents).values({
     companyId: source.companyId,
     name: draft.name,
-    actorType: source.actorType,
-    actorId: source.actorId,
+    ...eventActor(source),
     responsibleUserId,
     entityType: source.entityType,
     entityId: source.entityId,

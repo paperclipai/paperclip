@@ -108,6 +108,22 @@ describe("draftCloudProductEvent", () => {
     expect(draftCloudProductEvent(source({ action: "issue.updated", details: { title: "Renamed" } }))).toBeNull();
   });
 
+  it("records a task completion that the native runtime logs with fromStatus and toStatus", () => {
+    const completed = source({ action: "issue.updated", entityType: "issue", details: { fromStatus: "in_progress", toStatus: "done" } });
+    expect(draftCloudProductEvent(completed)).toMatchObject({ name: "task.completed", describesIssue: true });
+    expect(draftCloudProductEvent(source({ action: "issue.updated", details: { fromStatus: "done", toStatus: "done" } }))).toBeNull();
+    expect(draftCloudProductEvent(source({ action: "issue.updated", details: { fromStatus: "todo", toStatus: "in_progress" } }))).toBeNull();
+    expect(draftCloudProductEvent(source({ action: "issue.updated", details: { toStatus: "done" } }))).toBeNull();
+  });
+
+  it.each([
+    ["an entity type outside the closed list", { entityType: "Private customer name" }],
+    ["an entity identifier that is not an identifier", { entityId: "Private customer text" }],
+    ["the general plugin entity", { entityType: "plugin", entityId: "private-plugin-key" }],
+  ])("records no event for %s", (_label, overrides) => {
+    expect(draftCloudProductEvent(source({ actorType: "plugin", actorId: randomUUID(), ...overrides }))).toBeNull();
+  });
+
   it("ignores a repeated completion request that changes no status", () => {
     const repeated = source({
       action: "issue.updated",
@@ -266,6 +282,46 @@ const support = await getEmbeddedPostgresTestSupport();
       properties: { origin: "routine_execution", isSubtask: true, isOnboarding: false },
     });
     expect(Object.values(rows[0]!).map((value) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item)).join(" ")).not.toContain("Private customer wording");
+  });
+
+  it("stores no text that a plugin writes with a listed action through the general activity path", async () => {
+    const companyId = await createCompany();
+    const routineId = randomUUID();
+    const forged = { companyId, actorType: "plugin", action: "routine.created", details: { note: "Private customer wording" } };
+
+    await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "Private customer name", entityId: routineId });
+    await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "routine", entityId: "Private customer text" });
+    await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "plugin", entityId: "private-plugin-key" });
+    expect(await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId))).toHaveLength(0);
+
+    await logActivity(db, { ...forged, actorId: "private-plugin-key", entityType: "routine", entityId: routineId });
+    await logActivity(db, { ...forged, actorType: "Private actor type", actorId: "Private actor name", entityType: "routine", entityId: routineId });
+    const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
+    expect(rows.map((row) => [row.actorType, row.actorId, row.entityType, row.entityId])).toEqual([
+      ["plugin", "plugin", "routine", routineId],
+      ["other", "other", "routine", routineId],
+    ]);
+    expect(JSON.stringify(rows, (_key, item) => typeof item === "bigint" ? item.toString() : item)).not.toMatch(/[Pp]rivate/);
+  });
+
+  it("records a task that the native runtime completes", async () => {
+    const companyId = await createCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Private customer wording", originKind: "manual" });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "native-runtime",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { fromStatus: "in_progress", toStatus: "done" },
+    });
+
+    const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: "task.completed", entityType: "issue", entityId: issueId, properties: { origin: "manual" } });
   });
 
   it("stores a plugin origin as a fixed category, without the text the plugin supplied", async () => {

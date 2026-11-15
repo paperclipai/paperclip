@@ -52,6 +52,15 @@ so `origin` alone does not identify it.
   enters the table.
 - Each event holds the company ID, the actor type and ID, the responsible user
   ID, and the entity type and ID.
+- An event is written only when the entity type is in the closed list
+  `CLOUD_PRODUCT_EVENT_ENTITY_TYPES` and the entity ID has the shape of a
+  UUID. A plugin can write an activity record with a listed action and its own
+  text in these two fields, so an event does not copy them without this check.
+- The actor type comes from the closed list `CLOUD_PRODUCT_EVENT_ACTOR_TYPES`.
+  Each other value is stored as `other`. For a plugin actor, an ID that does
+  not have the shape of a UUID is stored as `plugin`.
+- A task completion is read from `status` with the previous status, or from
+  `toStatus` with `fromStatus`. The native runtime writes the second form.
 - The instance keeps events for 30 days. A write removes older rows at most
   once each hour. No background worker runs.
 
