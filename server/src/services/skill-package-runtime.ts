@@ -102,9 +102,11 @@ export function skillPackageRuntime(db: Db) {
         for (const file of files) {
           const target = path.join(staging, file.path);
           await fs.mkdir(path.dirname(target), { recursive: true });
-          if (file.generated) await fs.writeFile(target, file.generated);
-          else await fs.copyFile(path.join(root, file.sourcePath!), target);
-          await fs.chmod(target, file.executable ? 0o555 : 0o444);
+          const bytes = file.generated ?? await fs.readFile(path.join(root, file.sourcePath!));
+          // Set the final read-only mode when the file is created. A chmod after
+          // copyFile fails with EACCES on fakeowner FUSE mounts because the new
+          // inode already inherits the package's 0444 mode.
+          await fs.writeFile(target, bytes, { mode: file.executable ? 0o555 : 0o444 });
         }
         if (!await verifySkillPackageDirectory(staging, files)) throw new Error("Prepared skill version failed integrity verification");
         await fs.rm(directory, { recursive: true, force: true });
