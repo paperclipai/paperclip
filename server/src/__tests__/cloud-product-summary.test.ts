@@ -33,6 +33,8 @@ import {
   CLOUD_RUN_FAILURE_CLASSES,
   buildCloudProductSummary,
   cloudProductSummaryQuerySchema,
+  CLOUD_PRODUCT_SUMMARY_COUNT_CAP,
+  CLOUD_PRODUCT_SUMMARY_TASK_WINDOW,
   cloudRunFailureClass,
   sharedCloudProductSummary,
 } from "../services/cloud-product-summary.js";
@@ -353,8 +355,9 @@ describe("cloudProductSummaryQuerySchema", () => {
     await temporary?.cleanup();
   });
 
-  it("reports no and zero for an organization that has done nothing", async () => {
+  it("reports no and zero for an organization that has done nothing, when another organization has done each thing", async () => {
     const companyId = await createCompany();
+    await seedOrganization(await createCompany());
 
     const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
 
@@ -451,6 +454,126 @@ describe("cloudProductSummaryQuerySchema", () => {
       routineRunsMonth: 2,
     });
     expect(summary.setup).toEqual({ state: "ok", modelProviders: ["anthropic"], connectors: ["custom", "slack"] });
+  });
+
+  it("leaves a connection that is not active out of the setup lists", async () => {
+    const companyId = await createCompany();
+    const [application] = await db
+      .insert(toolApplications)
+      .values({ companyId, name: "Private application name", type: "mcp_http" })
+      .returning({ id: toolApplications.id });
+    await createConnection(companyId, application!.id, { connectionPurpose: "tool", status: "disabled", config: { sourceTemplateKey: "slack" } });
+    await createConnection(companyId, application!.id, { connectionPurpose: "tool", status: "archived", config: { sourceTemplateKey: "github" } });
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+
+    expect(summary.capabilities.connectorSetUp.state).toBe("yes");
+    expect(summary.setup).toEqual({ state: "ok", modelProviders: [], connectors: [] });
+  });
+
+  it("reads only the oldest and the newest tasks of a large organization, and reports unknown for what it did not find", async () => {
+    const companyId = await createCompany();
+    const filler = Array.from({ length: CLOUD_PRODUCT_SUMMARY_TASK_WINDOW + 50 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      title: "Private task title",
+      status: "todo",
+      originKind: "manual",
+      createdAt: new Date(ago(60 * DAY).getTime() + index * 1000),
+    }));
+    for (let start = 0; start < filler.length; start += 500) {
+      await db.insert(issues).values(filler.slice(start, start + 500));
+    }
+    const middleIssueId = filler[CLOUD_PRODUCT_SUMMARY_TASK_WINDOW + 10]!.id;
+    await createDocument(companyId, filler[0]!.id, "notes", ago(50 * DAY));
+    await createDocument(companyId, middleIssueId, "plan", ago(49 * DAY));
+    await createIssue(companyId, { status: "done", originKind: "manual", createdAt: ago(DAY), completedAt: ago(HOUR) });
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+
+    const unknown = { state: "unknown", firstAt: null, beforeSince: false };
+    expect(summary.capabilities.ownTaskCompleted).toEqual({ state: "yes", firstAt: iso(HOUR), beforeSince: false });
+    expect(summary.capabilities.artifactCreated).toEqual({ state: "yes", firstAt: iso(50 * DAY), beforeSince: false });
+    expect(summary.capabilities.planCreated).toEqual({ state: "yes", firstAt: iso(49 * DAY), beforeSince: false });
+    expect(summary.capabilities.planApproved).toEqual(unknown);
+    expect(summary.capabilities.routineTaskCompleted).toEqual(unknown);
+    expect(summary.capabilities.onboardingTaskCompleted).toEqual({ state: "no", firstAt: null, beforeSince: false });
+    expect(summary.activity.tasksCompletedWeek).toBe(1);
+  });
+
+  it("stops each run count at the cap, and keeps the day and the week apart", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const run = (endedAt: Date) => ({
+      companyId,
+      agentId,
+      status: "succeeded",
+      createdAt: new Date(endedAt.getTime() - 90_000),
+      startedAt: new Date(endedAt.getTime() - 90_000),
+      finishedAt: endedAt,
+    });
+    const today = Array.from({ length: CLOUD_PRODUCT_SUMMARY_COUNT_CAP + 40 }, () => run(ago(2 * HOUR)));
+    for (let start = 0; start < today.length; start += 1000) {
+      await db.insert(heartbeatRuns).values(today.slice(start, start + 1000));
+    }
+    await createRun(companyId, agentId, ago(3 * DAY), { status: "failed", errorCode: "adapter_failed" });
+    await createRun(companyId, agentId, ago(HOUR), { status: "failed", errorCode: "adapter_failed" });
+
+    const summary = await buildCloudProductSummary(db, { companyId, now: NOW });
+
+    expect(summary.runs.state).toBe("ok");
+    expect(summary.runs.day.succeeded).toBe(CLOUD_PRODUCT_SUMMARY_COUNT_CAP);
+    expect(summary.runs.week.succeeded).toBe(CLOUD_PRODUCT_SUMMARY_COUNT_CAP);
+    expect(summary.runs.day.failed).toBe(1);
+    expect(summary.runs.week.failed).toBe(2);
+    expect(summary.runs.recent).toHaveLength(20);
+  });
+
+  it("cancels a statement that runs past the section time limit, and reads the next sections", async () => {
+    const companyId = await createCompany();
+    await seedOrganization(companyId);
+    let transactions = 0;
+    let cancelled: unknown = null;
+    const slow = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return (run: Parameters<typeof db.transaction>[0], config: Parameters<typeof db.transaction>[1]) => {
+          transactions += 1;
+          if (transactions !== 4) return target.transaction(run, config);
+          return target.transaction(async (tx) => {
+            let statements = 0;
+            const sleepy = new Proxy(tx, {
+              get(inner, key, innerReceiver) {
+                if (key !== "execute") return Reflect.get(inner, key, innerReceiver);
+                return async (query: Parameters<typeof tx.execute>[0]) => {
+                  statements += 1;
+                  if (statements === 2) {
+                    try {
+                      await inner.execute(sql`select pg_sleep(5)`);
+                    } catch (err) {
+                      cancelled = err;
+                      throw err;
+                    }
+                  }
+                  return inner.execute(query);
+                };
+              },
+            }) as typeof tx;
+            return run(sleepy);
+          }, config);
+        };
+      },
+    }) as typeof db;
+    const startedAt = Date.now();
+
+    const summary = await buildCloudProductSummary(slow, { companyId, now: NOW, sectionTimeoutMs: 300 });
+
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    expect(JSON.stringify([cancelled, (cancelled as { cause?: unknown } | null)?.cause])).toContain("57014");
+    expect(summary.runs.state).toBe("unknown");
+    expect(summary.setup.state).toBe("ok");
+    expect(summary.waiting.state).toBe("ok");
+    expect(summary.capabilities.ownTaskCompleted.state).toBe("yes");
   });
 
   it("returns no text that a customer wrote", async () => {
@@ -567,7 +690,7 @@ describe("cloudProductSummaryQuerySchema", () => {
           transactions += 1;
           const index = transactions;
           return target.transaction(async (tx) => {
-            if (index === 4) time += 5_000;
+            if (index === 7) time += 5_000;
             return run(tx);
           }, config);
         };

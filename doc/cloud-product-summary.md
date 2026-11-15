@@ -20,9 +20,11 @@ Telemetry, not Observability, and not the run log. See `rules/data-paths.mdc`.
 `GET /api/instance/product-summary?since=<time>`
 
 - The request must carry a Cloud control assertion for the action
-  `product-summary:read`. Each other credential gets `403`.
-- An instance that is not Cloud-managed returns `404` with the error
-  `not_cloud_managed`.
+  `product-summary:read`. A request without an assertion gets `401`. Each
+  other credential gets `403`.
+- An instance that is not Cloud-managed has no key to verify an assertion.
+  Thus it rejects each request before the handler runs. The handler returns
+  `404` with the error `not_cloud_managed` as a second check.
 - `since` is optional. It is a time with an offset, for example
   `2026-11-20T17:00:00Z`. A value that is not such a time gets `400` with the
   error `invalid_query`.
@@ -37,10 +39,15 @@ Telemetry, not Observability, and not the run log. See `rules/data-paths.mdc`.
 
 - A date before `since` is not returned. The capability has `firstAt: null`
   and `beforeSince: true`.
-- Each count and each list covers the time from `since` only, when `since` is
-  later than the start of its window.
+- Each count of past events and the list of recent runs cover the time from
+  `since` only, when `since` is later than the start of the window.
 
-Thus no date and no count from before `since` leaves the instance.
+Thus no date of a past event and no count of past events from before `since`
+leaves the instance.
+
+Three values describe the state at the time of the request, not the past: the
+number of tasks that are blocked now, and the two setup lists. The `since` rule
+does not change them.
 
 ## The response
 
@@ -103,6 +110,25 @@ Each capability has a `state` of `yes`, `no`, or `unknown`.
 - `firstAt` is the earliest date among the rows that exist now. A deleted row
   takes its date with it. Paperclip Cloud keeps the earliest date that it saw.
 
+#### Task windows
+
+The capabilities for plans, tasks, and artifacts read the 2,000 oldest tasks
+of the organization. If a capability is not found there and the organization
+has more tasks, the instance reads the 2,000 newest tasks also.
+
+- An organization with 2,000 tasks or fewer gets an exact `yes` or `no`.
+- For a larger organization, `yes` is exact. `firstAt` is the earliest date in
+  the tasks that were read. A capability that is in neither window has the
+  state `unknown`.
+- `onboardingTaskCompleted` does not use the windows. It is exact.
+
+`routineRun` reads the 100 oldest and the 100 newest runs of each of the first
+100 customer routines. If no run is found and a routine has more runs, the
+state is `unknown`.
+
+Paperclip Cloud reads the summary many times each day. A new capability is in
+the newest window when the next request comes.
+
 ### Runs
 
 - A run is counted by the time at which it ended.
@@ -119,11 +145,13 @@ Each capability has a `state` of `yes`, `no`, or `unknown`.
 
 - `blockedTasks` is the number of tasks with the status `blocked`.
 - `lastPersonActivityAt` is the time of the last activity record whose actor
-  is a person, in the last 90 days.
+  is a person. The instance reads the 20,000 newest activity records of the
+  last 90 days. `null` means that no such record is in them.
 - `tasksCompletedWeek` and `tasksCompletedMonth` count tasks that are `done`
   and were completed in the last 7 days and the last 28 days.
 - `routineRunsWeek` and `routineRunsMonth` count runs of customer routines
   that created or completed a task in the same windows.
+- The setup lists cover connections that are active now.
 - `modelProviders` holds provider keys from the closed provider list.
 - `connectors` holds catalog keys. A connection that is not from the catalog
   is `custom`.
@@ -139,16 +167,26 @@ Each capability has a `state` of `yes`, `no`, or `unknown`.
 
 - Each section runs in its own read-only transaction. The summary cannot
   write.
-- Each section has a statement time limit of 2 seconds. A section that does
-  not finish in time has the state `unknown`. `unknown` is not `no` and is not
-  zero.
+- Each section has a time limit of 2 seconds. Before each statement, the
+  instance sets the statement time limit to the time that the section has
+  left. A section that does not finish in time has the state `unknown`.
+  `unknown` is not `no` and is not zero.
 - The request has a time budget of 6 seconds. A section that would start after
   the budget is used has the state `unknown`. A section that starts late gets
-  only the time that is left. Thus a request ends in 8 seconds or less.
+  only the time that is left. The budget does not include the wait for a
+  database connection.
+- The sections that read small tables run first. A slow section cannot take
+  the budget from them.
 - Two requests for the same summary at the same time share one computation.
 - A query error in one section does not fail the other sections.
-- Each query reads the first matching row, a bounded window of time, or a
-  bounded number of rows. No query counts a whole table.
+- Each query on a table that grows with use reads a bounded number of rows or
+  a bounded window of time:
+  - plans, tasks, and artifacts: the task windows above;
+  - routine runs: the run windows above, and the last 28 days for the counts;
+  - agent runs: the last 8 days;
+  - activity: the 20,000 newest records;
+  - completed tasks: the tasks that changed in the last 28 days.
+- No query counts or sorts a whole table.
 - The instance does no work for this path until Paperclip Cloud sends a
   request. To stop the work, stop the requests.
 
