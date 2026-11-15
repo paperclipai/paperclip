@@ -45,6 +45,7 @@ import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
+import { announcePluginManifestChange } from "./plugin-manifest-revision.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
@@ -1855,7 +1856,7 @@ export function pluginLoader(
             { persistFailure: false },
           );
         }
-      });
+      }).finally(announcePluginManifestChange);
 
       log.info(
         {

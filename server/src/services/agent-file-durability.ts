@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
@@ -104,58 +105,113 @@ export async function restoreDurableAgentFiles(tx: Tx, owner: Owner, root: strin
     throw error;
   });
   if (generation === head.generation && await fs.stat(root).then(s => s.isDirectory()).catch(() => false)) return true;
+  const scope = restoreScope.getStore();
+  const deferrable = scope?.deferring === true && !scope.used;
+  if (scope) scope.used = true;
+  const stageKey = `${owner.companyId}:${owner.id}:${root}`;
+  const staged = scope?.staged.get(stageKey);
+  if (staged?.generation === head.generation) {
+    scope!.staged.delete(stageKey);
+    try {
+      await invalidateAgentFileProjection(root);
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rename(staged.directory, root);
+      await mark(root, head.generation);
+      return true;
+    } finally { await fs.rm(staged.directory, { recursive: true, force: true }); }
+  }
+  if (deferrable) throw new AgentFilesRestoreDeferred(owner, root, head);
   const temporary = path.join(path.dirname(root), `.agent-files-${randomUUID()}`);
-  await fs.mkdir(temporary, { recursive: true, mode: 0o700 });
-  const failed = new AbortController();
-  const signal = AbortSignal.any([AbortSignal.timeout(30_000), failed.signal]);
   try {
-    // Bound open streams and file handles while avoiding one network round trip
-    // per file in series. Await every worker before removing a failed projection.
-    const entries = head.entries;
-    let next = 0;
-    const restoreEntry = async (entry: DurableAgentFileEntry) => {
-      signal.throwIfAborted();
-      const relative = instructionPath(entry.path);
-      if (entry.kind === "dir") {
-        await assertInstructionPathSafe(temporary, `${relative}/.path-check`);
-        await fs.mkdir(path.join(temporary, relative), { recursive: true, mode: 0o700 }); return;
-      }
-      const filename = await assertInstructionPathSafe(temporary, relative);
-      await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
-      const handle = await fs.open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, entry.mode & 0o777);
-      try {
-        const hash = createHash("sha256");
-        let size = 0;
-        if (entry.objectKey !== null) {
-          const object = await service.getObject(owner.companyId, entry.objectKey, { signal });
-          await pipeline(object.stream, new Transform({ transform(chunk: Buffer, _encoding, callback) {
-            size += chunk.length;
-            if (size > entry.size) return callback(new Error("Agent file exceeds its committed size"));
-            hash.update(chunk); callback(null, chunk);
-          } }), handle.createWriteStream(), { signal });
-        }
-        if (size !== entry.size || hash.digest("hex") !== entry.sha256) throw new Error("Agent file does not match its committed digest");
-      } finally { await handle.close(); }
-    };
-    const workers = Array.from({ length: Math.min(8, entries.length) }, async () => {
-      try {
-        while (next < entries.length) {
-          signal.throwIfAborted();
-          await restoreEntry(entries[next++]!);
-        }
-      } catch (error) {
-        failed.abort(error);
-        throw error;
-      }
-    });
-    await Promise.allSettled(workers);
-    signal.throwIfAborted();
+    await downloadAgentFiles(service, owner, head.entries, temporary);
     await invalidateAgentFileProjection(root);
     await fs.rm(root, { recursive: true, force: true });
     await fs.rename(temporary, root);
     await mark(root, head.generation);
     return true;
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
+}
+
+async function downloadAgentFiles(service: ReturnType<typeof storage>, owner: Pick<Owner, "companyId">,
+  entries: DurableAgentFileEntry[], temporary: string) {
+  await fs.mkdir(temporary, { recursive: true, mode: 0o700 });
+  const failed = new AbortController();
+  const signal = AbortSignal.any([AbortSignal.timeout(30_000), failed.signal]);
+  let next = 0;
+  const restoreEntry = async (entry: DurableAgentFileEntry) => {
+    signal.throwIfAborted();
+    const relative = instructionPath(entry.path);
+    if (entry.kind === "dir") {
+      await assertInstructionPathSafe(temporary, `${relative}/.path-check`);
+      await fs.mkdir(path.join(temporary, relative), { recursive: true, mode: 0o700 }); return;
+    }
+    const filename = await assertInstructionPathSafe(temporary, relative);
+    await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
+    const handle = await fs.open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, entry.mode & 0o777);
+    try {
+      const hash = createHash("sha256");
+      let size = 0;
+      if (entry.objectKey !== null) {
+        const object = await service.getObject(owner.companyId, entry.objectKey, { signal });
+        await pipeline(object.stream, new Transform({ transform(chunk: Buffer, _encoding, callback) {
+          size += chunk.length;
+          if (size > entry.size) return callback(new Error("Agent file exceeds its committed size"));
+          hash.update(chunk); callback(null, chunk);
+        } }), handle.createWriteStream(), { signal });
+      }
+      if (size !== entry.size || hash.digest("hex") !== entry.sha256) throw new Error("Agent file does not match its committed digest");
+    } finally { await handle.close(); }
+  };
+  const workers = Array.from({ length: Math.min(8, entries.length) }, async () => {
+    try {
+      while (next < entries.length) {
+        signal.throwIfAborted();
+        await restoreEntry(entries[next++]!);
+      }
+    } catch (error) {
+      failed.abort(error);
+      throw error;
+    }
+  });
+  await Promise.allSettled(workers);
+  signal.throwIfAborted();
+}
+
+class AgentFilesRestoreDeferred extends Error {
+  constructor(readonly owner: Owner, readonly root: string, readonly head: Head) { super("agent_files_restore_deferred"); }
+}
+type StagedAgentFiles = { generation: string; directory: string };
+type RestoreScope = { staged: Map<string, StagedAgentFiles>; deferring: boolean; used: boolean };
+const restoreScope = new AsyncLocalStorage<RestoreScope>();
+const RESTORE_DEFERRALS = 2;
+
+export async function withAgentFilesRestoredBeforeLock<T>(work: () => Promise<T>): Promise<T> {
+  const scope: RestoreScope = { staged: new Map(), deferring: true, used: false };
+  try {
+    for (let attempt = 0; ; attempt++) {
+      scope.deferring = attempt < RESTORE_DEFERRALS;
+      scope.used = false;
+      try {
+        return await restoreScope.run(scope, work);
+      } catch (error) {
+        if (!(error instanceof AgentFilesRestoreDeferred)) throw error;
+        const stageKey = `${error.owner.companyId}:${error.owner.id}:${error.root}`;
+        const previous = scope.staged.get(stageKey);
+        scope.staged.delete(stageKey);
+        if (previous) await fs.rm(previous.directory, { recursive: true, force: true });
+        const directory = path.join(path.dirname(error.root), `.agent-files-${randomUUID()}`);
+        try {
+          await downloadAgentFiles(storage(), error.owner, error.head.entries, directory);
+          scope.staged.set(stageKey, { generation: error.head.generation, directory });
+        } catch (failure) {
+          await fs.rm(directory, { recursive: true, force: true });
+          throw failure;
+        }
+      }
+    }
+  } finally {
+    await Promise.all([...scope.staged.values()].map(staged => fs.rm(staged.directory, { recursive: true, force: true })));
+  }
 }
 
 /** Objects uploaded before the agent row lock, by content (`sha256:size`). */

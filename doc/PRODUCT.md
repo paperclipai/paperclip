@@ -98,6 +98,22 @@ a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
 groups omit tasks already shown in the other sections and disappear when empty.
 
+Sidebar Recents shows readable direct subtasks below a recent parent. Each group
+can fold independently, starts with at most ten children, and loads more on
+request. Waiting external chat children remain visible in explicit child lists.
+A selected child beyond the first ten replaces the last preview row.
+Children already in recent history appear once under their recent root parent.
+Orphans remain in the main list. Standard Recents and Classic Recent Tasks use
+the same groups; Classic keeps its existing parent action menus. Child reads stop
+when a group leaves the viewport. At most three child requests run together.
+Show less discards extra cached pages, so the next refresh reads one preview.
+Live updates refresh the affected child groups and recent summary batches;
+permission changes clear cached children before refetching.
+
+Unread stays personal to each task. Folding, loading children, and Show more do
+not mark tasks read. A folded group shows its readable unread-child count,
+including children beyond ten, separately from the parent's own unread marker.
+
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
 (**Blocked**), a pending response or review (**In Review**), monitoring, or
@@ -544,7 +560,7 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
-Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced.
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
 

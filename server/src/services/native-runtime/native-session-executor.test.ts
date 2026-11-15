@@ -21,6 +21,7 @@ import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { TOOL_CALL_LOOP_REFUSAL_LIMIT, ToolCallLoopError, toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { enableReattachPhase, isReattachPhaseActive, joinReattachPhase, onReattachPhaseEnd, resetReattachPhaseForTests, type ReattachPhaseSummary } from "../heartbeat/run-admission.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { registerRunStartHandover } from "../run-start-handover.js";
@@ -81,7 +82,9 @@ import {
   type NativeExecutionInputV3,
   type NativeExecutionInput,
   type PrpEvent,
+  type PrpStructuredRunResult,
 } from "@paperclipai/paperclip-runner";
+import { HttpError } from "../../errors.js";
 import { existsSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
@@ -468,6 +471,8 @@ import {
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
   nativeToolsRefreshWaitResult,
+  nativeToolCallLoopWaitResult,
+  SessionAuthorityEpoch,
   parseRemoteExecutableCandidate,
   buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
@@ -7912,6 +7917,66 @@ describe("native conversation replies", () => {
 });
 
 describe("native governed waits", () => {
+  it("a turn whose model repeats a refused call N times ends with agent_tool_call_loop and schedules a continuation", async () => {
+    const wakes: Array<{ id: string; key: string; loop: ToolCallLoopError }> = [];
+    const authority = {
+      execute: vi.fn(async () => { throw new HttpError(400, "body is required"); }),
+      scheduleToolCallLoopContinuation: vi.fn(async (loop: ToolCallLoopError) => {
+        if (!wakes.length) wakes.push({ id: "wake-loop", key: toolCallLoopContinuationKey("run-1"), loop });
+        return true;
+      }),
+      close: () => {},
+    };
+    const epoch = new SessionAuthorityEpoch("run-1", authority as never);
+    const contract = { revision: "4", objective: "Describe the subtasks", criteria: [{ id: "describe", requirement: "Describe them" }] };
+    const observation = createGovernedWaitEventObservation(async () => wakes[0]
+      ? nativeToolCallLoopWaitResult({ wakeId: wakes[0].id, key: wakes[0].key, completionContract: contract }) : null);
+    const args = { operationId: "PATCH /api/issues/{id}", pathParams: { id: "issue-a" }, query: {}, responseText: { limitBytes: 8192 } };
+    const toolEvent = (n: number): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceInstanceId: "runner-1", sourceEventId: `runner-1:item:${n}`, sourceSeq: n,
+      sourceKind: "runner", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: `call-${n}`,
+      eventType: "item.completed", schemaVersion: 1, priority: 0, emittedAt: "2026-11-15T05:00:00.000Z",
+      payload: { kind: "dynamicToolCall", item: { type: "tool_result", is_error: true } },
+    });
+
+    let parked: PrpStructuredRunResult | null = null;
+    let calls = 0;
+    let lastError: unknown;
+    while (!parked && calls < 2 + TOOL_CALL_LOOP_REFUSAL_LIMIT + 5) {
+      calls += 1;
+      lastError = await epoch.execute({ tool: "call_api", callId: `call-${calls}`, arguments: args }).then(() => null, (error: unknown) => error);
+      await observation.observe(toolEvent(calls), true);
+      parked = observation.consume(toolEvent(calls));
+    }
+
+    expect(calls).toBe(2 + TOOL_CALL_LOOP_REFUSAL_LIMIT);
+    expect(authority.execute).toHaveBeenCalledTimes(2);
+    expect(lastError).toBeInstanceOf(ToolCallLoopError);
+    expect(lastError).toMatchObject({ code: "agent_tool_call_loop", refusals: TOOL_CALL_LOOP_REFUSAL_LIMIT });
+    expect(authority.scheduleToolCallLoopContinuation).toHaveBeenCalledTimes(1);
+    expect(parked).toMatchObject({
+      reportedWorkDisposition: "yielded",
+      completionClaim: { objectiveSatisfied: false },
+      evidence: [{ ref: "wakeup:wake-loop" }],
+      continuation: { kind: "same_agent", idempotencyKey: "agent_tool_call_loop:run-1", summary: "Continue the task in a fresh session." },
+    });
+  });
+
+  it("keeps the refused call's error when the loop continuation cannot be queued", async () => {
+    const authority = {
+      execute: vi.fn(async () => { throw new HttpError(400, "body is required"); }),
+      scheduleToolCallLoopContinuation: vi.fn(async () => { throw new Error("queue unavailable"); }),
+      close: () => {},
+    };
+    const epoch = new SessionAuthorityEpoch("run-1", authority as never);
+    let error: unknown;
+    for (let n = 0; n < 2 + TOOL_CALL_LOOP_REFUSAL_LIMIT; n++) {
+      error = await epoch.execute({ tool: "call_api", callId: `c-${n}`, arguments: {} }).then(() => null, (failure: unknown) => failure);
+    }
+    expect(error).toBeInstanceOf(ToolCallLoopError);
+    expect(authority.scheduleToolCallLoopContinuation).toHaveBeenCalledTimes(1);
+  });
+
   it("yields to an existing tools-refresh wake without claiming completion or a human interaction", () => {
     const result = nativeToolsRefreshWaitResult({
       wakeId: "wake-1",

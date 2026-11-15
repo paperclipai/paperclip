@@ -21,6 +21,7 @@ import { readProcessStartedAt } from "../services/hot-restart.js";
 import { hasRemoteTerminationReceipt, remoteTerminationReceipt, resolveRemoteTerminationLease } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { announcePluginManifestChange } from "../services/plugin-manifest-revision.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 describe("durable sandbox creation through the runtime entry point", () => {
@@ -37,6 +38,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`truncate sandbox_creation_operations, companies, environments, plugins cascade`);
+    announcePluginManifestChange();
     companyId = randomUUID(); environmentId = randomUUID(); pluginId = randomUUID(); runId = randomUUID();
     const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; pluginLogin = false; generatedLoginId = false; foreignReceipt = false; beforeReply = undefined; resources.clear();
     spool = await mkdtemp(join(tmpdir(), "empty-sandbox-web-"));
@@ -451,6 +453,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await secrets.createBinding({ companyId, secretId: secret.id, targetType: "environment", targetId: environmentId, configPath: "apiKey" });
     await db.update(plugins).set({ manifestJson: sql`jsonb_set(${plugins.manifestJson}, '{environmentDrivers,0,configSchema}',
       '{"type":"object","properties":{"apiKey":{"type":"string","format":"secret-ref"}}}'::jsonb)` }).where(eq(plugins.id, pluginId));
+    announcePluginManifestChange();
     await db.update(environments).set({ config: { provider: "creation-fixture", image: "fixture", reuseLease: false, apiKey: secret.id } })
       .where(eq(environments.id, environmentId));
     loseReply = true;

@@ -10,6 +10,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -69,6 +70,7 @@ describeEmbeddedPostgres("activity service", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
@@ -273,6 +275,45 @@ describeEmbeddedPostgres("activity service", () => {
     });
     expect(rows.map((row) => row.action)).toContain("open.changed");
     expect(rows.map((row) => row.action)).not.toContain("private.changed");
+  });
+
+  it("reports the queued messages a run's own accepted first turn took", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const acceptedRunId = randomUUID(), unacceptedRunId = randomUUID(), retryRunId = randomUUID();
+    const taken = [randomUUID(), randomUUID()], editedAfterSeal = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "running",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "First turn", status: "in_progress",
+      priority: "medium", assigneeAgentId: agentId });
+    await db.insert(issueComments).values([...taken, editedAfterSeal].map((id, index) => ({
+      id, companyId, issueId, authorType: "user" as const, authorUserId: "board-user", body: `Message ${index}`,
+      createdAt: new Date("2026-11-14T23:59:00.000Z"),
+      // Edited after the run sealed its input: still waiting to be delivered.
+      updatedAt: new Date(id === editedAfterSeal ? "2026-11-15T00:00:05.000Z" : "2026-11-14T23:59:00.000Z"),
+    })));
+    const receipt = (runId: string) => ({ schema: "paperclip.first-turn-queued-input.v1", runId,
+      wakeupRequestIds: [], commentIds: [...taken, editedAfterSeal], claimedAt: "2026-11-15T00:00:00.000Z" });
+    await db.insert(heartbeatRuns).values([
+      { id: acceptedRunId, receiptRunId: acceptedRunId, status: "running" },
+      // Sealed its input, then failed to start: the receipt proves nothing.
+      { id: unacceptedRunId, receiptRunId: unacceptedRunId, status: "failed" },
+      // A retry copies its predecessor's context; that receipt is not its own.
+      { id: retryRunId, receiptRunId: acceptedRunId, status: "running" },
+    ].map((run, index) => ({
+      id: run.id, companyId, agentId, scopeKind: "issue" as const, issueId, invocationSource: "assignment",
+      status: run.status, createdAt: new Date(Date.now() - (3 - index) * 1000),
+      contextSnapshot: { issueId, firstTurnQueuedInput: receipt(run.receiptRunId) },
+    })));
+    await db.insert(heartbeatRunEvents).values([acceptedRunId, retryRunId].map(runId => ({
+      companyId, runId, agentId, seq: 1, eventType: "turn.accepted", stream: "system", level: "info",
+      message: "turn accepted" })));
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+    const ids = (runId: string) => runs.find(run => run.runId === runId)?.firstTurnCommentIds ?? null;
+    expect(ids(acceptedRunId)).toEqual(taken);
+    expect(ids(unacceptedRunId)).toBeNull();
+    expect(ids(retryRunId)).toBeNull();
   });
 
   it.each([null, "native_provider_model_rejected", "adapter_failed"])("returns compact issue runs with bounded model rejection details: %s", async (errorCode) => {

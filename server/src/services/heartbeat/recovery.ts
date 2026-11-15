@@ -21,7 +21,7 @@ import {
   pendingCleanupAttemptsSql,
   pendingCleanupDeadlineSql,
   pendingCleanupMetadataObjectSql,
-  recoveredOrphanFirstAttemptSql,
+  recoveredCleanupFirstAttemptSql,
 } from "../environment-cleanup-state.js";
 import { currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -1872,7 +1872,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
           opts?.environmentRetry ? eq(environmentLeases.environmentId, opts.environmentRetry.environmentId) : undefined,
           pendingCleanupRetryDueSql(manualRetry),
-          backoffMs > 0 ? or(lte(environmentLeases.updatedAt, cutoff), recoveredOrphanFirstAttemptSql()) : undefined,
+          backoffMs > 0 ? or(lte(environmentLeases.updatedAt, cutoff), recoveredCleanupFirstAttemptSql()) : undefined,
         ),
       )
       .orderBy(asc(environmentLeases.updatedAt))
@@ -2888,8 +2888,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         // Process loss spends the durable failure retry budget that
-        // enqueueProcessLossRetry schedules against (execution-semantics
-        // "Shutdown, process loss, and provider failure"). Checking it here
+        // enqueueProcessLossRetry schedules against. Checking it here
         // keeps "retrying once" honest and lets an exhausted chain fall
         // through to the interaction continuation path below.
         // A conversation run that a restart ended draws on the server-restart
