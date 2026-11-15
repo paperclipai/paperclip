@@ -91,6 +91,28 @@ function delivery(state: PhotonExternalState, sequence = 3, previousSequence: nu
     payload: { version: 1, binding: state.binding, sequence, previousSequence, acceptedAt: createdAt, rawFrame: raw.toString("base64") } };
 }
 describe("Photon normal external-owner handoff (controlled owner ports, not real SQL or gRPC)", () => {
+  it("refuses original-only recovery when retirement commits before the current-state transaction", async () => {
+    const f = fixture();
+    const input = { identity, config, lease: { token: "lease" }, localResourceId: f.resourceId };
+    const original = await f.create().prepare(input);
+    const current = f.store.current;
+    let retired: PhotonExternalState | null = null;
+    f.store.current = async (selected, lease, work) => {
+      f.store.current = current;
+      // Another normal owner commits exact retirement after the recovery caller
+      // captured its intent, but before prepare acquires current SQL authority.
+      f.finishRetirement();
+      await f.create().retire(original);
+      retired = await f.read();
+      expect(retired).toMatchObject({ phase: "retired", handoffId: original.handoffId, binding: original.binding });
+      return current(selected, lease, work);
+    };
+    const recovery = { ...input, expected: original };
+    await expect(f.create().reconcile(recovery)).rejects.toThrow("Photon original handoff changed during reconnect recovery");
+    expect(await f.read()).toEqual(retired);
+    expect(f.requests.filter(request => request.kind === "enroll")).toEqual([]);
+    expect(f.counts()).toEqual({ enrollments: 0, joins: 1 });
+  });
   it("recovers original custody with a fenced old lease without inventing unknown physical closure", async () => {
     const f = fixture();
     const descriptor = { id: f.resourceId,

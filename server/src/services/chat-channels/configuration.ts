@@ -81,7 +81,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   getWebhookPublicBaseUrl: () => string | null;
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
   /** Provider-owned durable/resource settlement before destroying credentials. */
-  prepareCredentialRemoval?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<"settled" | "unhandled">;
+  prepareCredentialRemoval?: (endpointId: string, authority: { responsibleUserId?: string | null; preserveQueuedDeliveries?: true; reauthorize(): Promise<void> }) => Promise<"settled" | "unhandled">;
   prepareResume?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<void>;
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   reconcileDiscordCommands: ReturnType<typeof createDiscordCommands>["reconcileDiscordCommands"];
@@ -807,6 +807,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await credentialLease.assertOwned();
         const settled = await options.prepareCredentialRemoval?.(endpoint.id, {
           responsibleUserId: managementContext?.responsibleUserId ?? actorUserId,
+          preserveQueuedDeliveries: true,
           reauthorize: async () => { await managementContext?.reauthorize(); await credentialLease.assertOwned(); },
         });
         if (settled !== "settled") throw conflict("The original provider owner must settle before reconnect");

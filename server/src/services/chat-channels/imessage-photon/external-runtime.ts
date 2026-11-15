@@ -352,13 +352,15 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   function attachLocalRuntime(id: string, runtime: ChatEndpointRuntime): void {
     resources.attach(id, runtime, () => runtime.shutdown());
   }
-  async function reconcile(id: string): Promise<void> {
+  async function reconcile(id: string, expected?: PhotonExternalState): Promise<void> {
     const pending = active.get(id); if (pending) return pending;
     const run = (async () => {
       const record = await options.endpointRecord(id);
       if (!record || record.endpoint.provider !== "imessage-photon") return;
       await options.joinConstructionCleanup?.(id);
       const previous = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+      if (expected && !isDeepStrictEqual(previous, expected))
+        throw conflict("Photon original handoff changed before reconnect recovery");
       const broker = options.broker(), subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
       const identity: PhotonExternalIdentity | null = subject ? { companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
         runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject } : null;
@@ -387,14 +389,14 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         const originalResourceId = previous.localResourceId;
         await options.withReceiverLease(record, async lease => {
           const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
-          const input = { identity, lease, config: optionsConfig, localResourceId: originalResourceId };
+          const input = { identity, lease, config: optionsConfig, localResourceId: originalResourceId, expected };
           const prepared = await owner.prepare(input);
           if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
           return owner.reconcile(input);
         });
         return;
       }
-      let external = await placement(record);
+      let external = expected ? null : await placement(record);
       if (external) {
         if (external.localResourceId !== null && !external.localClosureConfirmed) {
           external = (await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(external)).state;
@@ -480,7 +482,11 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
           await store.retained(external, value => ({ ...value, failure: null }));
         return;
       }
-      const runtime = await options.runtimeFor(record.endpoint, { requireDiscordOwnership: true });
+      // Reconnect recovery may finish only its retained original allocation.
+      // It must never construct a replacement if another owner retired it.
+      const runtime = expected ? options.currentRuntime(id) : await options.runtimeFor(record.endpoint, { requireDiscordOwnership: true });
+      if (!runtime || expected && (!expected.localResourceId || !resources.owns(expected.localResourceId, runtime)))
+        throw conflict("Photon original receiver changed before reconnect recovery");
       const context = options.context(runtime), lease = options.ownership(id);
       if (!context || !lease || lease.context !== context || context.endpointRuntime !== runtime || lease.stopping) throw new Error("Photon normal local resource lease changed");
       const config = await options.config(record);
@@ -498,11 +504,13 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       // Keep the real runtime in the normal registry through shutdown. Its failure
       // persistence callbacks still see the exact current object/lease; removing
       // it first would turn cleanup debt into an obsolete-context no-op.
+      if (expected && (!expected.localResourceId || !resources.owns(expected.localResourceId, runtime)))
+        throw conflict("Photon original receiver resource changed during reconnect recovery");
       const resourceId = resources.capture(runtime, async () => { await runtime.shutdown(); });
       // This Runtime already exists. Capture its exact live process/lease before
       // handoff, not before its original constructor and never after a crash.
       const localResource: PhotonResourceDescriptor = { id: resourceId, controller, leaseDigest: photonHash(lease.token), closed: false };
-      const input = { identity: currentIdentity, lease, config, localResourceId: resourceId, localResource };
+      const input = { identity: currentIdentity, lease, config, localResourceId: resourceId, localResource, expected };
       const prepared = await owner.prepare(input);
       if (prepared.phase === "enrolling") await joinConnectionEventWakeEnrollment(db);
       await owner.reconcile(input);
@@ -566,13 +574,38 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       await store.retained(external, value => ({ ...value, failure: { code: "sender_close", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }));
     } finally { options.notify(id); }
   }
-  async function retire(id: string, cleanup?: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) {
+  async function retire(id: string, cleanup?: { responsibleUserId?: string | null; preserveQueuedDeliveries?: true; reauthorize(): Promise<void> }) {
     const record = await options.endpointRecord(id), broker = options.broker();
     if (!record || record.endpoint.provider !== "imessage-photon") return;
     await cleanup?.reauthorize();
     await options.joinConstructionCleanup?.(id);
     let retained = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
     if (!retained || retained.phase === "retired") return;
+    // Cloud enroll can commit before its reply or this App's local handoff.
+    // Recover ONLY that same current intent through the normal receiver lease;
+    // never turn unfinished, still-authorized delivery custody into revocation.
+    if (cleanup?.preserveQueuedDeliveries && ["enrolling", "joining"].includes(retained.phase)
+      && await store.inspect(retained.identity)) {
+      if (retained.failure && (retained.failure.nextAttemptAt === null || Date.parse(retained.failure.nextAttemptAt) > Date.now()))
+        throw conflict("Photon original handoff retry is not due before reconnect", { code: "photon_retirement_pending" });
+      const original = retained;
+      await cleanup.reauthorize();
+      await reconcile(id, original);
+      await cleanup.reauthorize();
+      const current = await store.read(original.identity);
+      if (!current || current.phase !== "external" || current.handoffId !== original.handoffId
+        || current.localResourceId !== original.localResourceId || !isDeepStrictEqual(current.identity, original.identity)
+        || !isDeepStrictEqual(current.binding, original.binding))
+        throw conflict("Photon original handoff remains pending before reconnect", { code: "photon_retirement_pending" });
+      retained = current;
+    }
+    // Reconnect has not revoked this generation or its credentials. Quiesce
+    // Cloud first, and keep normal queued admission alive until its exact ACK
+    // debt is retired. Pause/removal retain the existing revocation path.
+    if (cleanup?.preserveQueuedDeliveries && retained.phase === "external" && await store.inspect(retained.identity)) {
+      retained = await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) })
+        .drainBeforeReplacement(retained, cleanup);
+    }
     if (retained.phase !== "retiring") retained = await store.retained(retained, value => ({ ...value,
       phase: "retiring", ...(value.phase === "enrolling" ? { enrollmentCancellation: "requested" as const } : {}), failure: value.failure?.code === "sender_close" ? value.failure : null }));
     // Join the normal registry's current OR retained failed runtime first. A

@@ -1,3 +1,4 @@
+import { conflict } from "../../../errors.js";
 import { readControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controller-process-identity.js";
 import { photonResourceProcessEnded, photonSenderProcessEnded } from "./resource-process.js";
 import { isDeepStrictEqual } from "node:util";
@@ -122,7 +123,7 @@ export class PhotonLocalResources {
   owns(id: string, object: object): boolean { return this.objects.get(object) === id && this.resources.has(id); }
 }
 export type PhotonExternalHandoffInput = { identity: PhotonExternalIdentity; lease: PhotonExternalLease; config: ResolvedPhotonChatConfig;
-  localResourceId: string | null; localResource?: NonNullable<PhotonExternalState["localResource"]> };
+  localResourceId: string | null; localResource?: NonNullable<PhotonExternalState["localResource"]>; expected?: PhotonExternalState };
 export function createPhotonExternalOwner(options: { store: PhotonExternalStore; broker: PhotonExternalBroker | undefined;
   resources: PhotonLocalResources; notify(identity: PhotonExternalIdentity): void; now?: () => Date; processProbe?: ProcessProbe }) {
   const now = options.now ?? (() => new Date());
@@ -158,6 +159,10 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     if (input.localResource && (input.localResource.id !== input.localResourceId || input.localResource.closed
       || input.localResource.leaseDigest !== photonHash(lease.token) || !readControllerProcess(input.localResource.controller))) throw new Error("Photon new allocation descriptor is invalid");
     return options.store.current(identity, lease, async (state, current) => {
+      // A reconnect recovery is not permission to create or adopt another intent.
+      // Fence the retained snapshot under the same authority/receiver SQL lock.
+      if (input.expected && !isDeepStrictEqual(current, input.expected))
+        throw new Error("Photon original handoff changed during reconnect recovery");
       if (current && current.phase !== "retired") {
         // Admission uses the current authorized endpoint cutoff. Enrollment is
         // durable custody: retries must finish its exact original input tuple.
@@ -350,6 +355,30 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     });
     // Caller can now use ONLY the ordinary authenticated delivery ACK.
   }
+  /** Stop new Cloud intake before reconnect fences the unchanged App owner.
+   * Existing authorized deliveries still use normal dispatch/receipt/ACK. A
+   * pending or lost reply leaves this exact external owner dispatchable. */
+  async function drainBeforeReplacement(retained: PhotonExternalState, cleanup: { reauthorize(): Promise<void> }): Promise<PhotonExternalState> {
+    await cleanup.reauthorize();
+    const current = await options.store.inspect(retained.identity);
+    if (!current || current.phase !== "external" || current.handoffId !== retained.handoffId
+      || !isDeepStrictEqual(current.identity, retained.identity) || !isDeepStrictEqual(current.binding, retained.binding))
+      throw new Error("Photon current delivery authority changed before reconnect drain");
+    const request = { subject: current.identity.subject, companyId: current.identity.companyId };
+    await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "retire", binding: current.binding } });
+    const response = z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid(),
+      phase: z.enum(["staged", "active", "retiring", "retired"]) }).strict().parse(
+      await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "status", binding: current.binding } }));
+    if (!isDeepStrictEqual(response.binding, current.binding) || response.handoffId !== current.handoffId)
+      throw new Error("Photon reconnect drain tuple changed");
+    if (response.phase !== "retired") throw conflict("Photon original physical close or queue drain remains outstanding", { code: "photon_retirement_pending" });
+    await cleanup.reauthorize();
+    const latest = await options.store.inspect(current.identity);
+    if (!latest || latest.phase !== "external" || latest.handoffId !== current.handoffId
+      || !isDeepStrictEqual(latest.identity, current.identity) || !isDeepStrictEqual(latest.binding, current.binding))
+      throw new Error("Photon current delivery authority changed after reconnect drain");
+    return latest; // Preserve any normal admission/ACK prefix committed during the RPC.
+  }
   async function retire(retained: PhotonExternalState, cleanup?: { responsibleUserId?: string | null; reauthorize(): Promise<void> }): Promise<void> {
     if (retained.phase === "retired") return;
     if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring", ...(value.phase === "enrolling" ? { enrollmentCancellation: "requested" as const } : {}), failure: value.failure?.code === "sender_close" ? value.failure : null }));
@@ -384,5 +413,5 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
       options.notify(retained.identity);
     } catch (error) { return fail(retained, error instanceof PhotonSenderResourceUnknown ? "sender_close" : error instanceof PhotonExternalBrokerUnavailable ? "authority" : "retirement", error, !(error instanceof PhotonPhysicalResourceUnknown || error instanceof PhotonExternalBrokerUnavailable)); }
   }
-  return { prepare, repair, reserveSender, repairSender, confirmSenderClosed, reconcile, dispatch, retire };
+  return { prepare, repair, reserveSender, repairSender, confirmSenderClosed, reconcile, dispatch, drainBeforeReplacement, retire };
 }

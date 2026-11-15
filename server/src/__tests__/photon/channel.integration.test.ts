@@ -125,7 +125,7 @@ describe("iMessage Photon channel control plane", () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PHOTON_TEST_DATABASE_URL");
     if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-photon-");
     if (external) await applyPendingMigrations(external);
-    db = createDb(external ?? database!.connectionString);
+    db = createDb(external ?? database!.connectionString, external ? { maxConnections: 4 } : undefined);
     secrets = await mkdtemp(path.join(tmpdir(), "photon-secrets-"));
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
       secrets,
@@ -1033,7 +1033,7 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(false, true), 30_000);
   it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
     () => onlinePhotonEnrollment(false, false, true), 30_000);
-  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null, reconnectCheckpoint: "current" | "rotated" | "rollback" | "untagged" | "foreign" | null = null, handoffCommitReplyLost = false) {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null, reconnectCheckpoint: "current" | "rotated" | "rollback" | "untagged" | "foreign" | null = null, handoffCommitReplyLost = false, queuedReconnect: "pending" | "lost-retire-reply" | "lost-enroll-reply" | null = null) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
@@ -1072,7 +1072,8 @@ describe("iMessage Photon channel control plane", () => {
     const requests: Record<string, unknown>[] = [];
     const requestSubjects: string[] = [];
     let endpointId: string | undefined, companyId: string | undefined;
-    let retirementComplete = false, retiredReplyIssued = false;
+    let retirementComplete = false, retiredReplyIssued = false, reconnectReplyLost = false;
+    let activatedHandoff: string | undefined, activatedEnrollment: unknown;
     let revokeDuringRetirement: (() => Promise<void>) | undefined;
     vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation, subject }) => {
       requestSubjects.push(subject);
@@ -1082,13 +1083,35 @@ describe("iMessage Photon channel control plane", () => {
       if (!retained) throw new Error("Normal staged enrollment absent");
       expect(subject).toBe(retained.identity.subject);
       if (operation.kind === "enroll") {
-        if ((retirementResume || reconnectCheckpoint) && requests.filter(value => value.kind === "enroll").length > 1)
+        if (queuedReconnect === "lost-enroll-reply" && !activatedHandoff) {
+          // Cloud enroll resumes the receiver before replying. Lose only that
+          // reply, retaining its actual original intent and queued intake.
+          activatedHandoff = retained.handoffId;
+          activatedEnrollment = structuredClone(operation.enrollment);
+          throw new Error("Controlled active Photon enrollment reply lost");
+        }
+        const sameActivatedIntent = queuedReconnect === "lost-enroll-reply" && retained.handoffId === activatedHandoff;
+        if (sameActivatedIntent) expect(operation.enrollment).toEqual(activatedEnrollment);
+        if ((retirementResume || reconnectCheckpoint || queuedReconnect) && requests.filter(value => value.kind === "enroll").length > 1 && !sameActivatedIntent)
           expect(retiredReplyIssued, "replacement enrollment must follow the exact retired receipt").toBe(true);
         return { binding: retained.binding };
       }
-      if ((retirementResume || reconnectCheckpoint) && (operation.kind === "retire" || operation.kind === "status")) {
+      if (queuedReconnect === "lost-enroll-reply" && operation.kind === "cancel-enrollment") {
         expect(operation.binding).toEqual(retained.binding);
-        if (operation.kind === "retire") return { binding: retained.binding };
+        expect(operation.handoffId).toBe(activatedHandoff);
+        // Faithful old-product cancellation: active Cloud intake cannot claim
+        // cancelled/retired while its queued message still lacks an ACK.
+        return { binding: retained.binding, handoffId: retained.handoffId, phase: "retiring" };
+      }
+      if ((retirementResume || reconnectCheckpoint || queuedReconnect) && (operation.kind === "retire" || operation.kind === "status")) {
+        expect(operation.binding).toEqual(retained.binding);
+        if (operation.kind === "retire") {
+          if (queuedReconnect === "lost-retire-reply" && !reconnectReplyLost) {
+            reconnectReplyLost = true; // The controlled Cloud intake fence committed; its HTTP reply was lost.
+            throw new Error("Controlled committed Photon retire reply lost");
+          }
+          return { binding: retained.binding };
+        }
         await revokeDuringRetirement?.();
         if (retirementComplete) retiredReplyIssued = true;
         return { binding: retained.binding, handoffId: retained.handoffId, phase: retirementComplete ? "retired" : "retiring" };
@@ -1154,10 +1177,22 @@ describe("iMessage Photon channel control plane", () => {
       vi.spyOn(local, "shutdown").mockRejectedValueOnce(new Error("Controlled original local join pending"));
       await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled original local join pending");
     }
-    if (retirementResume || reconnectCheckpoint) await owner.reconcile(t.endpoint.id);
+    const lostEnrollmentReceiver = queuedReconnect === "lost-enroll-reply" ? t.service.runtime.get(t.endpoint.id) : null;
+    const lostEnrollmentShutdown = lostEnrollmentReceiver ? vi.spyOn(lostEnrollmentReceiver, "shutdown") : null;
+    if (queuedReconnect === "lost-enroll-reply") {
+      expect(lostEnrollmentReceiver).not.toBeNull();
+      await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled active Photon enrollment reply lost");
+    } else if (retirementResume || reconnectCheckpoint || queuedReconnect) await owner.reconcile(t.endpoint.id);
     const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
-    expect(original?.phase).toBe(retirementResume || reconnectCheckpoint || handoffCommitReplyLost ? "external" : phase);
+    expect(original?.phase).toBe(queuedReconnect === "lost-enroll-reply" ? "enrolling"
+      : retirementResume || reconnectCheckpoint || handoffCommitReplyLost || queuedReconnect ? "external" : phase);
     if (!original) throw new Error("Normal unfinished handoff absent");
+    if (queuedReconnect === "lost-enroll-reply") {
+      expect(original.handoffId).toBe(activatedHandoff);
+      expect(original.failure).toMatchObject({ code: "enrollment", attempts: 1 });
+      expect(Date.parse(original.failure?.nextAttemptAt ?? "")).toBeGreaterThan(Date.now());
+      expect(original.localClosureConfirmed).not.toBe(true);
+    }
     const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
     expect(before.status).toBe("active");
@@ -1171,7 +1206,7 @@ describe("iMessage Photon channel control plane", () => {
       await db.insert(principalPermissionGrants).values({ companyId: t.companyId, principalType: "user", principalId: operatorUserId,
         permissionKey: "tools:manage_connections", grantedByUserId: t.userId });
     }
-    const management = otherAuthorizedOperator || retirementResume || reconnectCheckpoint ? await connectionManagementService(db).authorize(
+    const management = otherAuthorizedOperator || retirementResume || reconnectCheckpoint || queuedReconnect ? await connectionManagementService(db).authorize(
       { type: "board", userId: operatorUserId, source: "session" }, "connections:configure",
       { type: "connection_management", companyId: t.companyId, connectionId: t.endpoint.connectionId,
         provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/configure" }, { mutation: true }) : undefined;
@@ -1180,12 +1215,23 @@ describe("iMessage Photon channel control plane", () => {
       expect(management.decision).toMatchObject({ allowed: true, action: "connections:configure" });
       if (otherAuthorizedOperator) expect(operatorUserId).not.toBe(original.identity.subject);
     }
-    if (!handoffCommitReplyLost) await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
+    if (queuedReconnect === "lost-enroll-reply") {
+      expect(await t.service.retrySlackFormReceipt(t.endpoint.id, original.handoffId, management!))
+        .toEqual({ actionId: original.handoffId, state: "scheduled" });
+      const retried = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(retried).toMatchObject({ phase: "enrolling", identity: original.identity, binding: original.binding,
+        handoffId: original.handoffId, localResourceId: original.localResourceId });
+      expect(retried?.failure?.code).toBe("enrollment");
+      expect(Date.parse(retried?.failure?.nextAttemptAt ?? "")).toBeLessThanOrEqual(Date.now());
+    }
+    if (!handoffCommitReplyLost && !queuedReconnect) await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
     const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
-    expect(paused.status).toBe(handoffCommitReplyLost ? "active" : "paused");
+    expect(paused.status).toBe(handoffCommitReplyLost || queuedReconnect ? "active" : "paused");
     expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
     expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
-      .toMatchObject({ phase: retirementResume || reconnectCheckpoint || handoffCommitReplyLost ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+      .toMatchObject({ phase: queuedReconnect === "lost-enroll-reply" ? "enrolling"
+        : retirementResume || reconnectCheckpoint || handoffCommitReplyLost || queuedReconnect ? "external" : phase,
+        binding: original.binding, handoffId: original.handoffId, identity: original.identity });
     if (reconnectCheckpoint) {
       retirementComplete = true;
       await owner.retire(t.endpoint.id, management!);
@@ -1320,7 +1366,7 @@ describe("iMessage Photon channel control plane", () => {
       await management!.reauthorize();
       return;
     }
-    if (!handoffCommitReplyLost) {
+    if (!handoffCommitReplyLost && !queuedReconnect) {
       const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
         .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
       expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
@@ -1334,7 +1380,7 @@ describe("iMessage Photon channel control plane", () => {
     expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
     const cutoff = Date.parse(String(Reflect.get(resumed.setup, "photonIntakeAfter")));
     expect(Number.isFinite(cutoff)).toBe(true);
-    if (handoffCommitReplyLost) expect(cutoff).toBe(Date.parse(original.binding.intakeAfter));
+    if (handoffCommitReplyLost || queuedReconnect) expect(cutoff).toBe(Date.parse(original.binding.intakeAfter));
     else expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
     if (otherAuthorizedOperator) {
       expect(Reflect.get(paused.setup, "photonExternalSubject")).toBe(original.identity.subject);
@@ -1342,7 +1388,8 @@ describe("iMessage Photon channel control plane", () => {
       expect(requestSubjects).toEqual([original.identity.subject]);
       await management!.reauthorize();
     }
-    expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
+    expect(recovered).toMatchObject({ phase: queuedReconnect === "lost-enroll-reply" ? "enrolling" : "external",
+      identity: original.identity, binding: original.binding, handoffId: original.handoffId });
     expect(requests).toHaveLength(1);
     expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
     if (!recovered) throw new Error("Normal recovered custody absent");
@@ -1420,16 +1467,16 @@ describe("iMessage Photon channel control plane", () => {
           version: 1, binding: recovered.binding, sequence, previousSequence, acceptedAt, rawFrame } } };
     };
     const wakeups = t.wakeup.mock.calls.length;
-    const previous = recovered.acceptedSequence;
-    if (!handoffCommitReplyLost) {
+    const previous = queuedReconnect === "lost-enroll-reply" ? recovered.initialSequence : recovered.acceptedSequence;
+    if (!handoffCommitReplyLost && !queuedReconnect) {
       const oldInput = packet((previous ?? 0) + 1, previous, cutoff - 1);
       await photonExternalRuntime.dispatchPhotonCloudEvent(db, oldInput);
       expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
       expect(usefulClients).toHaveLength(0);
       expect(await receiverLeases()).toEqual([]);
     }
-    const freshSequence = (previous ?? 0) + (handoffCommitReplyLost ? 1 : 2);
-    const freshInput = packet(freshSequence, handoffCommitReplyLost ? previous : (previous ?? 0) + 1, cutoff);
+    const freshSequence = (previous ?? 0) + (handoffCommitReplyLost || queuedReconnect ? 1 : 2);
+    const freshInput = packet(freshSequence, handoffCommitReplyLost || queuedReconnect ? previous : (previous ?? 0) + 1, cutoff);
     const getChat = t.f.client.chats.get.getMockImplementation();
     if (!getChat) throw new Error("Existing controlled provider lookup absent");
     let release!: () => void;
@@ -1454,6 +1501,72 @@ describe("iMessage Photon channel control plane", () => {
       await held;
       return getChat(...args);
     });
+    if (queuedReconnect) {
+      release(); // This case tests the queue/ACK boundary, not the separate held-provider control.
+      const reconnect = () => t.service.configure(t.endpoint.id, { action: "reconnect",
+        photon: { projectId: "project", lineId: "line" }, credentials: { projectSecret: "secret" } }, operatorUserId, management);
+      // This controlled Cloud frame is already part of the provider's history.
+      // Reconnect resumes after its original sequence; a zero-head replay would
+      // contradict the very message whose real admission/ACK this case proves.
+      vi.mocked(PhotonChatAdapter.prototype.recoveryStream).mockImplementation(
+        () => stream([{ type: "catchup.complete", headSequence: freshInput.payload.photonEvent.sequence }]),
+      );
+      const pending = await reconnect().then(() => ({ error: null }), error => ({ error }));
+      expect(pending.error).not.toBeNull();
+      const [pendingEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [pendingConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(pendingEndpoint.status).toBe("active");
+      expect(pendingEndpoint.connectionId).toBe(before.connectionId);
+      expect(Reflect.get(pendingEndpoint.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+      expect(pendingConnection.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+      let queued = true, acknowledgments = 0;
+      const cloudEvent = { ...freshInput, provider: "imessage-photon" as const, action: null, repositoryId: null };
+      vi.spyOn(connector, "leaseEvents").mockImplementation(async () => queued
+        ? { leaseId: "controlled-reconnect-lease", events: [cloudEvent] } : null);
+      vi.spyOn(connector, "acknowledgeEvents").mockImplementation(async values => {
+        expect(values.leaseId).toBe("controlled-reconnect-lease");
+        expect(values.deliveryIds).toEqual([freshInput.id]);
+        acknowledgments++; queued = false; retirementComplete = true;
+        return 1;
+      });
+      const drained = await eventService.pollOnce({ forDelivery: true });
+      // Baseline reaches the normal worker, but retiring+unchanged authority cannot noEffect this message.
+      expect(drained, "queued current-authority messages must enter useful admission and ordinary ACK before reconnect retires App ownership")
+        .toMatchObject({ leased: 1, processed: 1, failed: 0 });
+      expect(usefulEntered).toBe(true);
+      await t.service.processPendingDeliveries();
+      expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+      expect(acknowledgments).toBe(1);
+      expect(queued).toBe(false);
+      expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
+        .toMatchObject({ phase: "external", binding: original.binding, handoffId: original.handoffId,
+          identity: original.identity, acceptedSequence: freshSequence, pending: null });
+      if (queuedReconnect === "lost-enroll-reply") {
+        const settled = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+        expect(settled).toMatchObject({ localResourceId: original.localResourceId,
+          localClosureConfirmed: true, localResource: { closed: true } });
+        expect(lostEnrollmentShutdown).toHaveBeenCalled();
+        expect(requests.filter(value => value.kind === "enroll").slice(0, 2).map(value => value.enrollment))
+          .toEqual([activatedEnrollment, activatedEnrollment]);
+      }
+      if (queuedReconnect === "pending" || queuedReconnect === "lost-enroll-reply") expect(pending.error).toMatchObject({ status: 409, details: { code: "photon_retirement_pending" } });
+      else expect(pending.error).toMatchObject({ message: "Controlled committed Photon retire reply lost" });
+      await photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
+      await t.service.processPendingDeliveries();
+      expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+      expect(await receiverLeases()).toEqual([]);
+      const oldSenderClients = [...usefulClients];
+      const connected = await reconnect();
+      expect(connected.status, JSON.stringify({ status: connected.status, lastError: connected.lastError, healthMessage: connected.healthMessage })).toBe("verifying");
+      expect(retiredReplyIssued).toBe(true);
+      const [updated] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      expect(Reflect.get(updated.setup, "runtimeGeneration")).toBe(Number(Reflect.get(before.setup, "runtimeGeneration")) + 1);
+      expect(await state.read("checkpoint")).toMatchObject({ sequence: freshSequence });
+      expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+      for (const client of oldSenderClients) expect(client.joined, "the same old useful sender must physically close before credential replacement").toBe(true);
+      await management!.reauthorize();
+      return;
+    }
     const admitted = photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
     const observed = admitted.then(() => ({ error: null }), error => ({ error }));
     try {
@@ -1494,6 +1607,15 @@ describe("iMessage Photon channel control plane", () => {
       expect(row.close).toHaveBeenCalledTimes(1);
     }
   }
+  it("active reconnect drains a queued authorized Photon message before replacing its unchanged owner", async () => {
+    await resumeOriginalHandoff("joining", false, false, null, null, false, "pending");
+  }, 25_000);
+  it("reconnect recovers the same lost Photon enrollment reply before draining its queued message", async () => {
+    await resumeOriginalHandoff("enrolling", false, false, null, null, false, "lost-enroll-reply");
+  }, 25_000);
+  it("a lost active-reconnect retirement reply preserves queued Photon admission and idempotent retry", async () => {
+    await resumeOriginalHandoff("joining", false, false, null, null, false, "lost-retire-reply");
+  }, 25_000);
   it("releases its exact original receiver after a committed handoff reply is lost and immediately admits useful Cloud delivery",
     () => resumeOriginalHandoff("enrolling", false, false, null, null, true), 30_000);
   it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff",
