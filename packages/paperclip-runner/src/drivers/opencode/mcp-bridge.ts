@@ -65,6 +65,8 @@ const MAX_RESULT_BYTES = 1_048_576;
 const TOOL_DELIVERY_DIAGNOSTIC_SCHEMA = "paperclip.opencode.tool-delivery-diagnostic/v1";
 const MAX_TOOL_DELIVERY_DIAGNOSTICS = 256;
 const MAX_TOOL_INPUT_COERCION_DIAGNOSTICS = 64;
+const MAX_TOOL_DELIVERY_ARGUMENT_NAMES = 32;
+const TOOL_DELIVERY_ARGUMENT_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 
 type SocketUse = { requests: number; lastResponseAt: number | null };
 type ToolDelivery = {
@@ -73,6 +75,7 @@ type ToolDelivery = {
   receivedAt: number;
 };
 type ToolDeliveryOutcome = "result" | "error" | "unanswered";
+type ToolDeliveryInput = { argumentNames: string[] | null; undeclaredArgumentCount: number };
 
 export function canonicalOpenCodeMcpToolName(name: string): string {
   const trimmed = name.trim();
@@ -131,11 +134,13 @@ export async function startOpenCodeMcpBridge(
     delivery: ToolDelivery,
     outcome: ToolDeliveryOutcome,
     written: boolean,
+    input?: ToolDeliveryInput,
   ) => {
     if (!options.onDiagnostic || deliveryDiagnostics++ >= MAX_TOOL_DELIVERY_DIAGNOSTICS) return;
     const diagnostic = {
       schema: TOOL_DELIVERY_DIAGNOSTIC_SCHEMA,
       callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      ...(input ? { argumentNames: input.argumentNames, undeclaredArgumentCount: input.undeclaredArgumentCount } : {}),
       socketRequestIndex: delivery.socketRequestIndex,
       socketIdleMs: delivery.socketIdleMs,
       handlerMs: Date.now() - delivery.receivedAt,
@@ -250,7 +255,7 @@ async function handleRequest(
   response: ServerResponse,
   context: {
     delivery: ToolDelivery;
-    diagnoseToolDelivery: (callId: string, delivery: ToolDelivery, outcome: ToolDeliveryOutcome, written: boolean) => void;
+    diagnoseToolDelivery: (callId: string, delivery: ToolDelivery, outcome: ToolDeliveryOutcome, written: boolean, input?: ToolDeliveryInput) => void;
     secret: string;
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
@@ -345,8 +350,9 @@ async function handleRequest(
   // client that never consumes a written answer can be told apart from a
   // bridge that never answered it.
   let outcome: ToolDeliveryOutcome = "unanswered";
+  let deliveredInput: ToolDeliveryInput | undefined;
   response.once("close", () => {
-    context.diagnoseToolDelivery(callId, context.delivery, outcome, response.writableFinished);
+    context.diagnoseToolDelivery(callId, context.delivery, outcome, response.writableFinished, deliveredInput);
   });
   const rawName = typeof params.name === "string" ? params.name : "";
   // A declared operation may itself start with paperclip_. Preserve that
@@ -361,6 +367,14 @@ async function handleRequest(
     return;
   }
   const received = params.arguments ?? {};
+  const declaredSchema = context.admittedTools.find(entry => entry.name === tool)?.inputSchema.properties;
+  const declaredArguments = isRecord(declaredSchema) ? declaredSchema : {};
+  const receivedNames = isRecord(received) ? Object.keys(received) : null;
+  const declaredNames = receivedNames?.filter(name => Object.hasOwn(declaredArguments, name) && TOOL_DELIVERY_ARGUMENT_NAME.test(name)) ?? null;
+  deliveredInput = {
+    argumentNames: declaredNames?.sort().slice(0, MAX_TOOL_DELIVERY_ARGUMENT_NAMES) ?? null,
+    undeclaredArgumentCount: (receivedNames?.length ?? 0) - (declaredNames?.length ?? 0),
+  };
   const validator = context.validators.get(tool);
   const admitted = admitToolInput(validator, received);
   const { args, schemaValid } = admitted;

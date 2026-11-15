@@ -88,6 +88,8 @@ it("answers each tool call, including a parallel pair on a pooled keep-alive cli
       socketRequestIndex: expect.any(Number),
       socketIdleMs: delivery.socketRequestIndex === 1 ? null : expect.any(Number),
       handlerMs: expect.any(Number),
+      argumentNames: [],
+      undeclaredArgumentCount: 0,
       outcome: "result",
       written: true,
     });
@@ -139,4 +141,27 @@ it("records a rejected call as an answered error", async () => {
   expect(JSON.parse(messages[0]!)).toMatchObject({
     callIdSha256: createHash("sha256").update("11").digest("hex"), outcome: "error", written: true,
   });
+});
+
+it("records the declared argument names a call delivered, never their values or undeclared names", async () => {
+  const messages: string[] = [];
+  const bridge = await startOpenCodeMcpBridge({
+    tools: [{ name: "call_api", inputSchema: { type: "object", properties: {
+      operationId: { type: "string" }, pathParams: { type: "object" }, query: { type: "object" }, body: {}, responseText: { type: "object" },
+    } } }],
+    handler: async () => ({ ok: false, status: 400 }),
+    onDiagnostic: message => { if (message.includes("tool-delivery-diagnostic")) messages.push(message); },
+  });
+  bridges.push(bridge);
+  await (await fetch(bridge.url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "call_api", arguments: {
+      operationId: "PATCH /api/issues/{id}", pathParams: { id: "secret-issue" }, query: {}, responseText: { limitBytes: 8192 }, PRIVATE_FIELD: 1,
+    } } }),
+  })).json();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(JSON.parse(messages[0]!)).toMatchObject({ argumentNames: ["operationId", "pathParams", "query", "responseText"],
+    undeclaredArgumentCount: 1, outcome: "result" });
+  expect(messages[0]).not.toMatch(/PATCH|secret-issue|8192|PRIVATE_FIELD/);
 });

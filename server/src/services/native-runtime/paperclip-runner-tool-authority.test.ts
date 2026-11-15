@@ -8,6 +8,7 @@ import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   authUsers,
   approvals,
@@ -30,6 +31,7 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { TOOL_CALL_LOOP_HINT, ToolCallLoopError } from "./repeated-tool-failure-guard.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
@@ -1608,6 +1610,35 @@ describe("PaperclipRunnerToolAuthority", () => {
 
     await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
       .rejects.toThrow(/conversation cannot be a parent/i);
+  });
+
+  it("queues one fresh-session continuation with the tool hint when a turn is stopped by a tool-call loop", async () => {
+    const wakes: Array<{ agentId: string; options: Record<string, unknown> }> = [];
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId, workMode: "standard",
+      enqueueWakeup: async (wakeAgentId, options) => {
+        wakes.push({ agentId: wakeAgentId, options });
+        await db.insert(agentWakeupRequests).values({ companyId, agentId: wakeAgentId, source: options.source,
+          triggerDetail: options.triggerDetail, reason: options.reason, payload: options.payload, idempotencyKey: options.idempotencyKey });
+        return null;
+      },
+    });
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId", "pathParams"], 400, "refused");
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      agentId,
+      options: {
+        reason: "issue_continuation_needed",
+        idempotencyKey: `agent_tool_call_loop:${runId}`,
+        payload: { issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop", tool: "call_api",
+          argumentNames: ["operationId", "pathParams"] },
+        contextSnapshot: { issueId, forceFreshSession: true, livenessContinuationReason: "agent_tool_call_loop",
+          livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
+      },
+    });
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `agent_tool_call_loop:${runId}`));
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
