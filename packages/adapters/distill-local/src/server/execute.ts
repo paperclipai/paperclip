@@ -83,60 +83,68 @@ interface StageProjectAssetsInput {
 }
 
 async function stageProjectAssets({ cwd, instructionsFilePath, skillEntries, desiredSkillNames, onLog }: StageProjectAssetsInput) {
-  const created: Array<{ kind: "file" | "dir"; path: string }> = [];
+  const created: Array<{ kind: "file" | "tree" | "emptyDir"; path: string }> = [];
   let stagedInstructionsPath: string | null = null;
   let inlineInstructions = "";
   let stagedSkillsCount = 0;
 
-  const instructionsTarget = path.join(cwd, "Agents.md");
-  if (instructionsFilePath) {
-    if (!(await pathExists(instructionsTarget))) {
-      await fs.copyFile(instructionsFilePath, instructionsTarget);
-      created.push({ kind: "file", path: instructionsTarget });
-      stagedInstructionsPath = instructionsTarget;
-    } else if (path.resolve(instructionsTarget) !== path.resolve(instructionsFilePath)) {
-      inlineInstructions = (await fs.readFile(instructionsFilePath, "utf8")).trim();
-      await onLog(
-        "stdout",
-        `[paperclip] Distill workspace already contains ${instructionsTarget}; including ${instructionsFilePath} in the prompt instead of overwriting it.\n`,
-      );
+  const cleanup = async () => {
+    for (const entry of [...created].reverse()) {
+      if (entry.kind === "emptyDir") await fs.rmdir(entry.path).catch(() => undefined);
+      else await fs.rm(entry.path, { recursive: entry.kind === "tree", force: true }).catch(() => undefined);
     }
-  }
+  };
 
-  const desired = new Set(desiredSkillNames);
-  const selected = skillEntries.filter((entry) => desired.has(entry.key));
-  if (selected.length > 0) {
-    const claudeDir = path.join(cwd, ".claude");
-    const skillsRoot = path.join(claudeDir, "skills");
-    if (!(await pathExists(claudeDir))) {
-      await fs.mkdir(claudeDir, { recursive: true });
-      created.push({ kind: "dir", path: claudeDir });
-    }
-    if (!(await pathExists(skillsRoot))) {
-      await fs.mkdir(skillsRoot, { recursive: true });
-      created.push({ kind: "dir", path: skillsRoot });
-    }
-    for (const skill of selected) {
-      const target = path.join(skillsRoot, skill.runtimeName);
-      if (await pathExists(target)) {
-        await onLog("stdout", `[paperclip] Distill skill target already exists at ${target}; leaving it unchanged.\n`);
-        continue;
+  try {
+    const instructionsTarget = path.join(cwd, "Agents.md");
+    if (instructionsFilePath) {
+      if (!(await pathExists(instructionsTarget))) {
+        await fs.copyFile(instructionsFilePath, instructionsTarget);
+        created.push({ kind: "file", path: instructionsTarget });
+        stagedInstructionsPath = instructionsTarget;
+      } else if (path.resolve(instructionsTarget) !== path.resolve(instructionsFilePath)) {
+        inlineInstructions = (await fs.readFile(instructionsFilePath, "utf8")).trim();
+        await onLog(
+          "stdout",
+          `[paperclip] Distill workspace already contains ${instructionsTarget}; including ${instructionsFilePath} in the prompt instead of overwriting it.\n`,
+        );
       }
-      await materializePaperclipSkillCopy(skill.source, target);
-      created.push({ kind: "dir", path: target });
-      stagedSkillsCount += 1;
     }
+
+    const desired = new Set(desiredSkillNames);
+    const selected = skillEntries.filter((entry) => desired.has(entry.key));
+    if (selected.length > 0) {
+      const claudeDir = path.join(cwd, ".claude");
+      const skillsRoot = path.join(claudeDir, "skills");
+      if (!(await pathExists(claudeDir))) {
+        await fs.mkdir(claudeDir, { recursive: true });
+        created.push({ kind: "emptyDir", path: claudeDir });
+      }
+      if (!(await pathExists(skillsRoot))) {
+        await fs.mkdir(skillsRoot, { recursive: true });
+        created.push({ kind: "emptyDir", path: skillsRoot });
+      }
+      for (const skill of selected) {
+        const target = path.join(skillsRoot, skill.runtimeName);
+        if (await pathExists(target)) {
+          await onLog("stdout", `[paperclip] Distill skill target already exists at ${target}; leaving it unchanged.\n`);
+          continue;
+        }
+        created.push({ kind: "tree", path: target });
+        await materializePaperclipSkillCopy(skill.source, target);
+        stagedSkillsCount += 1;
+      }
+    }
+  } catch (error) {
+    await cleanup();
+    throw error;
   }
 
   return {
     stagedInstructionsPath,
     inlineInstructions,
     stagedSkillsCount,
-    async cleanup() {
-      for (const entry of [...created].reverse()) {
-        await fs.rm(entry.path, { recursive: entry.kind === "dir", force: true }).catch(() => undefined);
-      }
-    },
+    cleanup,
   };
 }
 

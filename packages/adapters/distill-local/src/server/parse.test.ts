@@ -68,3 +68,22 @@ describe("createDistillStdoutParser", () => {
     expect(result.isError).toBe(false);
   });
 });
+
+describe("parseDistillJsonl without an end event", () => {
+  it("keeps the token usage already reported per message when the run dies before end", () => {
+    const stdout = [
+      '{"type":"usage","usage":{"input_tokens":4,"output_tokens":85,"cache_read_input_tokens":0,"cache_creation_input_tokens":100}}',
+      '{"type":"usage","usage":{"input_tokens":2,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":10}}',
+    ].join("\n");
+    const parsed = parseDistillJsonl(stdout);
+    expect(parsed.inputTokens).toBe(4 + 2 + 110);
+    expect(parsed.outputTokens).toBe(90);
+    expect(parsed.cachedInputTokens).toBe(100);
+    expect(parsed.cacheWriteTokens).toBe(110);
+  });
+
+  it("prefers the final totals from the end event over the per-message sums", () => {
+    const parsed = parseDistillJsonl(fixture("auto-tool-run.jsonl"));
+    expect(parsed.outputTokens).toBe(93);
+  });
+});

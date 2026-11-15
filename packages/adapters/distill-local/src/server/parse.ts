@@ -55,6 +55,7 @@ export function parseDistillJsonl(stdout: string): ParsedDistillRun {
   let modelUsage: Record<string, unknown> | null = null;
   let costUsd: number | null = null;
   const textParts: string[] = [];
+  const running = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, seen: false };
 
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
@@ -66,6 +67,15 @@ export function parseDistillJsonl(stdout: string): ParsedDistillRun {
     if (type === "text") {
       const text = str(event.data);
       if (text) textParts.push(text);
+    } else if (type === "usage") {
+      const messageUsage = asRecord(event.usage);
+      if (messageUsage) {
+        running.input += num(messageUsage.input_tokens);
+        running.output += num(messageUsage.output_tokens);
+        running.cacheRead += num(messageUsage.cache_read_input_tokens);
+        running.cacheWrite += num(messageUsage.cache_creation_input_tokens);
+        running.seen = true;
+      }
     } else if (type === "end") {
       sessionId = str(event.sessionId).trim() || sessionId;
       stopReason = str(event.stopReason).trim() || stopReason;
@@ -81,8 +91,11 @@ export function parseDistillJsonl(stdout: string): ParsedDistillRun {
     }
   }
 
-  const cacheRead = num(usage?.cache_read_input_tokens);
-  const cacheWrite = num(usage?.cache_creation_input_tokens);
+  const fromRunning = usage === null && running.seen;
+  const cacheRead = fromRunning ? running.cacheRead : num(usage?.cache_read_input_tokens);
+  const cacheWrite = fromRunning ? running.cacheWrite : num(usage?.cache_creation_input_tokens);
+  const uncachedInput = fromRunning ? running.input : num(usage?.input_tokens);
+  const outputTokens = fromRunning ? running.output : num(usage?.output_tokens);
 
   let primaryModel: string | null = null;
   if (modelUsage) {
@@ -107,8 +120,8 @@ export function parseDistillJsonl(stdout: string): ParsedDistillRun {
     requestId,
     errorMessage,
     summary: textParts.join("").trim(),
-    inputTokens: num(usage?.input_tokens) + cacheWrite,
-    outputTokens: num(usage?.output_tokens),
+    inputTokens: uncachedInput + cacheWrite,
+    outputTokens,
     cachedInputTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     costUsd,
