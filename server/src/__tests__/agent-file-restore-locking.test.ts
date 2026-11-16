@@ -47,9 +47,10 @@ describe("agent file restore locking", () => {
   const board = () => ({ type: "board" as const, userId, source: "session" as const });
   const target = () => ({ companyId, agentId });
 
+  const lockCheckQuery = () => sql`select id from agents where id = ${agentId} for share nowait`;
   async function agentRowLocked(): Promise<boolean> {
     try {
-      await observer.transaction(async tx => { await tx.execute(sql`select id from agents where id = ${agentId} for update nowait`); });
+      await observer.transaction(async tx => { await tx.execute(lockCheckQuery()); });
       return false;
     } catch (error) {
       const code = (error as { code?: string; cause?: { code?: string } }).code ?? (error as { cause?: { code?: string } }).cause?.code;
@@ -104,6 +105,30 @@ describe("agent file restore locking", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await fs.rm(home, { recursive: true, force: true });
+  });
+
+  async function whileHolding(lock: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>, check: () => Promise<void>) {
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let holding!: () => void;
+    const held = new Promise<void>(resolve => { holding = resolve; });
+    const holder = db.transaction(async tx => { await lock(tx); holding(); await released; });
+    await Promise.race([held, holder]);
+    try { await check(); } finally { release(); }
+    await holder;
+  }
+
+  it("a lock check does not block another lock check", async () => {
+    await whileHolding(tx => tx.execute(lockCheckQuery()), async () => {
+      expect(await agentRowLocked()).toBe(false);
+    });
+  });
+
+  it("a lock check detects the product's agent row lock", async () => {
+    await whileHolding(tx => tx.select().from(agents).where(eq(agents.id, agentId)).for("update"), async () => {
+      expect(await agentRowLocked()).toBe(true);
+    });
+    expect(await agentRowLocked()).toBe(false);
   });
 
   it("downloads a stale projection without holding the agent row lock", async () => {

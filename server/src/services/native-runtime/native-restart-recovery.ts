@@ -1030,7 +1030,7 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
   run: typeof heartbeatRuns.$inferSelect; coordinator: typeof nativeRunFinalizations.$inferSelect;
   issueAssigneeAgentId: string | null; issueStatus: string;
 }, now: Date, reason: string, event: ReturnType<typeof historyEntry>, recoveryRequestId: string | null) {
-  await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+  await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
   await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
     nextAttemptAt: null, failureCode: "native_restart_recovery_blocked",
     failureDetail: { ...row.coordinator.failureDetail, reason, executorStopEvidence: "unverified" },
@@ -1932,7 +1932,7 @@ export async function claimNativeRestartRecoveries(input: {
           recycledProviderPids: providerProcesses.recycledPids,
           stderrTail: row.run.stderrExcerpt,
         });
-        await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
         await tx
           .update(nativeRunFinalizations)
           .set({
