@@ -678,6 +678,8 @@ export function TeamDetailPane({
   canInstall,
   fileContent,
   fileError,
+  onFileRetry,
+  fileRetrying,
   installed,
 }: {
   team: CatalogTeam;
@@ -686,7 +688,9 @@ export function TeamDetailPane({
   onInstall: () => void;
   canInstall: boolean;
   fileContent: string | null;
-  fileError?: Error | null;
+  fileError?: unknown;
+  onFileRetry?: () => void;
+  fileRetrying?: boolean;
   installed?: InstalledCatalogTeam | null;
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -849,9 +853,13 @@ export function TeamDetailPane({
               </div>
               <div className="max-h-96 overflow-auto p-3">
                 {fileError ? (
-                  <div role="alert" className="text-sm text-destructive">
-                    Failed to load file: {fileError.message}
-                  </div>
+                  <QueryErrorState
+                    error={fileError}
+                    size="inline"
+                    action="load the team file"
+                    onRetry={onFileRetry}
+                    retrying={fileRetrying}
+                  />
                 ) : fileContent === null ? (
                   <Skeleton className="h-32 w-full" />
                 ) : selectedPath.endsWith(".md") ? (
@@ -2347,6 +2355,7 @@ export function TeamCatalog() {
     queryFn: () => teamCatalogApi.catalogFile(selectedTeam!.id, selectedFilePath!),
     enabled: Boolean(selectedTeam && selectedFilePath),
   });
+  const fileView = useQueryView(fileQuery);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
@@ -2602,8 +2611,10 @@ export function TeamCatalog() {
                 }
                 onInstall={() => setInstallOpen(true)}
                 canInstall={canInstall}
-                fileContent={fileQuery.data?.content ?? null}
-                fileError={fileQuery.error}
+                fileContent={fileView.data?.content ?? null}
+                fileError={fileView.kind === "error" ? fileView.error : null}
+                onFileRetry={fileView.retry}
+                fileRetrying={fileView.isFetching}
                 installed={installedById.get(selectedTeam.id) ?? null}
               />
             ) : (

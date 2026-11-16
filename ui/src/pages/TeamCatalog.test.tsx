@@ -284,9 +284,8 @@ describe("TeamCatalog install preview path", () => {
     vi.clearAllMocks();
   });
 
-  async function renderPage() {
+  async function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -325,13 +324,44 @@ describe("TeamCatalog install preview path", () => {
   it("shows file request failures instead of leaving a loading placeholder", async () => {
     const matches = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"));
     currentRoute = matches![0].params["*"]!;
-    mockTeamCatalogApi.catalogFile.mockRejectedValue(new Error("Catalog team file not found"));
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("catalog_file_not_found"), { status: 404 }));
 
     await renderPage();
     await flushReact();
 
     expect(container.querySelector('[role="alert"]')?.textContent)
-      .toContain("Failed to load file: Catalog team file not found");
+      .toContain("This item doesn’t exist or was moved.");
+  });
+
+  it.each([429, 503])("keeps a loaded preview after a transient %s refresh failure", async (status) => {
+    currentRoute = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"))![0].params["*"]!;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockTeamCatalogApi.catalogFile.mockResolvedValue({ content: "Readable cached team file" });
+    await renderPage(client);
+    await flushReact();
+    expect(container.textContent).toContain("Readable cached team file");
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("temporarily_unavailable"), { status }));
+    await act(async () => { await client.refetchQueries({ type: "active" }); });
+    await flushReact();
+    expect(mockTeamCatalogApi.catalogFile).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Readable cached team file");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each([403, 404])("shows a real %s refresh error instead of cached file content", async (status) => {
+    currentRoute = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"))![0].params["*"]!;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockTeamCatalogApi.catalogFile.mockResolvedValue({ content: "Previously readable file" });
+    await renderPage(client);
+    await flushReact();
+    expect(container.textContent).toContain("Previously readable file");
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("private_internal_error_code"), { status }));
+    await act(async () => { await client.refetchQueries({ type: "active" }); });
+    await flushReact();
+    expect(mockTeamCatalogApi.catalogFile).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Previously readable file");
+    expect(container.textContent).not.toContain("private_internal_error_code");
   });
 
   it("opens the installer, fetches the preview, and submits the install", async () => {
