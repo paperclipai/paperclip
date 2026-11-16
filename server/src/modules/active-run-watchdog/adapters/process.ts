@@ -43,14 +43,21 @@ export function createProcessAdapter(): RunProcessController {
         return { attempted: false, outcome: "no_process_metadata", adapterType: input.adapterType };
       }
 
+      const fallbackProcessCreatedAt =
+        terminationPid === input.fallbackPid ? input.fallbackProcessStartedAt : undefined;
+      const runningProcessCreatedAt =
+        running && terminationPid === running.child.pid ? running.spawnStartedAtMs : undefined;
       const recordedProcessCreatedAt =
-        terminationPid === input.fallbackPid ? input.fallbackProcessStartedAt ?? null : null;
+        fallbackProcessCreatedAt ?? runningProcessCreatedAt ?? null;
       const processCreatedAt =
         recordedProcessCreatedAt instanceof Date
           ? recordedProcessCreatedAt.toISOString()
           : typeof recordedProcessCreatedAt === "string"
             ? recordedProcessCreatedAt
-            : null;
+            : typeof recordedProcessCreatedAt === "number" &&
+                Number.isFinite(recordedProcessCreatedAt)
+              ? new Date(recordedProcessCreatedAt).toISOString()
+              : null;
 
       const wasAlive =
         (pid !== null && isPidAlive(pid)) ||

@@ -173,7 +173,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     pid: number | null | undefined;
     processGroupId: number | null | undefined;
     graceMs?: number;
-    processStartedAt?: Date | string | null;
+    processStartedAt?: Date | string | number | null;
   }) => Promise<void>;
   setRunStatus: (runId: string, status: string, patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<HeartbeatRun | null>;
   setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>,
@@ -1302,7 +1302,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             processGroupId: running.processGroupId,
             graceMs: Math.max(1, running.graceSec) * 1000,
             processStartedAt:
-              run.processPid === running.child.pid ? run.processStartedAt : null,
+              (run.processPid === running.child.pid ? run.processStartedAt : null) ??
+              running.spawnStartedAtMs ??
+              null,
           });
         }
       } finally {
