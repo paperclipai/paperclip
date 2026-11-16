@@ -138,12 +138,14 @@ export function departmentRoutes(db: Db) {
       return;
     }
     await assertCanEditAgentDepartments(req, agent.companyId, agent.id);
-    const ids = [...req.body.departmentIds];
-    for (const name of req.body.names ?? []) {
-      const { department, created } = await svc.create(agent.companyId, name);
-      ids.push(department.id);
-      if (!created) continue;
-      const actor = getActorInfo(req);
+    const { memberships, created } = await svc.setForAgent(
+      agent.companyId,
+      agent.id,
+      req.body.departmentIds,
+      req.body.names ?? [],
+    );
+    const actor = getActorInfo(req);
+    for (const department of created) {
       await logActivity(db, {
         companyId: agent.companyId,
         actorType: actor.actorType,
@@ -157,8 +159,6 @@ export function departmentRoutes(db: Db) {
         details: { name: department.name },
       });
     }
-    const memberships = await svc.setForAgent(agent.companyId, agent.id, ids);
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,

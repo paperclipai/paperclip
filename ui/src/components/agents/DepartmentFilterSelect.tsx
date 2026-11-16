@@ -19,7 +19,7 @@ export function DepartmentFilterSelect({
       aria-label="Department"
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className={cn("h-9 w-full max-w-52 text-xs md:text-xs", className)}
+      className={cn("h-9 w-full max-w-52 text-base md:text-xs", className)}
     >
       <option value="">All departments</option>
       <option value={AGENT_DEPARTMENT_UNASSIGNED}>No department</option>

@@ -77,8 +77,8 @@ export function AgentConversationsSidebar() {
     unreadMessageCounts={unreadMessageCounts}
     pinnedAgentIds={pinnedAgentIds}
     onReorderPins={ids => agentChatPins.reorder(ids.map(id => agentChatPinKey(companyId!, id)))}
-    onCreateAgent={openNewAgent} renderAgentAction={agent => <AgentChatPin agent={agent} pins={agentChatPins}
-      className={agentChatPins.keys.has(agentChatPinKey(agent.companyId, agent.id)) ? "right-10" : undefined} />}
+    onCreateAgent={openNewAgent} renderAgentAction={(agent, placement) => <AgentChatPin agent={agent} pins={agentChatPins}
+      className={placement.besideReorderHandle && agentChatPins.keys.has(agentChatPinKey(agent.companyId, agent.id)) ? "right-10" : undefined} />}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.
     loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}

@@ -154,6 +154,38 @@ it("groups chat contacts into collapsible department stacks and keeps the linear
   expect(container.querySelector("button[aria-expanded]")).toBeNull();
 });
 
+it("groups a large roster from one membership index and keeps the pin off the unread badge", async () => {
+  let reads = 0;
+  const agents = Array.from({ length: 200 }, (_, index) => ({ ...roster[0], id: `a${index}`, name: `a${index}`, urlKey: `a${index}` }));
+  const departments = Array.from({ length: 40 }, (_, index) => ({
+    id: `d${index}`,
+    companyId: "company-a",
+    name: `Dept ${String(index).padStart(2, "0")}`,
+    get agentIds() {
+      reads += 1;
+      if (reads > 80) throw new Error("Department memberships were scanned for each contact");
+      return [`a${index}`, `a${index + 40}`];
+    },
+  }));
+  client.setQueryData(queryKeys.agents.list("company-a"), agents);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [
+    { ...chat("a0"), unreadMessageCount: 4 },
+  ]);
+  client.setQueryData(queryKeys.departments.list("company-a"), departments);
+  localStorage.setItem(pinStorageKey, JSON.stringify(["agent-chat:company-a:a0"]));
+  await render();
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="Unpin a0"]')!.className).toContain("right-10");
+  const press = (label: string) => [...container.querySelectorAll("button")].find((button) => button.textContent === label)!;
+  await act(async () => press("By department").click());
+  expect(reads).toBeGreaterThan(0);
+  expect(reads).toBeLessThanOrEqual(80);
+  expect(container.querySelector("button[aria-expanded]")!.textContent).toContain("Dept");
+  const pin = container.querySelector<HTMLButtonElement>('[aria-label="Unpin a0"]')!;
+  expect(pin.className).not.toContain("right-10");
+  expect(pin.className).toContain("right-2");
+  expect(container.querySelector('a[href="/chats/a0"]')!.className).toContain("pr-12");
+});
+
 it("reorders filtered pins with the keyboard and saves their order without moving hidden pins", async () => {
   const agents = ["alice", "bob", "carol", "dave"].map(id => ({ ...roster[0], id, name: id, urlKey: id, title: id === "alice" || id === "carol" ? "Designer" : "Engineer" }));
   client.setQueryData(queryKeys.agents.list("company-a"), agents);

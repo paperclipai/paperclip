@@ -8,6 +8,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Link, useNavigate } from "@/lib/router";
+import { indexDepartmentMemberships } from "@/lib/department-membership";
 import { agentRouteRef, cn } from "@/lib/utils";
 
 export interface AgentConversationSidebarProps {
@@ -30,7 +31,7 @@ export interface AgentConversationSidebarProps {
   historyError?: Error | null;
   onRetryHistory?: () => void;
   onCreateAgent?: () => void;
-  renderAgentAction?: (agent: Agent) => ReactNode;
+  renderAgentAction?: (agent: Agent, placement: { besideReorderHandle: boolean }) => ReactNode;
   pinnedAgentIds?: readonly string[];
   onReorderPins?: (ids: string[]) => void;
   /** When the company has at least one department, the list can switch to collapsible stacks. */
@@ -47,16 +48,16 @@ type ChatDepartment = { id: string; name: string; agentIds: readonly string[] };
 
 /** Agents keep the incoming order. A person in two departments is in both stacks. */
 function chatDepartmentStacks(agents: readonly Agent[], departments: readonly ChatDepartment[]) {
+  const memberships = indexDepartmentMemberships(departments);
   const stacks = departments
     .map((department) => ({
       id: department.id,
       name: department.name,
-      agents: agents.filter((agent) => department.agentIds.includes(agent.id)),
+      agents: agents.filter((agent) => memberships.membersByDepartment.get(department.id)?.has(agent.id) ?? false),
     }))
     .filter((stack) => stack.agents.length > 0)
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-  const assigned = new Set(departments.flatMap((department) => department.agentIds));
-  const unassigned = agents.filter((agent) => !assigned.has(agent.id));
+  const unassigned = agents.filter((agent) => !memberships.assigned.has(agent.id));
   if (unassigned.length > 0) stacks.push({ id: UNASSIGNED_DEPARTMENT_STACK, name: "No department", agents: unassigned });
   return stacks;
 }
@@ -111,7 +112,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
       </span>
       {unreadCount > 0 ? <Badge variant="ghost" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"} from ${agent.name}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
         : unreadIds.has(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
-    </Link>{renderAgentAction?.(agent)}</>;
+    </Link>{renderAgentAction?.(agent, { besideReorderHandle: canReorder })}</>;
     return { hasUnread, node };
   }
   return <aside aria-labelledby={headingId} className="flex h-full min-h-0 flex-col border-r border-border bg-background">
@@ -126,9 +127,9 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
       </div>
       {canGroup && <div role="group" aria-label="Chat list layout" className="grid grid-cols-2 rounded-md bg-muted p-0.5">
         <button type="button" aria-pressed={view === "list"} onClick={() => setView("list")}
-          className={cn("h-7 rounded-[5px] px-2 text-xs font-medium", view === "list" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>List</button>
+          className={cn("h-7 rounded-sm px-2 text-xs font-medium", view === "list" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>List</button>
         <button type="button" aria-pressed={view === "departments"} onClick={() => setView("departments")}
-          className={cn("h-7 rounded-[5px] px-2 text-xs font-medium", view === "departments" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>By department</button>
+          className={cn("h-7 rounded-sm px-2 text-xs font-medium", view === "departments" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>By department</button>
       </div>}
       {!!departmentError && <p role="alert" className="text-xs text-destructive">Departments could not be loaded. {onRetryDepartments && <Button variant="link" size="sm" onClick={onRetryDepartments}>Retry</Button>}</p>}
     </div>
@@ -154,7 +155,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
               className="group/stack flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:bg-accent/40 focus-visible:text-foreground focus-visible:outline-none">
               <ChevronRight aria-hidden="true" className={cn("size-3 shrink-0 opacity-60 transition-transform duration-150 group-hover/stack:opacity-100", open && "rotate-90")} />
               <span className="min-w-0 truncate text-xs font-medium">{label}</span>
-              <span className="shrink-0 text-[11px] tabular-nums opacity-60">{stack.agents.length}</span>
+              <span className="shrink-0 text-(length:--text-micro) tabular-nums opacity-60">{stack.agents.length}</span>
               {unread > 0 && <span role="img" aria-label={`${unread} unread`} className="size-1.5 shrink-0 rounded-full bg-primary" />}
             </button>
             {open && <div className="flex flex-col gap-0.5">

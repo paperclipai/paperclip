@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { agentDepartments, agents, departments, type Db } from "@paperclipai/db";
 import {
   AGENT_DEPARTMENT_MAX_MEMBERSHIPS,
@@ -119,39 +119,86 @@ export function departmentService(db: Db) {
       return { ...current, agentIds: [] };
     },
 
-    async setForAgent(companyId: string, agentId: string, departmentIds: readonly string[]): Promise<Department[]> {
-      const uniqueIds = [...new Set(departmentIds)];
-      if (uniqueIds.length > AGENT_DEPARTMENT_MAX_MEMBERSHIPS) {
-        throw badRequest(`An agent can belong to at most ${AGENT_DEPARTMENT_MAX_MEMBERSHIPS} departments`);
-      }
-      const [agent] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
-      if (!agent) throw notFound("Agent not found");
-      if (uniqueIds.length > 0) {
-        const found = await db
-          .select({ id: departments.id })
-          .from(departments)
-          .where(and(eq(departments.companyId, companyId), inArray(departments.id, uniqueIds)));
-        if (found.length !== uniqueIds.length) {
-          throw badRequest("Choose departments from this company");
+    async setForAgent(
+      companyId: string,
+      agentId: string,
+      departmentIds: readonly string[],
+      names: readonly string[] = [],
+    ): Promise<{ memberships: Department[]; created: Department[] }> {
+      const requestedIds = [...new Set(departmentIds)];
+      const requestedNames = names.map((input) => requireName(input));
+      const { finalIds, createdIds } = await db.transaction(async (tx) => {
+        const [agent] = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+          .for("update");
+        if (!agent) throw notFound("Agent not found");
+        const ids = [...requestedIds];
+        const createdIds: string[] = [];
+        for (const name of requestedNames) {
+          const [existing] = await tx
+            .select({ id: departments.id })
+            .from(departments)
+            .where(and(eq(departments.companyId, companyId), sql`lower(${departments.name}) = lower(${name})`))
+            .limit(1);
+          if (existing) {
+            ids.push(existing.id);
+            continue;
+          }
+          try {
+            await tx.transaction(async (inner) => {
+              const [inserted] = await inner
+                .insert(departments)
+                .values({ companyId, name })
+                .returning({ id: departments.id });
+              if (!inserted) throw conflict("A department with this name already exists");
+              ids.push(inserted.id);
+              createdIds.push(inserted.id);
+            });
+          } catch (error) {
+            if (!isUniqueViolation(error, NAME_CONSTRAINT)) throw error;
+            const [raced] = await tx
+              .select({ id: departments.id })
+              .from(departments)
+              .where(and(eq(departments.companyId, companyId), sql`lower(${departments.name}) = lower(${name})`))
+              .limit(1);
+            if (!raced) throw error;
+            ids.push(raced.id);
+          }
         }
-      }
-      await db.transaction(async (tx) => {
+        const finalIds = [...new Set(ids)];
+        if (finalIds.length > AGENT_DEPARTMENT_MAX_MEMBERSHIPS) {
+          throw badRequest(`An agent can belong to at most ${AGENT_DEPARTMENT_MAX_MEMBERSHIPS} departments`);
+        }
+        if (finalIds.length > 0) {
+          const found = await tx
+            .select({ id: departments.id })
+            .from(departments)
+            .where(and(eq(departments.companyId, companyId), inArray(departments.id, finalIds)));
+          if (found.length !== finalIds.length) {
+            throw badRequest("Choose departments from this company");
+          }
+        }
         await tx.delete(agentDepartments).where(and(
           eq(agentDepartments.companyId, companyId),
           eq(agentDepartments.agentId, agentId),
         ));
-        if (uniqueIds.length === 0) return;
-        await tx.insert(agentDepartments).values(uniqueIds.map((departmentId) => ({
-          companyId,
-          agentId,
-          departmentId,
-        })));
+        if (finalIds.length > 0) {
+          await tx.insert(agentDepartments).values(finalIds.map((departmentId) => ({
+            companyId,
+            agentId,
+            departmentId,
+          })));
+        }
+        return { finalIds, createdIds };
       });
       const listed = await listDepartments(db, companyId);
-      return listed.filter((row) => row.agentIds.includes(agentId));
+      const createdIdSet = new Set(createdIds);
+      return {
+        memberships: listed.filter((row) => finalIds.includes(row.id) && row.agentIds.includes(agentId)),
+        created: listed.filter((row) => createdIdSet.has(row.id)),
+      };
     },
   };
 }

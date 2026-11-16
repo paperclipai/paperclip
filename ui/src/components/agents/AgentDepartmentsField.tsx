@@ -32,6 +32,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
   });
 
   const add = () => {
+    if (!departments.isSuccess) return;
     const name = normalizeDepartmentName(draft);
     if (!name) {
       setError("Enter a department name of 1 to 80 characters");
@@ -49,7 +50,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
     replace.mutate({ departmentIds: mine.map((row) => row.id), names: [name] });
   };
 
-  const busy = replace.isPending;
+  const busy = replace.isPending || !departments.isSuccess;
   return (
     <div className="space-y-1.5">
       <div className="text-xs font-medium text-muted-foreground">Departments</div>

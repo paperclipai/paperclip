@@ -4,7 +4,7 @@ import { Filter } from "lucide-react";
 import type { Agent, Department } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { departmentsApi } from "@/api/departments";
-import { agentRosterFilterFields, buildAgentRosterIndex, departmentNamesForAgent, emptyAgentRosterFilters, matchesAgentRosterFilters, matchesDepartmentFilter, type AgentRosterFilterField, type AgentRosterFilters as FilterState, type AgentRosterOption } from "@/lib/agent-roster-filters";
+import { agentRosterFilterFields, buildAgentRosterIndex, departmentNamesFromIndex, emptyAgentRosterFilters, indexDepartmentMemberships, matchesAgentRosterFilters, matchesDepartmentIndex, type AgentRosterFilterField, type AgentRosterFilters as FilterState, type AgentRosterOption } from "@/lib/agent-roster-filters";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -31,20 +31,21 @@ export function useAgentRosterFilters(companyId: string | null, agents: Agent[] 
   });
   const departments = departmentQuery.data ?? emptyDepartments;
   const index = useMemo(() => buildAgentRosterIndex(agents, accounts.data), [agents, accounts.data]);
+  const memberships = useMemo(() => indexDepartmentMemberships(departments), [departments]);
   const activeCount = agentRosterFilterFields.filter(field => filters[field]).length + (filters.department ? 1 : 0);
   const departmentOptions = [...departments]
     .sort((left, right) => left.name.localeCompare(right.name))
     .map((department) => ({ value: department.id, label: department.name }));
   const matches = useCallback((agent: Agent) => (
     matchesAgentRosterFilters(index.byAgentId.get(agent.id), filters)
-    && matchesDepartmentFilter(agent.id, filters.department, departments)
-  ), [index, filters, departments]);
+    && matchesDepartmentIndex(memberships, agent.id, filters.department)
+  ), [index, filters, memberships]);
   return {
     filters, options: index.options, departmentOptions, activeCount,
     onChange: (next: RosterFilters) => setSelection({ companyId, filters: next }),
     matches,
     departmentLabel: (agentId: string) => {
-      const names = departmentNamesForAgent(agentId, departments);
+      const names = departmentNamesFromIndex(memberships, agentId);
       return names.length ? names.join(", ") : null;
     },
     connectionError: accounts.error,
