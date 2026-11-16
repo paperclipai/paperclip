@@ -1,3 +1,5 @@
+import { sql } from "drizzle-orm";
+import { postgresErrorCode } from "./transient-lock-contention.js";
 import { dedicatedDbConnectionStats, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
@@ -55,9 +57,14 @@ export async function observeStoppedExecutionResource<T extends LeaseBinding>(in
     endOwned(); // Only this borrowed connection; never the caller's shared pool.
     expire(fail("budget_exhausted"));
   }, Math.max(0, input.deadline - performance.now()));
+  const budgetUnavailable = (scope: EnvironmentResourceObservationScope, error: unknown) =>
+    scope.signal.aborted || remaining() < 1 ||
+    // The owned connection has our server-side statement deadline. Its SQL
+    // cancellation can win the race with the JavaScript abort timer.
+    (scope.db !== undefined && postgresErrorCode(error) === "57014");
   const observe = async (scope: EnvironmentResourceObservationScope) => {
     let current: T | null;
-    try { current = await input.readCurrentLease(scope); } catch { return fail(scope.signal.aborted ? "budget_exhausted" : "lease_read_failed"); }
+    try { current = await input.readCurrentLease(scope); } catch (error) { return fail(budgetUnavailable(scope, error) ? "budget_exhausted" : "lease_read_failed"); }
     if (scope.signal.aborted || remaining() < 1) return fail("budget_exhausted");
     if (!current || !expected.environmentId || !expected.heartbeatRunId || !expected.provider || !expected.providerLeaseId ||
         current.id !== expected.id || current.companyId !== expected.companyId || current.environmentId !== expected.environmentId ||
@@ -67,7 +74,7 @@ export async function observeStoppedExecutionResource<T extends LeaseBinding>(in
     const timeoutMs = remaining();
     if (timeoutMs < 1) return fail("budget_exhausted");
     let observation: PluginEnvironmentLeaseObservation | undefined;
-    try { observation = await input.inspect(current, timeoutMs, scope); } catch { return fail(scope.signal.aborted ? "budget_exhausted" : "inspection_failed"); }
+    try { observation = await input.inspect(current, timeoutMs, scope); } catch (error) { return fail(budgetUnavailable(scope, error) ? "budget_exhausted" : "inspection_failed"); }
     if (scope.signal.aborted || remaining() < 1) return fail("budget_exhausted");
     if (!observation) return fail("inspection_unavailable");
     if (observation.providerLeaseId !== current.providerLeaseId) return fail("foreign_observation");
@@ -76,7 +83,7 @@ export async function observeStoppedExecutionResource<T extends LeaseBinding>(in
     // Provider inspection awaited outside the database. A concurrent resume,
     // release, or resource rotation must not turn a stale positive into evidence.
     let after: T | null;
-    try { after = await input.readCurrentLease(scope); } catch { return fail(scope.signal.aborted ? "budget_exhausted" : "lease_read_failed"); }
+    try { after = await input.readCurrentLease(scope); } catch (error) { return fail(budgetUnavailable(scope, error) ? "budget_exhausted" : "lease_read_failed"); }
     if (scope.signal.aborted || remaining() < 1) return fail("budget_exhausted");
     if (!after || after.id !== expected.id || after.companyId !== expected.companyId ||
         after.environmentId !== expected.environmentId || after.heartbeatRunId !== expected.heartbeatRunId ||
@@ -89,9 +96,25 @@ export async function observeStoppedExecutionResource<T extends LeaseBinding>(in
   const run = async (connection?: Db) => {
     owned = connection;
     if (controller.signal.aborted) { endOwned(); return fail("budget_exhausted"); }
-    // Resolve the borrowed action on expiry so its normal finally releases the
-    // dedicated admission slot even if an external callback never settles.
-    return await Promise.race([observe({ signal: controller.signal, db: connection }), expired]);
+    const observeInScope = async () => {
+      if (connection) {
+        // end(0) only terminates the frontend. Bound the server's own SQL wait
+        // too, using this command's absolute deadline on this sole connection.
+        await connection.execute(sql`select set_config('statement_timeout',
+          ${String(Math.max(1, remaining()))}, false)`);
+        if (controller.signal.aborted || remaining() < 1) return fail("budget_exhausted");
+      }
+      return await observe({ signal: controller.signal, db: connection });
+    };
+    try {
+      // Include connection setup and SET in the same original deadline race.
+      return await Promise.race([observeInScope(), expired]);
+    } finally {
+      // A session timeout must never escape into the helper's idle cache.
+      // End only this borrowed scope on success, refusal, failure or expiry.
+      endOwned();
+      await ending;
+    }
   };
   try {
     // Both the snapshot and the helper's slot reservation run synchronously
@@ -107,8 +130,8 @@ export async function observeStoppedExecutionResource<T extends LeaseBinding>(in
       ? withDedicatedDbConnection(input.db, run, { admitWithoutWaiting: true })
       : run();
     return await Promise.race([work, expired]);
-  } catch {
-    return fail(controller.signal.aborted ? "budget_exhausted" : "lease_read_failed");
+  } catch (error) {
+    return fail(budgetUnavailable({ signal: controller.signal, db: owned }, error) ? "budget_exhausted" : "lease_read_failed");
   } finally {
     clearTimeout(timer);
   }

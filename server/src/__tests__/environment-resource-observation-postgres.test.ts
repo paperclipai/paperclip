@@ -55,7 +55,7 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
     await db.insert(companies).values({ id: companyId, name: "Observation scope", issuePrefix: `OBS${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Observation agent", adapterType: "codex_local", status: "idle" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "failed", invocationSource: "on_demand", finishedAt: new Date() });
-    await db.insert(environments).values({ id: environmentId, name: "Controlled observation", driver: "sandbox", status: "active", config: { provider: "controlled-provider", image: "fixture", reuseLease: false } });
+    await db.insert(environments).values({ id: environmentId, name: `Controlled observation ${environmentId}`, driver: "sandbox", status: "active", config: { provider: "controlled-provider", image: "fixture", reuseLease: false } });
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId, provider: "controlled-provider", providerLeaseId: randomUUID(), status: "active" });
     const service = environmentService(db);
     const environment = await service.getById(environmentId); const lease = await service.getLeaseById(leaseId);
@@ -63,12 +63,18 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
     return { companyId, runId, environment, lease };
   }
 
-  it("returns the original command error while its dedicated lease read is locked and preserves the shared client", async () => {
+  it.each(["initial_read", "final_read"] as const)("returns the original command error during a locked %s and preserves the shared client", async blocked => {
     const fixture = await seed();
     const mainEntered = deferred<number>(); const mainRelease = deferred();
-    const lockEntered = deferred(); const lockRelease = deferred();
+    const lockRequested = deferred(); const lockEntered = deferred(); const lockRelease = deferred();
     let activity!: () => Promise<Array<{ pid: number; birth: string; state: string; wait: string | null }>>;
-    const inspect = vi.fn(async () => ({ providerLeaseId: fixture.lease.providerLeaseId!, state: "stopped" as const }));
+    const inspect = vi.fn(async () => {
+      if (blocked === "final_read") {
+        lockRequested.resolve();
+        await entered(lockEntered.promise, lock);
+      }
+      return { providerLeaseId: fixture.lease.providerLeaseId!, state: "stopped" as const };
+    });
     const original = new Error("original command failed");
     const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
       acquireRunLease: async () => { throw new Error("unexpected acquire"); }, releaseRunLease: async () => null,
@@ -79,6 +85,7 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
       mainEntered.resolve(rows[0]!.pid); await mainRelease.promise;
     });
     const lock = control.transaction(async tx => {
+      await lockRequested.promise;
       await tx.execute(sql`lock table environment_leases in access exclusive mode`);
       activity = async () => {
         await tx.execute(sql`select pg_stat_clear_snapshot()`);
@@ -92,10 +99,15 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
     let execution: Promise<unknown> | undefined;
     try {
       const mainPid = await entered(mainEntered.promise, main);
-      await entered(lockEntered.promise, lock);
+      if (blocked === "initial_read") {
+        lockRequested.resolve();
+        await entered(lockEntered.promise, lock);
+      }
+      const commandStartedAt = performance.now();
       const operation = runtime.execute({ environment: fixture.environment, lease: fixture.lease, command: "controlled", timeoutMs: 1500 });
       const outcome = operation.then(value => ({ value }), error => ({ error }));
       execution = outcome;
+      await entered(lockEntered.promise, operation);
       let blockedPid: number | undefined;
       let blockedBirth: string | undefined;
       // The same functional control transaction owns the table lock and proves
@@ -106,11 +118,17 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
         expect(blocked).toBeDefined(); blockedPid = blocked!.pid; blockedBirth = blocked!.birth;
       }, { timeout: 1000 });
       const result = await outcome;
+      const callerReturnedAt = performance.now();
+      console.info("resource-observation-caller-timing", JSON.stringify({
+        stage: blocked, originalCommandBudgetMs: 1500,
+        callerDurationMs: callerReturnedAt - commandStartedAt,
+      }));
       expect("error" in result).toBe(true);
       if (!("error" in result)) throw new Error("failed command unexpectedly succeeded");
       expect(result.error).toBe(original);
       expect(readEnvironmentResourceObservationFailure(original)).toBe("budget_exhausted");
-      expect(inspect).not.toHaveBeenCalled();
+      if (blocked === "initial_read") expect(inspect).not.toHaveBeenCalled();
+      else expect(inspect).toHaveBeenCalledOnce();
       // end(0) must actually close the borrowed backend; admission must drain.
       await vi.waitFor(() => expect(dedicatedDbConnectionStats(db)?.inUse).toBe(0), { timeout: 5000 });
       expect(dedicatedDbConnectionStats(db)).toMatchObject({ waiting: 0, overLimit: 0, nestedOverLimit: 0 });
@@ -121,9 +139,15 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
         expect(rows.some(row => row.pid === blockedPid && row.birth === blockedBirth)).toBe(false);
         expect(rows.find(row => row.pid === mainPid)?.state).toBe("idle in transaction");
       }, { timeout: 5000 });
+      console.info("resource-observation-deadline-timing", JSON.stringify({
+        stage: blocked, originalCommandBudgetMs: 1500,
+        callerDurationMs: callerReturnedAt - commandStartedAt,
+        backendTailAfterCallerMs: performance.now() - callerReturnedAt,
+        semantics: "bounded server tail; not instantaneous cancellation",
+      }));
     } catch (error) { primary = error; }
     finally {
-      mainRelease.resolve(); lockRelease.resolve();
+      mainRelease.resolve(); lockRequested.resolve(); lockRelease.resolve();
       const joined = await Promise.allSettled([main, lock, execution]);
       const errors = joined.flatMap(value => value.status === "rejected" ? [value.reason] : []);
       if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors], "scoped observation SQL control failed");
