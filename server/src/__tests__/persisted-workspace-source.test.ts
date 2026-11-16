@@ -133,6 +133,7 @@ describe("persisted Git workspace source", () => {
     ["git@github.com:Example/Original.git", "https://github.com/example/original"],
     ["ssh://git@github.com/example/original.git", "https://github.com/example/original.git/"],
     ["https://github.com/example/original.git", "git@github.com:example/original"],
+    ["ssh://git@example.invalid:22/team/original.git", "git@example.invalid:team/original.git"],
   ])("accepts origin %s for recorded %s as the same repository", async (origin, recorded) => {
     const { original, input } = await fixture();
     await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
@@ -143,6 +144,10 @@ describe("persisted Git workspace source", () => {
     ["git@github.com:example/other.git", "https://github.com/example/original"],
     ["git@gitlab.com:example/original.git", "https://github.com/example/original"],
     ["https://example.invalid:8443/original.git", "https://example.invalid/original.git"],
+    // A port is only implied by its own protocol: SSH on 443 or 80 is another server.
+    ["ssh://git@example.invalid:443/team/original.git", "ssh://git@example.invalid/team/original.git"],
+    ["ssh://git@example.invalid:80/team/original.git", "git@example.invalid:team/original.git"],
+    ["git://example.invalid:22/team/original.git", "git://example.invalid/team/original.git"],
   ])("rejects origin %s for recorded %s", async (origin, recorded) => {
     const { original, input } = await fixture();
     await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);

@@ -50,7 +50,9 @@ async function readOrigin(cwd: string): Promise<string | null> {
   }).catch(() => null);
 }
 
-const DEFAULT_GIT_PORTS = new Set(["", "22", "80", "443", "9418"]);
+// URL already drops the default port of http(s); other schemes keep it. A port
+// is implied only by its own protocol, so SSH on 443 is a different server.
+const DEFAULT_GIT_PORTS: Record<string, string> = { "ssh:": "22", "git+ssh:": "22", "git:": "9418" };
 
 /** One repository written as HTTPS, ssh://, or scp-style SSH has one identity. */
 function repositoryIdentity(value: string): string {
@@ -65,7 +67,8 @@ function repositoryIdentity(value: string): string {
     let parsed: URL;
     try { parsed = new URL(raw); } catch { return raw; }
     if (!["https:", "http:", "ssh:", "git+ssh:", "git:"].includes(parsed.protocol) || !parsed.hostname) return raw;
-    host = DEFAULT_GIT_PORTS.has(parsed.port) ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
+    const implicitPort = !parsed.port || parsed.port === DEFAULT_GIT_PORTS[parsed.protocol];
+    host = implicitPort ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
     repoPath = parsed.pathname;
   }
   host = host.toLowerCase();
