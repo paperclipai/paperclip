@@ -343,12 +343,12 @@ const runColumns = {
   controllerProcess: heartbeatRuns.controllerProcess,
 };
 
-function runKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
+function runKind(id: string, title: string, obligation: Obligation, where: SQL | undefined | (() => SQL | undefined),
   owner: (row: RunRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
     listInProgress: async (db, limit, offset) => {
-      const rows = await db.select(runColumns).from(heartbeatRuns).where(where).orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
+      const rows = await db.select(runColumns).from(heartbeatRuns).where(typeof where === "function" ? where() : where).orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
       const result = page(rows as RunRow[], limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.id, issueId: row.issueId,
@@ -1105,7 +1105,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // Keep this entry after the environment teardown kinds: a lease they settle
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
-      heldInterruptedPreparationWhere(), row => {
+      heldInterruptedPreparationWhere, row => {
         // A preparation the orphan reaper ended has a revoked lease: its owner
         // is still the recorded controller process.
         const stamp = finishedLegacyControllerOwnerStamp(row);
