@@ -17,6 +17,7 @@ export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "permission.resolve",
   "input.resolve",
   "tool.resolve",
+  "tool.acknowledge_expired",
   "session.read",
   "session.snapshot",
   "session.goal.get",

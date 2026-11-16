@@ -331,3 +331,12 @@ test("tool resolution distinguishes delivered results from known expired receipt
     assert.equal(validateResult(result), false);
   }
 });
+
+test("expired-tool acknowledgement cannot claim provider delivery", () => {
+  const receipt = compileSidecarSchema(schema.$defs.toolExpiryAckResult);
+  for (const acknowledged of [true, false]) assert.equal(receipt({ acknowledged }), true);
+  for (const value of [{}, { acknowledged: "true" }, { acknowledged: true, resolved: true }]) {
+    assert.equal(receipt(value), false);
+  }
+  assert.equal(validate({ protocolVersion, id: 1, command: "tool.acknowledge_expired", params: { callId: "call-1", turnId: "turn-1" } }), true);
+});

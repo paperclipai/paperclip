@@ -183,6 +183,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if command == "tool.acknowledge_expired" {
+            if let Some(path) = args
+                .windows(2)
+                .find(|pair| pair[0] == "--expired-receipt-journal")
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path[1])?;
+                write_json(&mut file, &request["params"])?;
+            }
+        }
         if let Some(reply) = late_cancel_reply.take() {
             write_json(&mut stdout, &reply)?;
         }
@@ -1588,6 +1600,7 @@ fn bootstrap_success(
                 "identity": identity,
             })
         }
+        "tool.acknowledge_expired" => json!({"acknowledged":true}),
         "tool.resolve" => json!({
             "expired": mode == "resolutions-expired",
             "resolved":if mode == "resolutions-error-redaction" {

@@ -1215,6 +1215,40 @@ describe("qualified ACPX runtime sidecar", () => {
     await expect(completion).rejects.toThrow("ACPX tool call was cancelled");
   });
 
+  it("releases more than 4096 settled terminal callbacks without provider delivery", async () => {
+    const expiredTools = new ExpiredAcpxTools();
+    const tools = new Map<string, unknown>();
+    const wait = loadWaitForTool({ tools, emitted: [], expiredTools });
+    const end = loadRejectTurnWaiters(tools, expiredTools);
+    const commands = loadActualToolCommands(tools, expiredTools);
+    commands.setTurn(null);
+    for (let index = 0; index < 4_097; index++) {
+      const callId = `settled-${index}`;
+      const pending = wait({ callId, tool: "write_document", arguments: {}, signal: new AbortController().signal });
+      end("test-turn", "ACPX turn became terminal");
+      await expect(pending).rejects.toThrow("ACPX turn became terminal");
+      expect(await commands.acknowledgeExpired({ callId, turnId: "test-turn" })).toEqual({ acknowledged: true });
+    }
+    expect(() => expiredTools.assertCapacity(0)).not.toThrow();
+    expect(tools.size).toBe(0);
+  }, 15_000);
+
+  it("acknowledges only the expired turn and never settles a live callback", async () => {
+    const expiredTools = new ExpiredAcpxTools();
+    expiredTools.remember("same-call", "old-turn");
+    const settle = vi.fn(), reject = vi.fn(), cleanup = vi.fn();
+    const pending = { turnId: "new-turn", settle, reject, cleanup };
+    const tools = new Map<string, unknown>([["same-call", pending]]);
+    const commands = loadActualToolCommands(tools, expiredTools);
+    commands.setTurn("new-turn");
+    expect(await commands.acknowledgeExpired({ callId: "same-call", turnId: "new-turn" })).toEqual({ acknowledged: false });
+    expect(await commands.acknowledgeExpired({ callId: "same-call", turnId: "old-turn" })).toEqual({ acknowledged: true });
+    expect(await commands.acknowledgeExpired({ callId: "same-call", turnId: "old-turn" })).toEqual({ acknowledged: true });
+    expect(await commands.acknowledgeExpired({ callId: "unknown", turnId: "old-turn" })).toEqual({ acknowledged: false });
+    expect(tools.get("same-call")).toBe(pending);
+    for (const callback of [settle, reject, cleanup]) expect(callback).not.toHaveBeenCalled();
+  });
+
   it("accounts for a late result after terminal cleanup before the runner consumes the terminal event", async () => {
     const tools = new Map<string, unknown>();
     const expiredTools = new ExpiredAcpxTools();
@@ -2386,7 +2420,8 @@ function loadActualSidecarWriter(mode: "normal" | "backpressure" | "throws" = "n
 }
 
 /** Actual parsed command dispatcher; only the owned pending map/turn are supplied. */
-function loadActualToolCommands(tools: Map<string, unknown>): {
+function loadActualToolCommands(tools: Map<string, unknown>, expiredTools = new ExpiredAcpxTools()): {
+  acknowledgeExpired: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
   resolve: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
   setTurn: (turnId: string | null) => void;
 } {
@@ -2399,10 +2434,11 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
     ${stripTypeScriptTypes(source.slice(safeStart, safeEnd))}
     ${stripTypeScriptTypes(source.slice(start, end))}
     return {
+      acknowledgeExpired: params => dispatch(parseAcpxSidecarRequest({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++requestId, command: "tool.acknowledge_expired", params })),
       resolve: params => dispatch(parseAcpxSidecarRequest({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++requestId, command: "tool.resolve", params })),
       setTurn: value => { turnId=value; }
     };
-  `)(tools, new ExpiredAcpxTools(), boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
+  `)(tools, expiredTools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
   return dispatcher;
 }
 

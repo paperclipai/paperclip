@@ -35,6 +35,7 @@
         "permission.resolve",
         "input.resolve",
         "tool.resolve",
+        "tool.acknowledge_expired",
         "session.read",
         "session.snapshot",
         "session.goal.get",
@@ -185,6 +186,13 @@
         "claudeEffort": false,
         "expectedIdentity": { "type": ["object", "null"], "properties": { "claudeEffort": false } }
       } }
+    },
+    "toolExpiryAckResult": {
+      "description": "tool.acknowledge_expired releases only the matching expired call and turn. It never delivers a result or settles a live callback. Unknown or already discarded receipts return acknowledged:false.",
+      "type": "object",
+      "properties": { "acknowledged": { "type": "boolean" } },
+      "required": ["acknowledged"],
+      "additionalProperties": false
     },
     "toolResolveResult": {
       "description": "tool.resolve acknowledges delivery or a known call that expired before delivery. An expired receipt records the result without replaying the operation or claiming provider delivery.",

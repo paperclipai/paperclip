@@ -608,6 +608,11 @@ async function dispatch(
     pending.cleanup();
     return await deliverAcpxResponse(pending.responseDelivery, deliver);
   }
+  if (request.command === "tool.acknowledge_expired") {
+    const callId = boundedIdentity(request.params.callId, "callId");
+    const expiredTurnId = boundedIdentity(request.params.turnId, "turnId");
+    return { acknowledged: expiredTools.acknowledge(callId, expiredTurnId) };
+  }
   if (request.command === "tool.resolve") {
     const callId = boundedIdentity(request.params.callId, "callId");
     const expectedTurnId = boundedIdentity(request.params.turnId, "turnId");

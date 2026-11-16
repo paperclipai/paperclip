@@ -1189,6 +1189,10 @@ and while draining buffered output for a warm-attachment probe.
 A cancelled tool keeps a record of its call and turn until its result arrives.
 A known late result returns `{ resolved: false, expired: true }`. The runner
 records it without claiming delivery to the provider or repeating the operation.
+After the Runner consumes a terminal, `tool.acknowledge_expired` releases the
+matching expired call and turn when its operation result arrives. This message
+contains no result and never settles a live callback. A retired provider needs
+no cleanup because its process no longer retains the expiry pool.
 Unknown calls and calls from a different turn still fail. Admission counts active
 calls, calls being normalized, and unacknowledged expirations against a limit of
 4,096. Only acknowledged receipts can leave the 512-entry replay window.
