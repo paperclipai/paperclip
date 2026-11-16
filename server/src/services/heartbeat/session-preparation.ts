@@ -91,14 +91,14 @@ export async function selectAccountTaskSession(db: Db, input: {
     companyId: input.companyId, sessionId: parentTaskSession.id, sessionIdentity: managedAiRuntime.sessionIdentity,
   }) : undefined;
   const staleAccountSession = Boolean(accountSession && parentTaskSession && accountSession.lastRunId !== parentTaskSession.lastRunId);
-  const taskSession = staleAccountSession ? null : accountSession && parentTaskSession ? {
+  const taskSession = !staleAccountSession && accountSession && parentTaskSession ? {
     ...parentTaskSession,
     sessionParamsJson: accountSession.sessionParamsJson,
     sessionDisplayId: accountSession.sessionDisplayId,
     lastRunId: accountSession.lastRunId,
     lastError: accountSession.lastError,
   } : parentIdentityCompatible ? parentTaskSession : null;
-  return { taskSession, routerScoped, parentIdentityCompatible: parentIdentityCompatible && !staleAccountSession };
+  return { taskSession, routerScoped, parentIdentityCompatible };
 }
 
 /** Selects a resumable session before workspace preparation; acquires no runtime resources. */

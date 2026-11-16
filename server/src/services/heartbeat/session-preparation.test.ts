@@ -26,12 +26,13 @@ describe("account task session selection", () => {
     expect(result.parentIdentityCompatible).toBe(false);
   });
 
-  it("suppresses explicit resume for a stale child even if the parent identity matches", async () => {
+  it("keeps the compatible parent after a newer goal-less turn leaves its account copy stale", async () => {
     get.mockResolvedValueOnce({ sessionDisplayId: "old", sessionParamsJson: { paperclipAiCredentialIdentity: "bob:0" }, lastRunId: "old-run", lastError: null });
-    const sameIdentity = { ...parent, sessionParamsJson: { paperclipAiCredentialIdentity: "bob:0" } };
+    const sameIdentity = { ...parent, lastRunId: "bob-goal-less-run", sessionDisplayId: "bob-current-session",
+      sessionParamsJson: { paperclipAiCredentialIdentity: "bob:0", sessionId: "bob-current-native-session" } };
     const result = await selectAccountTaskSession(db, { parentTaskSession: sameIdentity, companyId: "company", router: true, managedAiRuntime: runtime });
-    expect(result.taskSession).toBeNull();
-    expect(result.parentIdentityCompatible).toBe(false);
+    expect(result.taskSession).toBe(sameIdentity);
+    expect(result.parentIdentityCompatible).toBe(true);
   });
 
   it("starts fresh for a missing child and does not adopt another account", async () => {
