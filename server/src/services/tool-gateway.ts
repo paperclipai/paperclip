@@ -119,7 +119,12 @@ import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.j
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
-const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+// Умолчание конфигурируемо окружением: стенд поднимает его до потолка без
+// sed-патча dist (E2E 16.11). Потолок 60 с остаётся в timeoutMs().
+const DEFAULT_TOOL_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.PAPERCLIP_TOOL_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 60_000) : 10_000;
+})();
 
 export function resolveCredentialGrantKind(
   policy: "shared" | "per_user" | "per_user_with_fallback",
