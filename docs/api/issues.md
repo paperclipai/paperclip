@@ -150,6 +150,52 @@ The server sets `Preference-Applied: return=minimal` and returns exactly:
 
 **The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
 
+## Completion Requirements
+
+A project workspace can require evidence before a task is allowed to finish. The
+issue carries that requirement in two fields:
+
+- `completionRequirement`: `"workspace_delivery"` or `null`
+- `completionRequirementRevision`: integer that increments whenever the requirement changes
+
+`"workspace_delivery"` means the task cannot reach `done` without a delivery
+attestation for the completing run. The attestation only satisfies the
+declaration it was recorded against, so changing the requirement invalidates an
+older attestation even when the value stays the same.
+
+**Create.** Omit the field, or send `null`, to inherit the target project
+workspace's `defaultCompletionRequirement`. A concrete value overrides the
+inherit for that issue only.
+
+**Update.** Sending a different `completionRequirement` bumps
+`completionRequirementRevision` in the same write. Send `null` to clear the
+requirement and let the task complete on a claim alone.
+
+**Completion gate.** Moving a `"workspace_delivery"` issue to `done` without a
+satisfying attestation returns `422`:
+
+```json
+{ "error": "Delivery attestation is required to complete this issue",
+  "code": "delivery_attestation_required" }
+```
+
+**Agent keys.** The requirement is the board's contract with the agent, so agent
+keys cannot set it. On create, any supplied value — including `null`, which would
+skip the workspace default — returns `403` with code
+`completion_requirement_protected`. On update, sending the key at all, even with
+`null`, returns the same error. Board sessions and internal callers are
+unaffected.
+
+**Workspace default.** Set it on the workspace, not per issue:
+
+```http
+PATCH /api/projects/{projectId}/workspaces/{workspaceId}
+{ "defaultCompletionRequirement": "workspace_delivery" }
+```
+
+`POST /api/projects/{projectId}/workspaces` accepts the same field when the
+workspace is created.
+
 ## Checkout (Claim Task)
 
 ```
