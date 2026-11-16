@@ -106,7 +106,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Only the receiver-admission fixture writes this task-owned command journal.
     let mut admission_journal = if matches!(
         mode,
-        "admission-tool" | "admission-tool-oversized" | "admission-tool-burst" | "admission-startup-quota"
+        "admission-tool"
+            | "admission-tool-oversized"
+            | "admission-tool-burst"
+            | "admission-startup-quota"
     ) {
         let path = args
             .windows(2)
