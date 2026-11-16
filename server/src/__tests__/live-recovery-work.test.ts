@@ -8,7 +8,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb, livenessDb,
   heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions, applyPendingMigrations,
-  issueRecoveryActions, issues, activityLog, agentWakeupRequests, reconcileDatabaseWork } from "@paperclipai/db";
+  issueRecoveryActions, issues, activityLog, agentWakeupRequests, reconcileDatabaseWork, databaseWorkPending, closeRegisteredClients } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -22,7 +22,7 @@ import { beginLegacyShutdownWorkspaceSettlement } from "../services/legacy-shutd
 import { renewLegacyControllerLease, legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { idleWorkSnapshot, isIdleTaskDrainActive, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 import { createHeartbeatRunOutput } from "../services/heartbeat/run-output.js";
-import { recoveryService } from "../services/recovery/service.js";
+import { recoveryService, ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS } from "../services/recovery/service.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { persistActivity } from "../services/activity-log.js";
 import { accountRunCost } from "../services/run-cost-accounting.js";
@@ -59,7 +59,7 @@ describe("residual recovery production matrix", () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIVE_RECOVERY_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("live-recovery-");
     else await applyPendingMigrations(external);
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: external ? 4 : 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   });
   beforeEach(async () => {
@@ -83,7 +83,10 @@ describe("residual recovery production matrix", () => {
     if (db) {
       await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
     }
-    await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIVE_RECOVERY_TEST_DATABASE_URL");
+    if (external) await closeRegisteredClients(external, { scope: "database" });
+    await temporary?.cleanup();
   });
   async function fixture() {
     const companyId = randomUUID(), actorId = "live-recovery-user";
@@ -798,6 +801,83 @@ describe("residual recovery production matrix", () => {
     expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.agent.id),
       eq(activityLog.action, "agent.status_reconciled")))).toHaveLength(1);
     await quiet();
+  });
+  it("settles an exact terminal-run hint before reconstruction coalescing while keeping another process watched", async () => {
+    const selected = await fixture(), other = await fixture();
+    // This is one real, test-owned local process, not a Native/SDK executor.
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    extraStops.push(async () => {
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, "exit"), timeout = new AbortController();
+      try {
+        if (!child.kill("SIGTERM")) throw new Error("Owned watchdog control process did not accept normal termination");
+        await Promise.race([exited, realDelay(5_000, undefined, { signal: timeout.signal, ref: false })
+          .then(() => { throw new Error("Owned watchdog control process did not join within five seconds"); })]);
+      } finally { timeout.abort(); }
+    });
+    await once(child, "spawn");
+    const startedAt = new Date();
+    const seed = async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
+      return (await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+        status: "running", runtimeMode: "legacy", responsibleUserId: f.actorId,
+        contextSnapshot: { issueId: f.issue.id }, startedAt, lastOutputAt: startedAt }).returning())[0];
+    };
+    const selectedRun = await seed(selected), otherRun = await seed(other);
+    await persistHeartbeatRunProcessMetadata(db, otherRun.id, { pid: child.pid!, processGroupId: child.pid!,
+      startedAt: startedAt.toISOString(), targetKind: "local" });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const baseline = idleWorkSnapshot().active;
+    expect(baseline).toBe(0);
+    // Register only the production silence owner: no dispatch or unrelated sweep.
+    await heartbeat.registerActiveRunSilenceWork(coordinator, () => true).ready;
+    const otherDeadline = startedAt.getTime() + ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+    expect(deadlines.get("active-run-silence")!()).toBe(otherDeadline);
+    // Establish the exact run's first real reconstruction, not only startup's broad scope.
+    await db.transaction(async tx => {
+      await notifyLiveRunRecovery(tx, { companyId: selected.companyId, runId: selectedRun.id,
+        issueId: selected.issue.id, agentId: selected.agent.id });
+      await tx.update(heartbeatRuns).set({ lastOutputAt: new Date() })
+        .where(and(eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.id, selectedRun.id)));
+    });
+    await advance(1_001);
+    expect(idleWorkSnapshot().active).toBe(baseline);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.activeRunSilence)).toBe(false);
+    expect(deadlines.get("active-run-silence")!()).toBe(otherDeadline);
+    const exactReconstructionFinishedAt = Date.now();
+    let terminalIntentActive: number | undefined;
+    await db.transaction(async tx => {
+      await notifyLiveRunRecovery(tx, { companyId: selected.companyId, runId: selectedRun.id,
+        issueId: selected.issue.id, agentId: selected.agent.id });
+      terminalIntentActive = idleWorkSnapshot().active;
+      const changed = await tx.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(and(eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.id, selectedRun.id),
+          eq(heartbeatRuns.status, "running"))).returning({ id: heartbeatRuns.id });
+      expect(changed).toEqual([{ id: selectedRun.id }]);
+    });
+    expect(terminalIntentActive).toBe(baseline + 1);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.activeRunSilence)).toBe(false);
+    await advance(1_001);
+    const settled = await getRun(selectedRun.id), stillRunning = await getRun(otherRun.id);
+    expect(settled).toMatchObject({ companyId: selected.companyId, status: "succeeded" });
+    expect(stillRunning).toMatchObject({ companyId: other.companyId, status: "running", processPid: child.pid });
+    expect(child.exitCode).toBeNull(); expect(child.signalCode).toBeNull();
+    expect(Date.now() - exactReconstructionFinishedAt).toBeLessThan(30_000);
+    const active = idleWorkSnapshot().active, next = deadlines.get("active-run-silence")!();
+    console.info(JSON.stringify({ kind: "active_run_silence_exact_terminal_frontier",
+      terminalRowCommitted: settled.status === "succeeded", otherRowRunning: stillRunning.status === "running",
+      otherRealProcessAlive: child.exitCode === null && child.signalCode === null,
+      exactTransactionSettled: !databaseWorkPending(db, DELIVERY_QUEUES.activeRunSilence),
+      terminalIntentObserved: terminalIntentActive === baseline + 1,
+      elapsedWithinReconstructionGate: Date.now() - exactReconstructionFinishedAt,
+      active, baseline, nextAt: next, retainedOtherDeadline: otherDeadline,
+      completedPasses: timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "active-run-silence").length,
+      errors: errors.length }));
+    expect(active, "Committed exact terminal hint must release its reconstruction intent").toBe(baseline);
+    expect(next).toBe(otherDeadline);
+    expect(coordinator.nextWakeAt()).toBe(otherDeadline);
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toHaveLength(2);
+    expect(errors).toEqual([]);
   });
   it("moves the silence threshold on actual output and folds same-run completion only at strict snooze expiry", async () => {
     const f = await fixture(), now = new Date(), old = new Date(now.getTime() - 10 * 60_000);
