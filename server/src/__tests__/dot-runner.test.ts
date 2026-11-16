@@ -342,33 +342,6 @@ describe("durable Dot Runner integration", () => {
     expect(completed!.settledAt).toBeInstanceOf(Date);
   });
 
-  it("executes a tool call again with the same requestId after the runner rejected it as in flight", async () => {
-    const f = await fixture({ provider: "grok_bot" }), { run, assignment } = await offeredWork(f);
-    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "In-flight retry", assigneeAgentId: f.agent.id,
-      checkoutRunId: run.id, executionRunId: run.id }).returning();
-    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativePhase: "running", driverKind: "grok_bot_mcp",
-      nativeIssueId: issue!.id, nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
-    await db.update(dotRunnerAssignments).set({ status: "accepted", acceptedAt: new Date() }).where(eq(dotRunnerAssignments.id, assignment.id));
-    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: f.company.id, issueId: issue!.id, phase: "running",
-      controllerGeneration: assignment.controllerGeneration, leaseExpiresAt: new Date(Date.now() + 60_000) });
-    const requestId = randomUUID(), args = { name: "list_task_attachments", arguments: {} };
-    await expect(f.broker.operation(f.principal, assignment.id, requestId, "tool", args)).resolves.toMatchObject({ status: "pending" });
-    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id }, provider: { kind: "grok_bot", binding: f.snapshot } });
-    const binding = { ...f.snapshot, runId: run.id, normalizedSessionId: assignment.normalizedSessionId,
-      turnId: assignment.turnId, assignmentRevision: assignment.revision };
-    const inFlight = { status: "rejected", requestId, error: { code: "tool_calls_in_flight",
-      message: "Too many tool calls are in flight. This call was not executed. Wait for the pending tool results, then retry it.", retryable: true } };
-    await port.settle({ sourceEventId: randomUUID(), payload: { binding, requestId, outcome: inFlight } });
-    await expect(f.broker.operationStatus(f.principal, assignment.id, requestId)).resolves.toEqual(inFlight);
-    await expect(f.broker.operation(f.principal, assignment.id, requestId, "tool", args)).resolves.toMatchObject({ status: "pending" });
-    const completed = { status: "completed", requestId, result: { attachments: [] } };
-    await port.settle({ sourceEventId: randomUUID(), payload: { binding, requestId, outcome: completed } });
-    await expect(f.broker.operation(f.principal, assignment.id, requestId, "tool", args)).resolves.toEqual(completed);
-    const receipts = await db.select().from(dotRunnerOperations).where(and(eq(dotRunnerOperations.assignmentId, assignment.id), eq(dotRunnerOperations.requestId, requestId)));
-    expect(receipts).toHaveLength(1);
-    expect(receipts[0]!.outcome).toEqual(completed);
-  }, 30000);
-
   it("reapplies the Dot-only migration after the merged gateway schema", async () => {
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0317_messy_famine.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {

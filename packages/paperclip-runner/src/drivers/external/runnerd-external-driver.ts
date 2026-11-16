@@ -77,13 +77,6 @@ export function describeRunnerdExternalDriver(codec: ExternalProviderCodec): Har
 }
 
 /** Thin SDK projection. Rust owns every lifecycle decision and durable receipt. */
-export function isRetryableOperationRejection(status: string | undefined, result: unknown): boolean {
-  if (status !== "completed" || !result || typeof result !== "object") return false;
-  const outcome = result as Record<string, unknown>;
-  const error = outcome.error && typeof outcome.error === "object" ? outcome.error as Record<string, unknown> : {};
-  return outcome.status === "rejected" && error.retryable === true;
-}
-
 export class RunnerdExternalDriver implements HarnessDriver {
   constructor(readonly options: RunnerdExternalDriverOptions, readonly codec: ExternalProviderCodec) {}
   async descriptor() {
@@ -281,7 +274,7 @@ class RunnerdExternalSession implements HarnessSession {
       || checkpoint.runId !== o.identity.runId || checkpoint.sessionId !== o.identity.normalizedSessionId
       || checkpoint.turnId !== o.identity.turnId)) throw new Error("dot_runner_checkpoint_authority_mismatch");
     this.#detachPort = await o.port.attach(async operation => {
-      await this.#command("external_provider.operation", { ...operation }, this.#operationCommandId(String(operation.requestId)));
+      await this.#command("external_provider.operation", { ...operation }, `${this.codec.commandPrefix}_operation_${operation.requestId}`);
     }, () => this.interrupt(), !!checkpoint);
     await this.#command("run.prepare", {
       provider: { kind: this.codec.provider, ...o.execution.provider.binding,
@@ -293,15 +286,6 @@ class RunnerdExternalSession implements HarnessSession {
     await this.#command("session.open", {}, `${this.codec.commandPrefix}_open`);
     await core.recoverPendingSemanticInputs();
     signal?.throwIfAborted();
-  }
-
-  #operationCommandId(requestId: string) {
-    const base = `${this.codec.commandPrefix}_operation_${requestId}`;
-    const digest = createHash("sha256").update(requestId).digest("hex");
-    let id = base;
-    for (let attempt = 1; isRetryableOperationRejection(this.#core?.getCommand(id)?.status, this.#core?.getCommand(id)?.result?.result); attempt += 1)
-      id = `${this.codec.commandPrefix}_operation_retry_${attempt}_${digest}`;
-    return id;
   }
 
   async #command(type: string, payload: Record<string, unknown>, id: string) {

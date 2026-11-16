@@ -600,23 +600,10 @@ impl ExternalCommandExecutor {
                         "external completion requires ingested runtime input",
                     ));
                 }
-                if let Err(error) =
-                    state
-                        .tools
-                        .begin_call(id.clone(), tool.to_owned(), args.clone())
-                {
-                    if !error.is_retryable() {
-                        return Err(invalid(error.to_string()));
-                    }
-                    let outcome = json!({"status":"rejected","requestId":id,"error":{
-                        "code":"tool_calls_in_flight","message":error.safe_provider_message(),"retryable":true}});
-                    state.operations.remove(&id);
-                    state.push(
-                        "external_provider.operation_settled",
-                        json!({"binding":state.binding(),"requestId":id,"outcome":outcome}),
-                    )?;
-                    return Ok(outcome);
-                }
+                state
+                    .tools
+                    .begin_call(id.clone(), tool.to_owned(), args.clone())
+                    .map_err(|e| invalid(e.to_string()))?;
                 state.push("semantic_tool.input", json!({"semantic_tool":{
                     "schema":"paperclip.prp.semantic_tool.v1","schemaVersion":1,"phase":"input",
                     "operationId":tool,"callId":id,"idempotencyKey":id,
@@ -1332,91 +1319,6 @@ mod tests {
             "one"
         );
     }
-    #[test]
-    fn a_tool_call_over_the_result_reserve_is_rejected_as_retryable() {
-        let dir = TestDirectory::new();
-        let mut executor = prepared(dir.path());
-        accept(&mut executor);
-        let tool = |id: &str| {
-            operation(
-                id,
-                "tool",
-                json!({"name":"save_report","arguments":{"text":id}}),
-            )
-        };
-        for index in 0..10 {
-            assert_eq!(
-                call(
-                    &mut executor,
-                    "external_provider.operation",
-                    tool(&format!("burst-{index}"))
-                )["status"],
-                "pending"
-            );
-        }
-        let rejected = call(
-            &mut executor,
-            "external_provider.operation",
-            tool("burst-10"),
-        );
-        assert_eq!(rejected["status"], "rejected");
-        assert_eq!(rejected["error"]["retryable"], true);
-        assert!(rejected["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Too many tool calls are in flight"));
-        assert_eq!(
-            call(
-                &mut executor,
-                "external_provider.operation",
-                tool("burst-10")
-            ),
-            rejected
-        );
-        assert_eq!(
-            executor
-                .poll_events()
-                .unwrap()
-                .iter()
-                .filter(|e| e.event_type == "semantic_tool.input")
-                .count(),
-            10
-        );
-        call(
-            &mut executor,
-            "semantic_tool.result",
-            json!({"callId":"burst-0","operationId":"save_report","result":{"reportId":"zero"},"isError":false}),
-        );
-        assert_eq!(
-            call(
-                &mut executor,
-                "external_provider.operation",
-                tool("burst-10")
-            )["status"],
-            "pending"
-        );
-        drop(executor);
-        let mut recovered = DotCommandExecutor::with_runner_config(dir.path(), &config(dir.path()));
-        assert_eq!(
-            call(
-                &mut recovered,
-                "external_provider.operation",
-                tool("burst-10")
-            )["status"],
-            "pending"
-        );
-        assert_eq!(
-            recovered
-                .poll_events()
-                .unwrap()
-                .iter()
-                .filter(|e| e.event_type == "semantic_tool.input"
-                    && e.payload.to_string().contains("\"callId\":\"burst-10\""))
-                .count(),
-            1
-        );
-    }
-
     #[test]
     fn revoked_authority_never_replays_and_late_effect_receipts_remain_settleable() {
         let dir = TestDirectory::new();
