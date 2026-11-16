@@ -20,6 +20,7 @@ import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
+import { externallyBilledNativeAccountingClosure } from "./native-runtime/external-provider-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
@@ -32,6 +33,7 @@ const amount = (value: unknown) => typeof value === "number" && Number.isFinite(
  * rather than acknowledging evidence from an earlier spool snapshot. */
 async function readAccountingClosure(db: Db, runId: string) {
   const [closure] = await db.select({
+    externallyBilled: externallyBilledNativeAccountingClosure,
     sourceId: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptSourceId'`,
     sequence: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptSequence'`,
     receiptId: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptId'`,
@@ -325,7 +327,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       const [coordinator] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       if (coordinator && !coordinator.resultId && coordinator.phase !== "terminal_failure") return false;
     }
-    const receiptUnavailable = !preProviderFailure && (captureFailed || object(run.usageJson).accountingReceiptReady === false);
+    // The provider contract explicitly reports unavailable usage and external
+    // billing. This is a closed operation, not a lost receipt: preserve the
+    // unpriced charge and ordinary unpriced-budget policy (no timeout exemption).
+    const receiptUnavailable = !preProviderFailure && !closure.externallyBilled
+      && (captureFailed || object(run.usageJson).accountingReceiptReady === false);
     const receiptClosure = captureFailed ? "timed_out" as const
       : receiptUnavailable ? await readProviderReceiptClosure(tx, run.id) : null;
     if (receiptUnavailable && !receiptClosure) return false;
@@ -359,7 +365,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // projection keeps the price already observed. A receipt that will never
     // complete (lost, timed out, or a failed capture) settles at no less than
     // that observed money, so settlement never lowers spend.
-    const observedCents = receiptUnavailable ? text(object(usage.budgetExposure).costCents) : null;
+    const observedCents = receiptUnavailable || closure.externallyBilled ? text(object(usage.budgetExposure).costCents) : null;
     let observedCostUsd: string | null = null;
     if (observedCents) {
       try {
@@ -375,11 +381,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const billingType = text(usage.billingType) ?? "unknown";
     // A lost receipt that already carries a provider-reported cost settles at
     // that cost, as an estimate marked as a lower bound, not as unpriced.
-    const reportedLowerBound = receiptUnavailable && knownCostUsd !== null && billingType !== "subscription_included"
+    const reportedLowerBound = (receiptUnavailable || closure.externallyBilled) && knownCostUsd !== null && billingType !== "subscription_included"
       && usdToUnits(knownCostUsd) > 0n;
     const lowerBoundProvenance = reportedLowerBound ? { source: "provider_reported", version: "accounting-receipt/v1",
       ...object(usage.pricingProvenance),
-      evidence: [text(object(usage.pricingProvenance).evidence), "final receipt lost; provider-reported cost of the observed usage is a lower bound"]
+      evidence: [text(object(usage.pricingProvenance).evidence), closure.externallyBilled ? "externally billed provider reports no final price; previously observed cost is a lower bound" : "final receipt lost; provider-reported cost of the observed usage is a lower bound"]
         .filter(Boolean).join("; ") } : null;
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
@@ -482,7 +488,7 @@ function actionableRunAccounting(at: Date = new Date()) {
           and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
           and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
         sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
-          or (${closedNativeReceiptSource}) or (${closedLegacyReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted}))`,
+          or (${externallyBilledNativeAccountingClosure}) or (${closedNativeReceiptSource}) or (${closedLegacyReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted}))`,
       )),
     )),
   );
