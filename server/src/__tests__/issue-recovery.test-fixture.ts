@@ -38,6 +38,8 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
   const extraStops: Array<() => Promise<void>> = [];
   const extraDeadlines: Array<() => number | null> = [];
   beforeAll(async () => {
+    // These fixtures boot heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-issue-recovery-work-secret");
     if (!external) database = await startEmbeddedPostgresTestDatabase("issue-recovery-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     if (options.meter) meter = meterDatabaseStatements(db, external ?? database!.connectionString);
@@ -55,7 +57,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { meter?.uninstall(); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => { meter?.uninstall(); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); vi.unstubAllEnvs(); });
   async function start(options: { backstopMs?: number; fullBackstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });

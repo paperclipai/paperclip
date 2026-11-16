@@ -12,7 +12,7 @@ import { errorHandler } from "../middleware/index.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   authUsers,
@@ -68,6 +68,8 @@ import {
     let companyId: string;
     let agentId: string;
     beforeAll(async () => {
+      // This fixture invokes heartbeat directly, without server startup.
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-conversation-run-secret");
       database = await startRecoveryPostgres(
         "paperclip-agent-conversations-",
       );
@@ -109,6 +111,7 @@ import {
     afterAll(async () => {
       await db?.$client.end({ timeout: 0 });
       await database?.cleanup();
+      vi.unstubAllEnvs();
     });
     const create = (user = randomUUID()) =>
       issueService(db).create(companyId, {

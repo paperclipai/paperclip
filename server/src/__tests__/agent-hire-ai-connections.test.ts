@@ -40,6 +40,8 @@ let home: string;
 beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
+  // This fixture invokes heartbeat directly, without server startup.
+  vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-hire-run-secret");
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
   vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
   if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);

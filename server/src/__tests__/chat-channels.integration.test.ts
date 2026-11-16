@@ -71082,6 +71082,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it("preserves ordinary legacy task Retry success without replaying its canonical request", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-legacy-task-retry-jwt-secret");
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     const fixture = await seedCompany();
     const companyId = fixture.companyId, agentId = fixture.assignedAgentId;
     const directory = mkdtempSync(path.join(os.tmpdir(), "legacy-task-retry-control-"));

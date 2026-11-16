@@ -56,6 +56,8 @@ describe("residual recovery production matrix", () => {
   const timeline: unknown[] = [];
   const extraStops: Array<() => Promise<void>> = [];
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-live-recovery-work-secret");
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIVE_RECOVERY_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("live-recovery-");
     else await applyPendingMigrations(external);
@@ -84,6 +86,7 @@ describe("residual recovery production matrix", () => {
       await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
     }
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
+    vi.unstubAllEnvs();
   });
   async function fixture() {
     const companyId = randomUUID(), actorId = "live-recovery-user";

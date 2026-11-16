@@ -21,6 +21,8 @@ describe.skipIf(!support.supported)("run starts during a deploy overlap (assembl
   const errors: unknown[] = [];
 
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-run-start-handover-secret");
     database = await startEmbeddedPostgresTestDatabase("heartbeat-run-start-handover-");
     admin = createDb(database.connectionString);
   }, 90_000);
@@ -33,6 +35,7 @@ describe.skipIf(!support.supported)("run starts during a deploy overlap (assembl
   afterAll(async () => {
     await admin?.$client.end({ timeout: 1 });
     await database?.cleanup();
+    vi.unstubAllEnvs();
   });
 
   async function bootServer(name: string, options: { dispatches: boolean }) {

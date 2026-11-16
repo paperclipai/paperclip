@@ -136,6 +136,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import { ensureLocalTrustedAgentJwtSecret } from "./agent-jwt-bootstrap.js";
 import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
@@ -336,6 +337,9 @@ async function startServerWithDatabaseTeardown(
   if ("deploymentMode" in startupConfig) {
     assertEphemeralServerConfig(startupConfig);
     ensureDecisionSigningSecret();
+    if (startupConfig.deploymentMode === "local_trusted") {
+      await ensureLocalTrustedAgentJwtSecret();
+    }
     initializeRuntimeConfigConsumers(startupConfig);
   }
   

@@ -30,6 +30,7 @@ describe.skipIf(!support.supported)("workspace history real process journey", ()
   beforeAll(async () => {
     root = await mkdtemp(path.join(tmpdir(), "paperclip-workspace-history-journey-"));
     vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-workspace-history-journey-secret");
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "false");
     database = await startEmbeddedPostgresTestDatabase("workspace-history-journey");
