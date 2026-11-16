@@ -84,7 +84,7 @@ export function aiRoutingHarness(
   if (provider === "acpx" && acpxAgent === "copilot") return "copilot_runtime";
   if (provider === "acpx" && acpxAgent === "antigravity") return "antigravity_runtime";
   const runner =
-    provider === "acpx" && ["claude", "grok", "pi"].includes(String(acpxAgent))
+    provider === "acpx" && ["claude", "grok", "pi", "kimi"].includes(String(acpxAgent))
       ? acpxAgent
       : provider;
   return (
@@ -95,6 +95,7 @@ export function aiRoutingHarness(
         opencode: "opencode_local",
         grok: "grok_local",
         pi: "pi_local",
+        kimi: "kimi_local",
       } as Record<string, string>
     )[String(runner)] ?? "unsupported"
   );

@@ -12,6 +12,8 @@ import { and, eq } from "drizzle-orm";
 import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  DEEPSEEK_API_BASE_URL,
+  KIMI_CODING_API_BASE_URL,
   aiConnectionMetadataSchema, aiRoutingHarness,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
@@ -66,6 +68,10 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
   "GROK_API_KEY",
+  "KIMI_MODEL_API_KEY",
+  "KIMI_API_KEY",
+  "MOONSHOT_API_KEY",
+  "KIMI_CODE_HOME",
   "CODEX_HOME",
   "GROK_HOME",
   "CLAUDE_CONFIG_DIR",
@@ -353,6 +359,38 @@ export async function prepareManagedAiRuntime(
         provider: { openrouter: { options: { apiKey: value, headers: OPENROUTER_ATTRIBUTION_HEADERS } } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+    }
+    if (!routing && input.binding.provider === "deepseek" && harness === "opencode_local") {
+      // OpenCode's built-in DeepSeek provider is OpenAI-compatible. Pin the
+      // key and base URL in provider config so the harness does not depend on
+      // ambient key discovery or a project-level OpenCode config.
+      env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+        provider: { deepseek: { options: { apiKey: value, baseURL: DEEPSEEK_API_BASE_URL } } },
+      });
+      env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+    }
+    if (!routing && input.binding.provider === "kimi" && harness === "kimi_local") {
+      // A managed Kimi key only works with the full KIMI_MODEL_* quartet: the
+      // CLI ignores a bare key, its default Moonshot endpoint rejects Coding
+      // Plan keys, and catalog aliases (`kimi-code/k3`) must reach the API as
+      // the bare model id (`k3`).
+      const configuredEnv = input.config.env && typeof input.config.env === "object"
+        ? input.config.env as Record<string, unknown> : {};
+      const setting = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : undefined;
+      env.KIMI_MODEL_NAME = setting(configuredEnv.KIMI_MODEL_NAME)
+        ?? setting(input.config.model)?.replace(/^kimi-code\//, "")
+        ?? "kimi-for-coding";
+      // A Coding Plan key is scoped to this endpoint, so the agent config must
+      // not be able to point the saved credential at a different host.
+      env.KIMI_MODEL_BASE_URL = KIMI_CODING_API_BASE_URL;
+      env.KIMI_MODEL_PROVIDER_TYPE = setting(configuredEnv.KIMI_MODEL_PROVIDER_TYPE) ?? "kimi";
+      // Kimi resolves its data dir as `KIMI_CODE_HOME ?? join(HOME, ".kimi-code")`,
+      // so a blank value is not a fallback: the CLI would call mkdir(""). Point it
+      // at the disposable managed home instead of reusing the host login.
+      env.KIMI_CODE_HOME = path.join(home, ".kimi-code");
+      // The native runner reads KIMI_API_KEY from its provider config instead
+      // of the CLI's KIMI_MODEL_* pair.
+      env.KIMI_API_KEY = value;
     }
     if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
       // Gemini headless CLI requires an explicit auth choice even with an API key.

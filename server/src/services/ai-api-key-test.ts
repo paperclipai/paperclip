@@ -1,4 +1,5 @@
 import type { AiProvider } from "@paperclipai/shared";
+import { DEEPSEEK_API_BASE_URL, KIMI_CODING_API_BASE_URL } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 /** Fixed provider endpoints; credentials are never sent to a caller-supplied URL or through a redirect. */
@@ -14,6 +15,8 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    kimi: `${KIMI_CODING_API_BASE_URL}/models`,
+    deepseek: `${DEEPSEEK_API_BASE_URL}/models`,
   };
   let response: Response;
   try {

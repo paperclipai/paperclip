@@ -16,6 +16,13 @@ const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
   openai: ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"],
   openrouter: ["OPENROUTER_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "PAPERCLIP_OPENCODE_PROVIDERS"],
   xai: ["XAI_API_KEY", "GROK_API_KEY", "GROK_HOME", "XAI_BASE_URL"],
+  // The Kimi CLI authenticates with the KIMI_MODEL_NAME + KIMI_MODEL_API_KEY
+  // pair, while the native runner reads KIMI_API_KEY. Either key expresses a
+  // child credential override that must outrank an inherited managed account.
+  kimi: ["KIMI_MODEL_API_KEY", "KIMI_API_KEY"],
+  // OpenCode's built-in DeepSeek provider reads DEEPSEEK_API_KEY, and a
+  // pre-configured OPENCODE_CONFIG_CONTENT also expresses child-only auth.
+  deepseek: ["DEEPSEEK_API_KEY", "OPENCODE_CONFIG_CONTENT"],
 };
 
 /** A hire inherits a connection choice, never its manager's credentials or identity. */

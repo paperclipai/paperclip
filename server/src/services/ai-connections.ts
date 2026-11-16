@@ -238,6 +238,13 @@ export function aiConnectionService(db: Db) {
     if (!metadata.success) throw notFound("AI connection not found");
     return { row, metadata: metadata.data };
   }
+  /** Saved metadata for a connection the caller already selected. Never opens credentials. */
+  async function connectionMetadata(companyId: string, connectionId: string) {
+    const row = (await rows(companyId)).find((candidate) => candidate.connection.id === connectionId);
+    if (!row) return undefined;
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    return metadata.success ? metadata.data : undefined;
+  }
   /** On-demand account observation for either runner; never probes ambient CLI auth. */
   async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
     const { row, metadata } = await readableAccount(companyId, userId, connectionId, grantId);
@@ -1270,5 +1277,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, connectionMetadata, save, setDefault, membership, markAuthenticationFailed };
 }

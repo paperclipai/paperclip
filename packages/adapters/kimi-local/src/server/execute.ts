@@ -220,7 +220,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "kimi");
-  const model = asString(config.model, "").trim();
+  const configuredModel = asString(config.model, "").trim();
+  // KIMI_MODEL_* replaces the model catalog with a single env-backed provider,
+  // so a catalog alias passed through -m is rejected ("not configured in
+  // config.toml"). Let the env provider supply the default model instead.
+  const envModelConfigured =
+    hasNonEmptyEnvValue(parseObject(config.env) as Record<string, string>, "KIMI_MODEL_NAME")
+    || hasNonEmptyEnvValue(process.env as Record<string, string>, "KIMI_MODEL_NAME");
+  const model = envModelConfigured ? "" : configuredModel;
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -303,7 +310,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // applies to Kimi providers (managed OAuth models included). Only send it for
   // models that advertise support_efforts, and never clobber an explicit value.
   const configuredEffort = asString(config.effort, "").trim();
-  if (configuredEffort && modelSupportsEffort(model) && !hasNonEmptyEnvValue(env, "KIMI_MODEL_THINKING_EFFORT")) {
+  if (configuredEffort && modelSupportsEffort(configuredModel) && !hasNonEmptyEnvValue(env, "KIMI_MODEL_THINKING_EFFORT")) {
     const kimiEffort = resolveKimiThinkingEffort(configuredEffort);
     if (kimiEffort) env.KIMI_MODEL_THINKING_EFFORT = kimiEffort;
   }

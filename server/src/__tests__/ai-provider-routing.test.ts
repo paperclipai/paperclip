@@ -9,6 +9,19 @@ import {
 import { managedProviderRouting } from "../services/ai-provider-routing.js";
 
 describe("provider routing", () => {
+  it("maps the native Kimi runner onto the Kimi harness", () => {
+    expect(aiRoutingHarness("paperclip_runner", "acpx", "kimi")).toBe("kimi_local");
+    expect(aiRoutingHarness("kimi_local")).toBe("kimi_local");
+    expect(isAiConnectionCompatible(
+      { provider: "kimi", method: "api_key", mode: "responsible_user" },
+      "paperclip_runner", "kimi-for-coding", "acpx", "kimi",
+    )).toBe(true);
+    expect(isAiConnectionCompatible(
+      { provider: "kimi", method: "api_key", mode: "shared", connectionId: "00000000-0000-4000-8000-000000000000", grantId: "00000000-0000-4000-8000-000000000001" },
+      "paperclip_runner", "kimi-for-coding", "acpx", "kimi",
+    )).toBe(true);
+  });
+
   it("routes managed OpenRouter accounts to direct and native Pi without OpenCode configuration", () => {
     const routing = aiProviderRoutingSchema.parse({ kind: "openrouter", protocol: "chat" });
     expect(aiRoutingHarness("paperclip_runner", "acpx", "pi")).toBe("pi_local");

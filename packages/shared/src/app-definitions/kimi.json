@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "kimi",
+  "name": "Kimi",
+  "description": "Use Kimi Code with a Coding Plan API key.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/kimi.svg",
+    "darkLogoUrl": "/brands/apps/kimi-dark.svg"
+  },
+  "urlPatterns": [
+    "https://api.kimi.com/coding/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Kimi API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "kimi",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Kimi Code with a Coding Plan API key.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "KIMI_MODEL_API_KEY"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}

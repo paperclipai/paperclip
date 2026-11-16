@@ -165,6 +165,9 @@ export async function testEnvironment(
   }
 
   const envConfig = parseObject(config.env);
+  const envModelConfigured =
+    (typeof process.env.KIMI_MODEL_NAME === "string" && process.env.KIMI_MODEL_NAME.trim().length > 0)
+    || (typeof envConfig.KIMI_MODEL_NAME === "string" && envConfig.KIMI_MODEL_NAME.trim().length > 0);
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
@@ -263,7 +266,9 @@ export async function testEnvironment(
         hint: "Use the `kimi` CLI command to run the automatic installation and auth probe.",
       });
     } else {
-      const model = asString(config.model, "").trim();
+      // KIMI_MODEL_* registers a single env-backed provider, so passing a
+      // catalog alias via -m fails with "not configured in config.toml".
+      const model = envModelConfigured ? "" : asString(config.model, "").trim();
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);

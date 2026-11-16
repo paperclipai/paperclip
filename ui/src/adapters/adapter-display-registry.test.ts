@@ -61,6 +61,19 @@ describe("adapter display registry", () => {
     });
   });
 
+  it("offers Kimi as a recommended first-agent source", () => {
+    expect(getAdapterDisplay("kimi_local").recommended).toBe(true);
+  });
+
+  it("surfaces DeepSeek as an onboarding source on the OpenCode harness", () => {
+    expect(getAdapterDisplay("opencode_local")).toMatchObject({
+      recommended: true,
+      onboardingSourceId: "deepseek",
+      onboardingLabel: "DeepSeek",
+      onboardingDefaultModel: "deepseek/deepseek-chat",
+    });
+  });
+
   it("drops local suffixes for unknown plugin adapter labels", () => {
     expect(getAdapterLabel("droid_local")).toBe("Droid");
     expect(getAdapterDisplay("droid_local")).toMatchObject({

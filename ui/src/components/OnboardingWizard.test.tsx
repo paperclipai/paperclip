@@ -529,13 +529,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
 
     it.each([false, true])("explains unavailable onboarding providers and clears an old Copilot draft: %s", async savedCopilot => {
-      mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local"]);
+      mockAdapterRegistry.disabled = new Set(["claude_local", "codex_local", "opencode_local"]);
       const root = await openProviderChoices(savedCopilot ? {
         adapterType: "paperclip_runner", onboardingCopilot: true, runner: "paperclip", model: "copilot-model",
       } : {});
       try {
         expect(document.body.querySelectorAll("button[aria-checked]")).toHaveLength(0);
-        expect(document.body.textContent).toContain("Claude and Codex are unavailable on this instance.");
+        expect(document.body.textContent).toContain("Claude, Codex, Kimi, and DeepSeek are unavailable on this instance.");
         expect(document.body.textContent).toContain("choose New Agent on the Agents page");
         const next = [...document.body.querySelectorAll("button")].find(button => isArcPrimary(button.textContent?.trim() ?? ""));
         expect(next?.disabled).toBe(true);

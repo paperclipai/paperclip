@@ -59,6 +59,15 @@ export interface AdapterDisplayInfo {
   disabledLabel?: string;
   experimental?: boolean;
   hideFromVisualSelection?: boolean;
+  /**
+   * Onboarding-only source identity. Used when the execution harness runs a
+   * provider that has no CLI of its own — DeepSeek runs on the OpenCode
+   * harness — so the "Model source" tile can be branded distinctly without
+   * changing how the adapter is labelled everywhere else.
+   */
+  onboardingSourceId?: string;
+  onboardingLabel?: string;
+  onboardingDefaultModel?: string;
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
@@ -105,6 +114,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Kimi Code",
     description: "Kimi Code CLI harness",
     icon: Moon,
+    recommended: true,
   },
   hermes_gateway: {
     label: "Hermes Gateway",
@@ -121,6 +131,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "OpenCode",
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
+    recommended: true,
+    // DeepSeek has no coding CLI; it runs on OpenCode with a `deepseek/` model.
+    onboardingSourceId: "deepseek",
+    onboardingLabel: "DeepSeek",
+    onboardingDefaultModel: "deepseek/deepseek-chat",
   },
   pi_local: {
     label: "Pi",

@@ -106,6 +106,28 @@ describe("managed AI connections", () => {
     await expect(prepareManagedAiRuntime(db, { ...piInput, config: { ...piInput.config, env: { PAPERCLIP_PI_PROVIDERS: "{}" } } })).rejects.toThrow("routing is incompatible");
   });
 
+  it("prepares the Kimi CLI with the Coding Plan endpoint and a bare model id", async () => {
+    const owner = "kimi-managed";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const token = "fixture-kimi-key";
+    const account = await service.save(companyId, owner, { provider: "kimi", method: "api_key", ownership: "personal", name: owner, apiKey: token, allAgents: true, agentIds: [] }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "kimi_local",
+      binding: { provider: "kimi", method: "api_key", mode: "responsible_user" },
+      config: { model: "kimi-code/k3", env: { KIMI_MODEL_API_KEY: "stale-kimi", KIMI_CODE_HOME: "/tmp/stale-kimi-home", KIMI_MODEL_BASE_URL: "https://kimi.example.test/v1" } } });
+    try {
+      expect(runtime.config.env).toMatchObject({
+        KIMI_MODEL_API_KEY: token, KIMI_API_KEY: token, KIMI_MODEL_NAME: "k3",
+        KIMI_MODEL_BASE_URL: "https://api.kimi.com/coding/v1", KIMI_MODEL_PROVIDER_TYPE: "kimi",
+      });
+      // A blank KIMI_CODE_HOME makes the CLI call mkdir(""); it must instead point
+      // at the disposable managed home so the host login is never reused.
+      expect(runtime.config.env.KIMI_CODE_HOME).toMatch(/\.kimi-code$/);
+      expect(runtime.config.env.KIMI_CODE_HOME).not.toBe("/tmp/stale-kimi-home");
+      expect(runtime.attribution).toMatchObject({ connectionId: account.connectionId, provider: "kimi" });
+    } finally { await runtime.cleanup(); }
+  });
+
   it.each([200, 401])("reverifies native Pi OpenRouter keys without requiring the Legacy Pi CLI (HTTP %s)", async status => {
     const owner = `pi-adoption-${status}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -1485,7 +1507,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       apiKey: "fixture", allAgents: true, agentIds: [],
     }, "github_pat_fixture_migration");
     await service.setDefault(companyId, "migration-copilot", copilot.grantId);
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0361_mighty_dracula.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0488_kimi_ai_provider.sql", import.meta.url), "utf8");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await db.transaction(async (tx) => {
         for (const statement of migration.split("--> statement-breakpoint")) {

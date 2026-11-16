@@ -89,6 +89,73 @@ describePostgres("agent configuration save latency", () => {
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled(); expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  it("clears a managed connection the new harness cannot consume", async () => {
+    await db.update(agents).set({ runtimeConfig: { aiConnection: binding } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({
+      adapterType: "kimi_local",
+      adapterConfig: { model: "kimi-code/k3" },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).adapterType).toBe("kimi_local");
+    expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled(); expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("clears a fixed connection whose provider cannot sign in the new harness", async () => {
+    const fixedBinding = { provider: "openai", method: "api_key", mode: "delegated",
+      connectionId: account.connectionId, grantId: account.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: fixedBinding } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({
+      adapterType: "kimi_local",
+      adapterConfig: { model: "kimi-code/k3" },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).adapterType).toBe("kimi_local");
+    expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled(); expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps a routed connection the new harness also supports", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openrouter", method: "api_key", ownership: "personal", name: "Routed account",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openrouter", method: "api_key", mode: "delegated",
+      connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({
+      adapterType: "opencode_local",
+      adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.5" },
+      runtimeConfig: { aiConnection: routedBinding },
+    }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+  });
+
+  it("keeps a compatible Kimi connection when only the model changes", async () => {
+    const kimi = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "kimi", method: "api_key", ownership: "personal", name: "Kimi account",
+      apiKey: "fixture-kimi-key", agentIds: [agent.id], allAgents: false,
+    }, "fixture-kimi-key");
+    const kimiBinding = { provider: "kimi", method: "api_key", mode: "delegated",
+      connectionId: kimi.connectionId, grantId: kimi.grantId } as const;
+    await db.update(agents).set({
+      adapterType: "kimi_local",
+      adapterConfig: { model: "kimi-code/k3" },
+      runtimeConfig: { aiConnection: kimiBinding },
+    }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({
+      adapterConfig: { model: "kimi-code/k3-256k" },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).adapterConfig.model).toBe("kimi-code/k3-256k");
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(kimiBinding);
+  });
+
   it("saves a roster connection edit without a runtime probe and rejects a stale retry", async () => {
     const patch = { runtimeSettings: { harness: "codex_local", aiConnection: binding,
       expected: { model: "gpt-5.6-sol", aiConnection: null } } };

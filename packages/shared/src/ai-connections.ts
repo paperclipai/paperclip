@@ -34,7 +34,14 @@ export const AI_PROVIDERS = [
   "xai",
   "github",
   "google",
+  "kimi",
+  "deepseek",
 ] as const;
+
+/** Kimi Code (Coding Plan) endpoint. The CLI's default Moonshot endpoint rejects coding-plan keys. */
+export const KIMI_CODING_API_BASE_URL = "https://api.kimi.com/coding/v1";
+/** DeepSeek OpenAI-compatible endpoint. Keys are created at platform.deepseek.com. */
+export const DEEPSEEK_API_BASE_URL = "https://api.deepseek.com";
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
 export type AiProvider = z.infer<typeof aiProviderSchema>;
@@ -118,7 +125,37 @@ export const AI_CONNECTION_CAPABILITIES: Record<
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
     },
   },
+  kimi: {
+    name: "Kimi",
+    methods: {
+      api_key: { adapters: ["kimi_local"], envKey: "KIMI_MODEL_API_KEY" },
+    },
+  },
+  // DeepSeek has no coding CLI; OpenCode's built-in DeepSeek provider consumes
+  // the OpenAI-compatible key. Models use the `deepseek/` transport prefix.
+  deepseek: {
+    name: "DeepSeek",
+    methods: {
+      api_key: { adapters: ["opencode_local"], envKey: "DEEPSEEK_API_KEY" },
+    },
+  },
 };
+/**
+ * Adapters that can consume a managed AI connection. Every other harness signs
+ * in itself (`kimi login`, `cursor login`, ...), so a harness switch must clear
+ * the binding instead of validating it against the previous harness.
+ */
+const MANAGED_AI_CONNECTION_ADAPTERS: ReadonlySet<string> = new Set([
+  ...Object.values(AI_CONNECTION_CAPABILITIES).flatMap((capability) =>
+    Object.values(capability.methods).flatMap((method) => method?.adapters ?? []),
+  ),
+  // Fixed shared/delegated bindings also accept Hermes, which the capability
+  // table does not list.
+  "hermes_local",
+]);
+export function adapterUsesManagedAiConnection(adapterType: string): boolean {
+  return MANAGED_AI_CONNECTION_ADAPTERS.has(adapterType);
+}
 export function isAiConnectionCompatible(
   requirement: AiConnectionMetadata | AiConnectionBinding,
   adapterType: string,
@@ -139,7 +176,7 @@ export function isAiConnectionCompatible(
     && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
     && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime", "kimi_local"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
@@ -147,7 +184,9 @@ export function isAiConnectionCompatible(
   return (
     candidates.some((method) => method?.adapters.includes(adapterType)) &&
     (requirement.provider !== "openrouter" ||
-      (typeof model === "string" && model.startsWith("openrouter/")))
+      (typeof model === "string" && model.startsWith("openrouter/"))) &&
+    (requirement.provider !== "deepseek" ||
+      (typeof model === "string" && model.startsWith("deepseek/")))
   );
 }
 export type AiConnectionUnavailableReason =

@@ -30,7 +30,12 @@ import {
 
 export function aiProviderForAdapter(
   adapterType: string,
+  model?: string,
 ): AiProvider | undefined {
+  // OpenCode can run either OpenRouter or a direct DeepSeek key; the model
+  // prefix disambiguates which provider the connection should target.
+  if (adapterType === "opencode_local" && typeof model === "string" && model.startsWith("deepseek/"))
+    return "deepseek";
   return (
     {
       claude_local: "anthropic",
@@ -42,6 +47,7 @@ export function aiProviderForAdapter(
       antigravity_runtime: "google",
       gemini_local: "google",
       hermes_local: "openrouter",
+      kimi_local: "kimi",
     } as Record<string, AiProvider>
   )[adapterType];
 }
@@ -72,7 +78,7 @@ export function AiConnectionField({
   preferAdvanced?: boolean;
   routerAdapterType?: string;
 }) {
-  const provider = aiProviderForAdapter(adapterType);
+  const provider = aiProviderForAdapter(adapterType, model);
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -123,7 +129,7 @@ export function AiConnectionField({
   };
   const method: AiAuthMethod = (value && value.mode !== "router" && value.mode !== "responsible_user" ? value.method : undefined)
     ?? accounts.data?.connections.find((account) => account.provider === provider && account.isDefault)?.method
-    ?? (provider === "openrouter" || provider === "google" || provider === "github" ? "api_key" : "subscription");
+    ?? (provider === "openrouter" || provider === "google" || provider === "github" || provider === "kimi" || provider === "deepseek" ? "api_key" : "subscription");
   const compatiblePools = agentId ? accounts.data?.pools?.filter(pool => pool.enabled && pool.members.some(member => isAiConnectionCompatible(member.binding, routerAdapterType ?? adapterType, member.profile.model, member.profile.provider, member.profile.acpxAgent))) ?? [] : [];
   if (!provider) return null;
   if (legacy && !value && !adopting)
@@ -247,7 +253,7 @@ export function AiConnectionField({
             initialMethod={reconnecting?.method ?? method}
             fixedMethod={Boolean(reconnecting)}
             connectionId={reconnecting?.id}
-            name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : provider === "github" ? "GitHub Copilot" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={reconnecting?.name ?? `My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : provider === "google" ? "Gemini" : provider === "github" ? "GitHub Copilot" : provider === "kimi" ? "Kimi" : provider === "deepseek" ? "DeepSeek" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={allAgents}
