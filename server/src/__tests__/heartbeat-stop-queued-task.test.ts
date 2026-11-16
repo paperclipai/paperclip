@@ -140,7 +140,9 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
       next();
     });
     app.use("/api", agentRoutes(db, {}));
-    app.use("/api", issueRoutes(db));
+    const unusedStorage = async () => { throw new Error("Stop and comment routes must not access object storage"); };
+    app.use("/api", issueRoutes(db, { provider: "local_disk", putFile: unusedStorage,
+      getObject: unusedStorage, headObject: unusedStorage, deleteObject: unusedStorage }));
     app.use(errorHandler);
     let entered = false;
     let release!: () => void;
