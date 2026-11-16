@@ -139,17 +139,45 @@ DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; def
 
 `withDedicatedDbConnection` gives an action exclusive use of one session outside
 the main pool (application name `paperclip-workspace-finalization-lock`). Each
-`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
-single-connection clients idle for reuse; they follow the same idle timeout and
-max lifetime as the main pool. This is not an admission limit: callers hold
-advisory locks and nest dedicated actions, so an action that finds no idle
-client opens one and closes it on release when four are already retained. A
-connection whose action throws is closed, never reused. Actions must keep
+`createDb` owner keeps released single-connection clients idle for reuse: always
+up to `DEDICATED_CONNECTION_IDLE_MAX` (4), and more while idle plus in-use
+clients stay within `DATABASE_DEDICATED_CONNECTION_MAX`, so a recurring burst
+reuses the sessions the previous burst opened instead of reconnecting. They
+follow the same idle timeout and max lifetime as the main pool, so a retained
+client closes its session after `DATABASE_IDLE_TIMEOUT_SECONDS` without use. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+(default 24) dedicated clients are in use at once per owner. A caller that
+finds the limit reached waits in a first-in, first-out queue. A caller that
+already holds a dedicated client, or runs inside an open transaction of the
+same process, is admitted at once, because its wait could deadlock with the
+holder that it blocks. A caller that holds another bounded resource that a
+holder can need passes `{ admitWithoutWaiting: true }` for the same reason; the
+skill package store does this while it holds one of its package I/O permits
+(at most 2 storage and 2 response permits). Such callers can take the in-use
+count above the limit.
+A caller that waits longer than `DATABASE_DEDICATED_CONNECTION_WAIT_MS`
+(default 30000) is admitted over the limit, so a lock cycle that the database
+cannot see ends in a delay, not a hang. A connection whose action throws is
+closed, never reused. Actions must keep
 session state transaction-scoped (`pg_advisory_xact_lock`,
 `set_config(..., true)`). Like the main pool, a retained session sees an
 `ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
 that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
 and ending the owner client close the idle set.
+
+Connections per server process, at most (`databaseConnectionBudget` in
+`packages/db/src/client.ts` computes this, and a test keeps it equal to the
+pool settings):
+
+| Source | Connections |
+| --- | --- |
+| Main pool | `DATABASE_POOL_MAX` (driver default 10) |
+| Private pools: controller lease 2, legacy controller lease 1, controller-instance lease 1, runner checkpoint 3, file storage 2 | 9 |
+| Notification listeners: plugin lifecycle 1, deployment notifications 1 | 2 |
+| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 52 with the default limit |
+| Total with defaults | 73 |
+
+A separate `DATABASE_MIGRATION_URL` adds a second owner with its own pools.
+Admission over the limit after the wait bound can exceed this total.
 
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
@@ -158,6 +186,26 @@ results. Bound values and returned data stay fresh. Explicit per-query options
 still apply, including `prepare: false` and simple-protocol execution. With the
 setting unset, ORM queries keep their existing unprepared behavior and tagged
 SQL uses the driver default. With `false`, preparation stays disabled.
+
+With `true`, a database client and its private pools prepare at most 1,000
+distinct SQL texts, and never a text longer than 8 KB; other texts run
+unprepared. A transaction-mode pooler
+(PgBouncer 1.22 or later, Neon `-pooler` hosts) shares prepared statements by
+SQL text across clients, so after a migration changes a column type, the
+pooler's statement for an affected text keeps failing with `cached plan must
+not change result type` for every client and every process. When a statement
+fails with that error, `prepared statement does not exist` (26000), or a
+duplicate statement name (42P05), the client stops preparing that text for the
+rest of the process and retries once without preparation. A pooled statement
+is retried on its own. When the failed statement is the first one that the
+transaction ran (after `SET TRANSACTION` only), the client rolls back, begins
+again with the same options, repeats the `SET TRANSACTION` statements, and runs
+the statement unprepared on the same connection. The transaction callback does
+not run again and receives the result. A later statement in a transaction, or a
+statement in a savepoint, is not retried, so that transaction or savepoint fails
+once for each affected text in each process. `preparedStatementStats(db)`
+reports the prepared texts and the unprepared, demoted, retried, and restarted
+counts.
 
 ## Switching between modes
 

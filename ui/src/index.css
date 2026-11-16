@@ -4816,9 +4816,12 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-sidebar-recents .design-sidebar-item { font-weight: var(--font-weight-normal); }
 .design-sidebar-navigation > :not(.design-sidebar-recents) { flex-shrink: 0; }
 .design-sidebar-recents { display: flex; flex: 1; min-height: 0; }
+.design-sidebar-recents [data-slot="sidebar-group-label"] { color: var(--muted-foreground); }
 .design-sidebar-recents > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recents > div > :first-child { flex-shrink: 0; }
 .design-sidebar-recents > div > :last-child { flex: 1; min-height: 0; }
+.design-sidebar-recents [data-slot="collapsible-content"][data-state="open"],
+.design-sidebar-recents [data-slot="collapsible-content"] > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recent-list {
   --recent-fade-top: 0px;
   --recent-fade-bottom: 0px;

@@ -2749,10 +2749,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
         const successors = (await readHeartbeatRunsByCompanyId(f.companyId)).filter(row => row.wakeupRequestId === receipt.id);
         const admitted = ["callback", "restart", "race"].includes(safetyScenario);
+        const sourceGone = { deleted_comment: "authority_source_comment", changed_generation: "authority_conversation_binding",
+          changed_source: "authority_source_shape" }[safetyScenario as "deleted_comment" | "changed_generation" | "changed_source"];
         expect(successors).toHaveLength(admitted ? 1 : 0);
         expect(settled).toMatchObject({ id: receipt.id, idempotencyKey: receipt.idempotencyKey,
           requestedByActorId: receipt.requestedByActorId, requestedAt: receipt.requestedAt,
-          status: admitted ? "queued" : "deferred_issue_execution" });
+          status: admitted ? "queued" : sourceGone ? "skipped" : "deferred_issue_execution",
+          ...(sourceGone ? { error: sourceGone, runId: null } : {}) });
         if (admitted) {
           expect(extractWakeCommentIds(successors[0].contextSnapshot)).toEqual([comment.id]);
           expect(successors[0].contextSnapshot?.chatConversationId).toBe(f.conversation.id);
@@ -4507,9 +4510,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
         await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
         expect(f.responseWrites).toHaveLength(baseline + 1);
+        // The retained requests only record that they wait for a newer run.
         expect(await db.select().from(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId))))
           .toEqual(expect.arrayContaining(history.map(row => expect.objectContaining({ id: row.actionId,
-            status: "processed", result: { code: "fast_response_superseded" } }))));
+            status: "processed", result: { code: "fast_response_superseded", terminalWaitKey: expect.any(String) } }))));
         expect(errors).toEqual([]);
       } finally {
         await coordinator.stop();
@@ -7846,7 +7850,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await f.pass("*");
       expect(f.pulls()).toBe(pulls);
       await db.update(chatGitHubReviews).set({ runId: f.run.id }).where(eq(chatGitHubReviews.id, f.review.id));
-      await f.pass(JSON.stringify({ companyId: f.companyId }));
+      // A run change notifies its task, as run milestones do.
+      await f.pass(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }));
       expect(f.writes.at(-1)).toMatchObject({ status: "in_progress" });
       expect(await f.action()).toMatchObject({ status: "received", result: { state: "running", unchangedPolls: 0 } });
       await f.window(400);
@@ -7856,7 +7861,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
     }, 120_000);
 
-    it("rebuilds GitHub review checks for company-wide hints at most once per interval", async () => {
+    it("reads no GitHub review check status for company-wide hints and still reads it for the check's task", async () => {
       const f = await unresolvedReviewCheckPasses();
       await f.window(400);
       const reads = async (hint: string) => {
@@ -7864,12 +7869,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.pass(hint);
         return f.states() - before;
       };
+      // A company-wide rebuild keeps the saved poll deadline; dispatch reads
+      // the status when it comes.
       const company = JSON.stringify({ companyId: f.companyId });
       const repeated = [];
       for (let index = 0; index < 10; index++) repeated.push(await reads(company));
-      expect(repeated).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      expect(repeated).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
       for (let index = 0; index < GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS / 1000 - 10; index++) await f.pass();
-      expect(await reads(company)).toBe(1);
+      expect(await reads(company)).toBe(0);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: f.review.issueId }))).toBe(1);
       expect(await reads(JSON.stringify({ companyId: f.companyId, issueId: randomUUID() }))).toBe(0);

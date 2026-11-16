@@ -1,6 +1,6 @@
 {
-  "id": "3c8a5d91-0570-4b6d-bf0e-cabcc0463e37",
-  "prevId": "e1f798e6-f13b-492e-b80e-04a9f546c428",
+  "id": "d559b960-fa8f-4298-ab63-1be34f5e7214",
+  "prevId": "c103c8f8-15c8-4e7d-a304-47c74a23d9bf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -21043,22 +21043,6 @@
           "method": "btree",
           "with": {}
         },
-        "company_skill_versions_security_approval_idx": {
-          "name": "company_skill_versions_security_approval_idx",
-          "columns": [
-            {
-              "expression": "security_approval_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"company_skill_versions\".\"security_approval_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "company_skill_versions_package_snapshot_idx": {
           "name": "company_skill_versions_package_snapshot_idx",
           "columns": [
@@ -41022,6 +41006,131 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_recovery_deferrals": {
+      "name": "issue_recovery_deferrals",
+      "schema": "",
+      "columns": {
+        "queue": {
+          "name": "queue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "issue_recovery_deferrals_issue_id_issues_id_fk": {
+          "name": "issue_recovery_deferrals_issue_id_issues_id_fk",
+          "tableFrom": "issue_recovery_deferrals",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_recovery_deferrals_company_id_companies_id_fk": {
+          "name": "issue_recovery_deferrals_company_id_companies_id_fk",
+          "tableFrom": "issue_recovery_deferrals",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "issue_recovery_deferrals_pk": {
+          "name": "issue_recovery_deferrals_pk",
+          "columns": [
+            "queue",
+            "issue_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_recovery_full_passes": {
+      "name": "issue_recovery_full_passes",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "queue": {
+          "name": "queue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "issue_recovery_full_passes_company_id_companies_id_fk": {
+          "name": "issue_recovery_full_passes_company_id_companies_id_fk",
+          "tableFrom": "issue_recovery_full_passes",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "issue_recovery_full_passes_pk": {
+          "name": "issue_recovery_full_passes_pk",
+          "columns": [
+            "company_id",
+            "queue"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

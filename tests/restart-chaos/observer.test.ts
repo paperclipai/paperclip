@@ -84,6 +84,31 @@ describe("TaskObserver", () => {
     }
   });
 
+  it("does not finish a staging-mix task whose run ended before its planned follow-up was posted", async () => {
+    let endedAt = 0;
+    const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+      finishedAt: new Date(endedAt).toISOString() }] });
+    const followUpAfterMs = REST_CONFIRM_MS + 500;
+    const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+      stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs, arriveAtMs: 0, holdMs: 0 } };
+    const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    endedAt = start;
+    const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+    await observer.poll(start + 100);
+    await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+    expect(comments()).toBe(0);
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 200);
+    expect(comments()).toBe(1);
+    expect(observer.record.stagingMix?.followUp).toMatchObject({ duringRun: false });
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 300);
+    await observer.poll(start + followUpAfterMs + 400 + REST_CONFIRM_MS);
+    expect(observer.done).toBe(true);
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);

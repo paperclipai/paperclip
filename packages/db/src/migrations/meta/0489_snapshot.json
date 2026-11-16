@@ -1,6 +1,6 @@
 {
-  "id": "9087c952-c049-4549-a60e-6dfe952e2b9e",
-  "prevId": "74693dce-f660-487f-b4ac-772e95e77a25",
+  "id": "78cb3f3b-03e8-4654-aa23-1b7d8fbc0962",
+  "prevId": "8f935a52-5f1e-4afe-8d13-c1770ca33968",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19991,87 +19991,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.company_skill_security_approvals": {
-      "name": "company_skill_security_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval": {
-          "name": "approval",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_skill_security_approvals_company_content_idx": {
-          "name": "company_skill_security_approvals_company_content_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "content_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_skill_security_approvals_company_id_companies_id_fk": {
-          "name": "company_skill_security_approvals_company_id_companies_id_fk",
-          "tableFrom": "company_skill_security_approvals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.company_skill_stars": {
       "name": "company_skill_stars",
       "schema": "",
@@ -21012,12 +20931,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "security_approval_id": {
-          "name": "security_approval_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -21202,19 +21115,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
-          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
-          "tableFrom": "company_skill_versions",
-          "tableTo": "company_skill_security_approvals",
-          "columnsFrom": [
-            "security_approval_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -41000,6 +40900,131 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_recovery_deferrals": {
+      "name": "issue_recovery_deferrals",
+      "schema": "",
+      "columns": {
+        "queue": {
+          "name": "queue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "due_at": {
+          "name": "due_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "issue_recovery_deferrals_issue_id_issues_id_fk": {
+          "name": "issue_recovery_deferrals_issue_id_issues_id_fk",
+          "tableFrom": "issue_recovery_deferrals",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "issue_recovery_deferrals_company_id_companies_id_fk": {
+          "name": "issue_recovery_deferrals_company_id_companies_id_fk",
+          "tableFrom": "issue_recovery_deferrals",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "issue_recovery_deferrals_pk": {
+          "name": "issue_recovery_deferrals_pk",
+          "columns": [
+            "queue",
+            "issue_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_recovery_full_passes": {
+      "name": "issue_recovery_full_passes",
+      "schema": "",
+      "columns": {
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "queue": {
+          "name": "queue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "issue_recovery_full_passes_company_id_companies_id_fk": {
+          "name": "issue_recovery_full_passes_company_id_companies_id_fk",
+          "tableFrom": "issue_recovery_full_passes",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "issue_recovery_full_passes_pk": {
+          "name": "issue_recovery_full_passes_pk",
+          "columns": [
+            "company_id",
+            "queue"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

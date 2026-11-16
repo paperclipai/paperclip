@@ -166,6 +166,34 @@ function firstTurnDeliveredSql(companyId: string, issueId: string, agentId: stri
             and accepted.event_type in ('turn.accepted', 'turn.started')))`;
 }
 
+/**
+ * The comment ids a run's own first-turn receipt sealed, once that run's
+ * provider accepted the turn. A receipt alone proves nothing: the run may
+ * have failed before acceptance, and a retry copies its predecessor's
+ * receipt. A message edited after the seal is still undelivered. Same
+ * evidence as `firstTurnDeliveredSql`.
+ */
+export function acceptedFirstTurnCommentIdsSql(run: { id: typeof heartbeatRuns.id; companyId: typeof heartbeatRuns.companyId;
+  contextSnapshot: typeof heartbeatRuns.contextSnapshot }) {
+  return sql<string[] | null>`case
+    when ${run.contextSnapshot} #>> '{firstTurnQueuedInput,schema}' = 'paperclip.first-turn-queued-input.v1'
+      and ${run.contextSnapshot} #>> '{firstTurnQueuedInput,runId}' = ${run.id}::text
+      and ${run.contextSnapshot} #>> '{firstTurnQueuedInput,claimedAt}' is not null
+      and jsonb_typeof(${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}') = 'array'
+      and exists (select 1 from ${heartbeatRunEvents} accepted
+        where accepted.company_id = ${run.companyId} and accepted.run_id = ${run.id}
+          and accepted.event_type in ('turn.accepted', 'turn.started'))
+    then (select jsonb_agg(sealed_comment.id::text order by sealed.position)
+      from (select case when raw.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          then raw.id::uuid end as id, raw.position
+        from jsonb_array_elements_text(${run.contextSnapshot} #> '{firstTurnQueuedInput,commentIds}')
+          with ordinality as raw(id, position)) sealed
+      join ${issueComments} sealed_comment on sealed_comment.id = sealed.id
+        and sealed_comment.company_id = ${run.companyId}
+      where (${run.contextSnapshot} #>> '{firstTurnQueuedInput,claimedAt}')::timestamptz
+        >= date_trunc('milliseconds', sealed_comment.updated_at)) end`;
+}
+
 /** Ids that an accepted first provider turn already received (see `deliveredQueuedCommentIds`). */
 export async function firstTurnDeliveredCommentIds(tx: Pick<Db, "select">, input: {
   companyId: string; issueId: string; agentId: string; commentIds: string[];
