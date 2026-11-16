@@ -540,3 +540,61 @@ fn cancelling_a_provider_started_turn_settles_it_cancelled_and_retires_the_provi
         .is_err());
     let _ = session.shutdown("test complete");
 }
+
+#[test]
+fn acknowledges_expired_results_after_terminal_without_replacing_a_quiet_provider() {
+    use paperclip_runner_core::acpx_provider_session::AcpxToolDelivery;
+    let scratch = Scratch::new();
+    scratch.background("quiet");
+    let journal = scratch.0.join("expired-receipts.jsonl");
+    let mut settings = config(&scratch.0, "turns-tool-terminal", "claude");
+    settings.transport.args.extend([
+        "--expired-receipt-journal".to_owned(),
+        journal.display().to_string(),
+    ]);
+    let mut session = AcpxProviderSession::start(&settings).unwrap();
+    let pid = session.process_id();
+    for index in 1..=3 {
+        let turn_id = format!("turn-{index}");
+        let call_id = format!("call-{index}");
+        session
+            .start_turn(&turn_id, "Continue", &std::env::temp_dir())
+            .unwrap();
+        let tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(&tool[0], AcpxProviderStateEvent::ToolCall { call_id: actual, .. } if actual == &call_id)
+        );
+        let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(&terminal[0], AcpxProviderStateEvent::TurnTerminal { turn_id: actual, .. } if actual == &turn_id)
+        );
+        let result = ToolResult {
+            call_id,
+            operation_id: "issues.read".into(),
+            result: json!({"ok":true}),
+            is_error: false,
+        };
+        assert_eq!(
+            session.deliver_tool_result(&result).unwrap(),
+            AcpxToolDelivery::Expired
+        );
+        assert_eq!(
+            session.deliver_tool_result(&result).unwrap(),
+            AcpxToolDelivery::AlreadyRecorded
+        );
+        assert!(session.continue_after_quiet_turn());
+        assert_eq!(session.process_id(), pid);
+    }
+    let receipts: Vec<serde_json::Value> = std::fs::read_to_string(journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        receipts,
+        (1..=3)
+            .map(|index| json!({"callId":format!("call-{index}"),"turnId":format!("turn-{index}")}))
+            .collect::<Vec<_>>()
+    );
+    session.shutdown("test complete").unwrap();
+}
