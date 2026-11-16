@@ -105,7 +105,7 @@ jobs:
           jq -n --arg sha "$SOURCE_SHA" --arg branch "$SOURCE_BRANCH" \
             '{sha: $sha, branch: $branch}' > ui/storybook-static/deployment.json
           echo "name=storybook-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.artifact.outputs.name }}
           path: ui/storybook-static
@@ -164,7 +164,7 @@ jobs:
         run: node .github/scripts/verify-storybook.cjs
       - name: Upload deployment links
         if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: storybook-deployment-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.deployment.outputs.report_path }}

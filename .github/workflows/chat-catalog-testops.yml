@@ -116,7 +116,7 @@ jobs:
           allurectl watch -- node tests/runner-e2e/chat-completion-testops-cli.mjs selection
       - name: Retain token-free registration receipts
         if: always() && needs.authorize.outputs.operation != 'evaluate'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-completion-testops-setup-${{ github.run_id }}-1
           path: |
@@ -126,7 +126,7 @@ jobs:
       - name: Retain the exact authenticated selection
         id: selection_upload
         if: steps.selection.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-completion-testops-selection-${{ github.run_id }}-1
           path: testops-pilot-selection.json
@@ -186,7 +186,7 @@ jobs:
           sha256sum chat-completion-build.tar.gz > chat-completion-build.tar.gz.sha256
       - name: Retain credential-free immutable outputs
         id: bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-completion-build-${{ github.run_id }}-1
           path: |
@@ -301,7 +301,7 @@ jobs:
         run: |
           node tests/runner-e2e/chat-completion-testops-cli.mjs verify-selection "$TESTOPS_CATALOG_SELECTION"
           node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/chat-full-catalog-testops-merge.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         id: projection
         with:
           name: chat-catalog-testops-projection-${{ github.run_id }}-1
@@ -369,7 +369,7 @@ jobs:
         run: node tests/runner-e2e/chat-completion-testops-cli.mjs verify-stream runner-e2e-testops
       - name: Retain closed final coverage verification
         if: always() && !cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-completion-testops-verification-${{ github.run_id }}-1
           path: ${{ runner.temp }}/chat-completion-testops-verify-stream/

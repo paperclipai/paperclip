@@ -270,7 +270,7 @@ jobs:
       - name: Retain the immutable metadata-only case bundle
         id: bundle
         if: always() && !cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-catalog-case-bundle-${{ github.run_id }}-1-${{ fromJSON(inputs.cell).index }}
           path: ${{ runner.temp }}/chat-catalog-case-bundle/
@@ -312,7 +312,7 @@ jobs:
         run: node tests/runner-e2e/chat-completion-testops-cli.mjs upload-case "$RUNNER_TEMP/chat-catalog-case-bundle/projection"
       - name: Retain only the closed singleton publication receipt
         if: always() && !cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: chat-catalog-case-publication-${{ github.run_id }}-1-${{ fromJSON(inputs.cell).index }}
           path: |
