@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { activityLog, agentCommentary, documents, issueDocuments } from "@paperclipai/db";
 import request from "supertest";
 import { createHash, generateKeyPairSync, sign, randomBytes, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, onTestFailed, onTestFinished, vi } from "vitest";
 import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, applyPendingMigrations, externalAgentHolds, heartbeatRuns, issueAccessGrants, issueComments, issues, projects, principalPermissionGrants, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, museIdleReceipts, museAgentBindings as bindings, museCredentials, museInputDeliveries, museReceiverContactBuckets, museMailboxItems as mailbox, museRunnerAssignments as assignments, museRunnerOperations as operations, nativeRunFinalizations } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -51,6 +51,8 @@ import { museReceiver } from "../services/muse-receiver.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { mcpCompanyDeletion } from "../services/public-mcp/company-deletion.js";
 import * as museProjectionModule from "../modules/external-agents/muse-hosted-projection.js";
+import { museContactPageDigest, type MuseContactPage } from "../modules/external-agents/muse-hosted-contract.js";
+import { syncMuseContactCustody } from "../modules/external-agents/muse-hosted-sync.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -1677,6 +1679,88 @@ describe("personal Muse control plane",()=>{
       try{await reset();}catch(error){cleanup.push({status:"rejected",reason:error});}
       const failed=cleanup.filter(value=>value.status==="rejected");
       if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse destructive deletion regression cleanup failed");
+    }
+  },30_000);
+  it("commits a two-binding contact page and authenticates its later OAuth binding without a mirror lock cycle",async()=>{
+    const first=await oauthFixture(false),second=await oauthFixture(false);
+    await first.oauth.token(first.tokenInput());
+    const tokens=await second.oauth.token(second.tokenInput()),access=tokens.access_token;
+    if(typeof access!=="string")throw new Error("Normal OAuth fixture did not return its access token");
+    const reset=await applyActualManagedContactIdentity(),identity=getCloudRuntimeIdentity();
+    if(!identity)throw new Error("Managed page namespace unavailable");
+    const namespace={stackId:identity.stackId,instanceId:"page-lock-"+randomUUID(),origin:oauthOrigin};
+    const now=Date.now(),unsigned={version:1 as const,namespace,recipientNamespace:namespace,sourceId:randomUUID(),after:0,through:2,
+      entries:[first,second].map((f,index)=>({sequence:index+1,bucket:{id:randomUUID(),bindingId:f.binding.id,companyId:f.company.id,generation:f.binding.generation,
+        bucketAt:Math.floor(now/30_000)*30_000,firstAt:now,lastAt:now,contacts:1,gapsAtMostSevenSeconds:0,maxGapMs:0,timestamps:[now],incomplete:false}}))};
+    const page:MuseContactPage={...unsigned,digest:museContactPageDigest(unsigned)};
+    const emptyUnsigned={...unsigned,after:2,through:2,entries:[]},empty:MuseContactPage={...emptyUnsigned,digest:museContactPageDigest(emptyUnsigned)};
+    const bindingIds=[first.binding.id,second.binding.id];
+    const persisted=()=>db.select().from(museReceiverContactBuckets).where(inArray(museReceiverContactBuckets.bindingId,bindingIds)).orderBy(asc(museReceiverContactBuckets.bindingId));
+    const sqlStates:string[]=[],actualSqlErrors:unknown[]=[];
+    const observe=(error:unknown)=>{
+      let current=error;
+      for(let depth=0;depth<6&&current&&typeof current==="object";depth++){
+        if("code" in current&&typeof current.code==="string"){sqlStates.push(current.code);actualSqlErrors.push(error);return;}
+        current="cause" in current?current.cause:undefined;
+      }
+    };
+    let releaseImport!:()=>void;const continueImport=new Promise<void>(resolve=>{releaseImport=resolve;});
+    let parked=false,importPid:number|undefined,waitKind:string|undefined,acks=0,deliver=true;
+    let servedPage=page;
+    const ackedPages:MuseContactPage[]=[];
+    const exchange=async(serialized:string)=>{
+      const input=JSON.parse(serialized);
+      if(input.operation==="read")return{page:deliver?servedPage:empty,ownership:{state:"pending"}};
+      expect(input.operation).toBe("ack");expect(input.page).toEqual(page);
+      // This independent normal read must see BOTH rows committed before ACK.
+      const rows=await persisted();expect(rows).toHaveLength(2);expect(rows.every(row=>row.contacts===1&&!row.incomplete)).toBe(true);
+      ackedPages.push(input.page);acks++;deliver=false;return{};
+    };
+    const realPrepare=museProjectionModule.prepareMuseReceiverAuthorityMutation;
+    const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverAuthorityMutation").mockImplementation(async(tx,scope)=>{
+      await realPrepare(tx,scope);
+      if(!parked&&scope?.companyId===first.company.id){
+        const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);
+        importPid=row.pid;parked=true;await continueImport;
+      }
+    });
+    let importing:ReturnType<typeof syncMuseContactCustody>|undefined,authenticating:ReturnType<typeof second.identity.authenticateOAuthAccess>|undefined,primary:unknown,outcomesObserved=false;
+    onTestFailed(()=>console.error("MUSE_PAGE_OAUTH_LOCK_FRONTIER "+JSON.stringify({sqlStates,waitKind,parked,acks})));
+    try{
+      importing=syncMuseContactCustody(db,namespace,exchange,new AbortController().signal).catch(error=>{observe(error);throw error;});
+      void importing.catch(()=>{});
+      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      expect(acks).toBe(0);expect(await persisted()).toEqual([]);
+      authenticating=second.identity.authenticateOAuthAccess(access,oauthOrigin).catch(error=>{observe(error);throw error;});
+      const joined=Promise.allSettled([importing,authenticating]);
+      await vi.waitFor(async()=>{
+        const [waiter]=await db.execute<{kind:string}>(sql`select waiting.wait_event as kind from pg_stat_activity waiting
+          where waiting.datname=current_database() and waiting.pid<>pg_backend_pid()
+            and ${importPid!}=any(pg_blocking_pids(waiting.pid))`);
+        expect(waiter).toBeDefined();waitKind=waiter.kind;
+      },{timeout:5_000});
+      releaseImport();const outcomes=await joined;outcomesObserved=true;
+      const rejected=outcomes.filter(value=>value.status==="rejected");
+      if(actualSqlErrors.length||rejected.length)throw new AggregateError([...actualSqlErrors,...rejected.map(value=>value.reason)],"Muse page/OAuth concurrency failed");
+      expect(outcomes[0]).toMatchObject({status:"fulfilled",value:{state:"pending"}});
+      expect(outcomes[1]).toMatchObject({status:"fulfilled",value:{provider:"muse",credentialSource:"oauth",companyId:second.company.id,agentId:second.agent.id,bindingId:second.binding.id,generation:second.binding.generation}});
+      expect(sqlStates).toEqual([]);expect(acks).toBe(1);expect(ackedPages).toEqual([page]);
+      const beforeReplay=await persisted();expect(beforeReplay).toHaveLength(2);
+      for(const row of beforeReplay){expect(row.contacts).toBe(1);expect(row.timestamps).toHaveLength(1);expect(row.incomplete).toBe(false);}
+      deliver=true;
+      await syncMuseContactCustody(db,namespace,exchange,new AbortController().signal);
+      expect(acks).toBe(2);expect(ackedPages).toEqual([page,page]);expect(await persisted()).toEqual(beforeReplay);
+      // Malformed custody must still fail before any ACK; no result/receipt seed.
+      servedPage={...page,digest:"0".repeat(64)};deliver=true;
+      await expect(syncMuseContactCustody(db,namespace,exchange,new AbortController().signal)).rejects.toThrow("Muse contact page changed");
+      expect(acks).toBe(2);expect(await persisted()).toEqual(beforeReplay);
+    }catch(error){primary=error;throw error;}
+    finally{
+      releaseImport();const settled=await Promise.allSettled([...(importing?[importing]:[]),...(authenticating?[authenticating]:[])]);
+      const lateErrors=outcomesObserved?[]:settled.filter(value=>value.status==="rejected").map(value=>value.reason);
+      prepare.mockRestore();
+      try{await reset();}catch(error){lateErrors.push(error);}
+      if(lateErrors.length)throw new AggregateError([...(primary?[primary]:[]),...lateErrors],"Muse page/OAuth cleanup or late actor join failed");
     }
   },30_000);
   it("managed late HTTP success after empty handoff already has durable contact before stop or reconstruction",async()=>{
