@@ -83,8 +83,8 @@ describe("enforceSchemaDriftGate", () => {
     };
     const assertNoDrift = vi
       .fn()
-      .mockResolvedValueOnce(CLEAN_REPORT) // serving db clean
-      .mockRejectedValueOnce(new SchemaDriftError(DRIFTED_REPORT)); // migration db drifted
+      .mockResolvedValueOnce(CLEAN_REPORT)
+      .mockRejectedValueOnce(new SchemaDriftError(DRIFTED_REPORT));
 
     await expect(
       enforceSchemaDriftGate([SERVING_TARGET, migrationTarget], {
