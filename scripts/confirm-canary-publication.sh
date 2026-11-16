@@ -60,6 +60,7 @@ else
 fi
 
 release_info "==> Installing paperclipai@${version} into a clean prefix..."
-verify_npm_installable "paperclipai@${version}" "$version" || release_fail "paperclipai@${version} did not install cleanly"
+wait_for_npm_installable "paperclipai@${version}" "$version" "${NPM_INSTALL_VERIFY_ATTEMPTS:-40}" "${NPM_INSTALL_VERIFY_DELAY_SECONDS:-30}" \
+  || release_fail "paperclipai@${version} did not install cleanly"
 
 push_release_tag_at "$PUBLISH_REMOTE" "$tag_name" "$source_sha"

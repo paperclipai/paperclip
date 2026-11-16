@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -496,4 +496,25 @@ test("a canary version is accepted only for the master commit whose position num
   fixture.git(fixture.repo, "commit", "-q", "--allow-empty", "-m", "side");
   const side = fixture.git(fixture.repo, "rev-parse", "HEAD").trim();
   assert.throws(() => confirm("2026.1116.0-canary.2600", side), /is not on origin\/master/);
+});
+
+test("a canary install is retried while its tarball lags the metadata, within a bound", () => {
+  const dir = mkdtempSync(join(tmpdir(), "paperclip-install-retry-"));
+  const counter = join(dir, "attempts");
+  const run = (failures, attempts) => {
+    writeFileSync(counter, "0");
+    const script = `source "${repoRoot}/scripts/release-lib.sh"
+verify_npm_installable() { local n; n=$(( $(cat "$1") + 1 )); echo "$n" > "$1"; [ "$n" -gt "$2" ]; }
+wait_for_npm_installable "${counter}" "${failures}" "${attempts}" 0`;
+    const result = spawnSync("bash", ["-c", script], { encoding: "utf8" });
+    return { status: result.status, attempts: Number(readFileSync(counter, "utf8")), stderr: result.stderr };
+  };
+  assert.deepEqual(run(0, 5).status, 0);
+  const recovered = run(3, 5);
+  assert.equal(recovered.status, 0);
+  assert.equal(recovered.attempts, 4);
+  assert.match(recovered.stderr, /attempt 3\/5/);
+  const exhausted = run(9, 4);
+  assert.notEqual(exhausted.status, 0);
+  assert.equal(exhausted.attempts, 4);
 });

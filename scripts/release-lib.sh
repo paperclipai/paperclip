@@ -588,6 +588,23 @@ verify_npm_installable() {
   [ "$installed_version" = "$expected_version" ]
 }
 
+wait_for_npm_installable() {
+  local package_spec="$1"
+  local expected_version="$2"
+  local attempts="${3:-40}"
+  local delay_seconds="${4:-30}"
+  local attempt=1
+
+  until verify_npm_installable "$package_spec" "$expected_version"; do
+    if [ "$attempt" -ge "$attempts" ]; then
+      return 1
+    fi
+    release_warn "${package_spec} did not install yet (attempt ${attempt}/${attempts}); a large tarball can lag its metadata. Retrying in ${delay_seconds}s."
+    sleep "$delay_seconds"
+    attempt=$((attempt + 1))
+  done
+}
+
 wait_for_release_registry_state() {
   local attempts="${1:-12}"
   local delay_seconds="${2:-5}"

@@ -109,7 +109,7 @@ Every push to `master` runs the canary path inside [`.github/workflows/release.y
 - requires the source commit to be on master and the canary number to come from it (`N / 100` equals the commit's master position), so a dispatch with invented inputs cannot tag another commit
 - checks npm provenance ([`scripts/verify-canary-provenance.mjs`](../scripts/verify-canary-provenance.mjs)): any package whose provenance names something other than `.github/workflows/release.yml` on `refs/heads/master` at the source commit fails the check. A package with no provenance is accepted, because that is the supported retry after a duplicate transparency-log entry, only the trusted release workflow can publish, and the number check above already ties the version to the commit. Brief npm errors are retried.
 - verifies that `canary` resolves to this version or a newer canary, and that published internal dependencies exist on npm
-- installs the exact `paperclipai@<version>` into a clean temporary prefix
+- installs the exact `paperclipai@<version>` into a clean temporary prefix, retrying for up to 20 minutes (40 × 30 s): npm can expose a large package's metadata minutes before its tarball downloads (on 2026-11-16 `@paperclipai/server`, about 524 MB unpacked, still returned 404 several minutes after its recorded publish time)
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
 - creates and pushes the git tag `canary/vYYYY.MDD.P-canary.N` (a tag that already points at the same commit is accepted, so a rerun is safe). Nightly still selects only tagged canaries.
 - dispatches `docker.yml` at the tag

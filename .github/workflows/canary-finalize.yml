@@ -32,7 +32,7 @@ jobs:
     name: Confirm canary on npm and tag it
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     permissions:
       contents: write
       actions: write
