@@ -1,3 +1,4 @@
+import { connectionManagementService, type ConnectionManagementContext } from "../connection-management.js";
 import { providerEffectPayload } from "./provider-effects.js";
 
 import { slackSlashTaskRecoveryPayload } from "./slack/task-start.js";
@@ -161,7 +162,7 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
     });
   }
 
-  async function listActivity(endpointId: string, page?: { limit: number; before?: { createdAt: string; id: string } }) {
+  async function readActivity(endpointId: string, page?: { limit: number; before?: { createdAt: string; id: string } }, managementContext?: ConnectionManagementContext) {
     const limit = page ? page.limit + 1 : 100;
     // Match the millisecond precision of the public timestamp and use a UUID
     // tie-breaker so equal timestamps never skip records between pages.
@@ -332,7 +333,38 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
       )
         cancellableConflicts.set(publication.id, transfer.version);
     }
-    return [
+    // An endpoint manager may still lack access to individual private tasks.
+    let visibleIds: Set<string> | undefined;
+    if (managementContext?.actor.type === "agent") {
+      const activityRows = [
+        ...deliveries, ...publications, ...slashActions, ...providerEffects,
+        ...githubIngressFailures, ...slackSessionActions, ...githubRecoveries.map(row => row.action),
+      ];
+      // Each source is page-bounded above. Endpoint history does not contribute
+      // authorization work unless a conversation appears in these candidates.
+      const conversationIds = [...new Set(activityRows.flatMap(row => row.conversationId ? [row.conversationId] : []))];
+      const conversations = conversationIds.length ? await db.select({ id: chatConversations.id, issueId: chatConversations.issueId }).from(chatConversations).where(and(
+        eq(chatConversations.companyId, managementContext.resource.companyId),
+        eq(chatConversations.endpointId, endpointId), inArray(chatConversations.id, conversationIds),
+      )) : [];
+      const visibleConversations = new Set<string>();
+      const issueVisibility = new Map<string, boolean>();
+      const management = connectionManagementService(db);
+      for (const conversation of conversations) {
+        let allowed = issueVisibility.get(conversation.issueId);
+        if (allowed === undefined) {
+          const decision = await management.capability(managementContext.actor, "connections:audit",
+            { ...managementContext.resource, issueId: conversation.issueId }, { mutation: false, readContext: managementContext });
+          allowed = decision.allowed;
+          issueVisibility.set(conversation.issueId, allowed);
+        }
+        if (allowed) visibleConversations.add(conversation.id);
+      }
+      const visible = (row: { id: string; conversationId: string | null }) => !row.conversationId || visibleConversations.has(row.conversationId);
+      visibleIds = new Set(activityRows.filter(visible).map(row => row.id));
+      githubRecoveryScans.forEach(row => visibleIds!.add(row.id));
+    }
+    const rows = [
       ...deliveries.map((row) => {
         const normalized =
           row.normalizedEvent &&
@@ -550,11 +582,18 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
       })),
       ...githubRecoveryScans,
     ]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
-      .slice(0, limit);
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    return {
+      visible: rows.filter(row => !visibleIds || visibleIds.has(row.id)).slice(0, limit),
+      examined: rows.slice(0, limit),
+    };
   }
 
-  async function listActivityPage(endpointId: string, limit = 25, cursor?: string) {
+  async function listActivity(endpointId: string, page?: { limit: number; before?: { createdAt: string; id: string } }, managementContext?: ConnectionManagementContext) {
+    return (await readActivity(endpointId, page, managementContext)).visible;
+  }
+
+  async function listActivityPage(endpointId: string, limit = 25, cursor?: string, managementContext?: ConnectionManagementContext) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw badRequest("Activity limit must be between 1 and 100");
     let before: { createdAt: string; id: string } | undefined;
     if (cursor !== undefined) {
@@ -567,12 +606,14 @@ export function createChatActivity(db: Db, options: ChatActivityOptions) {
         before = { createdAt: value[0], id: value[1] };
       } catch { throw badRequest("Invalid activity cursor"); }
     }
-    const rows = await listActivity(endpointId, { limit, before });
-    const items = rows.slice(0, limit);
-    const last = items.at(-1);
+    const rows = await readActivity(endpointId, { limit, before }, managementContext);
+    const examined = rows.examined.slice(0, limit);
+    const ids = new Set(examined.map(row => row.id));
+    const items = rows.visible.filter(row => ids.has(row.id));
+    const last = examined.at(-1);
     return {
       items,
-      nextCursor: rows.length > limit && last
+      nextCursor: rows.examined.length > limit && last
         ? Buffer.from(JSON.stringify([last.createdAt, last.id])).toString("base64url")
         : null,
     };

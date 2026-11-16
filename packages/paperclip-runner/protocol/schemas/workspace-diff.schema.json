@@ -28,7 +28,11 @@
           "additions": { "type": ["integer", "null"], "minimum": 0 },
           "deletions": { "type": ["integer", "null"], "minimum": 0 },
           "binary": { "type": "boolean" },
-          "diff": { "type": ["string", "null"], "maxLength": 262144 }
+          "diff": { "type": ["string", "null"], "maxLength": 262144 },
+          "diffTruncated": {
+            "description": "The producer shortened or omitted this file's patch; additions and deletions still cover all of it.",
+            "type": "boolean"
+          }
         },
         "additionalProperties": false
       }

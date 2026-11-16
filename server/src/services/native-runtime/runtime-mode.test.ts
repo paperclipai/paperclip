@@ -21,6 +21,13 @@ const eligible = {
 } as const;
 
 describe("resolveNativeRuntimeMode", () => {
+  it("requires experimental opt-in and a local controller for Cursor Cloud while retaining its backend on recovery", () => {
+    const adapterConfig = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo" };
+    expect(resolveNativeRuntimeMode({ ...eligible, adapterConfig })).toMatchObject({ kind: "native", profile: { backend: "cursor_cloud_api" } });
+    expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
+    expect(() => resolveNativeRuntimeMode({ ...eligible, adapterConfig, target: { kind: "remote" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_cursor_cloud_local_controller_required" }));
+    expect(resolveHeartbeatNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig, persisted: { runtimeMode: "native", runtimeModeReason: "eligible_opt_in", runtimeModeResolvedAt: new Date(), driverKind: "cursor_cloud_api" } })).toMatchObject({ kind: "native", profile: { backend: "cursor_cloud_api" } });
+  });
   it("keeps every direct built-in adapter outside native arbitration", () => {
     for (const adapterType of BUILTIN_ADAPTER_TYPES) {
       if (adapterType === "paperclip_runner") continue;
@@ -419,8 +426,14 @@ describe("resolveNativeRuntimeMode", () => {
   it("rejects an explicit native profile outside the approved boundary", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, agent: { ...eligible.agent, adapterType: "claude_local" } }))
       .toEqual(expect.objectContaining({ kind: "legacy", reason: "direct_adapter" }));
-    expect(() => resolveNativeRuntimeMode({ ...eligible, issue: { id: "issue", workMode: "skill_test" } }))
+    expect(() => resolveNativeRuntimeMode({ ...eligible, issue: { id: "issue", workMode: "unknown" } }))
       .toThrow(NativeRuntimeEligibilityError);
+  });
+
+  it("admits Skills Studio tests on remote Runners", () => {
+    expect(resolveNativeRuntimeMode({ ...eligible,
+      issue: { id: "skill-test", workMode: "skill_test" }, target: { kind: "remote" },
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
   });
 
   it("admits remote targets only through paperclip_runner", () => {

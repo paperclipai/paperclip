@@ -1,23 +1,37 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
+import { act as reactAct } from "react";
+import { webcrypto } from "node:crypto";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { rememberComposerEffort } from "../lib/recent-composer-effort";
-import { NewIssueDialog } from "./NewIssueDialog";
+import { addStagedFilesToIssue, NewIssueDialog } from "./NewIssueDialog";
 
 const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
+const storedFiles = vi.hoisted(() => new Map<string, import("../lib/staged-issue-files").StagedIssueFile[]>());
+vi.mock("../lib/staged-issue-files", () => ({
+  readStagedIssueFiles: vi.fn(async (key: string) => storedFiles.get(key) ?? []),
+  writeStagedIssueFiles: vi.fn(async (key: string, files: import("../lib/staged-issue-files").StagedIssueFile[]) => {
+    storedFiles.set(key, files);
+  }),
+}));
 vi.mock("./primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => primaryState }));
+const coordinatorState = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => coordinatorState }));
 
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
   newIssueDefaults: {} as Record<string, unknown>,
   closeNewIssue: vi.fn(),
+  openNewIssue: vi.fn(),
 }));
 
 const dialogContentState = vi.hoisted(() => ({
@@ -288,7 +302,7 @@ function act(callback: () => void | Promise<void>): void | Promise<void> {
 }
 
 async function flush() {
-  await act(async () => {
+  await reactAct(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
@@ -328,8 +342,8 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
-function renderDialog(container: HTMLDivElement, hiddenSettings: string[] = []) {
-  const queryClient = new QueryClient({
+function renderDialog(container: HTMLDivElement, hiddenSettings: string[] = [], client?: QueryClient) {
+  const queryClient = client ?? new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
@@ -354,6 +368,7 @@ describe("NewIssueDialog", () => {
   let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    coordinatorState.enabled = false;
     primaryState.primaryAgentId = null;
     primaryState.loading = false;
     vi.useRealTimers();
@@ -370,6 +385,7 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogState.openNewIssue.mockReset();
     dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
@@ -398,6 +414,7 @@ describe("NewIssueDialog", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
+    storedFiles.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
       companyId: "company-1",
@@ -424,6 +441,33 @@ describe("NewIssueDialog", () => {
     { id: "worker", name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
     { id: "ceo", name: "CEO", role: "ceo", status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
   ];
+
+  it("accepts a draft while agents and projects load, then fills defaults in place", async () => {
+    let resolveAgents!: (agents: typeof defaultAgents) => void;
+    let resolveProjects!: (projects: { id: string; name: string; archivedAt: null }[]) => void;
+    mockAgentsApi.list.mockImplementationOnce(() => new Promise((resolve) => { resolveAgents = resolve; }));
+    mockProjectsApi.list.mockImplementationOnce(() => new Promise((resolve) => { resolveProjects = resolve; }));
+    trackRecentProject("project-1", "company-1");
+
+    const { root } = renderDialog(container);
+    try {
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      expect(editor).not.toBeNull();
+      expect(editor.disabled).toBe(false);
+      await typeTextareaValue(editor, "Keep writing while the lists load");
+
+      resolveAgents(defaultAgents);
+      resolveProjects([{ id: "project-1", name: "Alpha", archivedAt: null }]);
+      await waitForAssertion(() => {
+        expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1");
+        expect(container.textContent).toContain("CEO");
+      });
+      expect(container.querySelector('textarea[aria-label="Describe a task…"]')).toBe(editor);
+      expect(editor.value).toBe("Keep writing while the lists load");
+    } finally {
+      act(() => root.unmount());
+    }
+  });
 
   it.each([
     { remembered: "project-1", expected: "project-1" },
@@ -523,7 +567,7 @@ describe("NewIssueDialog", () => {
     primaryState.primaryAgentId = primary;
     if (recent) trackRecentAssignee(recent, "company-1");
     if (explicit) dialogState.newIssueDefaults = { assigneeAgentId: explicit };
-    if (draft) localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
+    if (draft) localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
     const { root } = renderDialog(container);
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     act(() => root.unmount());
@@ -720,7 +764,7 @@ describe("NewIssueDialog", () => {
   });
 
   it("restores private visibility from a saved draft without a project", async () => {
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Private draft", description: "", status: "todo", priority: "", projectId: "", isPrivate: true }));
     const { root } = renderDialog(container);
     await flush();
     const toggle = container.querySelector<HTMLButtonElement>('button[data-testid="composer-private-chip"]')!;
@@ -780,7 +824,7 @@ describe("NewIssueDialog", () => {
     // Saving this form must retain only the explicit toggle choice. A later
     // standalone draft must not acquire a sticky private flag from its parent.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
-    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft")!).isPrivate).toBe(false);
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!).isPrivate).toBe(false);
     const submit = Array.from(container.querySelectorAll("button")).find(button => button.getAttribute("aria-label") === "Create sub-task")!;
     await act(async () => submit.click());
     await flush();
@@ -1029,7 +1073,7 @@ describe("NewIssueDialog", () => {
       id: "project-1", name: "Alpha", workspaces: [{ id: "source-default", isPrimary: true }],
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
     }]);
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "",
       reviewerValue: "", approverValue: "", projectId: "project-1",
       projectWorkspaceId: "stale-source", selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
@@ -1300,7 +1344,7 @@ describe("NewIssueDialog", () => {
 
 
   it("restores a description-only draft", async () => {
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "", description: "Keep the request without a title", status: "todo", priority: "medium",
       assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
       assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
@@ -1327,6 +1371,61 @@ describe("NewIssueDialog", () => {
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ description: "Investigate the sign-in redirect and fix it" }));
     expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("title");
     await act(async () => root.unmount());
+  });
+
+  it.each([false, true])("creates a task from one description field (Coordinator %s)", async (enabled) => {
+    coordinatorState.enabled = enabled;
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    expect(container.querySelectorAll("textarea")).toHaveLength(1);
+    expect(container.textContent).not.toContain("New Task");
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    expect(submit.disabled).toBe(true);
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Write the launch post");
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    const payload = mockIssuesApi.create.mock.calls[0][1];
+    expect(payload.description).toBe("Write the launch post");
+    expect(payload).not.toHaveProperty("successCriteria");
+    expect(payload).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    { enabled: false, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "", criteria: "Ready for review", expected: "## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: " \n ", expected: "Write the launch post" },
+  ])("restores legacy draft criteria into the editable description (Coordinator $enabled, criteria '$criteria')", async ({ enabled, description, criteria, expected }) => {
+    coordinatorState.enabled = enabled;
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+      title: "", description, successCriteria: criteria, status: "todo", priority: "medium",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    const descriptionInput = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+    expect(descriptionInput.value).toBe(expected);
+    const editedDescription = `${expected}\nKeep this edit.`;
+    await typeTextareaValue(descriptionInput, editedDescription);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    const savedDraft = JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!);
+    expect(savedDraft.description).toBe(editedDescription);
+    expect(savedDraft).not.toHaveProperty("successCriteria");
+    await act(async () => root.unmount());
+    const reopened = renderDialog(container);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!.value).toBe(editedDescription);
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create.mock.calls[0][1].description).toBe(editedDescription);
+    await act(async () => reopened.root.unmount());
   });
 
   it.each(["Corrected task title", ""])("lets users edit or clear an inherited title (%s)", async (nextTitle) => {
@@ -1406,24 +1505,31 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("shows the create-task loading state only in the submit button", async () => {
+  it.each([
+    { name: "description only", defaults: { description: "Pending task" } },
+    { name: "explicit title", defaults: { title: "Pending task" } },
+    { name: "sub-task", defaults: { description: "Pending task", parentId: "parent-1", parentTitle: "Parent task" } },
+  ])("dismisses immediately while saving a task with $name", async ({ defaults }) => {
     mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
-    dialogState.newIssueDefaults = { title: "Pending task" };
+    dialogState.newIssueDefaults = defaults;
 
     const { root } = renderDialog(container);
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.getAttribute("aria-label") === "Create task");
+      .find((button) => button.getAttribute("data-testid") === "task-chat-composer-send");
     expect(submitButton).not.toBeUndefined();
+    const composer = container.querySelector(".paperclip-task-chat-composer")!;
 
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    expect(submitButton?.querySelector(".animate-spin")).not.toBeNull();
-    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+    expect(submitButton?.querySelector(".animate-spin")).toBeNull();
+    expect(submitButton?.getAttribute("aria-busy")).not.toBe("true");
     expect(container.textContent).not.toContain("Creating issue");
 
     act(() => root.unmount());
@@ -1437,7 +1543,7 @@ describe("NewIssueDialog", () => {
       .find((button) => button.getAttribute("aria-label") === "Create task")!;
 
     act(() => submit().click());
-    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    await waitForAssertion(() => expect(toastState.pushToast).toHaveBeenCalledOnce());
     const firstPayload = mockIssuesApi.create.mock.calls[0][1];
     expect(firstPayload).toMatchObject({
       title: "Connect Circleback through Composio",
@@ -1456,7 +1562,7 @@ describe("NewIssueDialog", () => {
     act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
     await flush();
     act(() => submit().click());
-    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2));
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
     const secondPayload = mockIssuesApi.create.mock.calls[1][1];
     expect(secondPayload.title).toBe(firstPayload.title);
     expect(secondPayload.allowDuplicate).toBe(true);
@@ -1473,7 +1579,7 @@ describe("NewIssueDialog", () => {
       await flush();
       act(() => Array.from(container.querySelectorAll("button"))
         .find(button => button.getAttribute("aria-label") === "Create task")!.click());
-      await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledOnce());
       expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey)
         .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
       act(() => root.unmount());
@@ -1489,7 +1595,7 @@ describe("NewIssueDialog", () => {
     const submit = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "Create task")!;
     act(() => submit.click());
-    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    await waitForAssertion(() => expect(toastState.pushToast).toHaveBeenCalledOnce());
     expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("navigateOnCreate");
     if (navigateOnCreate) {
       expect(navigateMock).toHaveBeenCalledExactlyOnceWith("/PAP/issues/PAP-2");
@@ -1522,7 +1628,8 @@ describe("NewIssueDialog", () => {
     act(() => submit().click());
     await waitForAssertion(() => expect(container.textContent).toContain("Request failed"));
     const firstPayload = mockIssuesApi.create.mock.calls[0][1];
-    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+    expect(dialogState.openNewIssue).toHaveBeenCalledOnce();
     expect(toastState.pushToast).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
 
@@ -1535,6 +1642,388 @@ describe("NewIssueDialog", () => {
     act(() => submit().click());
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(3));
     expect(mockIssuesApi.create.mock.calls[2][1].idempotencyKey).not.toBe(firstPayload.idempotencyKey);
+    act(() => root.unmount());
+  });
+
+  it("keeps a create that hit an outage and resends it with the same key", async () => {
+    const { ApiError } = await import("../api/client");
+    dialogState.newIssueDefaults = { title: "Created during a deploy" };
+    mockIssuesApi.create
+      .mockRejectedValueOnce(new ApiError("Unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockResolvedValue({ id: "issue-created", identifier: "PAP-9", companyId: "company-1", projectId: null });
+    const { root } = renderDialog(container);
+    await flush();
+    const button = (label: string) => Array.from(container.querySelectorAll("button"))
+      .find((item) => item.getAttribute("aria-label") === label || item.textContent === label)!;
+
+    act(() => button("Create task").click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Sending when reconnected…"));
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toContain(
+      mockIssuesApi.create.mock.calls[0][1].idempotencyKey,
+    );
+
+    // The waiting request is what gets created, so later edits are locked out.
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')?.disabled).toBe(true);
+
+    act(() => button("Resend now").click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).toBe(mockIssuesApi.create.mock.calls[0][1].idempotencyKey);
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalled());
+    expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("shows why a resent create was rejected", async () => {
+    const { ApiError } = await import("../api/client");
+    dialogState.newIssueDefaults = { title: "Rejected on resend" };
+    mockIssuesApi.create
+      .mockRejectedValueOnce(new ApiError("Unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockRejectedValueOnce(new ApiError("Project is archived", 422, { error: "Project is archived" }));
+    const { root } = renderDialog(container);
+    await flush();
+    const button = (label: string) => Array.from(container.querySelectorAll("button"))
+      .find((item) => item.getAttribute("aria-label") === label || item.textContent === label)!;
+
+    act(() => button("Create task").click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Sending when reconnected…"));
+    act(() => button("Resend now").click());
+    await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Project is archived"));
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')?.disabled).toBe(false);
+    act(() => root.unmount());
+  });
+
+  it("never creates a restored task without the files it was submitted with", async () => {
+    dialogState.newIssueDefaults = { title: "Has files" };
+    localStorage.setItem("paperclip:issue-draft:pending-create:user-1", JSON.stringify({
+      version: 1,
+      key: "paperclip:issue-draft:pending-create:user-1",
+      idempotencyKey: "create-key-123",
+      createdAt: Date.now(),
+      payload: {
+        fingerprint: "{}",
+        data: { companyId: "company-1", title: "Has files" },
+        stagedFileNames: ["spec.pdf"],
+      },
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+
+    await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Attach it again");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toBeNull();
+    // The original key outlives the rejection, so it survives another reload.
+    expect(localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1")).toContain("create-key-123");
+    act(() => root.unmount());
+
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf");
+    expect(localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1")).toContain("create-key-123");
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    act(() => reloaded.root.unmount());
+  });
+
+  it.each([false, true])("keeps restored create payload immutable when files are reattached (changed title: %s)", async changed => {
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    dialogState.newIssueDefaults = { title: "Has files" };
+    const spec = new File(["a"], "spec.pdf", { lastModified: 1 });
+    const notes = new File(["bb"], "notes.pdf", { lastModified: 2 });
+    localStorage.setItem("paperclip:issue-draft:pending-create:user-1", JSON.stringify({
+      version: 1,
+      key: "paperclip:issue-draft:pending-create:user-1",
+      idempotencyKey: "create-key-123",
+      createdAt: Date.now(),
+      payload: {
+        fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1", "attachment::notes.pdf:2:2"] }),
+        data: { companyId: "company-1", title: "Has files" },
+        stagedFileNames: ["spec.pdf", "notes.pdf"],
+      },
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf"));
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [notes, spec] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    if (changed) await typeTextareaValue(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!, "Changed after restore");
+    const send = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await act(async () => { send.click(); });
+    await flush();
+    if (changed) {
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("original fields");
+    } else {
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("create-key-123");
+      expect(mockIssuesApi.create.mock.calls[0][1].title).toBe("Has files");
+    }
+    act(() => root.unmount());
+  });
+
+  it("drops an account's restored create and staged files when the account changes", async () => {
+    dialogState.newIssueDefaults = { title: "Account A saved task" };
+    const file = new File(["a"], "spec.pdf", { lastModified: 1 });
+    const original = JSON.stringify({ version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "account-a-create-key", createdAt: Date.now(), payload: { fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1"] }), data: { companyId: "company-1", title: "Account A saved task" }, stagedFileNames: ["spec.pdf"] } });
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", original);
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain("spec.pdf"));
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [file] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-2" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      await waitForAssertion(() => expect(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')?.value ?? "").toBe(""));
+      expect(container.textContent).not.toContain("spec.pdf");
+      expect(localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1")).toBe(original);
+      await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Account B fresh task");
+      mockIssuesApi.create.mockResolvedValue({ id: "task-b", identifier: "PAP-2", companyId: "company-1" });
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Account B fresh task");
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).not.toBe("account-a-create-key");
+      expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each(["user-1", "user-2"])("waits for fresh session verification before restoring a pending create (%s)", async verifiedUser => {
+    dialogState.newIssueDefaults = { title: "Saved task" };
+    localStorage.setItem("paperclip:issue-draft:pending-create:user-1", JSON.stringify({ version: 1,
+      key: "paperclip:issue-draft:pending-create:user-1", idempotencyKey: "unverified-create-key", createdAt: Date.now(),
+      payload: { fingerprint: "{}", data: { companyId: "company-1", title: "Saved task" }, stagedFileNames: [] } }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let complete!: (value: { user: { id: string } }) => void;
+    mockAuthApi.getSession.mockReturnValue(new Promise(resolve => { complete = resolve; }));
+    const { root } = renderDialog(container, [], client);
+    try {
+      await flush();
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now");
+      if (resend) act(() => resend.click());
+      await waitForAssertion(() => expect(mockAuthApi.getSession).toHaveBeenCalled());
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+      await act(async () => { complete({ user: { id: verifiedUser } }); });
+      if (verifiedUser === "user-1") {
+        await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+        expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("unverified-create-key");
+      } else {
+        await flush();
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+      }
+    } finally { act(() => root.unmount()); cache.dispose(); client.clear(); }
+  });
+
+  it.each([false, true])("retains a restored task backup after the debounce (session known=%s)", async (sessionKnown) => {
+    if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+      title: "", description: "Keep this restored backup", status: "todo", priority: "",
+      assigneeValue: "", reviewerValue: "", approverValue: "", watchdogAgentId: "", watchdogInstructions: "",
+      projectId: "", projectWorkspaceId: "", assigneeModelLane: "primary", assigneeModelOverride: "",
+      assigneeThinkingEffort: "", assigneeChrome: false, executionWorkspaceMode: "shared_workspace",
+      selectedExecutionWorkspaceId: "", workMode: "standard", isPrivate: false, composerSettings: null,
+    }));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      if (!sessionKnown) queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await waitForAssertion(() => expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Keep this restored backup"));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 850)); });
+      expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1") ?? "null")?.description).toBe("Keep this restored backup");
+      dialogState.newIssueOpen = false;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      dialogState.newIssueOpen = true;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Keep this restored backup");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each([false, true])("keeps erased task text erased after reopening (session known=%s)", async (sessionKnown) => {
+    if (!sessionKnown) mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "", description: "Older saved text" }));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Erase this task text");
+      await typeTextareaValue(editor, "");
+      if (!sessionKnown) queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 850)); });
+      await waitForAssertion(() => expect(localStorage.getItem("paperclip:issue-draft:user-1")).toBeNull());
+      dialogState.newIssueOpen = false;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      dialogState.newIssueOpen = true;
+      act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
+      expect(container.textContent).not.toContain("Erase this task text");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each([false, true])("keeps task typing through the first session lookup (storage unavailable=%s)", async (unavailable) => {
+    mockAuthApi.getSession.mockReturnValue(new Promise(() => {}));
+    const { root, queryClient } = renderDialog(container);
+    let storage: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await flush();
+      await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Typed before account lookup");
+      if (unavailable) storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      await flush(); await flush();
+      expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Typed before account lookup");
+      if (!unavailable) expect(localStorage.getItem("paperclip:issue-draft:user-1")).toContain("Typed before account lookup");
+      expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    } finally { storage?.mockRestore(); act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each([["image/png", "picker"], ["", "picker"], ["application/octet-stream", "picker"], ["image/png", "screen drop"]])("shows staged images with MIME '%s' from %s and uploads only retained files", async (type, source) => {
+    dialogState.newIssueDefaults = { title: "Review image references" };
+    mockIssuesApi.create.mockResolvedValue({ id: "image-task", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Keep this caption");
+      const retained = new File(["image"], "reference.png", { type });
+      const removed = new File(["other"], "removed.png", { type: "image/png" });
+      if (source === "screen drop") {
+        const event = new Event("drop", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [retained, removed] } });
+        await act(async () => { document.body.dispatchEvent(event); });
+        expect(event.defaultPrevented).toBe(true);
+      } else {
+        const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+        Object.defineProperty(input, "files", { configurable: true, value: [retained, removed] });
+        await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      }
+      await flush();
+      const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
+      expect(row.querySelectorAll("img")).toHaveLength(2);
+      expect(row.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(editor.value).toBe("Keep this caption");
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Remove removed.png"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "image-task", retained);
+      expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Keep this caption");
+      expect(mockAssetsApi.uploadImage).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("restores staged image bytes after remount and clears them after creation", async () => {
+    dialogState.newIssueDefaults = { title: "Retain these images" };
+    const file = new File(["image bytes"], "reference.png", { type: "image/png", lastModified: 12 });
+    const first = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.disabled).toBe(false));
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+    expect(storedFiles.get(JSON.stringify(["user-1", "company-1"]))?.[0].file).toBe(file);
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    const second = renderDialog(container);
+    try {
+      await flush();
+      await waitForAssertion(() => expect(container.querySelector('img[alt="reference.png"]')).not.toBeNull());
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "issue-2", file));
+      await waitForAssertion(() => expect(storedFiles.get(JSON.stringify(["user-1", "company-1"])) ?? []).toEqual([]));
+    } finally { act(() => second.root.unmount()); second.queryClient.clear(); }
+  });
+
+  it.each(["create", "upload"] as const)("stops old staged work after an account change during %s", async (during) => {
+    dialogState.newIssueDefaults = { title: "Account A in-flight task" };
+    let finish!: (value: unknown) => void;
+    const waiting = new Promise(resolve => { finish = resolve; });
+    const created = { id: "task-a", identifier: "PAP-1", companyId: "company-1" };
+    mockIssuesApi.create.mockImplementation(() => during === "create" ? waiting : Promise.resolve(created));
+    mockIssuesApi.uploadAttachment.mockImplementation(() => during === "upload" ? waiting : Promise.resolve({}));
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush(); await flush();
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [new File(["a"], "first.pdf"), new File(["b"], "second.pdf")] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      if (during === "upload") await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+      const key = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-2" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      await flush(); await flush();
+      finish(during === "create" ? created : {});
+      await waitForAssertion(() => {
+        const mutation = queryClient.getMutationCache().getAll().find(item => (item.state.variables as { input?: { idempotencyKey?: string } } | undefined)?.input?.idempotencyKey === key);
+        expect(mutation?.state.status).toMatch(/^(success|error)$/);
+      });
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(during === "create" ? 0 : 1);
+      expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+      expect(localStorage.getItem("paperclip:issue-draft:pending-create:user-1")).toContain(key);
+      expect(container.textContent).not.toContain("Account A in-flight task");
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("restores original document keys when colliding document names are reattached in reverse", async () => {
+    dialogState.newIssueDefaults = { title: "Has documents" };
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.upsertDocument.mockResolvedValue({});
+    const markdown = new File(["a"], "notes.md", { type: "text/markdown", lastModified: 1 });
+    const text = new File(["bb"], "notes.txt", { type: "text/plain", lastModified: 2 });
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", JSON.stringify({ version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "original-doc-create-key", createdAt: Date.now(), payload: { fingerprint: JSON.stringify({ stagedFiles: ["document:notes:notes.md:1:1", "document:notes-2:notes.txt:2:2"] }), data: { companyId: "company-1", title: "Has documents" }, stagedFileNames: ["notes.md", "notes.txt"] } }));
+    const { root } = renderDialog(container);
+    try {
+      await waitForAssertion(() => expect(container.textContent).toContain("notes.md"));
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [text, markdown] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+      await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey).toBe("original-doc-create-key");
+      await waitForAssertion(() => expect(mockIssuesApi.upsertDocument).toHaveBeenCalledTimes(2));
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith("issue-1", "notes", expect.objectContaining({ body: "a" }));
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith("issue-1", "notes-2", expect.objectContaining({ body: "bb" }));
+    } finally { act(() => root.unmount()); }
+  });
+
+  it("restores a saved subtask's parent and goal when opened from the normal New Task action", async () => {
+    dialogState.newIssueDefaults = {};
+    mockIssuesApi.create.mockResolvedValue({ id: "issue-1", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    mockIssuesApi.get.mockResolvedValue({ id: "parent-1", identifier: "PAP-2", title: "Parent", isPrivate: false });
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({ title: "Saved subtask", description: "", status: "todo", priority: "", projectId: "", assigneeValue: "" }));
+    localStorage.setItem("paperclip:issue-draft:create-awaiting-files:user-1", JSON.stringify({
+      version: 1, key: "paperclip:issue-draft:create-awaiting-files:user-1", idempotencyKey: "subtask-key-123", createdAt: Date.now(),
+      payload: { fingerprint: JSON.stringify({ stagedFiles: ["attachment::spec.pdf:1:1"] }),
+        data: { companyId: "company-1", title: "Saved subtask", parentId: "parent-1", goalId: "goal-1" }, stagedFileNames: ["spec.pdf"] },
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["a"], "spec.pdf", { lastModified: 1 })] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledTimes(1);
+    expect(mockIssuesApi.create.mock.calls[0]?.[1]).toMatchObject({ idempotencyKey: "subtask-key-123", title: "Saved subtask", parentId: "parent-1", goalId: "goal-1" });
     act(() => root.unmount());
   });
 
@@ -2008,7 +2497,7 @@ describe("NewIssueDialog", () => {
       enableIsolatedWorkspaces: false,
     });
     localStorage.setItem(
-      "paperclip:issue-draft",
+      "paperclip:issue-draft:user-1",
       JSON.stringify({
         title: "Watched task",
         description: "",
@@ -2054,6 +2543,304 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("closes and accepts a second task before the first create returns", async () => {
+    let finishFirst!: (value: unknown) => void;
+    mockIssuesApi.create.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }));
+    dialogState.newIssueDefaults = { description: "First task" };
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledOnce());
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+
+    dialogState.newIssueDefaults = { description: "Second task" };
+    act(() => { root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>); });
+    await flush();
+    const send = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    expect(send.disabled).toBe(false);
+    await act(async () => { send.click(); });
+    expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2);
+
+    dialogState.newIssueDefaults = { description: "Third task still being written" };
+    act(() => { root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>); });
+    await flush();
+    await act(async () => { finishFirst({ id: "first", identifier: "PAP-10", companyId: "company-1" }); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    await flush();
+    expect(mockIssuesApi.create.mock.calls[1][1].description).toBe("Second task");
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).not.toBe(mockIssuesApi.create.mock.calls[0][1].idempotencyKey);
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Third task still being written");
+    expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+  });
+
+  it("keeps the next draft and its image when a background create fails", async () => {
+    let rejectFirst!: (error: Error) => void;
+    mockIssuesApi.create.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
+    dialogState.newIssueDefaults = { description: "Failed first task", navigateOnCreate: true };
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledOnce());
+    const key = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    dialogState.newIssueDefaults = { description: "Next draft" };
+    act(() => { root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>); });
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const nextFile = new File(["next"], "next.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { configurable: true, value: [nextFile] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { rejectFirst(new Error("Save failed")); });
+    await waitForAssertion(() => expect(container.textContent).toContain("Save failed"));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Next draft");
+    expect(container.querySelector('img[alt="next.png"]')).not.toBeNull();
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.startsWith("Retry saved task:"))!;
+    await act(async () => { retry.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ description: "Failed first task", idempotencyKey: key });
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Next draft");
+    expect(container.querySelector('img[alt="next.png"]')).not.toBeNull();
+    expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+    act(() => root.unmount());
+  });
+
+  it("restores two queued tasks and their separate files after a reload", async () => {
+    mockIssuesApi.create.mockImplementationOnce(() => new Promise(() => {}));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    dialogState.newIssueDefaults = { description: "First queued task" };
+    const first = renderDialog(container);
+    const files = [new File(["first"], "same.png", { type: "image/png" }), new File(["second"], "same.png", { type: "image/png" })];
+    for (let index = 0; index < 2; index++) {
+      if (index) {
+        dialogState.newIssueDefaults = { description: "Second queued task" };
+        act(() => { first.root.render(<QueryClientProvider client={first.queryClient}><NewIssueDialog /></QueryClientProvider>); });
+      }
+      await flush();
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [files[index]] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await flush();
+    }
+    const queuedKeys = Object.keys(localStorage).filter(key => key.startsWith("paperclip:issue-draft:pending-create:queue:user-1:request:"));
+    const queued = queuedKeys.map(key => JSON.parse(localStorage.getItem(key)!));
+    expect(queued.map((item: { payload: { data: { description: string } } }) => item.payload.data.description)).toEqual(["First queued task", "Second queued task"]);
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    dialogState.newIssueOpen = false;
+    dialogState.newIssueDefaults = {};
+    const reloaded = renderDialog(container);
+    await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls.slice(1).map(call => call[1].idempotencyKey)).toEqual(queued.map((item: { idempotencyKey: string }) => item.idempotencyKey));
+    expect(mockIssuesApi.uploadAttachment.mock.calls.map(call => call[2])).toEqual(files);
+    await waitForAssertion(() => expect(queuedKeys.map(key => localStorage.getItem(key))).toEqual([null, null]));
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2);
+    act(() => reloaded.root.unmount());
+  });
+
+  it("reopens a rejected task with its settings and files after a reload", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save was rejected"));
+    dialogState.newIssueDefaults = { description: "Restore this request", parentId: "parent-1", goalId: "goal-1", workMode: "planning", assigneeAgentId: "agent-1" };
+    const first = renderDialog(container);
+    await flush();
+    const file = new File(["reference"], "reference.png", { type: "image/png" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    const key = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    dialogState.newIssueDefaults = {};
+    dialogState.openNewIssue.mockClear();
+    const reloaded = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('img[alt="reference.png"]')).not.toBeNull());
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Restore this request");
+    expect(container.textContent).toContain("Save was rejected");
+    expect(mockIssuesApi.create).toHaveBeenCalledOnce();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ parentId: "parent-1", goalId: "goal-1", workMode: "planning", idempotencyKey: key, assigneeAgentId: "agent-1" });
+    act(() => reloaded.root.unmount());
+  });
+
+  it.each([false, true])("keeps a newer saved draft when a rejected create reloads (open: %s)", async (open) => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Earlier save failed"));
+    dialogState.newIssueDefaults = { description: "Earlier request" };
+    const first = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    const nextDraft = {
+      description: "Newer saved work", title: "", status: "backlog", priority: "high",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "project-1",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false, workMode: "planning",
+    };
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify(nextDraft));
+    dialogState.newIssueDefaults = {};
+    dialogState.newIssueOpen = open;
+    dialogState.openNewIssue.mockClear();
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!).description).toBe("Newer saved work");
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    if (!open) {
+      dialogState.newIssueOpen = true;
+      act(() => reloaded.root.render(<QueryClientProvider client={reloaded.queryClient}><NewIssueDialog /></QueryClientProvider>));
+      await flush();
+    }
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Newer saved work");
+    expect(container.textContent).toContain("Retry saved task:");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("keeps a fresh launch when a recovered draft reloads", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Old recovered text" };
+    const first = renderDialog(container);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    dialogState.openNewIssue.mockClear();
+    dialogState.newIssueDefaults = { description: "Fresh launch", parentId: "new-parent" };
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(dialogState.openNewIssue).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Fresh launch");
+    expect(container.textContent).toContain("Retry saved task:");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("keeps edits when a recovered task is closed, reopened, and reloaded", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Original recovered text" };
+    const { root, queryClient } = renderDialog(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Edited recovery text");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    dialogState.newIssueOpen = false;
+    dialogState.newIssueDefaults = {};
+    act(render);
+    dialogState.newIssueOpen = true;
+    act(render);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Edited recovery text");
+    act(() => root.unmount());
+    queryClient.clear();
+    const reloaded = renderDialog(container);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Edited recovery text");
+    act(() => reloaded.root.unmount());
+  });
+
+  it("uses fresh launch defaults after a recovered task is closed", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    dialogState.newIssueDefaults = { description: "Old recovered task", parentId: "old-parent", goalId: "old-goal" };
+    const { root, queryClient } = renderDialog(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    const oldKey = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    dialogState.newIssueOpen = false;
+    dialogState.newIssueDefaults = {};
+    act(render);
+    dialogState.newIssueOpen = true;
+    dialogState.newIssueDefaults = { description: "New launch", parentId: "new-parent", goalId: "new-goal" };
+    act(render);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("New launch");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ description: "New launch", parentId: "new-parent", goalId: "new-goal" });
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).not.toBe(oldKey);
+    act(() => root.unmount());
+  });
+
+  it("keeps hidden workspace launch context when retrying a rejected create", async () => {
+    mockIssuesApi.create.mockRejectedValueOnce(new Error("Save failed"));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      description: "Workspace task", projectId: "project-1", projectWorkspaceId: "source-context", executionWorkspaceId: "workspace-context",
+    };
+    const { root, queryClient } = renderDialog(container, ["workspaces.isolation"]);
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(dialogState.openNewIssue).toHaveBeenCalledOnce());
+    const original = mockIssuesApi.create.mock.calls[0][1];
+    // The real dialog clears launch defaults when it closes and reopens.
+    dialogState.newIssueDefaults = {};
+    act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+    await flush();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({
+      idempotencyKey: original.idempotencyKey, projectWorkspaceId: "source-context",
+      executionWorkspaceId: "workspace-context", executionWorkspacePreference: "reuse_existing",
+    });
+    act(() => root.unmount());
+  });
+
+  it("keeps the newer parent context when an earlier restored task has missing files", async () => {
+    mockIssuesApi.create.mockImplementationOnce(() => new Promise(() => {}));
+    dialogState.newIssueDefaults = { description: "Original task", parentId: "old-parent", goalId: "old-goal" };
+    const first = renderDialog(container);
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["image"], "missing.png", { type: "image/png" })] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledOnce());
+    const originalKey = mockIssuesApi.create.mock.calls[0][1].idempotencyKey;
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    storedFiles.clear();
+    dialogState.newIssueDefaults = { description: "Newer task", parentId: "new-parent", goalId: "new-goal" };
+    const reloaded = renderDialog(container);
+    await waitForAssertion(() => expect(container.textContent).toContain("missing.png"));
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Newer task");
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create sub-task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(mockIssuesApi.create.mock.calls[1][1]).toMatchObject({ description: "Newer task", parentId: "new-parent", goalId: "new-goal" });
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).not.toBe(originalKey);
+    act(() => reloaded.root.unmount());
+  });
+
+  it("accepts a task before account lookup and binds its queued files to the resolved account", async () => {
+    let finishSession!: (value: unknown) => void;
+    mockAuthApi.getSession.mockImplementationOnce(() => new Promise(resolve => { finishSession = resolve; }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    dialogState.newIssueDefaults = { description: "Submitted before account lookup" };
+    const { root } = renderDialog(container);
+    await flush();
+    const file = new File(["image"], "reference.png", { type: "image/png" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect([...storedFiles.keys()]).toEqual([]);
+    await act(async () => { finishSession({ user: { id: "user-1" } }); });
+    await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "issue-2", file));
+    expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Submitted before account lookup");
+    expect([...storedFiles.keys()].every(key => JSON.parse(key)[0] === "user-1")).toBe(true);
+    act(() => root.unmount());
+  });
+
   it("retains a failed creation draft and allows retry through the composer", async () => {
     mockIssuesApi.create.mockRejectedValueOnce(new Error("Service unavailable"));
     dialogState.newIssueDefaults = { description: "Keep this request for retry" };
@@ -2063,16 +2850,18 @@ describe("NewIssueDialog", () => {
     await act(async () => { send.click(); });
     await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Service unavailable"));
     expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("Keep this request for retry");
-    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
-    await act(async () => { send.click(); });
-    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledOnce());
+    expect(dialogState.closeNewIssue).toHaveBeenCalledOnce();
+    expect(dialogState.openNewIssue).toHaveBeenCalledOnce();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2);
     expect(mockIssuesApi.create).toHaveBeenCalledTimes(2);
     act(() => root.unmount());
   });
 
   it("restores shared model, effort, and fast settings into the created task", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Coder", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} }]);
-    localStorage.setItem("paperclip:issue-draft", JSON.stringify({
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
       title: "", description: "Use the saved run settings", status: "todo", priority: "medium",
       assigneeValue: "agent:agent-1", projectId: "", workMode: "planning",
       composerSettings: { model: "gpt-6-astra", effort: "ultra", fast: true },
@@ -2107,4 +2896,71 @@ describe("NewIssueDialog", () => {
     });
   });
 
+});
+
+describe("addStagedFilesToIssue", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", webcrypto);
+    localStorage.clear();
+    mockIssuesApi.uploadAttachment.mockReset();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps a confirmed upload receipt when ownership changes before the next file", async () => {
+    const files = ["one", "two"].map((name, index) => ({ id: name, kind: "attachment" as const, file: new File([name], `${name}.pdf`, { lastModified: index + 1 }) }));
+    let owned = true;
+    const assertCurrentOwner = () => { if (!owned) throw new Error("Account changed"); };
+    mockIssuesApi.uploadAttachment.mockResolvedValue({}).mockImplementationOnce(async () => { owned = false; return {}; });
+    const input = { companyId: "company-1", issueId: "task-1", stagedFiles: files, idempotencyKey: "original-upload-request", assertCurrentOwner };
+    await expect(addStagedFilesToIssue(input)).rejects.toThrow("Account changed");
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1);
+    owned = true;
+    await expect(addStagedFilesToIssue(input)).resolves.toEqual([]);
+    expect(mockIssuesApi.uploadAttachment.mock.calls.map(call => call[2].name)).toEqual(["one.pdf", "two.pdf"]);
+  });
+
+  it("uploads distinct files with the same metadata instead of treating one as a receipt", async () => {
+    const stagedFiles = ["a", "b"].map((body, index) => ({
+      id: `staged-${index}`,
+      kind: "attachment" as const,
+      file: new File([body], "report.txt", { lastModified: 123 }),
+    }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    expect(await addStagedFilesToIssue({ companyId: "company-1", issueId: "issue-1", idempotencyKey: "metadata-collision", stagedFiles })).toEqual([]);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2);
+    expect(mockIssuesApi.uploadAttachment.mock.calls[0]?.[2]).toBe(stagedFiles[0]!.file);
+    expect(mockIssuesApi.uploadAttachment.mock.calls[1]?.[2]).toBe(stagedFiles[1]!.file);
+  });
+
+  it("still uploads files when browser hashing is unavailable", async () => {
+    vi.stubGlobal("crypto", {});
+    const stagedFiles = ["a", "b"].map((body, index) => ({
+      id: `staged-${index}`, kind: "attachment" as const,
+      file: new File([body], "report.txt", { lastModified: 123 }),
+    }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    expect(await addStagedFilesToIssue({ companyId: "company-1", issueId: "issue-1", idempotencyKey: "hashing-unavailable", stagedFiles })).toEqual([]);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2);
+  });
+
+  it("never adds a file twice when a create replays after a reload mid-upload", async () => {
+    const spec = { id: "staged-1", kind: "attachment" as const, file: new File(["a"], "spec.pdf", { lastModified: 1 }) };
+    const notes = { id: "staged-2", kind: "attachment" as const, file: new File(["bb"], "notes.txt", { lastModified: 2 }) };
+    mockIssuesApi.uploadAttachment.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("Upload interrupted"));
+    const target = { companyId: "company-1", issueId: "issue-1", idempotencyKey: "create-key-123" };
+    expect(await addStagedFilesToIssue({ ...target, stagedFiles: [spec, notes] })).toEqual(["notes.txt"]);
+
+    // Reattached after a reload: new staging ids, the same files, the same key.
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    expect(await addStagedFilesToIssue({
+      ...target,
+      stagedFiles: [{ ...spec, id: "staged-3" }, { ...notes, id: "staged-4" }],
+    })).toEqual([]);
+    expect(mockIssuesApi.uploadAttachment.mock.calls.map((call) => (call[2] as File).name)).toEqual([
+      "spec.pdf",
+      "notes.txt",
+      "notes.txt",
+    ]);
+  });
 });

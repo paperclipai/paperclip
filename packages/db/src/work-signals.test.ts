@@ -3,7 +3,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { workSignalDebug } from "./work-signal-debug.js";
+import { DATABASE_WORK_CHANNEL, DATABASE_WORK_NOTIFICATION_MAX_BYTES, DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, receiveDatabaseWorkNotification, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -15,6 +16,20 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.execute(sql`create table work_signal_test (id text primary key)`);
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
+
+  it("does not touch the debug attribution log on the signal path when the flag is off", async () => {
+    const signal = vi.spyOn(workSignalDebug, "signal");
+    const event = vi.spyOn(workSignalDebug, "event");
+    try {
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, "debug-off", "{\"companyId\":\"c\"}");
+        await tx.execute(sql`insert into work_signal_test values ('debug-off')`);
+      });
+      publishDatabaseWorkSettled(db, "debug-off");
+      expect(signal).not.toHaveBeenCalled();
+      expect(event).not.toHaveBeenCalled();
+    } finally { signal.mockRestore(); event.mockRestore(); }
+  });
 
   it("defers nested savepoint notifications until the outer commit and preserves return values", async () => {
     const events: string[] = [];
@@ -34,6 +49,20 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(events).toEqual(["intent", "settled"]);
       expect(databaseWorkPending(db, "nested")).toBe(false);
       expect(await db.execute(sql`select * from work_signal_test where id = 'nested'`)).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
+
+  it("sends an untracked commit-bound hint that leaves nothing to reconcile", async () => {
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "untracked", event => events.push(event));
+    try {
+      await expect(db.transaction(async tx => {
+        await notifyDatabaseWorkOnCommit(tx, "untracked");
+        throw new Error("abort");
+      })).rejects.toThrow("abort");
+      await db.transaction(async tx => { await notifyDatabaseWorkOnCommit(tx, "untracked"); });
+      expect(databaseWorkPending(db, "untracked")).toBe(false);
+      expect(events).toEqual([]);
     } finally { unsubscribe(); }
   });
 
@@ -131,6 +160,49 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { release(); await serverDone?.catch(() => {}); unsubscribe(); }
   });
 
+  it("resolves an uncertain transaction with a transaction id that a statement returned", async () => {
+    await expect(db.transaction(async tx => {
+      const [{ xid }] = await tx.execute(sql`select pg_current_xact_id()::text as xid`);
+      primeDatabaseWorkTransactionId(tx, xid as string);
+      await signalDatabaseWork(tx, "primed-disconnect");
+      await tx.execute(sql`insert into work_signal_test values ('primed-disconnect')`);
+      const [{ pid }] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      await db.execute(sql`select pg_terminate_backend(${pid as number})`);
+      await tx.execute(sql`select 1`);
+    })).rejects.toThrow();
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(true);
+    await reconcileDatabaseWork(db, "primed-disconnect");
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(false);
+    expect(await db.execute(sql`select * from work_signal_test where id = 'primed-disconnect'`)).toHaveLength(0);
+  });
+
+  it("publishes a settled wake at once outside a transaction, and inside one only after the outermost commit", async () => {
+    const events: Array<[string, string[]]> = [];
+    const unsubscribe = subscribeDatabaseWork(db, "settled-after-commit", (event, hints) => events.push([event, [...hints ?? []]]));
+    try {
+      publishDatabaseWorkSettled(db, "settled-after-commit", "outside");
+      expect(events).toEqual([["settled", ["outside"]]]);
+      events.length = 0;
+      await db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "committed");
+        await tx.transaction(async savepoint => { publishDatabaseWorkSettled(savepoint, "settled-after-commit", "released"); });
+        await expect(tx.transaction(async savepoint => {
+          publishDatabaseWorkSettled(savepoint, "settled-after-commit", "rolled-back-savepoint");
+          throw new Error("savepoint rollback");
+        })).rejects.toThrow("savepoint rollback");
+        expect(events).toEqual([]);
+      });
+      expect(events).toEqual([["settled", ["committed"]], ["settled", ["released"]]]);
+      events.length = 0;
+      await expect(db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "rolled-back");
+        throw new Error("outer rollback");
+      })).rejects.toThrow("outer rollback");
+      expect(events).toEqual([]);
+      expect(databaseWorkPending(db, "settled-after-commit")).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
   it("recovers after a real backend disconnect without replaying the queue write", async () => {
     await expect(db.transaction(async tx => {
       await signalDatabaseWork(tx, "disconnect");
@@ -182,8 +254,322 @@ describe("work signal query boundaries", () => {
     expect(write).not.toHaveBeenCalled();
     expect(databaseWorkPending(connection, "failed")).toBe(false);
   });
+  it("reads no transaction id when a statement of the transaction already returned it", async () => {
+    const execute = vi.fn();
+    const connection = installDatabaseWorkSignals({ execute, transaction: async (callback: any) => callback({ execute, transaction: async () => {} }) });
+    primeDatabaseWorkTransactionId(connection, "outside");
+    await connection.transaction(async (tx: any) => {
+      primeDatabaseWorkTransactionId(tx, "42");
+      await signalDatabaseWork(tx, "primed");
+      await signalDatabaseWork(tx, "primed-again");
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });
     await expect(signalDatabaseWork(connection, "bad")).rejects.toThrow("inside a transaction");
+  });
+});
+
+
+describe("database work scope identity", () => {
+  type TestConnection = { execute: () => Promise<unknown[]>; transaction: (callback: (tx: TestConnection) => unknown) => Promise<unknown> };
+  function connection(): TestConnection {
+    return { execute: vi.fn(async () => []), transaction: async callback => callback(connection()) };
+  }
+  it("shares owner identity through child pools and nested transactions, but isolates independent owners", async () => {
+    const first = installDatabaseWorkSignals(connection());
+    const second = installDatabaseWorkSignals(connection());
+    const child = installDatabaseWorkSignals(connection(), first);
+    const key = databaseWorkScopeKey(first);
+    expect(databaseWorkScopeKey(second)).not.toBe(key);
+    expect(databaseWorkScopeKey(child)).toBe(key);
+    await child.transaction(async tx => {
+      expect(databaseWorkScopeKey(tx)).toBe(key);
+      await tx.transaction(async nested => { expect(databaseWorkScopeKey(nested)).toBe(key); });
+    });
+  });
+});
+
+(support.supported ? describe : describe.skip)("database work notifications flushed once per transaction", () => {
+  let db: ReturnType<typeof createDb>;
+  let listener: ReturnType<typeof createDb>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  const delivered: string[] = [];
+  let notifyStatements = 0;
+  let sentPayloads: string[] = [];
+  beforeAll(async () => {
+    temporary = await startEmbeddedPostgresTestDatabase("work-signals-notify-");
+    db = createDb(temporary.connectionString);
+    enableDatabaseWorkNotifications(db);
+    listener = createDb(temporary.connectionString, { maxConnections: 1 });
+    await listener.$client.listen(DATABASE_WORK_CHANNEL, payload => { delivered.push(payload); });
+    db.$client.options.debug = (_connection: number, query: string, parameters: unknown[]) => {
+      if (!/pg_notify/.test(query) || parameters.some(value => String(value).includes("fence"))) return;
+      notifyStatements += 1;
+      sentPayloads.push(...JSON.parse(String(parameters[parameters.length - 1])) as string[]);
+    };
+  }, 90_000);
+  afterAll(async () => {
+    await listener?.$client.end({ timeout: 1 });
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
+  });
+  const topic = (payload: string) => (JSON.parse(payload) as { topic: string }).topic;
+  async function run(action: (root: typeof db) => Promise<unknown>) {
+    notifyStatements = 0;
+    sentPayloads = [];
+    delivered.length = 0;
+    let failure: unknown = null;
+    await action(db).catch(error => { failure = error; });
+    await db.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${JSON.stringify({ topic: "fence" })})`);
+    await vi.waitFor(() => expect(delivered.some(payload => topic(payload) === "fence")).toBe(true));
+    const received = delivered.filter(payload => topic(payload) !== "fence");
+    return { statements: notifyStatements, sent: sentPayloads.map(topic), delivered: received.map(topic), payloads: received,
+      failure: failure instanceof Error ? failure.message : failure };
+  }
+  const rollback = () => { throw new Error("rollback"); };
+
+  it("sends every distinct topic of a transaction in one statement at commit, in first-signal order", async () => {
+    const result = await run(root => root.transaction(async tx => {
+      await signalDatabaseWork(tx, "a", "one");
+      await signalDatabaseWork(tx, "b");
+      await signalDatabaseWork(tx, "a", "two");
+      await notifyDatabaseWorkOnCommit(tx, "c");
+      expect(notifyStatements).toBe(0);
+    }));
+    expect(result).toMatchObject({ statements: 1, sent: ["a", "b", "c"], delivered: ["a", "b", "c"], failure: null });
+    expect(result.payloads.map(payload => JSON.parse(payload))).toEqual([
+      { version: 1, origin: expect.any(String), topic: "a", hints: ["one", "two"] },
+      { version: 1, origin: expect.any(String), topic: "b" },
+      { version: 1, origin: expect.any(String), topic: "c" },
+    ]);
+  });
+
+  it("sends nothing for a transaction that signals nothing", async () => {
+    expect(await run(root => root.transaction(async tx => { await tx.execute(sql`select 1`); })))
+      .toMatchObject({ statements: 0, delivered: [] });
+  });
+
+  it("keeps a released savepoint's topics, two levels deep, and drops a rolled-back savepoint's topics", async () => {
+    expect(await run(root => root.transaction(async tx => {
+      await tx.transaction(async first => {
+        await first.transaction(async second => { await signalDatabaseWork(second, "kept"); });
+        await first.transaction(async second => { await signalDatabaseWork(second, "dropped"); rollback(); }).catch(() => {});
+      });
+      await tx.transaction(async nested => { await signalDatabaseWork(nested, "dropped-too"); rollback(); }).catch(() => {});
+    }))).toMatchObject({ statements: 1, sent: ["kept"], delivered: ["kept"], failure: null });
+  });
+
+  it("still sends a topic signalled in a rolled-back savepoint when the outer level signals it again", async () => {
+    expect(await run(root => root.transaction(async tx => {
+      await tx.transaction(async nested => { await signalDatabaseWork(nested, "a"); rollback(); }).catch(() => {});
+      await signalDatabaseWork(tx, "a");
+    }))).toMatchObject({ statements: 1, delivered: ["a"] });
+    expect(await run(root => root.transaction(async tx => {
+      await signalDatabaseWork(tx, "a");
+      await tx.transaction(async nested => { await signalDatabaseWork(nested, "a"); rollback(); }).catch(() => {});
+    }))).toMatchObject({ statements: 1, delivered: ["a"] });
+  });
+
+  it("sends nothing when the callback throws", async () => {
+    expect(await run(root => root.transaction(async tx => { await signalDatabaseWork(tx, "a"); rollback(); })))
+      .toMatchObject({ statements: 0, delivered: [], failure: "rollback" });
+  });
+
+  it("fails and rolls back the transaction when the commit-time send fails", async () => {
+    await db.execute(sql`create table if not exists work_signal_flush_test (id text primary key)`);
+    const result = await run(root => root.transaction(async tx => {
+      await tx.execute(sql`insert into work_signal_flush_test values ('flush')`);
+      await signalDatabaseWork(tx, "a");
+      await tx.execute(sql`select 1 / 0`).catch(() => {});
+    }));
+    expect(result.delivered).toEqual([]);
+    expect(result.statements).toBe(1);
+    expect(result.failure).toMatch(/pg_notify/);
+    expect(await db.execute(sql`select id from work_signal_flush_test where id = 'flush'`)).toHaveLength(0);
+  });
+
+  it("sends a large number of distinct topics in one bounded statement", async () => {
+    const names = Array.from({ length: 500 }, (_, index) => `topic-${index}`);
+    const result = await run(root => root.transaction(async tx => { for (const name of names) await signalDatabaseWork(tx, name); }));
+    expect(result.statements).toBe(1);
+    expect(result.delivered).toEqual(names);
+  });
+
+  it("rejects a signal recorded after its transaction or savepoint ended instead of losing it", async () => {
+    let outer: Parameters<Parameters<typeof db.transaction>[0]>[0] | undefined;
+    let savepoint: typeof outer;
+    const result = await run(root => root.transaction(async tx => {
+      outer = tx;
+      await signalDatabaseWork(tx, "a");
+      await tx.transaction(async nested => { savepoint = nested; await signalDatabaseWork(nested, "b"); });
+      await expect(signalDatabaseWork(savepoint!, "late-savepoint")).rejects.toThrow("after its transaction or savepoint ended");
+      await expect(notifyDatabaseWorkOnCommit(savepoint!, "late-savepoint")).rejects.toThrow("after its transaction or savepoint ended");
+    }));
+    expect(result).toMatchObject({ statements: 1, delivered: ["a", "b"], failure: null });
+    await expect(signalDatabaseWork(outer!, "late-outer")).rejects.toThrow("after its transaction or savepoint ended");
+    await expect(notifyDatabaseWorkOnCommit(outer!, "late-outer")).rejects.toThrow("after its transaction or savepoint ended");
+  });
+
+  it("starts every transaction clean, including concurrent transactions and a retried callback", async () => {
+    expect(await run(async root => {
+      await root.transaction(async tx => { await signalDatabaseWork(tx, "a"); });
+      await root.transaction(async tx => { await signalDatabaseWork(tx, "a"); });
+      await Promise.all([1, 2].map(() => root.transaction(async tx => { await signalDatabaseWork(tx, "b"); })));
+      let attempts = 0;
+      const callback = async (tx: Parameters<Parameters<typeof root.transaction>[0]>[0]) => {
+        attempts += 1;
+        await signalDatabaseWork(tx, "c");
+        if (attempts === 1) rollback();
+      };
+      await root.transaction(callback).catch(() => {});
+      await root.transaction(callback);
+    })).toMatchObject({ statements: 5, delivered: ["a", "a", "b", "b", "c"] });
+  });
+
+  function legacyReceive(payload: string): string | null {
+    if (payload.length > 1024) return null;
+    let value: { version?: unknown; origin?: unknown; topic?: unknown };
+    try { value = JSON.parse(payload); } catch { return null; }
+    if (!value || value.version !== 1 || typeof value.origin !== "string"
+      || typeof value.topic !== "string" || !/^[a-zA-Z0-9:_-]{1,200}$/.test(value.topic)) return null;
+    return value.topic;
+  }
+  function receiving(topics: string[]) {
+    const receiver = createDb(temporary.connectionString, { maxConnections: 1 });
+    const wakes: Array<[string, string[] | null]> = [];
+    const stops = topics.map(name => subscribeDatabaseWork(receiver, name, (event, hints) => {
+      wakes.push([name, hints ? [...hints] : null]);
+      expect(event).toBe("settled");
+    }));
+    return {
+      receiver, wakes,
+      deliver(payloads: string[]) { for (const payload of payloads) receiveDatabaseWorkNotification(receiver, payload); },
+      async close() { for (const stop of stops) stop(); await receiver.$client.end({ timeout: 1 }); },
+    };
+  }
+
+  it("carries a commit's deduplicated hints, so another process wakes only those scopes", async () => {
+    const other = receiving(["hinted", "unhinted", "mixed"]);
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "hinted", "company-1");
+        await tx.transaction(async nested => {
+          await signalDatabaseWork(nested, "hinted", "company-2");
+          publishDatabaseWorkSettled(nested, "hinted", "company-1");
+        });
+        await tx.transaction(async nested => { await signalDatabaseWork(nested, "hinted", "rolled-back"); rollback(); }).catch(() => {});
+        await signalDatabaseWork(tx, "unhinted");
+        await signalDatabaseWork(tx, "mixed", "company-3");
+        publishDatabaseWorkSettled(tx, "mixed");
+      }));
+      expect(result).toMatchObject({ statements: 1, sent: ["hinted", "unhinted", "mixed"], failure: null });
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1", "company-2"], undefined, undefined]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["hinted", ["company-1", "company-2"]], ["unhinted", null], ["mixed", null]]);
+      expect(result.payloads.map(legacyReceive)).toEqual(["hinted", "unhinted", "mixed"]);
+    } finally { await other.close(); }
+  });
+
+  it("scopes an unhinted signal alongside a hinted one to the hinted set, locally and in another process", async () => {
+    const other = receiving(["alongside"]);
+    const local: Array<string[] | null> = [];
+    const stop = subscribeDatabaseWork(db, "alongside", (event, hints) => { if (event === "settled") local.push(hints ? [...hints] : null); });
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "alongside");
+        await signalDatabaseWork(tx, "alongside", "company-1");
+      }));
+      expect(local).toEqual([["company-1"]]);
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1"]]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["alongside", ["company-1"]]]);
+    } finally { stop(); await other.close(); }
+  });
+
+  it("splits many hints into payloads an older receiver still reads, within the per-topic byte cap", async () => {
+    const hints = Array.from({ length: 80 }, (_, index) => JSON.stringify({ companyId: `company-${String(index).padStart(4, "0")}` }));
+    const other = receiving(["many"]);
+    try {
+      const result = await run(root => root.transaction(async tx => { for (const hint of hints) await signalDatabaseWork(tx, "many", hint); }));
+      expect(result.statements).toBe(1);
+      expect(result.payloads.length).toBeGreaterThan(1);
+      for (const payload of result.payloads) expect(Buffer.byteLength(payload)).toBeLessThanOrEqual(DATABASE_WORK_NOTIFICATION_MAX_BYTES);
+      expect(result.payloads.reduce((total, payload) => total + Buffer.byteLength(payload), 0))
+        .toBeLessThanOrEqual(DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES);
+      expect(result.payloads.flatMap(payload => JSON.parse(payload).hints)).toEqual(hints);
+      expect(result.payloads.map(legacyReceive)).toEqual(result.payloads.map(() => "many"));
+      other.deliver(result.payloads);
+      expect(other.wakes.flatMap(([, received]) => received ?? ["*"])).toEqual(hints);
+    } finally { await other.close(); }
+  });
+
+  it("falls back to one unscoped notification when a topic's hints exceed the byte cap", async () => {
+    const tooMany = Array.from({ length: 400 }, (_, index) => `scope-${index}-${"x".repeat(20)}`);
+    const tooLong = "y".repeat(DATABASE_WORK_NOTIFICATION_MAX_BYTES);
+    const other = receiving(["overflow", "long-hint"]);
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        for (const hint of tooMany) await signalDatabaseWork(tx, "overflow", hint);
+        await signalDatabaseWork(tx, "long-hint", "short");
+        await signalDatabaseWork(tx, "long-hint", tooLong);
+      }));
+      expect(result.payloads.map(payload => JSON.parse(payload))).toEqual([
+        { version: 1, origin: expect.any(String), topic: "overflow" },
+        { version: 1, origin: expect.any(String), topic: "long-hint" },
+      ]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["overflow", null], ["long-hint", null]]);
+    } finally { await other.close(); }
+  });
+
+  it("treats a malformed or unknown-version hint list as unscoped and ignores unusable or own-origin payloads", async () => {
+    const other = receiving(["remote"]);
+    const warn = vi.spyOn(process, "emitWarning");
+    try {
+      const own = await run(root => root.transaction(async tx => { await signalDatabaseWork(tx, "remote", "mine"); }));
+      const ownEvents: string[] = [];
+      const stopOwn = subscribeDatabaseWork(db, "remote", event => ownEvents.push(event));
+      try { receiveDatabaseWorkNotification(db, own.payloads[0]!); } finally { stopOwn(); }
+      expect(ownEvents).toEqual([]);
+      const origin = "another-process";
+      const payload = (value: Record<string, unknown>) => JSON.stringify({ version: 1, origin, topic: "remote", ...value });
+      other.deliver([
+        payload({ hints: "company-1" }),
+        payload({ hints: ["company-1", 7] }),
+        payload({ hints: [] }),
+        payload({ hints: null }),
+        payload({ version: 2, hints: ["company-1"] }),
+        payload({}),
+      ]);
+      expect(other.wakes).toEqual(Array.from({ length: 6 }, () => ["remote", null]));
+      other.wakes.length = 0;
+      expect(() => other.deliver([
+        "not json", "null", "[]", "7", JSON.stringify({ origin, topic: "remote", hints: ["a"] }),
+        payload({ version: "1" }), payload({ version: 1.5 }), payload({ version: 0 }), payload({ origin: 4 }),
+        payload({ topic: "bad topic" }), payload({ hints: ["a".repeat(9000)] }),
+      ])).not.toThrow();
+      expect(other.wakes).toEqual([]);
+      other.deliver([payload({ hints: ["company-9"] })]);
+      expect(other.wakes).toEqual([["remote", ["company-9"]]]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); await other.close(); }
+  });
+
+  it("logs the received hints in the remote notification debug event", async () => {
+    const enabled = vi.spyOn(workSignalDebug, "enabled", "get").mockReturnValue(true);
+    const event = vi.spyOn(workSignalDebug, "event").mockImplementation(() => {});
+    const other = receiving([]);
+    try {
+      other.deliver([
+        JSON.stringify({ version: 1, origin: "another-process", topic: "debugged", hints: ["company-1", "company-2"] }),
+        JSON.stringify({ version: 1, origin: "another-process", topic: "debugged" }),
+      ]);
+      expect(event.mock.calls.filter(([, name]) => name === "remote_notification")).toEqual([
+        ["debugged", "remote_notification", { hints: JSON.stringify(["company-1", "company-2"]) }],
+        ["debugged", "remote_notification", { hints: null }],
+      ]);
+    } finally { enabled.mockRestore(); event.mockRestore(); await other.close(); }
   });
 });

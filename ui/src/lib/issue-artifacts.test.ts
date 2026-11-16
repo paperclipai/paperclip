@@ -4,10 +4,21 @@ import {
   documentDisplayTitle,
   getAttachmentBackedWorkProductAttachmentIds,
   isAgentAttachment,
+  isGeneralTaskDocumentKey,
   selectAgentArtifactAttachments,
   selectArtifactAttachments,
   workProductHref,
 } from "./issue-artifacts";
+
+it.each(["plan", " Plan ", "artifact-review-output", "pipeline-case-body", "continuation-summary"])("keeps %s out of general document authoring", key => {
+  expect(isGeneralTaskDocumentKey(key)).toBe(false);
+});
+it("allows ordinary general document keys", () => {
+  expect(isGeneralTaskDocumentKey("notes")).toBe(true);
+});
+it.each([undefined, null])("treats a missing document key (%s) as not general", key => {
+  expect(isGeneralTaskDocumentKey(key)).toBe(false);
+});
 
 function makeAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
   return {

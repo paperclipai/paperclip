@@ -39,6 +39,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError } from "../api/errors";
 import {
   Dialog,
   DialogContent,
@@ -1020,7 +1022,7 @@ export function useInstallTeamCatalogEntry({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(describeError(error, { action: "load the install preview" }).body);
     },
   });
 
@@ -1038,7 +1040,7 @@ export function useInstallTeamCatalogEntry({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(describeError(error, { action: "install the team" }).body);
     },
   });
 
@@ -1205,7 +1207,7 @@ export function TeamInstallerDialog({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(describeError(error, { action: "load the install preview" }).body);
     },
   });
 
@@ -1222,7 +1224,7 @@ export function TeamInstallerDialog({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(describeError(error, { action: "install the team" }).body);
     },
   });
 
@@ -2307,6 +2309,7 @@ export function TeamCatalog() {
     queryFn: () => teamCatalogApi.catalogList(kindFilter === "all" ? {} : { kind: kindFilter }),
     enabled: Boolean(selectedCompanyId),
   });
+  const catalogView = useQueryView(catalogQuery);
 
   const teams = catalogQuery.data ?? [];
 
@@ -2402,7 +2405,7 @@ export function TeamCatalog() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+      <div data-canonical-toolbar="teams" role="toolbar" aria-label="Teams controls" className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <h1 className="text-lg font-semibold">Teams</h1>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -2497,20 +2500,20 @@ export function TeamCatalog() {
             !isDesktop && selectedTeam && "hidden",
           )}
         >
-          {catalogQuery.isLoading ? (
+          {catalogView.kind === "loading" || catalogView.kind === "reconnecting" ? (
             <div className="space-y-2 p-3">
               {Array.from({ length: 6 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : catalogQuery.isError ? (
+          ) : catalogView.kind === "error" ? (
             <div className="p-4">
-              <div role="alert" className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-700 dark:text-rose-300">
-                Failed to load team catalog.
-              </div>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => catalogQuery.refetch()}>
-                <RotateCcw className="h-3.5 w-3.5" /> Retry
-              </Button>
+              <QueryErrorState
+                error={catalogView.error}
+                action="load the team catalog"
+                onRetry={catalogView.retry}
+                retrying={catalogView.isFetching}
+              />
             </div>
           ) : teams.length === 0 ? (
             <EmptyState icon={Users2} message="No team catalog configured." />

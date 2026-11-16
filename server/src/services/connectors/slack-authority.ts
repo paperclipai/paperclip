@@ -8,7 +8,7 @@ import {
   type chatConversations,
 } from "@paperclipai/db";
 import { and, eq, inArray } from "drizzle-orm";
-import { captureRunIdentity } from "../run-identity.js";
+import { captureRunIdentity, runIdentityTaskFields } from "../run-identity.js";
 import { forbidden } from "../../errors.js";
 import { boundRunIssueId } from "../run-task-binding.js";
 import { chatRunSourceMessageId } from "../chat-channels/run-origin.js";
@@ -110,7 +110,7 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
     if (!approved || !binding.identityContextId)
       throw forbidden("Slack approval is not executing for this task");
     const [run] = await db
-      .select()
+      .select(runIdentityTaskFields)
       .from(heartbeatRuns)
       .where(
         and(
@@ -141,7 +141,7 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
       );
     captured = { run, context };
   } else {
-    captured = await captureRunIdentity(db, binding);
+    captured = await captureRunIdentity(db, binding, { readScope: "task_authorization" });
     if (
       binding.identityContextId &&
       binding.identityContextId !== captured.context?.id

@@ -171,6 +171,7 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  storageProviderPluginId?: string | null;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;

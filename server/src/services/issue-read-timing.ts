@@ -6,7 +6,7 @@ type IssueReadPhase = "lookup" | "authorization" | "project_goal" | "ancestors"
   | "mentions" | "documents" | "relations" | "blockers" | "review"
   | "references" | "handoff" | "retry" | "recovery" | "cases" | "inbox"
   | "channel" | "workspace" | "work_products" | "created_from" | "execution_blocker"
-  | "relation_recovery" | "revalidate_recovery" | "mentioned_projects";
+  | "relation_recovery" | "revalidate_recovery" | "mentioned_projects" | "stalled_dependencies";
 
 export function createIssueReadTiming() {
   const start = performance.now();
