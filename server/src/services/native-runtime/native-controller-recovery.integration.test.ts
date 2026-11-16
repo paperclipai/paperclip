@@ -844,6 +844,32 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
+  it("lets a claim that holds the follow-up's finalization lock its run row while the outgoing server's save waits", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      let fence!: Promise<void>;
+      await db.transaction(async tx => {
+        await tx.execute(sql`select set_config('lock_timeout', '2000', true)`);
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)).for("update");
+        fence = db.transaction(async fenceTx => assertNativeRunnerCheckpointOwner(fenceTx, fixture.owner, false));
+        void fence.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+      });
+      await expect(fence).resolves.toBeUndefined();
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
   it("refuses the outgoing server's save that waited on the re-claimed follow-up's uncommitted process start", async () => {
     registerControllerInstanceDb(db);
     const parked = await parkFollowUpBehindOutgoingServer();
@@ -865,7 +891,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       void fence.catch(() => undefined);
       await vi.waitFor(async () => {
         const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
-          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
         expect(blocked.count).toBeGreaterThan(0);
       }, { timeout: 1_500, interval: 20 });
       release();
@@ -877,7 +903,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
-  it.each(["own-process", "own-process-event", "own-checkpoint", "other-owner-boot", "other-owner-run", "claim-expired"] as const)(
+  it.each(["own-process", "own-process-event", "own-checkpoint", "other-owner-boot", "other-owner-run", "claim-expired", "attempt-started"] as const)(
     "refuses the outgoing server's idle checkpoint when the re-claimed follow-up is no longer waiting on it: %s", async scenario => {
       registerControllerInstanceDb(db);
       const parked = await parkFollowUpBehindOutgoingServer(owner => scenario === "other-owner-boot"
@@ -893,6 +919,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
           await db.insert(nativeRunnerCheckpoints).values({ companyId, issueId: fixture.scope.issueId, runId, part: "header", material: {} });
         } else if (scenario === "claim-expired") {
           await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, runId));
+        } else if (scenario === "attempt-started") {
+          await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, runId));
         }
         const before = await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId });
         await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
