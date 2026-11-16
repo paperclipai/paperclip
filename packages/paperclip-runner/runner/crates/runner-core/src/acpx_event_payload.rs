@@ -111,6 +111,9 @@ pub fn decode_acpx_event(
     admit_acpx_event_payload_size(event)?;
 
     match event.event_type {
+        GeneratedAcpxSidecarEventType::RuntimeTurnStarted => Err(LocalRunnerError::invalid(
+            "ACPX provider turn start requires an awaited continuation",
+        )),
         GeneratedAcpxSidecarEventType::RuntimeRichEvent => decode_rich_event(&event.payload),
         GeneratedAcpxSidecarEventType::RuntimeEvent => decode_runtime_event(&event.payload),
         GeneratedAcpxSidecarEventType::RuntimePermissionRequested => {

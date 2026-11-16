@@ -10,7 +10,9 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
-import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
+import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
+import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
@@ -87,6 +89,8 @@ import type {
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
+/** Wake outcome for a deferred chat wake whose news an earlier reply already gave. */
+export const ALREADY_REPORTED_WAKE_REASON = "Already reported by an earlier reply in this conversation";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -336,7 +340,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       }
     },
 
-    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
+    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds, retainDeliveredCommentBindings }) {
       // Malformed ids (for example an 8-char short form written into a wake
       // payload) can never match a comment row, but Postgres rejects the whole
       // `inArray` statement on the first invalid uuid and blocks every queued
@@ -358,7 +362,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       // received would deliver them twice and can reopen finished work.
       const delivered = await deliveredQueuedCommentIds(tx, { companyId, issueId, agentId: wakeAgentId,
         commentIds: liveAndUnauthored });
-      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
+      const liveNonSelfCommentIds = retainDeliveredCommentBindings
+        ? liveAndUnauthored
+        : liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
@@ -537,6 +543,22 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         const referencedChildren = children.filter((child) => child.identifier !== null && references.includes(child.identifier));
         return referencedChildren.length === 1 && referencedChildren[0].status === "done";
       });
+    },
+
+    async skipAlreadyReportedChatWake({ companyId, issueId, wake, now }) {
+      if (wake.authorizedFailedChatRetry || wake.queuedCommentIds.length > 0) return false;
+      const reported = (wake.wakeReason ?? wake.reason) === CHAT_COMPLETION_WAKE_REASON
+        ? await settleReportedChatCompletions(tx, { companyId, conversationId: issueId, agentId: wake.agentId })
+        : Boolean(await earlierDeclinedOutcomeReply(tx, { companyId, issueId, agentId: wake.agentId, payload: wake.payload }));
+      if (!reported) return false;
+      await notifyStrandedAgentStatus(tx, { companyId, agentId: wake.agentId });
+      await notifyChatInboundWakeNotices(tx, { companyId });
+      const rows = await tx.update(agentWakeupRequests)
+        .set({ status: "skipped", finishedAt: now, error: ALREADY_REPORTED_WAKE_REASON, updatedAt: now })
+        .where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.agentId, wake.agentId),
+          eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS)))
+        .returning({ id: agentWakeupRequests.id });
+      return rows.length > 0;
     },
 
     async isCompletedOnboardingHandoffWake(input) {
@@ -729,7 +751,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId });
+      await notifyRunDispatch(tx, { companyId, issueId: issue.id });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -808,7 +830,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId });
+      await notifyRunDispatch(tx, { companyId, issueId: issue.id });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -1106,7 +1128,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .set({ contextSnapshot: withRunRedactionHistory(input.mergedContextSnapshot, current.contextSnapshot), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),
@@ -1372,7 +1394,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: evidence.kind === "complete" &&
+          legacyExecutionNeedsReconciliation: evidence.kind === "complete" && !agentRunSupersededByFreshContinuation(run) &&
             await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, evidence.run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it

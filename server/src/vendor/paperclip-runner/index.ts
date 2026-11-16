@@ -67,6 +67,7 @@ export type {
   PrpTerminalState,
   PrpVerificationReasonCode,
   PrpWireConnection,
+  ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
   RunnerLaunchPreparer,
@@ -106,6 +107,8 @@ export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const admitToolInputSchema = runner.admitToolInputSchema;
 export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
 export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
+export const runnerLaunchPreparationDigest = runner.runnerLaunchPreparationDigest;
+export const runnerLaunchRunDigest = runner.runnerLaunchRunDigest;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
 export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
@@ -127,6 +130,8 @@ export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").Sem
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const toolInputVariantError = runner.toolInputVariantError;
+export const providerToolSchemaShapeIssues = runner.providerToolSchemaShapeIssues;
 export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;

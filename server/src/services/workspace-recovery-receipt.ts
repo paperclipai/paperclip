@@ -7,7 +7,7 @@ import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-m
 import { readSnapshot } from "./workspace-recovery-snapshot.js";
 import { exhaustedSystemRecoveryAction, isCapturePolicyRearmable, readSystemRecovery } from "./system-recovery-state.js";
 import { verifiedUnchangedRestoredSnapshot, verifiedWorkspaceSnapshotReuse } from "./remote-workspace-snapshot-reuse-receipt.js";
-import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
+import { isAbandonedPreparedRemoteWorkspace, isReleasedUnchangedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 
 export const workspaceRecoverySchema = z.object({
   schema: z.literal("paperclip.workspace-recovery.v1"),
@@ -198,7 +198,8 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
 }
 
 export async function hasVerifiedWorkspaceRepair(...args: Parameters<typeof verifiedWorkspaceRepairReceipt>) {
-  return (await verifiedWorkspaceRepairReceipt(...args)) !== null || await isAbandonedPreparedRemoteWorkspace(...args);
+  return (await verifiedWorkspaceRepairReceipt(...args)) !== null || await isAbandonedPreparedRemoteWorkspace(...args)
+    || await isReleasedUnchangedRemoteWorkspace(...args);
 }
 
 /** Read-only historical bytes have no execution authority. Their immutable

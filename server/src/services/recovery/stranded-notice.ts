@@ -27,6 +27,13 @@ export type StrandedRecoveryNoticeSeed = {
   nextAction?: string;
 };
 
+export const SAVED_WORK_HELD_SENTENCE = "Paperclip is holding this task until its saved work is settled.";
+
+export function withoutRetryInstruction(text: string): string {
+  const kept = text.split(/(?<=[.!?])\s+/).filter(sentence => !/\bretry\b/i.test(sentence));
+  return [...kept, SAVED_WORK_HELD_SENTENCE].join(" ");
+}
+
 export type StrandedRecoveryEscalationNotice = {
   body: string;
   presentation: IssueCommentPresentation;
@@ -87,19 +94,27 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
   },
 };
 
+export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
+
+export function buildNoRunningExecutionNoticeSeed(input: {
+  status: "todo" | "in_progress";
+  attempts?: number;
+}): StrandedRecoveryNoticeSeed {
+  const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  return {
+    body: input.status === "todo"
+      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+        + "Press Retry to start it again from the saved work.",
+    title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
+    tone: "danger",
+  };
+}
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
-  const retryDescription = input.status === "todo"
-    ? "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery"
-    : "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run recovery";
-  return {
-    body:
-      `${retryDescription}, but it still has no live execution path. ` +
-      "Moving it to `blocked` so it is visible for intervention.",
-    title: "No live execution path",
-    tone: "danger",
-  };
+  return buildNoRunningExecutionNoticeSeed(input);
 }
 
 export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
@@ -262,6 +277,7 @@ export function buildStrandedRecoveryEscalationNotice(input: {
   recoveryCause?: string | null;
   recoveryActionId: string;
   continuesAutomatically?: boolean;
+  retryOffered?: boolean;
   recoveryOwner: { id: string; name: string | null } | null | undefined;
   sourceRun: {
     id: string;
@@ -284,7 +300,8 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     tone: "danger" as const,
   } : SETUP_FAILURE_NOTICES[input.sourceRun?.errorCode ?? ""] ?? input.seed;
   const fallbackBody = input.fallbackBody?.trim();
-  const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
+  const honest = (text: string) => input.retryOffered === false ? withoutRetryInstruction(text) : text;
+  const body = honest(seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY));
   const title =
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
     seed?.title ??
@@ -302,9 +319,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
         ),
     keyValueRow(
       "Next action",
-      seed?.nextAction ?? (input.recoveryOwner
+      honest(seed?.nextAction ?? (input.recoveryOwner
         ? "The assigned agent continues the task from the saved work"
-        : RETRY_FROM_SAVED_WORK_NEXT_ACTION),
+        : RETRY_FROM_SAVED_WORK_NEXT_ACTION)),
     ),
   ];
 

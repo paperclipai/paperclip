@@ -3,7 +3,7 @@ export const REMOTE_RUNNER_RECOVERY_ERROR_CODE = "runner_remote_process_identity
 const stages = ["runner_state", "identity_marker", "process_verification"] as const;
 const reasons = [
   "marker_missing", "marker_unsafe", "marker_read_failed", "marker_invalid",
-  "fingerprint_missing", "process_not_running", "process_identity_changed",
+  "fingerprint_missing", "process_not_running", "process_identity_changed", "process_runner_id_missing",
   "fingerprint_unavailable", "process_generation_changed", "probe_timeout",
   "probe_transport_failed", "probe_failed",
   "state_read_failed", "state_invalid",
@@ -88,6 +88,29 @@ export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick
     runnerSettled: Array.isArray(state.outbox) && state.outbox.length === 0 &&
       state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null,
   };
+}
+
+/**
+ * The Runner exits with these codes after it stops its provider and saves its
+ * state, because only a new process with a fresh bootstrap ticket can
+ * reconnect. The replacement continues from the same cursor.
+ */
+const FRESH_BOOTSTRAP_RECOVERABLE_FAILURES = new Set([
+  "lease_expired_requires_bootstrap", "transport_reconnect_deadline_exceeded", "transport_reconnect_grace_exceeded",
+]);
+
+export function exitedRunnerRequestedFreshBootstrap(
+  diagnostic: Pick<RemoteRunnerRecoveryDiagnostic, "runnerLifecycle" | "runnerRecoverableFailure">,
+): boolean {
+  return diagnostic.runnerLifecycle === "recoverable_failure"
+    && FRESH_BOOTSTRAP_RECOVERABLE_FAILURES.has(diagnostic.runnerRecoverableFailure ?? "");
+}
+
+/** The saved state of an exited Runner that asked for a fresh bootstrap, re-read after its exit. */
+export function runnerStateRequestsFreshBootstrap(state: Record<string, unknown>): boolean {
+  return exitedRunnerRequestedFreshBootstrap({ ...describeExitedRemoteRunner(state),
+    ...describeExitedRemoteRunnerReason(state, text => text) })
+    && state.pendingTerminalDelivery == null && state.warmTransition == null;
 }
 
 const transportDiagnostics = new WeakMap<object, RemoteRunnerRecoveryDiagnostic>();
@@ -196,7 +219,7 @@ catch (error) {
 if (expectedGeneration) verifyGeneration();
 if (!args.includes("--runner-id") || !args.includes(runnerId)) {
   requireLiveProcess();
-  process.exit(44);
+  process.exit(48);
 }
 ' "$pid" "$expected_runner_id"` + ' "${5:-}"',
 ].join("; ");
@@ -215,6 +238,7 @@ export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic[
     if (exitCode === 45) return "process_not_running";
     if (exitCode === 46) return "fingerprint_unavailable";
     if (exitCode === 47) return "process_generation_changed";
+    if (exitCode === 48) return "process_runner_id_missing";
   }
   return "probe_failed";
 }

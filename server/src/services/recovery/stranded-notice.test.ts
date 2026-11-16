@@ -7,6 +7,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildNoRunningExecutionNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./stranded-notice.js";
@@ -16,9 +17,19 @@ function allRows(metadata: { sections: Array<{ rows: unknown[] }> }) {
 }
 
 describe("stranded recovery notice seeds", () => {
+  it("says what happened and the one thing to do, with no internal words (the UI recognizes this wording)", () => {
+    for (const seed of [buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+      buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 })]) {
+      expect(seed.body).toMatch(/^Paperclip tried to (start|continue) this task again, but it still could not (start|continue)\b/);
+      expect(seed.body).toContain("Press Retry");
+      expect(seed.body).not.toMatch(/execution path|intervention|`blocked`|`todo`|`in_progress`|issue|board operator|inspect|repair/i);
+    }
+    expect(buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 }).body).toContain("after 3 tries");
+  });
+
   it.each([
-    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "No live execution path"],
-    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "No live execution path"],
+    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "Task could not continue"],
+    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "Task could not continue"],
     ["workspace validation", buildWorkspaceValidationRecoveryNoticeSeed(), "Workspace validation failed"],
     ["configuration incomplete", buildConfigurationIncompleteRecoveryNoticeSeed(), "Configuration incomplete"],
     ["review participant recovery", buildExecutionReviewParticipantRecoveryNoticeSeed(), "Review recovery stalled"],
@@ -117,9 +128,9 @@ describe("stranded recovery notice seeds", () => {
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
-    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
+    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("tried to start this task again");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
-      "retried continuation",
+      "tried to continue this task again",
     );
   });
 });
@@ -389,4 +400,17 @@ it("tells the operator to switch a preconfigured Runner home to an isolated one"
   expect(notice.title).toBe("Isolated Runner home required");
   expect(notice.nextAction).toContain("isolated Runner home");
   expect(notice.nextAction).not.toContain("Choose an AI connection");
+});
+
+it("never tells a person to press Retry when the task offers no Retry", () => {
+  const sourceRun = { id: "run-1", status: "cancelled", errorCode: "execution_reconciliation_required" };
+  for (const seed of [buildNoRunningExecutionNoticeSeed({ status: "in_progress" }), null]) {
+    const offered = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun });
+    expect(`${offered.body} ${JSON.stringify(allRows(offered.metadata))}`).toMatch(/Press Retry/);
+    const withheld = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun,
+      retryOffered: false });
+    expect(withheld.body).not.toMatch(/retry/i);
+    expect(JSON.stringify(allRows(withheld.metadata))).not.toMatch(/retry/i);
+    expect(withheld.body).toContain("Paperclip is holding this task until its saved work is settled.");
+  }
 });

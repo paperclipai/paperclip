@@ -62,6 +62,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
+import { returnStoppedWaitingTaskToTodo } from "../services/heartbeat/stopped-waiting-task.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -3264,6 +3265,7 @@ export function agentRoutes(
         return { connectionId: selection.connection.id };
       }
       const testEnvironment = testEnvironmentId ? await environmentsSvc.getById(testEnvironmentId) : null;
+      if (testEnvironment?.driver === "ssh" && testEnvironment.config.useHostAuth !== false) return { connectionId: selection.connection.id };
       if (adapterType === "paperclip_runner" && config.homeMode === "preconfigured" && testEnvironment
         && await pluginEnvironmentRunnerTaskDriver(db, testEnvironment)) {
         throw unprocessable(pluginRunnerAiConnectionRequiredMessage(true), { code: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED });
@@ -3301,7 +3303,7 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
-      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
+      let aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
@@ -3314,7 +3316,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      let poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
         && (req.body.runner === undefined || req.body.runner === "auto")
         && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
@@ -3349,6 +3351,14 @@ export function agentRoutes(
       const requestedEnvironment = requestedEnvironmentId
         ? await assertAdapterTestEnvironmentBinding(companyId, requestedEnvironmentId)
         : null;
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth !== false) {
+        aiBinding = undefined;
+        poolBinding = undefined;
+      }
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth === false) {
+        if (!aiBinding && poolBinding?.mode !== "router") aiBinding = poolBinding;
+        if (!aiBinding && !poolBinding) throw unprocessable("Select an AI account for this agent or enable authentication configured on the remote machine in the SSH environment's advanced settings.", { code: "ssh_ai_connection_required" });
+      }
       // Agent reads redact every plain environment value. When this is a saved
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
@@ -3383,7 +3393,8 @@ export function agentRoutes(
           defaultEnvironmentId: requestedEnvironmentId,
         });
       type = selection.adapterType;
-      adapterConfigForTest = selection.adapterConfig;
+      adapterConfigForTest = { ...selection.adapterConfig,
+        ...(type === "paperclip_runner" && requestedEnvironment?.driver === "ssh" ? { homeMode: requestedEnvironment.config.useHostAuth === false ? "isolated" : "preconfigured" } : {}) };
       if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
@@ -7261,7 +7272,9 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs first: a deep queue must not push the work actually
+      // running past the limit.
+      .orderBy(sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
     let rows = liveRuns;
@@ -7301,13 +7314,17 @@ export function agentRoutes(
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => !(await actorCanReadRun(req, run)) ? redactHeartbeatRunListRow(run) : ({
+    const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, rows);
+    const readableRuns = rows.filter((_, index) => readDecisions[index]);
+    const silences = await heartbeat.buildRunOutputSilences(readableRuns);
+    const silenceByRun = new Map(readableRuns.map((run, index) => [run.id, silences[index]!]));
+    res.json(await runRedactions.redactForRuns(companyId, rows.map((run, index) => !readDecisions[index] ? redactHeartbeatRunListRow(run) : ({
       ...heartbeat.decorateActiveRunStatus(run),
       agentAppearance: resolveAgentAppearance(run.agentAppearance, run.agentId),
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
+      outputSilence: silenceByRun.get(run.id)!,
+    })), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   function readHeartbeatRunId(req: Request): string {
@@ -7366,6 +7383,11 @@ export function agentRoutes(
         entityId: run.id,
         details: { agentId: run.agentId },
       });
+      // Stop on a task still waiting in line: the run never started, so the
+      // task should not keep looking in progress.
+      if (existing.status === "queued") {
+        await returnStoppedWaitingTaskToTodo(db, run, { userId: req.actor.userId ?? null });
+      }
     }
 
     res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,

@@ -33,14 +33,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  runner_image_report:
-    name: Report the Runner image of this commit
-    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+  runner_image:
+    name: Resolve the Runner image of this commit
+    if: vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064'
     continue-on-error: true
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 70
     permissions:
       contents: read
+      actions: read
+      attestations: read
+    outputs:
+      mode: ${{ steps.verify.outputs.mode || 'inline' }}
+      build_contexts: ${{ steps.verify.outputs.build_contexts }}
+      labels: ${{ steps.verify.outputs.labels }}
+      build_args: ${{ steps.verify.outputs.build_args }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -70,12 +77,48 @@ jobs:
         timeout-minutes: 5
         run: node scripts/runner-image-resolve.mjs inputs --dir "$RUNNER_TEMP/runner-image-resolve"
 
-      - name: Report the Runner an image build would use
-        timeout-minutes: 2
+      - name: Find the published Runner image of these inputs
+        id: resolve
+        timeout-minutes: 55
+        env:
+          WAIT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          GITHUB_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.token || '' }}
         run: |
           set -euo pipefail
-          node scripts/runner-image-resolve.mjs resolve --dir "$RUNNER_TEMP/runner-image-resolve"
-          echo "Report only: no build read this result." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$WAIT" = true ]; then
+            node scripts/runner-image-resolve.mjs resolve --dir "$RUNNER_TEMP/runner-image-resolve" --wait
+          else
+            node scripts/runner-image-resolve.mjs resolve --dir "$RUNNER_TEMP/runner-image-resolve"
+          fi
+
+      - name: Verify the attestation of the Runner image
+        id: verify
+        if: steps.resolve.outputs.mode == 'published'
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.resolve.outputs.image }}
+          LABELS: ${{ steps.resolve.outputs.labels }}
+          BUILD_ARGS: ${{ steps.resolve.outputs.build_args }}
+        run: |
+          set -euo pipefail
+          if ! gh attestation verify "oci://$IMAGE" \
+            --repo paperclipai/paperclip \
+            --signer-workflow paperclipai/paperclip/.github/workflows/runner-image.yml \
+            --source-ref refs/heads/master; then
+            echo "::warning title=Runner image not verified::The attestation of $IMAGE did not verify. The image build makes its own Runner."
+            echo "The attestation of \`$IMAGE\` did not verify: the image build makes its own Runner." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo "mode=published"
+            echo "build_contexts=runner-artifacts=docker-image://$IMAGE"
+            echo "build_args=$BUILD_ARGS"
+            echo "labels<<runner-image-labels-end"
+            echo "$LABELS"
+            echo "runner-image-labels-end"
+          } >> "$GITHUB_OUTPUT"
+          echo "The attestation of \`$IMAGE\` verified: the image build copies this Runner." >> "$GITHUB_STEP_SUMMARY"
 
   source_verification:
     name: Watch exact-source verification
@@ -85,6 +128,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      checks: read # runner-loss evidence (annotations) for readiness retries
     outputs:
       verified: ${{ steps.watch.outputs.verified }}
     steps:
@@ -152,7 +196,7 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
-    needs: [reuse_canary_image]
+    needs: [reuse_canary_image, runner_image]
     if: ${{ !cancelled() && (needs.reuse_canary_image.result == 'skipped' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'false')) }}
     strategy:
       # Independent legs: one architecture failing should still publish
@@ -234,6 +278,7 @@ jobs:
           node-version: 24
 
       - name: Refresh lockfile for Docker build context
+        if: needs.runner_image.outputs.mode != 'published'
         run: |
           set -euo pipefail
           pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
@@ -285,7 +330,7 @@ jobs:
 
       # Build-before-merge. When the merge queue already built and probed this
       # exact commit (docker-merge-group.yml, with no registry credentials),
-      # push those bytes instead of rebuilding. scripts/merge-group-image.mjs
+      # push those bytes, unless a published Runner image is used. The script
       # requires a successful merge-group run of this repository for this SHA
       # and checks the record's commit, tree, architecture and archive digest.
       # Any missing or mismatched proof, or any failure here, leaves
@@ -293,7 +338,7 @@ jobs:
       # before. The probe below and the exact-source gate apply either way.
       - name: Find the merge-queue build of this commit
         id: find
-        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -412,6 +457,8 @@ jobs:
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
+            ${{ needs.runner_image.outputs.build_args }}
+          build-contexts: ${{ needs.runner_image.outputs.build_contexts }}
           platforms: ${{ matrix.platform }}
           # By digest, not by tag: two runners cannot each push the same tag
           # and end up with a manifest list. Each leg publishes an untagged
@@ -427,7 +474,9 @@ jobs:
           # have each leg overwrite the other's cache on every build.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            ${{ needs.runner_image.outputs.labels }}
 
       # Exactly one of the two paths produced this leg's digest.
       - name: Select image digest
@@ -494,6 +543,7 @@ jobs:
     permissions:
       contents: read
       actions: write # restart only exact-source producers deferred before admission
+      checks: read # runner-loss evidence (annotations) for readiness retries
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

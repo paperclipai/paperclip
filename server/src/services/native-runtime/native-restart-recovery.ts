@@ -5,7 +5,7 @@ import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
-import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
+import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -26,7 +26,7 @@ import {
   recordNativeLocalProcessStopInTransaction,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql, type SQLWrapper } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -221,6 +221,12 @@ function previousNoProgressRestarts(recoveryHistory: ReadonlyArray<RecoveryClaim
     return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : 0;
   }
   return 0;
+}
+
+function lastBootstrapRestartWatermark(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>): number | null {
+  const last = [...recoveryHistory].reverse().find(entry => RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition));
+  const previous = previousRecoveryClaim(recoveryHistory);
+  return last?.disposition === "bootstrap_incomplete" && typeof previous === "object" ? previous.watermark : null;
 }
 
 /**
@@ -759,7 +765,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   remoteBootstrapProvenIncomplete?: boolean;
   remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
     | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands"
-    | "remote_follow_up_never_attached";
+    | "remote_follow_up_never_attached" | "remote_bootstrap_restart_deferred_before_launch";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -1024,7 +1030,7 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
   run: typeof heartbeatRuns.$inferSelect; coordinator: typeof nativeRunFinalizations.$inferSelect;
   issueAssigneeAgentId: string | null; issueStatus: string;
 }, now: Date, reason: string, event: ReturnType<typeof historyEntry>, recoveryRequestId: string | null) {
-  await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+  await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
   await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
     nextAttemptAt: null, failureCode: "native_restart_recovery_blocked",
     failureDetail: { ...row.coordinator.failureDetail, reason, executorStopEvidence: "unverified" },
@@ -1056,6 +1062,17 @@ async function endNamespaceUnverifiedRun(tx: Db, row: {
   if (updatedRun) await preserveNativeFailedWorkspace(tx, updatedRun);
 }
 
+export function settledNativeControllerNamespaceAttention(owner: {
+  companyId: SQLWrapper | string; issueId: SQLWrapper | string; runId: SQLWrapper | string; leaseExpiresAt: SQLWrapper | string;
+}) {
+  return sql`exists (select 1 from ${issueRecoveryActions} settled
+    where settled.company_id = ${owner.companyId}::uuid and settled.source_issue_id = ${owner.issueId}::uuid
+      and settled.evidence->>'runId' = ${owner.runId}::text
+      and settled.status = 'resolved' and settled.cause = 'native_restart_recovery_blocked'
+      and starts_with(settled.fingerprint, 'native-controller-space:' || ${owner.runId}::text || ':')
+      and settled.resolved_at >= ${owner.leaseExpiresAt}::timestamptz)`;
+}
+
 /** Shared by restart inspection and failed-owner cleanup under their existing
  * issue/coordinator/run locks. Publishing attention never grants a new turn. */
 export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
@@ -1079,6 +1096,12 @@ export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
   const sameSource = existing?.cause === "native_restart_recovery_blocked"
     && existing.evidence.runId === input.run.id
     && ["controller_process_space_unverified", "remote_controller_process_space_unverified"].includes(String(existing.evidence.reason));
+  if (!existing && input.coordinator.leaseExpiresAt) {
+    const [settled] = await db.execute<{ settled: boolean }>(sql`select ${settledNativeControllerNamespaceAttention({
+      companyId: input.run.companyId, issueId: input.coordinator.issueId, runId: input.run.id,
+      leaseExpiresAt: input.coordinator.leaseExpiresAt.toISOString() })} as settled`);
+    if (settled?.settled) return;
+  }
   if (!existing || (sameSource && existing.fingerprint !== fingerprint)) {
     await attention.upsertSourceScoped({
       companyId: input.run.companyId, sourceIssueId: input.coordinator.issueId,
@@ -1110,6 +1133,7 @@ export async function claimNativeRestartRecoveries(input: {
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
   /** Runs this process handed to the next server (graceful drain or hot restart). */
   handedOffForShutdown?: (runId: string) => boolean;
+  handedOffByThisController?: (runId: string) => boolean;
   now?: Date;
   limit?: number;
   /** Called after each committed claim, before scanning the next candidate. */
@@ -1406,6 +1430,9 @@ export async function claimNativeRestartRecoveries(input: {
       // A run this process handed to the next server (graceful drain or hot
       // restart) stays with that server: this process is about to exit.
       const ownControllerProcess = !nonExecutionOwner && isCurrentNativeControllerProcess(row.coordinator);
+      if (ownControllerProcess && input.handedOffByThisController?.(row.run.id)) {
+        return { kind: "blocked", runId: row.run.id, reason: "handed_off_to_next_controller", transitionUnchanged: true } as const;
+      }
       if (ownControllerProcess && activeNativeExecutionRunIds.has(row.run.id)) {
         return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
       }
@@ -1481,7 +1508,7 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       if (!takeover.allowed) {
-        if (namespaceAttentionNeeded) {
+        if (namespaceAttentionNeeded && !["done", "cancelled"].includes(row.issueStatus)) {
           await surfaceNativeControllerNamespaceAttention(tx as unknown as Db, {
             run: row.run, coordinator: row.coordinator, expiryEpoch: row.controllerLeaseExpiryEpoch, remoteProcess,
           });
@@ -1735,7 +1762,25 @@ export async function claimNativeRestartRecoveries(input: {
         && await carriesSettledPredecessorSession(tx, row.run, checkpointRecord.providerSessionId)
         && !(await hasNativeRunnerOriginatedEvidence(tx, row.run))
         && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
-      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork || remoteFollowUpNeverAttached)
+      const bootstrapRestartWatermark = lastBootstrapRestartWatermark(row.coordinator.recoveryHistory);
+      const remoteBootstrapRestartDeferredBeforeLaunch = !unclaimedBootstrap && !remoteRunnerNeverLaunched
+        && !remoteRunnerExitedBeforeProviderWork && !remoteFollowUpNeverAttached
+        && remoteWorkspace?.state === "prepared" && !pluginTask && !durableAuthority && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "retryable_failure" && row.run.status === "running" && !row.coordinator.leaseOwner
+        && row.coordinator.failureCode === NATIVE_AGENT_DIRECTORY_BUSY_WAIT
+        && settledFailure?.recoveryMode === "bootstrap_retry"
+        && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
+        && !settledFailure?.successorRunId
+        && bootstrapRestartWatermark !== null
+        && providerEvents.length === 0 && (!hasCheckpoint || continuedSessionOnly)
+        && (inheritedRunnerIdentity || (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt))
+        && (!row.run.sessionIdBefore || continuedSessionOnly) && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !(await nativeExecutionStartedSince(tx, row.run.id, bootstrapRestartWatermark))
+        && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
+      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork || remoteFollowUpNeverAttached
+        || remoteBootstrapRestartDeferredBeforeLaunch)
         && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
@@ -1809,11 +1854,13 @@ export async function claimNativeRestartRecoveries(input: {
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority) || portablePreparation,
         unclaimedBootstrap: unclaimedBootstrap || portablePreparation && row.coordinator.attempt === 0,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached || portablePreparation,
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached || portablePreparation
+          || remoteBootstrapRestartDeferredBeforeLaunch,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched || portablePreparation ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
           : remoteFollowUpNeverAttached ? "remote_follow_up_never_attached"
+          : remoteBootstrapRestartDeferredBeforeLaunch ? "remote_bootstrap_restart_deferred_before_launch"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
@@ -1822,7 +1869,8 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint: hasCheckpoint && !portablePreparation && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
-          && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
+          && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly)
+          && !remoteBootstrapRestartDeferredBeforeLaunch,
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
@@ -1884,7 +1932,7 @@ export async function claimNativeRestartRecoveries(input: {
           recycledProviderPids: providerProcesses.recycledPids,
           stderrTail: row.run.stderrExcerpt,
         });
-        await notifyExecutionRunWork(tx, { companyId: row.run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: row.run.companyId, runId: row.run.id });
         await tx
           .update(nativeRunFinalizations)
           .set({

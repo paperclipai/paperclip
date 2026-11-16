@@ -226,6 +226,8 @@ export interface TaskChatToolItem {
   name: string;
   /** Raw ACP tool name pre-collapse ("mcp__server__tool") for taxonomy lookup. */
   rawName?: string;
+  /** The app tool a wrapper call runs (`paperclip_call_assigned_tool`'s `name`), for its progress. */
+  appToolName?: string;
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;

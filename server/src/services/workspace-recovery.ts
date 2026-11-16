@@ -572,6 +572,10 @@ async function recordCopybackOwnerHold(db: Db, input: Source, generationId: stri
 
 const cursors = new WeakMap<Db, string>();
 const workInFlight = new WeakMap<Db, Set<string>>();
+/** Overdue recoveries the assigned-work sweep started outside the queue's
+ * slots. The queue skips their runs; their count has its own small limit. */
+const overdueInFlight = new WeakMap<Db, Set<string>>();
+export const OVERDUE_WORKSPACE_RECOVERY_LIMIT = 2;
 const unfinishedCursors = new WeakMap<Db, string>();
 
 /** Destruction is a later cleanup obligation, authorized only by a matching
@@ -697,7 +701,7 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   if (pending.size >= 2) return;
   // Locally running exports already own their slot. Exclude them before
   // pagination so a page containing only held work cannot prevent wrapping.
-  const inFlightRunIds = [...pending];
+  const inFlightRunIds = [...pending, ...(overdueInFlight.get(db) ?? [])];
   let unfinishedRows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
   if (!unfinishedRows.length) unfinishedRows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
   const unfinished: CandidateLane = { rows: unfinishedRows, index: 0, advance: id => unfinishedCursors.set(db, id) };
@@ -764,30 +768,64 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
     const finish = beginIdleTrackedWork();
     const physical = actions.some(action => ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? ""));
     work.push((async () => { try {
-      for (const action of actions) await recoverRunAction(action, run);
+      for (const action of actions) await recoverRunAction(db, runtime, onRecovered, action, run);
     } finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
   }
   return work;
+}
 
-  async function recoverRunAction(action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect) {
-    try {
-      await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
-      const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
-      const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
-      const exhausted = readSystemRecovery(updated?.evidence)?.state === "exhausted";
-      if (recovered || exhausted) {
-        const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
-        if (current) {
-          if (recovered) {
-            await resumePreservedResultFinalization(db, current.companyId, current.id);
-            await scheduleRecoveredWorkspaceCleanup(db, current);
-          }
-          // Only normal dispatch can consume existing authorized input. An
-          // exhausted export permits evaluation of an isolated continuation,
-          // never another export attempt or a replay of an old assignment.
-          await onRecovered(current);
+/**
+ * Starts one saved-work recovery that the queue has not reached within its
+ * bound (the assigned-work sweep's repair). It runs outside the queue's two
+ * slots, so a queue held by slow or stuck attempts cannot keep a task waiting
+ * indefinitely, and it goes through the same ownership and attempt bookkeeping
+ * as the queue, so it never runs beside another attempt for the same run.
+ * Resolves once the attempt is started (or refused), not when it finishes.
+ */
+export async function startOverdueWorkspaceRecovery(db: Db, runtime: EnvironmentRuntimeService,
+  onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, source: Source):
+  Promise<"started" | "in_flight" | "busy" | "not_eligible"> {
+  const overdue = overdueInFlight.get(db) ?? new Set<string>();
+  overdueInFlight.set(db, overdue);
+  if (overdue.has(source.runId) || workInFlight.get(db)?.has(source.runId)) return "in_flight";
+  if (overdue.size >= OVERDUE_WORKSPACE_RECOVERY_LIMIT) return "busy";
+  const [row] = await db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id, source.runId)))
+    .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
+      eq(issueRecoveryActions.sourceIssueId, source.issueId), sql`${issueRecoveryActions.evidence}->>'runId' = ${source.runId}`,
+      inArray(heartbeatRuns.status, terminal), workspaceRecoverySourceEligible(),
+      sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`)).limit(1);
+  if (!row) return "not_eligible";
+  if (overdue.has(source.runId) || workInFlight.get(db)?.has(source.runId)) return "in_flight";
+  overdue.add(source.runId);
+  const finish = beginIdleTrackedWork();
+  void (async () => {
+    try { await recoverRunAction(db, runtime, onRecovered, row.action, row.run); }
+    finally { overdue.delete(source.runId); finish(); }
+  })();
+  return "started";
+}
+
+async function recoverRunAction(db: Db, runtime: EnvironmentRuntimeService,
+  onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>,
+  action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect) {
+  try {
+    await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
+    const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
+    const exhausted = readSystemRecovery(updated?.evidence)?.state === "exhausted";
+    if (recovered || exhausted) {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      if (current) {
+        if (recovered) {
+          await resumePreservedResultFinalization(db, current.companyId, current.id);
+          await scheduleRecoveredWorkspaceCleanup(db, current);
         }
+        // Only normal dispatch can consume existing authorized input. An
+        // exhausted export permits evaluation of an isolated continuation,
+        // never another export attempt or a replay of an old assignment.
+        await onRecovered(current);
       }
-    } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-  }
+    }
+  } catch (error) { logger.warn({ err: error, runId: run.id, actionId: action.id }, "Retained workspace remains pending"); }
 }

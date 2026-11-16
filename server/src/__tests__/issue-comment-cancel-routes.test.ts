@@ -392,6 +392,22 @@ describe("issue comment cancel routes", () => {
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
   });
 
+  it("points a non-author agent at a board user for an agent-authored queued message", async () => {
+    mockIssueService.getComment.mockResolvedValue(makeComment({
+      authorUserId: null, authorAgentId: "33333333-3333-4333-8333-333333333333",
+    }));
+    const agent = { type: "agent", agentId: "22222222-2222-4222-8222-222222222222", companyId: "company-1", runId: "run-1", source: "agent_key" };
+    const res = await request(await installActor(createApp(), agent))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/queued-comments/comment-1")
+      .send({ queueId: "queue-1", revision: "revision-1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("board user with access");
+    expect(res.body.error).toContain("[PAP-1353](/PAP/issues/PAP-1353)");
+    expect(res.body.error).not.toContain("no board, admin or agent override");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
   it("returns 404 without task details when the agent cannot read the private task", async () => {
     mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
       action, allowed: false, reason: "deny_issue_private", explanation: "Private task",

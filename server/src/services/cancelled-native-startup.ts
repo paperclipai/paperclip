@@ -107,8 +107,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
-        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "aiConnectionNonAssigneeCommentWake" && typeof value === "boolean")
+      && !(key === "nativeWorkspaceOwnerStopProof" && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
@@ -245,7 +245,7 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
       heartbeatRuns.nativeIssueId, heartbeatRuns.nativeSessionId, heartbeatRuns.sessionIdAfter].map(column => isNull(column)),
     noProviderOutputPredicate(),
     sql`${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}' = 'paperclip_runner'`,
-    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission') = '{}'::jsonb`,
+    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission' - 'aiConnectionNonAssigneeCommentWake') = '{}'::jsonb`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->>'kind' = 'workspace_wait'`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->'providerWorkStarted' = 'false'::jsonb`,
     sql`(${heartbeatRuns.resultJson} - 'cancellation' - 'workspaceBusy' - 'executionRecovery') = '{}'::jsonb`,

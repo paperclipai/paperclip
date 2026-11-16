@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AgentQueueWait } from "./AgentQueueWait";
+import { agentQueueWaitOf, isWaitingToStart } from "../lib/agent-queue-wait";
 import type { ActivityEvent, Issue, Agent, ProviderTraceMetadata } from "@paperclipai/shared";
 import {
   isResponsibleUserDenialCode,
@@ -34,6 +36,7 @@ import {
   ProviderTraceStatusBadge,
   runRequestedProviderTrace,
 } from "./ProviderTraceStatusBadge";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -463,7 +466,7 @@ export function IssueRunLedger({
   });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId), issueId, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId)),
     enabled: hasLiveRuns,
     refetchInterval: 3000,
     placeholderData:
@@ -846,6 +849,7 @@ export function IssueRunLedgerContent({
             }
             const run = item.run;
             const nextAction = run.execution ? run.execution.nextAction : run.nextAction;
+            const agentQueue = isWaitingToStart(run) ? agentQueueWaitOf(run.execution) : null;
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
@@ -889,7 +893,7 @@ export function IssueRunLedgerContent({
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
-                  {run.isLive ? (
+                  {run.isLive && !isWaitingToStart(run) ? (
                     <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
@@ -1005,7 +1009,9 @@ export function IssueRunLedgerContent({
                   />
                 ) : null}
 
-                {nextAction ? (
+                {agentQueue ? (
+                  <AgentQueueWait queue={agentQueue} className="text-xs" />
+                ) : nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">
                       Next action:{" "}

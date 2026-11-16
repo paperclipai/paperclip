@@ -149,6 +149,9 @@ describe("waits for a finished run's reply to be saved, then rendered, before it
 // finalization after the run's terminal status and logged no comment_added, so the open conversation never
 // fetched it; the thread kept only the person's message. One reload reads the saved conversation.
 describe("reloads once when a saved reply never renders in the open conversation", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+  const settle = async <T>(waiting: Promise<T>) => { await vi.runAllTimersAsync(); return waiting; };
   const reloading = (onReload: () => void) => {
     let reloads = 0;
     const page = { evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg),
@@ -159,7 +162,7 @@ describe("reloads once when a saved reply never renders in the open conversation
     const comments = async () => input().comments;
     document.querySelector('#comment-reply')!.remove();
     const p = reloading(() => document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'));
-    const wait = await waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50);
+    const wait = await settle(waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50));
     expect(wait.result).toBe("rendered"); expect(p.reloads()).toBe(1);
     expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
   });
@@ -171,17 +174,17 @@ describe("reloads once when a saved reply never renders in the open conversation
       document.body.innerHTML = "<main>Loading</main>";
       setTimeout(() => { document.body.innerHTML = saved; document.querySelector('[data-testid="task-chat-scroller"]')!.insertAdjacentHTML("beforeend", '<div id="comment-reply"><a href="/RUN/issues/task">Task</a></div>'); }, 300);
     });
-    const wait = await waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 1_000, 50);
+    const wait = await settle(waitForSavedTurnReplyRenderReloadingOnce(p.page, { comments, leadId: "ceo", runIds: ["run"] }, 1_000, 50));
     expect(wait.attempts.map(row => [row.phase, row.result])).toEqual([["open-document", "pending"], ["after-reload", "rendered"]]);
   });
   it("does not reload a reply that rendered live, and still reports a reply that never renders", async () => {
     const comments = async () => input().comments;
     const live = reloading(() => undefined);
-    expect((await waitForSavedTurnReplyRenderReloadingOnce(live.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50)).result).toBe("rendered");
+    expect((await settle(waitForSavedTurnReplyRenderReloadingOnce(live.page, { comments, leadId: "ceo", runIds: ["run"] }, 300, 50))).result).toBe("rendered");
     expect(live.reloads()).toBe(0);
     document.querySelector('#comment-reply')!.remove();
     const never = reloading(() => undefined);
-    const wait = await waitForSavedTurnReplyRenderReloadingOnce(never.page, { comments, leadId: "ceo", runIds: ["run"] }, 200, 50);
+    const wait = await settle(waitForSavedTurnReplyRenderReloadingOnce(never.page, { comments, leadId: "ceo", runIds: ["run"] }, 200, 50));
     expect(wait.result).toBe("pending"); expect(never.reloads()).toBe(1); expect(wait.attempts).toHaveLength(2);
   });
 });

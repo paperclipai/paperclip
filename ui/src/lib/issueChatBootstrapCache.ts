@@ -4,6 +4,7 @@ import type { RunForIssue } from "@/api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import { seedIssueIdBatch } from "@/hooks/useIssueIdBatches";
 import { seedIssueDetailProjections } from "./issueDetailCache";
+import { isRestoredSavedRead } from "./persisted-query-cache";
 import {
   buildRecentIssueRunWindow,
   issueCommentInputFactsQueryKey,
@@ -71,13 +72,17 @@ export function hasFreshIssueChatFirstFrame(queryClient: QueryClient, refs: read
  * A key with a read in flight or a pending invalidation is left to that read.
  * `replace` endpoints return the whole answer, so older cached data may be
  * replaced. The others merge what the open page observed (comments, activity,
- * runs), so only an empty key is filled.
+ * runs), so only an empty key is filled. Data restored from the saved read
+ * cache is a stand-in no read has confirmed, so the answer replaces it.
  */
 function seedKey(queryClient: QueryClient, key: QueryKey, data: unknown, requestedAt: number, replace: boolean) {
   // A missing field (an older server, or a partial answer) is not an empty answer.
   if (data === undefined) return false;
   const state = queryClient.getQueryState(key);
-  if (state) {
+  if (state && isRestoredSavedRead(queryClient, key)) {
+    // A revalidation already running shares this answer, or asks the server.
+    if (state.fetchStatus === "fetching") return false;
+  } else if (state) {
     if (state.fetchStatus === "fetching" || state.isInvalidated) return false;
     if (state.data !== undefined && (!replace || state.dataUpdatedAt >= requestedAt)) return false;
   }

@@ -31,6 +31,13 @@ describe("native continuation event projection", () => {
     expect(marked.readByEarlierTurn).toEqual({ messageIds: ["new"], note: expect.stringContaining("may have applied it") });
     expect(JSON.parse(build({ ...wake, comments: [comment] })!).readByEarlierTurn).toBeUndefined();
   });
+  it("keeps the task widgets' app context on a resumed turn", () => {
+    const appContext = "## App context (untrusted)\n\n```json\n{\"app\":\"Circleback\",\"text\":\"Selected m2\"}\n```";
+    const events = JSON.parse(build({ ...wake, mcpAppContext: appContext })!);
+    expect(events.appContext).toBe(appContext);
+    expect(events.messages[0]).toMatchObject({ body: message.body });
+    expect(JSON.parse(build()!).appContext).toBeUndefined();
+  });
   it("only uses a delta whose base matches the actual previous run", () => {
     expect(build({ ...wake, executionContinuation: { ...wake.executionContinuation, resumeDelta: { baseRunId: "different", messages: [message] } } })).toBeNull();
     expect(build({ ...wake, executionContinuation: null })).toBeNull();

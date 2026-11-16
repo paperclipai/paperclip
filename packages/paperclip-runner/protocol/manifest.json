@@ -35,7 +35,7 @@
     {
       "path": "schemas/command-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/command.schema.json",
-      "sha256": "3c8a2d55bfcd1151885ed74bfb4fe2994b9b56f4794d02e446606253d2e8870d"
+      "sha256": "0757002c91143e89b12efd46d80c981a00a739109adf22992038398c4f84e7c7"
     },
     {
       "path": "schemas/command.schema.json",
@@ -60,7 +60,7 @@
     {
       "path": "schemas/event-v3.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v3/event.schema.json",
-      "sha256": "dcd842c34d0b6cccffde3d28de9f5c68790699962eb30d19ffc54f2fc30e24d8"
+      "sha256": "d661ba8facbbec1389509f17bb6322958d100af98838b98a654e0a7cba15053f"
     },
     {
       "path": "schemas/event.schema.json",
@@ -96,6 +96,11 @@
       "path": "schemas/provider-failure.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/provider-failure.schema.json",
       "sha256": "d8bc6a9a165d48c125aa0b2193f6dc212450156086f17ef852f93a3a4c260dd0"
+    },
+    {
+      "path": "schemas/provider-turn.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json",
+      "sha256": "5112079cb5ba37b81728437d686cff22317b77cbbd039e1891a53cd37971e06c"
     },
     {
       "path": "schemas/question-adapter-fixture.schema.json",
@@ -185,7 +190,7 @@
     },
     {
       "path": "fixtures/evals/native-execution-seeded.json",
-      "sha256": "9a89a18e01b2eef9066a4d84dcad385df173742ce8db1baf19e6d6e1d25ab72b",
+      "sha256": "8a23b12f3345339517ff0ec31ca4d9580a27f3599ea965700b81fe2cbf988cae",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },
@@ -228,6 +233,12 @@
     {
       "path": "fixtures/local-runner/scripts/permission-input.json",
       "sha256": "9b64b78ed75006b9190c80fd88c5ab555ef458f7ad023e8ebfdac8de373e1f9c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/provider-boundary/acpx-background-tasks.json",
+      "sha256": "25a8ee4368eaded9fd8a6784900c9918bbb5c8f59fffb2c37466971e1d5be438",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

@@ -6,7 +6,7 @@ import { canSelectFreshWorkspace, freshReadinessSchema, retainedIssueWorkspaceFo
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent, retireTaskRetriesContinuedBy } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { readSystemRecovery } from "./system-recovery-state.js";
+import { readSystemRecovery, savedFilesUnrecoverable, unrecoverableSavedFilesFailure, unrecoverableSavedFilesNotice } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
@@ -476,6 +476,7 @@ export async function admitExplicitNativeContinuation(input: {
             and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
           recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
           retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
+          evidence: issueRecoveryActions.evidence,
         }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -486,11 +487,12 @@ export async function admitExplicitNativeContinuation(input: {
         // A spent recovery budget finishes nothing by itself. Another Retry
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
-        if (live.length && live.every(row => row.recoveryState === "exhausted"))
+        if (!live.length || !live.every(row => row.recoveryState === "exhausted"))
+          return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+        if (!freshIntent || !live.every(row => savedFilesUnrecoverable(readSystemRecovery(row.evidence))))
           return live.some(row => row.retryClass === "service_required")
-            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Your Retry is saved.")
             : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
-        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       }
     }
     // A repaired export no longer blocks execution. Its machine receipt still
@@ -716,12 +718,15 @@ export async function admitExplicitNativeContinuation(input: {
     failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "explicit_user_continuation" })}::jsonb`,
     updatedAt: new Date(),
   }).where(and(eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.runId, nativeSources.map(run => run.id))));
+  const unrecoverable = actions.map(action => freshSources.has(String(action.evidence.runId))
+    ? unrecoverableSavedFilesFailure(readSystemRecovery(action.evidence)) : null).find(failure => failure !== null) ?? null;
   if (actions.length) await db.transaction(async tx => {
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
   for (const action of actions) {
     await tx.update(issueRecoveryActions).set({
       status: "resolved", outcome: "cancelled", resolvedAt: new Date(), updatedAt: new Date(),
-      nextAction: "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
+      nextAction: unrecoverable ? unrecoverableSavedFilesNotice(unrecoverable)
+        : "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
       resolutionNote: "The user continued after the prior execution stopped. No action outcomes were inferred.",
       wakePolicy: null, monitorPolicy: null,
       evidence: { ...action.evidence, explicitUserContinuation: authorization,
@@ -734,6 +739,11 @@ export async function admitExplicitNativeContinuation(input: {
         } } : {}),
       },
     }).where(eq(issueRecoveryActions.id, action.id));
+  }
+  if (unrecoverable) {
+    const { issueService } = await import("./issues.js");
+    await issueService(db).addComment(issueId, unrecoverableSavedFilesNotice(unrecoverable), {},
+      { authorType: "system" }, tx);
   }
   });
   await persistActivity(db, { companyId, actorType: "user", actorId,

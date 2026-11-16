@@ -1,4 +1,5 @@
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { executionStartedEventPredicate } from "../pre-dispatch-execution-evidence.js";
 import { and, eq, exists, sql } from "drizzle-orm";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
@@ -63,6 +64,10 @@ function nativeWorkspaceRunProjection() {
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
       'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}', 'bridgeRevision', ${input}#>'{provider,bridgeRevision}'))`,
     controllerBootId: heartbeatRuns.controllerBootId,
+    cancelledBeforeRunnerLaunch: sql<boolean>`${heartbeatRuns.status} = 'cancelled'
+      and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+      and not exists (select 1 from ${heartbeatRunEvents} where ${and(eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId),
+        eq(heartbeatRunEvents.runId, heartbeatRuns.id), executionStartedEventPredicate())})`,
     contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
     remoteReference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'`,
   };
@@ -71,9 +76,11 @@ function nativeWorkspaceRunProjection() {
 function nativeWorkspaceSourcePending(run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "runtimeMode" | "driverKind"> & {
     reference: unknown; executionScope: Record<string, unknown>; observedRemoteWorkspace: boolean;
+    cancelledBeforeRunnerLaunch: boolean;
   }, lease: WorkspaceSourceLease) {
   if (run.runtimeMode !== "native") return false;
   if (run.observedRemoteWorkspace) return true;
+  if (run.cancelledBeforeRunnerLaunch) return false;
   if (nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id

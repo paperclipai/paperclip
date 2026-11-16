@@ -126,6 +126,31 @@ describe("native turn accounting", () => {
     expect(accounting.snapshot().usage).not.toHaveProperty("accountingUsageLost");
   });
 
+  it("counts a prompt turn and the provider-started turn after it once each, as the executor receives them", () => {
+    const acpx = { kind: "acpx" as const, agent: "claude", model: "claude-sonnet-5" } as never;
+    const accounting = createNativeTurnAccounting(acpx);
+    const report = (inputTokens: number, outputTokens: number, sessionCost: number) => ({ kind: "usage", usage: {
+      total: { inputTokens: 0, outputTokens: 0, providerCostUsd: sessionCost },
+      runDelta: { inputTokens, outputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, providerCostUsd: 0 }, runDeltaComplete: true } });
+    const history = [
+      event(1, "turn.started", "turn_lab_prompt", { status: "inProgress" }),
+      event(2, "item.completed", "turn_lab_prompt", report(6, 4, 0.2)),
+      event(3, "turn.completed", "turn_lab_prompt", { status: "completed", error: null, awaitingProviderTurn: true }),
+      event(4, "turn.started", "provider-1", { status: "inProgress", origin: "provider" }),
+      event(5, "item.completed", "provider-1", report(30, 20, 0.465)),
+      event(6, "turn.completed", "provider-1", { status: "completed", error: null }),
+    ];
+    history.forEach(value => accounting.observe(value));
+    history.forEach(value => accounting.observe(value));
+    const snapshot = accounting.finish("provider-1");
+    expect(snapshot.complete).toBe(true);
+    expect(snapshot.turnId).toBe("provider-1");
+    expect(normalizeNativeUsage(snapshot.usage)).toEqual({ inputTokens: 36, outputTokens: 24, cachedInputTokens: 0, cacheWriteTokens: 0 });
+    expect(nativeUsageCostUsd(snapshot.usage, acpx)).toBeUndefined();
+    expect(snapshot.usage).not.toHaveProperty("accountingCostUsdExact");
+    expect(JSON.stringify(snapshot.usage)).not.toMatch(/0\.665|0\.465|0\.2[^0-9]/);
+  });
+
   it("keeps an incomplete provider report pending instead of trusting placeholder zeroes", () => {
     const accounting = createNativeTurnAccounting(provider);
     accounting.observe(event(1, "turn.started"));

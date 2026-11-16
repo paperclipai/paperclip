@@ -189,6 +189,42 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await renewLegacyControllerLease(db, run)).toBe(false);
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
   });
+  it("renews at once when the watch starts on a lease older than one renewal interval", async () => {
+    // The watch can start long after the claim (a slow claim batch). Waiting for
+    // the first 10 s tick let a still-live lease reach its deadline unrenewed.
+    const run = await seed();
+    const [late] = await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp() + interval '1500 milliseconds'` })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(db, late, controller);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 2_000));
+      expect(controller.signal.reason?.leaseLossTiming).toBeUndefined();
+      expect(controller.signal.aborted).toBe(false);
+      const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(saved.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + LEGACY_CONTROLLER_LEASE_MS - 5_000);
+      expect(saved.controllerBootId).toBe(legacyControllerBootId);
+    } finally { watch.stop(); }
+  });
+  it.each(["revoked by recovery", "reaped", "lapsed"] as const)(
+    "a watch that starts late on a lease that was %s still loses it and never revives it", async outcome => {
+    const run = await seed();
+    await expire(run.id);
+    if (outcome === "revoked by recovery") expect(await revokeExpiredLegacyController(db, run)).toBe(true);
+    if (outcome === "reaped") await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    const controller = new AbortController();
+    // The stale claim-time row still names this boot with a lease that has not expired locally.
+    const watch = watchLegacyControllerLease(db, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 1_000) }, controller);
+    try {
+      await vi.waitFor(() => expect(controller.signal.aborted).toBe(true), { timeout: 2_000 });
+      expect(controller.signal.reason).toBeInstanceOf(LegacyControllerLeaseLostError);
+      expect(controller.signal.reason.leaseLossCause).toBe("renewal_rejected");
+      const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(after).toMatchObject({ status: before.status, controllerBootId: before.controllerBootId,
+        controllerLeaseExpiresAt: before.controllerLeaseExpiresAt });
+    } finally { watch.stop(); }
+  });
   it("rejects dispatch at the lease deadline even if the database query never settles", async () => {
     const run = await seed();
     const hungDb = fakeRenewalDb(() => new Promise(() => {}));
@@ -619,7 +655,9 @@ describe("legacy controller lease loss attribution", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(controller.signal.reason.leaseLossCause).toBe("renewal_deadline");
       expect(controller.signal.reason.leaseLossTiming.deadlineLateMs).toBeGreaterThanOrEqual(60);
-      expect(controller.signal.reason.leaseLossTiming.renewalPendingMs).toBeNull();
+      // A watch that starts this close to the deadline renews at once; that renewal never answered.
+      expect(controller.signal.reason.leaseLossTiming.renewalPendingMs).toBeGreaterThanOrEqual(60);
+      expect(controller.signal.reason.leaseLossTiming.renewalCount).toBe(0);
     } finally { watch.stop(); }
   });
 });

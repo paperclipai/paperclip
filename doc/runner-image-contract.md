@@ -2,9 +2,11 @@
 
 The Runner image is the Runner built alone, as a plain file tree with no
 entrypoint and no operating system. An image build copies paths out of it
-instead of compiling the Runner again. Nothing in this repository consumes it
-yet. Its name is `ghcr.io/paperclipai/paperclip-runner`, and one build makes
-two variants:
+instead of compiling the Runner again. The application image of this
+repository takes its Runner from the stage that builds it (see "The
+application image"), or copies the published image when a repository variable
+allows it (see "The Runner of the application image"). Its name is
+`ghcr.io/paperclipai/paperclip-runner`, and one build makes two variants:
 
 - full, the `runner-artifacts` target of the `Dockerfile`: every path below;
 - slim, the `runner-artifacts-slim` target: the same without the two paths
@@ -95,6 +97,21 @@ build reads (the root one, `packages/paperclip-runner` and
 pull-request runs resolve it first. For a local build, run
 `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`.
 
+Three places ask pnpm the same question, with the same arguments
+(`runnerLockState` in `scripts/runner-image-publish.mjs`):
+
+- the publication workflow, which publishes nothing for a lockfile that is
+  behind;
+- the `runner-lockfile` stage of the `Dockerfile`, which fails an application
+  image build and prints the command above. The application's dependency
+  install starts from that stage, so it cannot start before the check passes.
+  The Runner's toolchain and daemon stages do not depend on it, so they can
+  already be running, and the failed check cancels them.
+- `scripts/check-release-runner-lockfile.mjs`, which `scripts/release.sh`
+  runs for a beta and for a stable release. It checks the committed files of
+  the release commit, so a beta or stable tag always builds with a plain
+  `docker build`. A canary or a nightly is not checked.
+
 ## Checks
 
 CI builds each variant as an OCI archive and nothing else.
@@ -131,7 +148,8 @@ uses it.
 
 ## Consuming the image
 
-Read the image only with `COPY --from`, and pin it by digest:
+Read the image only with `COPY --from` or a read-only bind mount
+(`RUN --mount=type=bind,from=`), and pin it by digest:
 
 ```dockerfile
 FROM ghcr.io/paperclipai/paperclip-runner@sha256:<digest> AS runner-artifacts
@@ -144,15 +162,55 @@ its own, as in this repository, can take a built image or tree in its place
 with `--build-context <stage>=<image or directory>`. The stage is then not
 built.
 
+### The application image
+
+The `production` and `cloud` targets of the `Dockerfile` read only the
+`runner-artifacts` stage, in two stages:
+
+- `build` copies `/runner-package/dist` and the build stamp into
+  `packages/paperclip-runner` and sets
+  `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1`. The server build then vendors
+  that output, and fails when the stamp does not match the Runner inputs of
+  the tree it builds. The lockfile is one of those inputs.
+- `runner-provider-pack` copies `/provider-pack`, the receipt and the
+  archives, and moves each pack file of 1 MiB or more to a tree of its own.
+  `production` copies the three trees with the same three instructions as
+  before, so the paths under `/opt/paperclip-runner/` and the layers are the
+  same. A deployed server finds the transport layer of an application image
+  by the text of the instruction
+  `COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/`
+  in the image history (`retained-provider-pack-oci.ts`). Do not change it.
+
+Unless a workflow replaces the stage (see "The Runner of the application
+image"), an application image build runs the Runner stages itself: an inline
+Runner. An inline Runner is not this image, and an application image says so
+in three ways:
+
+- its pack names the build commit of the application image as
+  `payload.runnerSourceRevision`, the value of `PAPERCLIP_BUILD_COMMIT`;
+- its pack has no `payload.runnerInputsDigest`;
+- the image has neither label of "Choosing the Runner for an image build".
+
+A build without `PAPERCLIP_BUILD_COMMIT` has no pack, as before.
+
+`build` also declares the build argument
+`PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST`. It is for a build that replaces the
+stage with a published image, and `docker.yml` sets it together with the
+build context. When the argument is
+set, `scripts/check-runner-image-expectation.mjs` reads `/runner-image.json`
+of the `runner-artifacts` the build was given, and the build fails unless
+that file has `publication: true` and names exactly those inputs. An inline
+Runner is never a publication, so the argument without the image fails too.
+The check runs before the server build vendors the Runner.
+
 ### Choosing the Runner for an image build
 
 `scripts/runner-image-resolve.mjs` decides whether a build of a checkout can
-copy the published image. No build uses its answer yet: on a `master` push,
-the `runner_image_report` job of `.github/workflows/docker.yml` runs it and
-writes the answer to the job summary, and nothing reads that job. The job
-runs on the committed files, holds no credential (the Runner package is
-public, so the lookup is anonymous) and cannot fail the run. The script has
-two commands, so that the one that builds reads no registry credential:
+copy the published image. The `runner_image` job of
+`.github/workflows/docker.yml` runs it for the application image; see "The
+Runner of the application image". The Runner package is public, so the lookup
+needs no credential. The script has two commands, so that the one that builds
+reads no credential:
 
 ```sh
 node scripts/runner-image-resolve.mjs inputs --dir "$dir"
@@ -170,16 +228,143 @@ the committed files, before any step that rewrites `pnpm-lock.yaml`.
 - `build_contexts`: one `--build-context` value on each line, which replace
   the `runner-artifacts` and `runner-artifacts-slim` stages;
 - `labels`: `io.paperclip.runner.image` and
-  `io.paperclip.runner.inputs-digest`, for the image that copies the Runner.
+  `io.paperclip.runner.inputs-digest`, for the image that copies the Runner;
+- `build_args`: `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=<digest>`, the build
+  argument with which a build checks the Runner it is given.
 
 `published` needs a complete publication whose full index names these inputs
-and both platforms. Every other answer is `inline`, with the last four values
+and both platforms. Every other answer is `inline`, with the last five values
 empty: the lockfile is behind the Runner's manifests (`lock-behind`), the
 image does not exist (`absent`), a publication is `incomplete` or `broken`,
 the full index does not match (`mismatch`), or the registry refused, failed
-or could not be reached (`unknown`). An inline build runs the Runner stages
-itself and carries neither label. The command does not wait for a publication
-and does not verify the attestation of the image.
+or could not be reached (`unknown`). A tree whose `Dockerfile` declares no
+`PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST` argument is `inline` too
+(`unsupported`): its build could not refuse a Runner of other inputs, so
+`inputs` runs no build for it. An inline build runs the Runner stages itself
+and carries neither label. For an `inline` answer `resolve` prints a notice
+with the reason. The command does not verify the attestation of the image:
+the workflow that uses the answer does.
+
+### Waiting for a publication
+
+A `master` push starts its own run of `.github/workflows/runner-image.yml`,
+which may still be publishing when an image build of the same commit asks.
+`resolve --dir "$dir" --wait` is for that build. When the first answer is
+`absent` or `incomplete`, it lists the runs of that workflow for the push of
+`GITHUB_SHA` to `master` (the Actions API, with `GITHUB_TOKEN` and
+`actions: read`) and looks again when they end. Only a run of the `push`
+event on `master` in this repository counts: a run of the same commit for a
+pull request, for the weekly schedule or from a manual start publishes
+nothing and is never waited for. Every other first answer is final and starts
+no wait.
+
+- **A run, not a time.** When every run of the commit has completed, the
+  command looks up the image once more, and that answer is final. A run that
+  failed, was cancelled, or published nothing because the lockfile is behind
+  ends the wait as soon as it ends.
+- **Published before the run ends.** While a run is in progress the command
+  looks up the image every 30 seconds. The wait ends when the image is
+  published, not when the last job of the run ends.
+- **Not listed yet.** A run can be missing from the list just after the push.
+  The command looks for it for two minutes, measured from the start of the
+  wait. A commit with no run by then is not the head of a `master` push.
+- **Limit.** The wait ends 40 minutes after the push
+  (`RUNNER_IMAGE_WAIT_MINUTES` in the script). The push is the creation time
+  of the oldest run of the commit, so a build that starts late waits less, and
+  one that starts after the limit looks once and does not wait.
+- **Actions API.** Three failed requests in a row end the wait. Without a
+  token or a full commit SHA there is no wait.
+- **Never an error.** After every ending the command looks up the image one
+  last time. Without an image the answer is `inline`, with the reason of that
+  lookup and what the wait saw.
+
+### The Runner of the application image
+
+The application image, `ghcr.io/paperclipai/paperclip`, gets its Runner in one
+of two ways. The recipe is the same in both, so the Runner behaves the same.
+
+- **Inline.** The image build runs the `runner-artifacts` stage itself.
+- **Published.** The build receives
+  `--build-context runner-artifacts=docker-image://ghcr.io/paperclipai/paperclip-runner@sha256:<full index digest>`.
+  The stage is then not built, and the image copies the published Runner.
+
+Only `.github/workflows/docker.yml` in this repository can choose
+"published". A local `docker build`, a fork, the pull-request check
+(`docker-app-check.yml`) and the merge-queue build
+(`docker-merge-group.yml`) are always inline.
+
+**Labels.** An image that copied the published Runner has two labels, on the
+image of each platform:
+
+| Label | Value |
+| --- | --- |
+| `io.paperclip.runner.image` | `ghcr.io/paperclipai/paperclip-runner@sha256:<full index digest>` |
+| `io.paperclip.runner.inputs-digest` | The inputs digest of that Runner image. |
+
+The workflow writes them, not the `Dockerfile`, and only together with the
+build context. An image without them made its own Runner. Nothing else
+follows from their absence: such an image is complete and supported. Its pack
+has no `payload.runnerInputsDigest`, and the pack's `runnerSourceRevision` is
+the commit of the image. In an image with the labels, `runnerSourceRevision`
+is the commit that published the Runner image, which can be older than the
+commit of the application image.
+
+**The variable.** The repository variable `RUNNER_IMAGE_CONSUME_ENABLED`
+turns this on. Only the exact value `true` does. With any other value, or no
+variable, the `runner_image` job does not run and every build is inline, as
+before the job existed.
+
+**The job.** `runner_image` runs once for a workflow run, and both
+architecture builds need it, so both always get the same answer.
+
+1. `inputs`, on the committed files, with no credential.
+2. `resolve`. For a `master` push it runs with `--wait` and a token that can
+   read workflow runs. For a tag or a manual run it does not wait: no run of
+   `runner-image.yml` belongs to that event.
+3. For a `published` answer, the job verifies the attestation of the full
+   index, with the command under "Create-only". Only this step writes the
+   outputs of the job, so no build receives a digest that did not verify. An
+   image that does not verify fails this step with a warning. The job is then
+   red, the run is not, and the builds are inline.
+4. The builds add the outputs to their own values: the build context, the two
+   labels and the build argument `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST`. With
+   empty outputs a build has exactly the arguments, contexts and labels it
+   had without the job.
+
+The job holds no registry credential and cannot write anything. It cannot
+fail the run or stop a build: every failure, a timeout included, leaves the
+outputs empty and the builds inline. The 40 minutes of the wait end inside
+the limit of its step (55 minutes) and of the job (70 minutes), so the script
+ends the wait, with a notice, before the workflow would stop it.
+
+**The check in the build.** With the build argument, the build fails unless
+its `runner-artifacts` is the publication of those inputs (see "The
+application image"). A wrong or missing build context then fails the build,
+and no image carries labels for a Runner it does not have. The resolver
+answers `unsupported` for a `Dockerfile` that does not declare the argument.
+
+**The lockfile.** The published Runner was built from the committed
+`pnpm-lock.yaml`, and its build stamp covers that whole file. A build that
+copies it must therefore build the committed lockfile. `docker.yml` refreshes
+the lockfile on the runner before an inline build, because the inline Runner
+stages install frozen. It does not refresh it when the answer is `published`:
+a refresh rewrites the file whenever the manifest of any package is ahead of
+it, also a package the Runner does not read, and the server build would then
+refuse the published Runner as built from other inputs. The resolver answers
+`published` only when the committed lockfile matches the Runner's own
+manifests, so the `runner-lockfile` stage passes, and the `deps` stage
+resolves the manifests of the other packages inside the image, as it does for
+a local `docker build`. A build that is given a published Runner and a
+refreshed lockfile fails at the step that vendors the Runner.
+
+**Merge-queue images.** `docker.yml` can push the image that the merge queue
+built for a commit instead of building it. That image made its own Runner. A
+run whose `runner_image` job answered `published` does not look for it and
+builds from source, so one commit never has both kinds.
+
+**Rollback.** Set `RUNNER_IMAGE_CONSUME_ENABLED` to another value, or delete
+it. The next run of `docker.yml` builds inline. No revert is needed, and
+images that exist do not change.
 
 ## Publication
 

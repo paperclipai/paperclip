@@ -90,6 +90,8 @@ run log line that names the variables it did not set.
   task. It does not resume the retained Runner.
 - A session handoff starts a new Runner, so its `resume` has
   `configuredEnvironment`.
+- A provider that also returns `resumeLaunchInputsVersion: 1` gets
+  `configuredEnvironment` on every `resume`. See "Release and resume".
 
 A driver can declare `protectedEnvironmentKeys` in the manifest. These are the
 variables that the driver always sets on its tasks. Core rejects a protected
@@ -117,19 +119,26 @@ workspace and current authority before installing the ticket or reserving reuse.
 The ticket is bounded transient authentication input, as on submission. Never
 copy its bytes into status, metadata, logs, results or durable replay records.
 
-A provider can return `resumeCredentialVersion: 1` from `describe`. Core then
-adds `credential` to `resume` when it would add `credential` to `submit` for the
-claimant run. The field has the same shape and validation as on `submit`. Core
-resolves it for the claimant run's selected account, so the value can be newer
-than the credential that started the Runner. When Core has no credential for the
-task, `resume` has no `credential`. An older provider gets no new field.
+A provider can return `resumeLaunchInputsVersion: 1` from `describe`. Core then
+adds the launch inputs of `submit` to every `resume`, with the same values and
+rules as on `submit` for the claimant run:
+
+- `credential`, when Core would add `credential` to `submit`. Core resolves it
+  for the claimant run's selected account, so the value can be newer than the
+  credential that started the Runner. When Core has no credential for the task,
+  `resume` has no `credential`.
+- `configuredEnvironment`, when the provider also returns
+  `configuredEnvironmentVersion: 1`.
+
+An older provider gets no new fields. A session handoff keeps its existing
+fields.
 
 - A provider that must start the Runner again to resume the session, for example
-  after it moved the session to a new sandbox or after a reboot, can use this
-  credential to start the Runner.
-- A provider with a live Runner ignores the field. The running Runner keeps its
-  own credential.
-- The credential is transient secret input, as on `submit`. Do not save it in
+  after it moved the session to a new sandbox or after a reboot, starts the
+  Runner with these inputs, as on `submit`.
+- A provider with a live Runner ignores the fields. The running Runner keeps the
+  credential and environment that it started with.
+- The values are transient secret input, as on `submit`. Do not save them in
   task state, lease metadata, journals, logs, results or durable replay records.
 
 The `resume` result has a closed `outcome`:

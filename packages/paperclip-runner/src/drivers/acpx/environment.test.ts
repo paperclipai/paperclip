@@ -185,7 +185,7 @@ describe("ACPX launch environment", () => {
     expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
   });
 
-  it("strips configured Kimi model redirects and home overrides while retaining selected task and MCP values", () => {
+  it("strips configured Kimi model redirects, home overrides and retired gateway values while retaining selected task values", () => {
     const overrides = {
       KIMI_MODEL_NAME: "__kimi_env_model__", KIMI_MODEL_API_KEY: "unselected-model-key",
       KIMI_MODEL_BASE_URL: "https://unselected.invalid/v1", KIMI_MODEL_PROVIDER_TYPE: "openai_legacy",
@@ -200,8 +200,8 @@ describe("ACPX launch environment", () => {
     for (const environment of [sidecar, createSanitizedAcpxSpawnInput(source, "kimi").env,
       createSanitizedAcpxSpawnInput(sidecar, "kimi").env]) {
       for (const name of Object.keys(overrides)) expect(environment).not.toHaveProperty(name);
-      expect(environment).toMatchObject({ KIMI_API_KEY: "selected-code-key", CUSTOM_SETTING: "allowed",
-        PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "https://assigned.example/mcp" });
+      expect(environment).toMatchObject({ KIMI_API_KEY: "selected-code-key", CUSTOM_SETTING: "allowed" });
+      if (environment !== sidecar) for (const name of ["PAPERCLIP_NATIVE_MCP_NAME", "PAPERCLIP_NATIVE_MCP_URL", "PAPERCLIP_NATIVE_MCP_TOKEN"]) expect(environment).not.toHaveProperty(name);
       expect(JSON.parse(environment[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM_SETTING"]);
     }
     expect(createSanitizedAcpxSpawnInput(source, "kimi").env).not.toHaveProperty("PAPERCLIP_NATIVE_MCP_TOKEN");

@@ -1,4 +1,5 @@
 import { assertSupportedConnection } from "../connections/setup-policy.js";
+import { usesClientCredentials } from "../oauth/client-credentials.js";
 import { vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import type { ActorInfo } from "../types.js";
@@ -168,7 +169,9 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
-      return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }));
+      return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }, {
+        declareClientCredentials: usesClientCredentials(connection),
+      }));
     };
     const connectionConfig = asRecord(connection.config);
     const sourceTemplateKey = typeof connectionConfig?.sourceTemplateKey === "string"
@@ -333,7 +336,10 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (
       response.status === 401 &&
       connection.authKind === "oauth" &&
-      connection.credentialSource === "paperclip_vault"
+      connection.credentialSource === "paperclip_vault" &&
+      // A machine sign-in probe with candidate credentials must fail on its own
+      // answer, not succeed by falling back to the stored ones.
+      !(credentialHeaders && usesClientCredentials(connection))
     ) {
       headers = {
         ...projectedConnectionHeaders(connection),
@@ -386,6 +392,15 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         connection.credentialSecretRefs.length === 0 &&
         Object.keys(headers).length === 0 &&
         !urlCarriesCredential(sentUrl);
+      if (response.status === 401 && usesClientCredentials(connection)) {
+        // Machine sign-in is pinned to the sign-in service recorded at setup.
+        // Never adopt whatever the server's challenge now advertises.
+        await response.body?.cancel().catch(() => undefined);
+        throw unprocessable(
+          "The server didn't accept this connection's machine sign-in. Test machine sign-in again from the connection's settings.",
+          { code: "client_credentials_rejected", status: response.status, setupUrl: connectionSetupUrl(connection) },
+        );
+      }
       if (
         response.status === 401 &&
         (/bearer|oauth|authorization/i.test(authenticate) ||

@@ -415,6 +415,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Durable app actions (MCP Tasks)"
+          description="Let connected apps run long actions, such as CI runs or deploys, as tasks Paperclip keeps track of. If an action outlasts a call, a restart, or a deploy, the agent collects the result later and the work is never started twice."
+          footnote="Applies to apps that support MCP Tasks. Turning this off stops new tasks; apps then answer as before."
+          checked={experimentalQuery.data?.enableMcpTasks === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMcpTasks: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMcpTasks"
+          managed={managedKeys.enableMcpTasks}
+          ariaLabel="Toggle durable app actions experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Enable Environments"
           description="Show environment management in company settings and allow project and agent environment assignment controls."
           checked={enableEnvironments}

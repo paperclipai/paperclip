@@ -45,6 +45,7 @@ import { managedConnectorProfile } from "./tool-access/oauth/client-settings.js"
 import { createOAuthClientRegistration } from "./tool-access/oauth/client-registration.js";
 import { createOAuthRefreshLeases } from "./tool-access/oauth/refresh-leases.js";
 import { createLegacyOAuthRefresh } from "./tool-access/oauth/connection-refresh.js";
+import { createClientCredentialsService } from "./tool-access/oauth/client-credentials-service.js";
 import { createOAuthGrantRefresh } from "./tool-access/oauth/grant-refresh.js";
 import { createGitHubGrantContinuity } from "./tool-access/github-grant-continuity.js";
 import { createToolRuntimeHealth } from "./tool-access/runtime/health.js";
@@ -67,7 +68,7 @@ import { createOAuthClientProtocol } from "./tool-access/oauth/client.js";
 
 import type { OAuthClientRegistrationSource } from "./tool-access/oauth/types.js";
 export { OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, resolveOAuthClientIdMetadataDocumentUrl, oauthClientIdMetadataDocument } from "./tool-access/oauth/client-metadata.js";
-import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
+import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionHeaders, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
 export {
   normalizeConnectionMethodConfig,
   projectedConnectionHeaders,
@@ -788,8 +789,19 @@ export function toolAccessService(
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
-  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
-  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
+  // Later dependencies are reached through closures: they are only called at request time.
+  const clientCredentials = createClientCredentialsService(db, {
+    now, secrets, store: credentialStore, exchangeOAuthToken, getConnectionRow, fetchRemoteHttpUrl, assertOAuthEndpointUrl,
+    assertRemoteConnectionEndpointsAllowed, ensureDefaultOrganizationGrant, nextAvailableConnectionName,
+    checkConnectionHealth: (connectionId, actor) => checkConnectionHealth(connectionId, actor),
+    refreshCatalog: (connectionId, actor, refreshOptions) => refreshCatalog(connectionId, actor, refreshOptions),
+    probeServerWithToken: (connection, authorization, actor) => catalogDiscovery.remoteTools(
+      connection, { ...projectedConnectionHeaders(connection), Authorization: authorization }, actor, undefined, [], { live: true },
+    ),
+  });
+  const { requestClientCredentialsToken } = clientCredentials;
+  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
+  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
@@ -803,7 +815,7 @@ export function toolAccessService(
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
   const { enableCatalogEntriesByDefault, upsertAskFirstPolicies } = defaultCatalogAccess;
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
-  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
+  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
   const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
@@ -1065,8 +1077,10 @@ export function toolAccessService(
       const eligible = grants.filter(
         (grant) =>
           grant.connectionId === connection.id &&
-          (connection.credentialPolicy !== "per_user" ||
-            (grant.kind === "user" && grant.subjectUserId === userId)),
+          (connection.credentialPolicy === "per_agent"
+            ? grant.kind === "agent"
+            : connection.credentialPolicy !== "per_user" ||
+              (grant.kind === "user" && grant.subjectUserId === userId)),
       );
       connection.requiresReauthorization = !eligible.some(
         (grant) => grant.status === "active",
@@ -2220,7 +2234,7 @@ export function toolAccessService(
 
     const credentialValues = input.credentialValues ?? {};
     // A curated method declares its auth kind. A pasted URL declares one only
-    // under Advanced authentication; on the simple path it starts from what the
+    // when the operator picks a sign-in option; on the simple path it starts from what the
     // operator supplied and is upgraded to `oauth` when discovery proves the
     // endpoint needs sign-in (see `remoteTools` and `startOAuth`).
     const genericAuthKind: ToolConnectionAuthKind =
@@ -3320,6 +3334,8 @@ export function toolAccessService(
         connection.name,
         otherProfiles.map((profile) => profile.name),
       );
+      const priorEntries = existingProfile ? await tx.select().from(toolProfileEntries)
+        .where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.profileId, existingProfile.id))) : [];
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -3337,10 +3353,6 @@ export function toolAccessService(
                 priority: prior.priority,
                 metadata: prior.metadata,
               });
-          const priorEntries = await tx
-            .select()
-            .from(toolProfileEntries)
-            .where(eq(toolProfileEntries.profileId, existingProfile.id));
           for (const prior of priorEntries)
             if (
               !entries.some(
@@ -3359,38 +3371,6 @@ export function toolAccessService(
                 riskLevel: prior.riskLevel,
                 conditions: prior.conditions,
               });
-        }
-        await tx
-          .delete(toolProfileBindings)
-          .where(
-            and(
-              eq(toolProfileBindings.companyId, companyId),
-              eq(toolProfileBindings.profileId, existingProfile.id),
-            ),
-          );
-        await tx
-          .delete(toolProfileEntries)
-          .where(
-            and(
-              eq(toolProfileEntries.companyId, companyId),
-              eq(toolProfileEntries.profileId, existingProfile.id),
-            ),
-          );
-        if (entries.length > 0) {
-          await tx.insert(toolProfileEntries).values(
-            entries.map((entry) => ({
-              companyId,
-              profileId: existingProfile.id,
-              selectorType: entry.selectorType,
-              effect: entry.effect ?? "include",
-              applicationId: entry.applicationId ?? null,
-              connectionId: entry.connectionId ?? null,
-              catalogEntryId: entry.catalogEntryId ?? null,
-              toolName: entry.toolName ?? null,
-              riskLevel: entry.riskLevel ?? null,
-              conditions: entry.conditions ?? null,
-            })),
-          );
         }
         const [updated] = await tx
           .update(toolProfiles)
@@ -3424,24 +3404,34 @@ export function toolAccessService(
             },
           })
           .returning();
-        if (entries.length > 0) {
-          await tx.insert(toolProfileEntries).values(
-            entries.map((entry) => ({
-              companyId,
-              profileId: created.id,
-              selectorType: entry.selectorType,
-              effect: entry.effect ?? "include",
-              applicationId: entry.applicationId ?? null,
-              connectionId: entry.connectionId ?? null,
-              catalogEntryId: entry.catalogEntryId ?? null,
-              toolName: entry.toolName ?? null,
-              riskLevel: entry.riskLevel ?? null,
-              conditions: entry.conditions ?? null,
-            })),
-          );
-        }
         profileId = created.id;
       }
+
+      const entryValues = (entry: CreateToolProfileEntryForProfile) => ({
+        companyId,
+        profileId,
+        selectorType: entry.selectorType,
+        effect: entry.effect ?? "include",
+        applicationId: entry.applicationId ?? null,
+        connectionId: entry.connectionId ?? null,
+        catalogEntryId: entry.catalogEntryId ?? null,
+        toolName: entry.toolName ?? null,
+        riskLevel: entry.riskLevel ?? null,
+        conditions: entry.conditions ?? null,
+      });
+      const priorEntriesByValue = new Map<string, typeof priorEntries>();
+      for (const entry of priorEntries) {
+        const key = stableHash(entryValues(entry));
+        const matches = priorEntriesByValue.get(key) ?? [];
+        matches.push(entry);
+        priorEntriesByValue.set(key, matches);
+      }
+      const addedEntries = entries.map(entryValues).filter((entry) => !priorEntriesByValue.get(stableHash(entry))?.shift());
+      const removedEntries = [...priorEntriesByValue.values()].flat();
+      if (removedEntries.length) await tx.delete(toolProfileEntries).where(and(
+        eq(toolProfileEntries.companyId, companyId), inArray(toolProfileEntries.id, removedEntries.map(entry => entry.id)),
+      ));
+      if (addedEntries.length) await tx.insert(toolProfileEntries).values(addedEntries);
 
       const profileBindings: ToolProfileBinding[] = [];
       // Agent access is also the credential admission boundary. Save its
@@ -3467,24 +3457,37 @@ export function toolAccessService(
           details: { added: added.map(({ targetType, targetId }) => ({ targetType, targetId })), removed: removed.map(({ targetType, targetId }) => ({ targetType, targetId })) },
         });
       }
+      const existingBindingsByTarget = new Map(existingBindings.map(binding => [`${binding.targetType}:${binding.targetId}`, binding]));
+      const retainedBindings = new Map<string, typeof toolProfileBindings.$inferSelect>();
+      const addedBindings: Array<typeof toolProfileBindings.$inferInsert> = [];
       for (const bindingInput of bindingInputs) {
-        const [binding] = await tx
-          .insert(toolProfileBindings)
-          .values({
-            companyId,
-            profileId,
-            targetType: bindingInput.targetType,
-            targetId: bindingInput.targetId,
-            priority: bindingInput.priority ?? 100,
-            metadata: bindingInput.metadata ?? {},
-            createdByAgentId:
-              actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
-            createdByUserId:
-              connectionActorUserId(actor),
-          })
-          .returning();
-        profileBindings.push(toProfileBinding(binding));
+        const key = `${bindingInput.targetType}:${bindingInput.targetId}`;
+        const existing = existingBindingsByTarget.get(key);
+        if (existing && existing.priority === (bindingInput.priority ?? 100)
+          && stableHash(existing.metadata) === stableHash(bindingInput.metadata ?? {})) {
+          retainedBindings.set(key, existing);
+          continue;
+        }
+        addedBindings.push({
+          companyId,
+          profileId,
+          targetType: bindingInput.targetType,
+          targetId: bindingInput.targetId,
+          priority: bindingInput.priority ?? 100,
+          metadata: bindingInput.metadata ?? {},
+          createdByAgentId: actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+          createdByUserId: connectionActorUserId(actor),
+        });
       }
+      const removedBindings = existingBindings.filter(binding => !retainedBindings.has(`${binding.targetType}:${binding.targetId}`));
+      if (removedBindings.length) await tx.delete(toolProfileBindings).where(and(
+        eq(toolProfileBindings.companyId, companyId), inArray(toolProfileBindings.id, removedBindings.map(binding => binding.id)),
+      ));
+      if (addedBindings.length) {
+        const saved = await tx.insert(toolProfileBindings).values(addedBindings).returning();
+        for (const binding of saved) retainedBindings.set(`${binding.targetType}:${binding.targetId}`, binding);
+      }
+      profileBindings.push(...bindingInputs.map(binding => toProfileBinding(retainedBindings.get(`${binding.targetType}:${binding.targetId}`)!)));
 
       const reviewedAt = new Date();
       if (reviewedIds.length > 0) {
@@ -3903,6 +3906,12 @@ export function toolAccessService(
     connectGalleryApp,
 
     finishGalleryAppConnection,
+
+    createMachineSignIn: clientCredentials.createMachineSignIn,
+    testMachineSignIn: clientCredentials.testMachineSignIn,
+    rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
+    completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
+    getMachineSignIn: clientCredentials.getMachineSignIn,
 
     reconnectGalleryApp,
 

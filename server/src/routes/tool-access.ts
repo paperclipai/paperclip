@@ -23,6 +23,10 @@ import {
   type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
+  type MachineSignInStatus,
   configureRailwaySshSchema,
   createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
@@ -67,6 +71,7 @@ import { accessService, logActivity, toolAccessPolicyService, toolAccessService,
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
@@ -85,6 +90,7 @@ import {
   startPaperclipCloudConnectorEnrollment,
 } from "../services/paperclip-cloud-connector-enrollment.js";
 import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
+import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -103,6 +109,21 @@ const ORGANIZATION_GRANT_DENIAL_REASON =
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Activity for machine sign-in carries identifiers only: never a secret, key or token. */
+function machineSignInActivityDetails(status: MachineSignInStatus) {
+  return {
+    method: status.method,
+    issuer: status.issuer,
+    keyId: status.publicKey?.keyId ?? null,
+    pendingKeyId: status.pendingPublicKey?.keyId ?? null,
+    scopeCount: status.scopes.length,
+  };
+}
+
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
   const raw = config?.allowedSpreadsheetIds;
   if (!Array.isArray(raw)) return [];
@@ -208,7 +229,7 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
     const parsed = new URL(returnTo, "http://paperclip.local");
     if (
       parsed.origin !== "http://paperclip.local"
-      || !["/apps/connect", "/apps/chat/connect"].includes(parsed.pathname)
+      || !["/apps/connect", "/apps/chat/connect", "/apps/tailscale"].includes(parsed.pathname)
       || parsed.username
       || parsed.password
     ) return null;
@@ -463,7 +484,7 @@ export function toolAccessRoutes(
   }
 
 function connectorEnrollmentPrincipal(req: Request): string {
-  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+  return paperclipCloudEnrollmentPrincipal(req.actor);
 }
 
 /**
@@ -1001,6 +1022,87 @@ function connectorEnrollmentPrincipal(req: Request): string {
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
+  });
+
+  // Machine sign-in (MCP OAuth client credentials): organization connections
+  // that authenticate as a registered client, with no person signing in.
+  router.post("/companies/:companyId/tools/machine-sign-in", managementGuard("connections:configure", "POST /companies/:companyId/tools/machine-sign-in"), validate(createMachineSignInSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertToolAppMutationAccess(req, companyId);
+    if (!await isToolConnectionManagerQuiet(req, companyId)) throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
+    try {
+      const result = await svc.createMachineSignIn(companyId, req.body, connectionRequestActor(req));
+      await logActivity(db, {
+        companyId,
+        ...connectionRequestActor(req),
+        action: "tool_connection.machine_sign_in_created",
+        entityType: "tool_connection",
+        entityId: result.connectionId,
+        details: machineSignInActivityDetails(result.machineSignIn),
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      svc.ensureNoDuplicateNameError(error);
+    }
+  });
+
+  router.get("/tool-connections/:connectionId/machine-sign-in", managementGuard("connections:configure", "GET /tool-connections/:connectionId/machine-sign-in"), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await svc.getMachineSignIn(existing.companyId, existing.id));
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/test", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/test"), validate(testMachineSignInSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.testMachineSignIn(existing.companyId, existing.id, req.body, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.machine_sign_in_verified",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: {
+        ...machineSignInActivityDetails(await svc.getMachineSignIn(existing.companyId, existing.id)),
+        clientSecretReplaced: Boolean(req.body.clientSecret),
+        catalogEntryCount: result.catalog.length,
+      },
+    });
+    res.json(result);
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/rotate", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/rotate"), validate(rotateMachineSignInSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.rotateMachineSignIn(existing.companyId, existing.id, req.body, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: result.completed ? "tool_connection.machine_sign_in_rotated" : "tool_connection.machine_sign_in_rotation_started",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: machineSignInActivityDetails(result.machineSignIn),
+    });
+    res.json(result);
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/rotate/complete", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/rotate/complete"), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.completeMachineSignInRotation(existing.companyId, existing.id, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.machine_sign_in_rotated",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: machineSignInActivityDetails(result.machineSignIn),
+    });
+    res.json(result);
   });
 
   router.post(
@@ -2284,7 +2386,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.archived",
       entityType: "tool_connection",
       entityId: connection.id,
-      details: { transport: connection.transport, ...removal },
+      details: {
+        transport: connection.transport,
+        ...(asRecord(asRecord(existing.config).oauth).grantType === "client_credentials" ? { machineSignIn: true } : {}),
+        ...removal,
+      },
     });
     if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
       await logActivity(db, {
@@ -2356,6 +2462,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
+  });
+
+  // Provider tool icons for the task chat's tool rows. Same gate and
+  // visibility as the connection list: only icons of connections this viewer
+  // can see.
+  router.get("/companies/:companyId/tool-icons", managementGuard("connections:read", "GET /companies/:companyId/tool-icons", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    const visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.json({ icons: await listCompanyProviderToolIcons(db, companyId, visible.map(connection => connection.id)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {
