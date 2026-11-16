@@ -1285,6 +1285,25 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      decisions: {
+        async connections(input) {
+          return callHost("decisions.connections", { companyId: input.companyId });
+        },
+        async models(input) {
+          return callHost("decisions.models", { companyId: input.companyId, connectionId: input.connectionId });
+        },
+        async decide(input) {
+          return callHost("decisions.decide", {
+            companyId: input.companyId,
+            issueId: input.issueId,
+            connectionId: input.connectionId,
+            model: input.model,
+            state: input.state,
+            questions: input.questions,
+          });
+        },
+      },
+
       goals: {
         async list(input) {
           return callHost("goals.list", {

@@ -1,6 +1,7 @@
 import type { PluginWorkspaceParams, PluginWorkspacePrepareParams, PluginWorkspacePrepareResult, PluginWorkspaceResult } from "./workspace-provider.js";
 import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
-import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "./types.js";
+import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity, PluginDecideInput, PluginDecisionConnections, PluginDecisionModelList } from "./types.js";
+import type { DecisionResult } from "@paperclipai/shared";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
@@ -2299,6 +2300,19 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Goal,
+  ];
+
+  "decisions.connections": [
+    params: { companyId: string },
+    result: PluginDecisionConnections,
+  ];
+  "decisions.models": [
+    params: { companyId: string; connectionId: string },
+    result: PluginDecisionModelList,
+  ];
+  "decisions.decide": [
+    params: PluginDecideInput,
+    result: DecisionResult,
   ];
 
   // Access

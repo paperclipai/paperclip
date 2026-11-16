@@ -5,23 +5,36 @@ export const DECISION_MODELS = {
   openai: { id: "gpt-6-luna", name: "GPT-6 Luna" },
   openrouter: { id: "typesafe/jev-1.13", name: "Jev 1.13" },
 } as const;
-export type DecisionProvider = keyof typeof DECISION_MODELS;
+export type NativeDecisionProvider = keyof typeof DECISION_MODELS;
+export type DecisionProvider = NativeDecisionProvider | "gateway";
+export type DecisionProtocol = "decisions" | "chat" | "messages";
+export interface DecisionRoute {
+  provider: DecisionProvider;
+  protocol: DecisionProtocol;
+  baseUrl: string | null;
+  auth: "bearer" | "api_key" | "none";
+  defaultModel: string | null;
+}
+export const decisionModelIdSchema = z.string().trim().min(1).max(256).regex(/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/, "Enter a valid model ID");
+export interface DecisionModelOption { id: string; name: string }
+export interface DecisionModelList { models: DecisionModelOption[]; errorCode?: string }
 export const updateDecisionModelSchema = z.object({
   enabled: z.boolean(),
   connectionId: z.string().uuid().nullable(),
   grantId: z.string().uuid().nullable(),
   allowBackground: z.boolean().optional(),
+  model: decisionModelIdSchema.nullable().optional(),
 }).refine(v => Boolean(v.connectionId) === Boolean(v.grantId) && (!v.enabled || Boolean(v.connectionId)), {
   message: "Select a connection before enabling decisions",
 });
 export type UpdateDecisionModel = z.infer<typeof updateDecisionModelSchema>;
-export interface DecisionModelSettings extends UpdateDecisionModel {
+export interface DecisionModelSettings extends Omit<UpdateDecisionModel, "model"> {
   allowBackground: boolean;
   companyId: string;
   provider: DecisionProvider | null;
   model: string | null;
 }
-export type DecisionConnectionChoice = AiManagedConnectionSummary & { decisionModel: string };
+export type DecisionConnectionChoice = AiManagedConnectionSummary & { decisionModel: string | null; decisionProtocol: DecisionProtocol };
 export type DecisionUnavailableReason = "not_configured" | "disabled" | "connection_unavailable" | "incompatible_connection" | "access_denied" | "responsible_user_missing" | "background_disabled" | "budget_blocked";
 export type DecisionAvailability = { available: true } | { available: false; reason: DecisionUnavailableReason };
 const instructions = z.string().trim().min(1).max(8000);
@@ -65,9 +78,23 @@ export const DECISION_TEST_REQUEST: DecisionRequest = {
 };
 
 /** Native endpoints only; OpenRouter's official routing metadata is compatible. */
-export function decisionProviderForConnection(metadata: { provider: string; method: string; routing?: { kind: string; baseUrl?: string } }): DecisionProvider | null {
+export function decisionProviderForConnection(metadata: { provider: string; method: string; routing?: { kind: string; baseUrl?: string } }): NativeDecisionProvider | null {
   if (metadata.method !== "api_key") return null;
   if (metadata.provider === "openai" && !metadata.routing) return "openai";
   if (metadata.provider === "openrouter" && (!metadata.routing || (metadata.routing.kind === "openrouter" && !metadata.routing.baseUrl))) return "openrouter";
   return null;
+}
+
+export function decisionRouteForConnection(metadata: {
+  provider: string; method: string;
+  routing?: { kind: string; baseUrl?: string; protocol?: string; auth?: string; models?: Array<{ id: string }> };
+}): DecisionRoute | null {
+  const native = decisionProviderForConnection(metadata);
+  if (native) return { provider: native, protocol: "decisions", baseUrl: null, auth: "bearer", defaultModel: DECISION_MODELS[native].id };
+  const routing = metadata.routing;
+  if (metadata.method !== "api_key" || routing?.kind !== "gateway" || !routing.baseUrl) return null;
+  if (routing.protocol !== "chat" && routing.protocol !== "messages") return null;
+  if (metadata.provider !== (routing.protocol === "messages" ? "anthropic" : "openai")) return null;
+  const auth = routing.auth === "api_key" || routing.auth === "none" ? routing.auth : "bearer";
+  return { provider: "gateway", protocol: routing.protocol, baseUrl: routing.baseUrl.replace(/\/+$/, ""), auth, defaultModel: routing.models?.[0]?.id ?? null };
 }

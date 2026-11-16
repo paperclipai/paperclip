@@ -26,6 +26,7 @@ import {
 import {
   AI_CONNECTION_CAPABILITIES,
   decisionProviderForConnection,
+  decisionRouteForConnection,
   aiConnectionCatalogSlug,
   getAppStoreDefinition,
   aiConnectionMetadataSchema,
@@ -434,8 +435,9 @@ export function aiConnectionService(db: Db) {
         eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
     if (!row || row.grant.kind !== "organization") throw unprocessable("Shared AI connection unavailable", { code: "connection_unavailable" });
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    const provider = metadata.success ? decisionProviderForConnection(metadata.data) : null;
-    if (!provider) throw unprocessable("Connection does not support decisions", { code: "incompatible_connection" });
+    const route = metadata.success ? decisionRouteForConnection(metadata.data) : null;
+    if (!route) throw unprocessable("Connection does not support decisions", { code: "incompatible_connection" });
+    const provider = route.provider;
     if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
       throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
     // Only the decision service may sponsor background use; ordinary AI selection never bypasses an audience.
@@ -454,7 +456,7 @@ export function aiConnectionService(db: Db) {
       )).limit(1);
       if (!install) throw forbidden("Connection is not permitted for this agent");
     }
-    return { ...row, provider };
+    return { ...row, provider, route };
   }
   /**
    * A native run's image tool reuses the exact AI connection the run was

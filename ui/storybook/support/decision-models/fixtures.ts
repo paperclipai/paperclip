@@ -6,8 +6,14 @@ export const choices: DecisionConnectionChoice[] = ["openai", "openrouter"].map(
   grantId: `20000000-0000-4000-8000-00000000000${i + 1}`,
   companyId, provider: provider as "openai" | "openrouter", method: "api_key", ownership: "shared",
   name: i === 0 ? "Company OpenAI" : "Company OpenRouter", isDefault: false, status: "connected",
-  decisionModel: i === 0 ? "gpt-6-luna" : "typesafe/jev-1.13",
+  decisionModel: i === 0 ? "gpt-6-luna" : "typesafe/jev-1.13", decisionProtocol: "decisions" as const,
 }));
+export const gatewayChoice: DecisionConnectionChoice = {
+  id: "10000000-0000-4000-8000-000000000003", grantId: "20000000-0000-4000-8000-000000000003", companyId, provider: "openai", method: "api_key",
+  ownership: "shared", name: "Company gateway", isDefault: false, status: "connected", decisionModel: null, decisionProtocol: "chat",
+  routing: { kind: "gateway", protocol: "chat", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [] },
+};
+export const models = [{ id: "gpt-6-luna", name: "GPT-6 Luna" }, { id: "gpt-6-sol", name: "GPT-6 Sol" }];
 export const unconfigured: DecisionModelSettings = { companyId, enabled: false, allowBackground: true, connectionId: null, grantId: null, provider: null, model: null };
 export const configured: DecisionModelSettings = { ...unconfigured, enabled: true, connectionId: choices[0]!.id, grantId: choices[0]!.grantId, provider: "openai", model: "gpt-6-luna" };
 export const result: DecisionResult = { status: "succeeded", invocationId: "decision-fixture", answers: {

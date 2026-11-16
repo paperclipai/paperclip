@@ -9,6 +9,7 @@
  * @see PLUGIN_SPEC.md §29.2 — SDK Versioning
  */
 
+import type { DecisionRequest, DecisionResult } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginStateScopeKind,
@@ -1834,6 +1835,31 @@ export interface PluginAgentSessionsClient {
   close(sessionId: string, companyId: string): Promise<void>;
 }
 
+export type PluginDecisionProtocol = "decisions" | "chat" | "messages";
+
+export interface PluginDecisionConnections {
+  companyDefault: { connectionId: string; name: string; model: string } | null;
+  connections: Array<{ id: string; name: string; provider: string; protocol: PluginDecisionProtocol }>;
+}
+
+export interface PluginDecisionModelList {
+  models: Array<{ id: string; name: string }>;
+  errorCode?: string;
+}
+
+export interface PluginDecideInput extends DecisionRequest {
+  companyId: string;
+  issueId?: string;
+  connectionId?: string;
+  model?: string;
+}
+
+export interface PluginDecisionsClient {
+  connections(input: { companyId: string }): Promise<PluginDecisionConnections>;
+  models(input: { companyId: string; connectionId: string }): Promise<PluginDecisionModelList>;
+  decide(input: PluginDecideInput): Promise<DecisionResult>;
+}
+
 /**
  * `ctx.goals` — read and mutate goals.
  *
@@ -2270,6 +2296,8 @@ export interface PluginContext {
 
   /** Read and mutate goals. Requires `goals.read` for reads; `goals.create` / `goals.update` for write ops. */
   goals: PluginGoalsClient;
+
+  decisions: PluginDecisionsClient;
 
   /** Read and manage access memberships and invites. Requires `access.*` capabilities. */
   access: PluginAccessClient;

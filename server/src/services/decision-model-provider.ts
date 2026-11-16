@@ -2,7 +2,8 @@ import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-a
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { experimental_decide as decide, type Experimental_DecisionModel } from "ai";
-import { centsToUnits, unitsToCents, type DecisionAnswer, type DecisionProvider, type DecisionRequest } from "@paperclipai/shared";
+import { centsToUnits, unitsToCents, type DecisionAnswer, type DecisionProvider, type DecisionRequest, type DecisionRoute } from "@paperclipai/shared";
+import { runGatewayDecision } from "./decision-gateway.js";
 
 export interface DecisionProviderReceipt {
   inputTokens: number | null; outputTokens: number | null; providerRequestId: string | null;
@@ -41,8 +42,13 @@ export function decisionReceipt(provider: DecisionProvider, result: unknown): De
   return { ...base, costCents: null, costStatus: "unpriced", pricingProvenance: { source: "unknown" } };
 }
 export async function runDecisionProvider(input: {
-  provider: DecisionProvider; model: string; apiKey: string; request: DecisionRequest; signal: AbortSignal;
+  provider: DecisionProvider; model: string; apiKey: string; request: DecisionRequest; signal: AbortSignal; route?: DecisionRoute;
 }, options: { fetch?: typeof fetch } = {}): Promise<DecisionProviderOutcome> {
+  if (input.provider === "gateway") {
+    if (!input.route?.baseUrl) return { errorCode: "incompatible_connection", noProviderWork: true, receipt: { ...decisionReceipt("gateway", null),
+      inputTokens: 0, outputTokens: 0, costCents: "0.0000000", costStatus: "estimated", pricingProvenance: { source: "unknown", evidence: "No provider request was sent" } } };
+    return runGatewayDecision({ route: input.route, model: input.model, apiKey: input.apiKey, request: input.request, signal: input.signal }, options);
+  }
   const native = input.provider === "openai"
     ? createOpenAI({ apiKey: input.apiKey, fetch: options.fetch }).decisionModel(input.model)
     : createOpenRouter({ apiKey: input.apiKey, fetch: options.fetch, headers: OPENROUTER_ATTRIBUTION_HEADERS }).evaluationModel(input.model);

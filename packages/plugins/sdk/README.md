@@ -422,6 +422,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `goals.read` |
 | | `goals.create` |
 | | `goals.update` |
+| | `decisions.invoke` |
 | | `activity.read` |
 | | `costs.read` |
 | | `issues.orchestration.read` |

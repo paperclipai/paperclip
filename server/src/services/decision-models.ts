@@ -2,13 +2,14 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, lt, lte, or, sql } from "drizzle-orm";
 import {
-  agents, authUsers, budgetReservations, companies, companyMemberships, companyDecisionModels, costEvents,
-  decisionInvocations, heartbeatRuns, issues, projects, companySecrets, type Db,
+  agents, authUsers, budgetReservations, companies, companyMemberships, companyDecisionModels, connectionGrants, costEvents,
+  decisionInvocations, heartbeatRuns, issues, projects, companySecrets, toolConnections, type Db,
 } from "@paperclipai/db";
 import {
-  DECISION_MODELS, decisionProviderForConnection, decisionRequestSchema, updateDecisionModelSchema,
-  centsToUnits, unitsToCents, type DecisionAvailability, type DecisionConnectionChoice, type DecisionHistoryEntry,
-  type DecisionModelSettings, type DecisionProvider, type DecisionRequest, type DecisionResult, type DecisionUnavailableReason, type UpdateDecisionModel,
+  aiConnectionMetadataSchema, decisionModelIdSchema, decisionRouteForConnection, decisionRequestSchema, updateDecisionModelSchema,
+  centsToUnits, unitsToCents, type DecisionAvailability, type DecisionConnectionChoice, type DecisionHistoryEntry, type DecisionModelList,
+  type DecisionModelSettings, type DecisionProtocol, type DecisionProvider, type DecisionRequest, type DecisionResult, type DecisionRoute,
+  type DecisionUnavailableReason, type UpdateDecisionModel,
 } from "@paperclipai/shared";
 import { HttpError, forbidden, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
@@ -22,6 +23,7 @@ import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { logActivity } from "./activity-log.js";
 import { decisionReceipt, runDecisionProvider, type DecisionProviderOutcome } from "./decision-model-provider.js";
+import { listDecisionModels } from "./decision-gateway.js";
 
 const registeredFeatures = new WeakSet<object>();
 /** Register once in a server module. Feature handles cannot be supplied over JSON/API. */
@@ -32,13 +34,24 @@ export function defineDecisionFeature(id: string, options: { background?: boolea
   return feature;
 }
 export const settingsDecisionTest = defineDecisionFeature("settings.test");
+const pluginFeatures = new Map<string, ReturnType<typeof defineDecisionFeature>>();
+export function pluginDecisionFeature(pluginKey: string) {
+  const id = `plugin.${pluginKey.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").slice(0, 93)}`;
+  let feature = pluginFeatures.get(id);
+  if (!feature) { feature = defineDecisionFeature(id, { background: true }); pluginFeatures.set(id, feature); }
+  return feature;
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface DecisionContext {
   companyId: string;
   feature: ReturnType<typeof defineDecisionFeature>;
   actor: AuthorizationActor | { type: "system" };
   issueId?: string;
   projectId?: string;
+  connectionId?: string;
+  model?: string;
 }
+export interface DecisionConnectionOption { id: string; name: string; provider: DecisionProvider; protocol: DecisionProtocol }
 class DecisionUnavailable extends Error {
   constructor(readonly reason: DecisionUnavailableReason) { super(reason); }
 }
@@ -53,8 +66,31 @@ function unavailableReason(error: unknown): DecisionUnavailableReason | null {
   return null;
 }
 
-export function decisionModelService(db: Db, options: { provider?: typeof runDecisionProvider; budgetHooks?: BudgetServiceHooks } = {}) {
+function costProvider(provider: string, model: string) {
+  const vendor = model.includes("/") ? model.slice(0, model.indexOf("/")) : null;
+  if (provider === "openrouter") return vendor ?? "openrouter";
+  if (provider === "gateway") return vendor ?? "gateway";
+  return "openai";
+}
+
+export function decisionModelService(db: Db, options: { provider?: typeof runDecisionProvider; budgetHooks?: BudgetServiceHooks; fetch?: typeof fetch } = {}) {
   const providerCall = options.provider ?? runDecisionProvider;
+  async function compatibleRows(companyId: string, executor: Db = db) {
+    const rows = await executor.select({ connection: toolConnections, grant: connectionGrants }).from(toolConnections)
+      .innerJoin(connectionGrants, and(eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId)))
+      .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"), eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"), eq(toolConnections.healthStatus, "ok"), eq(connectionGrants.kind, "organization"), eq(connectionGrants.status, "active")))
+      .orderBy(toolConnections.name, connectionGrants.createdAt);
+    const seen = new Set<string>();
+    return rows.flatMap(row => {
+      if (seen.has(row.connection.id)) return [];
+      const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+      const route = metadata.success ? decisionRouteForConnection(metadata.data) : null;
+      if (!route) return [];
+      seen.add(row.connection.id);
+      return [{ ...row, route, configuredModels: metadata.success ? metadata.data.routing?.models ?? [] : [] }];
+    });
+  }
   async function settings(companyId: string): Promise<DecisionModelSettings> {
     const [row] = await db.select().from(companyDecisionModels).where(eq(companyDecisionModels.companyId, companyId));
     return row ? { ...row, provider: row.provider as DecisionProvider | null } : {
@@ -65,8 +101,8 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
     const connections = aiConnectionService(db);
     if (!(await connections.membership(companyId, userId))) throw forbidden();
     return (await connections.list(companyId, userId)).flatMap(row => {
-      const provider = decisionProviderForConnection(row);
-      return provider && row.ownership === "shared" ? [{ ...row, decisionModel: DECISION_MODELS[provider].id }] : [];
+      const route = decisionRouteForConnection(row);
+      return route && row.ownership === "shared" ? [{ ...row, decisionModel: route.defaultModel, decisionProtocol: route.protocol }] : [];
     });
   }
   async function configure(companyId: string, userId: string, input: UpdateDecisionModel) {
@@ -78,15 +114,22 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       const row = !disabling && data.connectionId && data.grantId ? await aiConnectionService(tx).selectDecision({ companyId,
         userId, connectionId: data.connectionId, grantId: data.grantId }) : null;
       const provider = (disabling ? previous?.provider : row?.provider) as DecisionProvider | null | undefined;
-      const values = { ...data, allowBackground: data.allowBackground ?? previous?.allowBackground ?? true, companyId, provider: provider ?? null, model: provider ? DECISION_MODELS[provider].id : null, updatedAt: new Date() };
+      const kept = data.model === undefined && previous?.connectionId === data.connectionId && previous?.provider === provider ? previous?.model ?? null : null;
+      const model = disabling && data.model === undefined ? previous?.model ?? null : provider ? data.model ?? kept ?? row?.route.defaultModel ?? null : null;
+      if (data.enabled && !model) throw unprocessable("Select a model for this connection", { code: "model_required" });
+      const values = { enabled: data.enabled, connectionId: data.connectionId, grantId: data.grantId,
+        allowBackground: data.allowBackground ?? previous?.allowBackground ?? true, companyId, provider: provider ?? null, model, updatedAt: new Date() };
       await tx.insert(companyDecisionModels).values(values).onConflictDoUpdate({ target: companyDecisionModels.companyId, set: values });
       await logActivity(tx, { companyId, actorType: "user", actorId: userId, action: "decision_model.configured", entityType: "company", entityId: companyId,
-        details: { ...data, provider: values.provider, model: values.model } }, publications);
+        details: { enabled: data.enabled, connectionId: data.connectionId, grantId: data.grantId, allowBackground: values.allowBackground, provider: values.provider, model: values.model } }, publications);
       return values;
     });
   }
   async function resolve(context: DecisionContext, executor = db, lockAdmission = false) {
     if (!registeredFeatures.has(context.feature)) throw forbidden("A registered decision feature is required");
+    if (context.model !== undefined && !decisionModelIdSchema.safeParse(context.model).success) throw new DecisionUnavailable("incompatible_connection");
+    if (context.connectionId !== undefined && !UUID.test(context.connectionId)) throw new DecisionUnavailable("incompatible_connection");
+    if (context.issueId !== undefined && !UUID.test(context.issueId)) throw forbidden();
     const configQuery = executor.select().from(companyDecisionModels).where(eq(companyDecisionModels.companyId, context.companyId));
     const [config] = await (lockAdmission ? configQuery.for("share") : configQuery);
     if (!config?.connectionId || !config.grantId) throw new DecisionUnavailable("not_configured");
@@ -131,10 +174,27 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
           : projectId ? { type: "project", companyId: context.companyId, projectId } : { type: "company", companyId: context.companyId } });
       if (!accessResult.allowed) throw forbidden();
     }
-    const connection = await aiConnectionService(executor).selectDecision({ companyId: context.companyId,
-      connectionId: config.connectionId, grantId: config.grantId, userId, agentId, sponsoredBackground: actor.type === "system" });
-    if (connection.provider !== config.provider || config.model !== DECISION_MODELS[connection.provider].id) throw new DecisionUnavailable("incompatible_connection");
-    return { config, connection, userId, agentId, runId, identityContextId, issueId, projectId, admissionAgent,
+    const overriding = Boolean(context.connectionId && context.connectionId !== config.connectionId);
+    let grantId = config.grantId;
+    if (overriding) {
+      const [grant] = await executor.select({ id: connectionGrants.id }).from(connectionGrants).where(and(eq(connectionGrants.companyId, context.companyId),
+        eq(connectionGrants.connectionId, context.connectionId!), eq(connectionGrants.kind, "organization"), eq(connectionGrants.status, "active")))
+        .orderBy(connectionGrants.createdAt).limit(1);
+      if (!grant) throw new DecisionUnavailable("incompatible_connection");
+      grantId = grant.id;
+    }
+    let connection: Awaited<ReturnType<ReturnType<typeof aiConnectionService>["selectDecision"]>>;
+    try {
+      connection = await aiConnectionService(executor).selectDecision({ companyId: context.companyId,
+        connectionId: overriding ? context.connectionId! : config.connectionId, grantId, userId, agentId, sponsoredBackground: actor.type === "system" });
+    } catch (error) {
+      if (overriding && error instanceof HttpError && error.status === 422) throw new DecisionUnavailable("incompatible_connection");
+      throw error;
+    }
+    if (!overriding && connection.provider !== config.provider) throw new DecisionUnavailable("incompatible_connection");
+    const model = context.model ?? (overriding ? connection.route.defaultModel : config.model ?? connection.route.defaultModel);
+    if (!model) throw new DecisionUnavailable("incompatible_connection");
+    return { config, connection, model, userId, agentId, runId, identityContextId, issueId, projectId, admissionAgent,
       actorType: actor.type === "board" ? "user" as const : actor.type === "agent" ? "agent" as const : "system" as const,
       actorId: actor.type === "system" ? "paperclip-decisions" : agentId ?? userId! };
   }
@@ -203,7 +263,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
         usageKind: "decision", responsibleUserId: invocation.responsibleUserId, ...links,
         // Run attribution lives on the invocation. Run receipt reconciliation must not ingest this independent charge.
         heartbeatRunId: null, idempotencyKey: `decision:${invocation.id}`,
-        provider: invocation.provider === "openrouter" ? "typesafe" : "openai", biller: invocation.provider,
+        provider: costProvider(invocation.provider, invocation.model), biller: invocation.provider,
         billingType: "metered_api", costStatus: receipt.costStatus, model: invocation.model,
         inputTokens: receipt.inputTokens ?? 0, outputTokens: receipt.outputTokens ?? 0, costCents: receipt.costCents ?? "0",
         providerRequestId: receipt.providerRequestId, pricingProvenance: receipt.pricingProvenance, occurredAt: invocation.startedAt,
@@ -252,6 +312,8 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       if (current.config.updatedAt.getTime() !== selected.config.updatedAt.getTime()
         || current.config.connectionId !== selected.config.connectionId || current.config.grantId !== selected.config.grantId
         || current.config.model !== selected.config.model || current.config.provider !== selected.config.provider
+        || current.model !== selected.model || current.connection.connection.id !== selected.connection.connection.id
+        || current.connection.grant.id !== selected.connection.grant.id
         || current.projectId !== selected.projectId
         || current.connection.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")?.secretId !== credentialSnapshot.id
         || current.userId !== selected.userId || current.identityContextId !== selected.identityContextId
@@ -278,7 +340,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       const [invocation] = await tx.insert(decisionInvocations).values({ id: randomUUID(), companyId: context.companyId, feature: context.feature.id,
         actorType: current.actorType, actorId: current.actorId, responsibleUserId: current.userId, agentId: current.agentId,
         issueId: current.issueId, projectId: current.projectId, runId: current.runId, identityContextId: current.identityContextId,
-        connectionId: current.connection.connection.id, grantId: current.connection.grant.id, provider: current.connection.provider, model: current.config.model!,
+        connectionId: current.connection.connection.id, grantId: current.connection.grant.id, provider: current.connection.provider, model: current.model,
         questionTypes: Object.values(parsed.data.questions).map(q => q.type),
       }).returning();
       await tx.insert(budgetReservations).values({ companyId: context.companyId, decisionInvocationId: invocation.id, agentId: current.agentId,
@@ -290,7 +352,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
     const invocation = admission.invocation!;
     let outcome: DecisionProviderOutcome;
     try { outcome = await providerCall({ provider: selected.connection.provider, model: invocation.model, apiKey: credential,
-      request: parsed.data, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) }); }
+      route: selected.connection.route, request: parsed.data, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000) }); }
     catch { outcome = { errorCode: "provider_failed", receipt: decisionReceipt(selected.connection.provider, null) }; }
     await settle(invocation, outcome);
     const { inputTokens, outputTokens, costCents, costStatus } = outcome.receipt;
@@ -326,5 +388,26 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
         costCents: cost.costStatus === "unpriced" ? null : cost.costCents, costStatus: cost.costStatus };
     }));
   }
-  return { settings, choices, configure, availability, availabilityForRequest, decide, recoverInterrupted, history };
+  async function connectionOptions(companyId: string): Promise<{ companyDefault: { connectionId: string; name: string; model: string } | null; connections: DecisionConnectionOption[] }> {
+    const [config, rows] = await Promise.all([settings(companyId), compatibleRows(companyId)]);
+    let companyDefault = null;
+    if (config.enabled && config.connectionId && config.model) {
+      const row = rows.find(candidate => candidate.connection.id === config.connectionId && candidate.grant.id === config.grantId);
+      if (row) companyDefault = { connectionId: config.connectionId, name: row.connection.name, model: config.model };
+    }
+    return { companyDefault, connections: rows.map(row => ({ id: row.connection.id, name: row.connection.name, provider: row.route.provider, protocol: row.route.protocol })) };
+  }
+  async function models(companyId: string, connectionId: string, audit: { responsibleUserId: string | null; actorType: "user" | "system"; actorId: string }, signal?: AbortSignal): Promise<DecisionModelList> {
+    if (!UUID.test(connectionId)) return { models: [], errorCode: "incompatible_connection" };
+    const row = (await compatibleRows(companyId)).find(candidate => candidate.connection.id === connectionId);
+    if (!row) return { models: [], errorCode: "incompatible_connection" };
+    let apiKey = "";
+    if (row.route.provider !== "openrouter") {
+      try { apiKey = await aiConnectionService(db).credential(row, 0, audit); }
+      catch { return { models: [], errorCode: "connection_unavailable" }; }
+    }
+    const route: DecisionRoute = row.route;
+    return listDecisionModels({ route, apiKey, signal, configured: row.configuredModels.map(model => ({ id: model.id, name: model.label ?? model.id })) }, { fetch: options.fetch });
+  }
+  return { settings, choices, configure, availability, availabilityForRequest, decide, recoverInterrupted, history, connectionOptions, models };
 }
