@@ -13,11 +13,8 @@ import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
-// The model's own reply quotes the Claude CLI's sign-in hint, as an agent does
-// when it reports the output of a `claude` command it ran.
 const QUOTED_LOGIN_TEXT = 'The probe exited 1: "Not logged in · Please run /login". I posted its output.';
 
-/** Runs one turn through the real Claude ACP bridge and Claude Code against a local API stand-in. */
 async function runTurn() {
   const root = await mkdtemp(join(tmpdir(), "claude-login-text-"));
   const home = join(root, "home"), cwd = join(root, "workspace"), config = join(home, ".claude");
@@ -104,8 +101,6 @@ async function runTurn() {
 
 it("completes a turn whose successful reply quotes the CLI's sign-in hint through the real ACP stream", async () => {
   const { result, events } = await runTurn();
-  // Before the fix, the bridge read the quoted hint in the successful result
-  // as a sign-in failure and the turn failed as a terminal access failure.
   expect(result).toMatchObject({ status: "completed", stopReason: "end_turn" });
   expect(JSON.stringify(events)).toContain("Please run /login");
 }, 60_000);
