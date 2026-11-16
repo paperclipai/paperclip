@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { spawn, execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile, access } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { CommandManagedDuplexChannel, CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
@@ -288,7 +288,8 @@ function liveParent(env: Record<string, string>) {
     lines.once("line", line => resolve(JSON.parse(line))); parent.stdin.write("run\n");
   });
 }
-it.each([false, true])("re-arms a live provider's launchers after its controller restarts (callback bridge: %s)", async remote => {
+it("re-arms a live sandbox provider's launchers after its controller restarts", async () => {
+  const remote = true;
   const root = await mkdtemp(path.join(tmpdir(), "native-github-restart-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const before = await broker(undefined, remote, false, undefined, undefined, { root, launcherKey: "session-a" });
@@ -309,7 +310,7 @@ it.each([false, true])("re-arms a live provider's launchers after its controller
   const adopted = await operation();
   expect(adopted).toMatchObject({ pid: first.pid, value: "adopted-run-a", stderr: "" });
   expect(await readFile(path.join(launchers, "gh"), "utf8")).not.toContain(after.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
-  if (!remote) expect((await stat(path.join(launchers, "broker.json"))).mode & 0o777).toBe(0o600);
+  expect((await stat(path.join(launchers, "broker.json"))).mode & 0o777).toBe(0o600);
   releaseAfter();
   await after.stop();
   await expect(access(launchers)).rejects.toThrow();
@@ -317,15 +318,43 @@ it.each([false, true])("re-arms a live provider's launchers after its controller
 it("keeps launchers a successor re-armed when a superseded access stops", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-successor-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const superseded = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const superseded = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-a" });
   const successor = await broker(vi.fn(async () => ({ status: "available", env: { GH_TOKEN: "successor" } })),
-    false, false, undefined, undefined, { root, launcherKey: "session-a" });
+    true, false, undefined, undefined, { root, launcherKey: "session-a" });
   const operation = liveParent(superseded.env);
   await superseded.stop();
   successor.activate(run("run-b"));
   expect(await operation()).toMatchObject({ value: "successor", stderr: "" });
-  const other = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-b" });
+  const other = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-b" });
   expect(other.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(successor.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+});
+it("keeps a previous-release provider running without managed GitHub after the cutover restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-cutover-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const previous = await broker(undefined, true, false, undefined, undefined, { root });
+  const operation = liveParent(previous.env);
+  const releasePrevious = previous.activate(run("run-a"));
+  expect((await operation()).value).toBe("fixture-run-a");
+  releasePrevious();
+  await previous.stop();
+  await expect(access(previous.env.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toThrow();
+  const current = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-a" });
+  expect(current.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(previous.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+  current.activate(run("run-a"));
+  expect(await operation()).toMatchObject({ value: "anonymous", stderr: "" });
+  expect(current.resolveCredentials).not.toHaveBeenCalled();
+  await expect(liveParent(current.env)()).resolves.toMatchObject({ value: "fixture-run-a" });
+}, 45_000);
+it("keeps the broker capability out of local launcher files", async () => {
+  const b = await broker(undefined, false, false, undefined, undefined, { launcherKey: "session-a" });
+  const files = await readdir(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, { recursive: true });
+  expect(files).not.toContain("broker.json");
+  for (const file of files) {
+    const target = path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, file);
+    if ((await stat(target)).isFile()) expect(await readFile(target, "utf8")).not.toContain(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
+  }
+  b.activate(run("local"));
+  expect(await liveParent(b.env)()).toMatchObject({ value: "fixture-local", stderr: "" });
 });
 it("rejects other scopes, concurrent bindings, browser requests and forged authority", async () => {
   const b = await broker();

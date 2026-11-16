@@ -53,6 +53,7 @@ function program(input: RemoteTextFileSyncFile) {
   const sha256 = createHash("sha256").update(input.body, "utf8").digest("hex");
   const script = [
       "set -eu",
+      ...(input.private ? ["umask 077"] : []),
       `remote_dir=${shellQuote(input.remoteDir)}`,
       `remote_path=${shellQuote(input.remotePath)}`,
       `remote_partial=${shellQuote(remotePartial)}`,

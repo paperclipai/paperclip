@@ -179,7 +179,7 @@ export async function createNativeGitHubAccess(input: {
     };
     launcherOwners.set(launcherDirectory, launcherOwner);
     const env = await prepareGitHubOperationLaunchers({
-      ...launcherLocation, cwd: input.cwd, broker,
+      ...launcherLocation, cwd: input.cwd, ...(input.target?.kind === "remote" ? { broker } : {}),
       env: {
         ...githubBrokerEnvironment({ PATH: input.env.PATH }, broker),
         // Never retain an old run's bridge authentication override.
