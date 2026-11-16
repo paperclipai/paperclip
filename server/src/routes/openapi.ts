@@ -3798,7 +3798,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/default-mcp/missing-entry-enrollment",
   tags: ["agents"],
   summary: "Add missing managed default-MCP entries to agents that already have a defaultMcp state",
-  description: "Adds the managed entries (for example comms-board) that an agent with an existing defaultMcp state lacks, in the same pending snapshot form new agents get, then runs setup for just those entries. Existing entries (including arcana-brain) are never rewritten. Defaults to a read-only census; a real run needs dryRun=false and the confirmation string. Reports counts, agent ids and entry keys only. Admin-only (owner/admin membership, tools:manage_connections, or instance admin).",
+  description: "Adds the managed entries (for example comms-board) that an agent with an existing defaultMcp state lacks, in the same pending snapshot form new agents get, then runs setup for just those entries. Existing entries (including arcana-brain) are never rewritten. Defaults to a read-only census; a real run needs dryRun=false and the confirmation string. Reports counts, agent ids, entry keys and the responsibleSource (audit_log or operator_override) per agent only. Optional responsibleUserId supplies the responsible user for agents whose audit log resolves none (for example agents created by other agents); it never overrides an agent that already resolves an owner, must be an active verified-email member of the company (otherwise 400), and each agent enrolled through it gets an agent.default_mcp.responsible_user_override activity entry. Admin-only (owner/admin membership, tools:manage_connections, or instance admin).",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(
@@ -3807,6 +3807,7 @@ registry.registerPath({
         confirm: z.string().optional(),
         limit: z.number().int().min(1).max(MISSING_ENTRY_BATCH_LIMIT).optional(),
         afterId: z.string().uuid().optional(),
+        responsibleUserId: z.string().min(1).max(255).optional(),
       }),
     ),
   },

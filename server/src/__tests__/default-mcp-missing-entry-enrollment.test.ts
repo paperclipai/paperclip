@@ -15,6 +15,7 @@ import { snapshotDefaultMcpForNewAgent, waitForScheduledDefaultMcpSetups } from 
 import {
   MISSING_ENTRY_CONFIRMATION,
   MissingEntryConfirmationError,
+  MissingEntryInvalidResponsibleUserError,
   addMissingDefaultMcpEntries,
   missingEntryEligibleSpec,
 } from "../services/default-mcp-missing-entry-enrollment.js";
@@ -333,6 +334,99 @@ describeEmbeddedPostgres("adding missing managed default-MCP entries to agents t
     expect(outcomeOf(dry, agent.id)).toMatchObject({ result: "skipped", reason: "owner_required" });
     expect(outcomeOf(live, agent.id)).toMatchObject({ result: "skipped", reason: "owner_required" });
     expect(await everything()).toBe(before);
+  });
+
+  async function seedUser(companyId: string | null, opts: { verified?: boolean; status?: string } = {}) {
+    const userId = `user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({ id: userId, name: "Dan", email: `${userId}@redesignhealth.com`, emailVerified: opts.verified ?? true, createdAt: now, updatedAt: now });
+    if (companyId) await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: opts.status ?? "active", membershipRole: "member" });
+    return userId;
+  }
+  const overrideActivity = async () => (await db.select().from(activityLog)).filter((row) => row.action === "agent.default_mcp.responsible_user_override");
+
+  describe("operator responsibleUserId override", () => {
+    it("fills only the agent with no audit-log owner: dry run reports would_add, real run enrolls it and writes one audit entry", async () => {
+      const companyId = await seedCompany();
+      await seedCommsTemplate(companyId);
+      const operator = await seedUser(companyId);
+      const target = await seedUser(companyId);
+      const agent = await arcanaOnlyAgent(companyId, null);
+      enableFeature();
+      configureDownstream();
+      vi.stubGlobal("fetch", downstreamFetch());
+      const before = await everything();
+
+      const dry = await addMissingDefaultMcpEntries(db, { companyId, responsibleUserId: target, actedByUserId: operator });
+      expect(outcomeOf(dry, agent.id)).toMatchObject({ result: "would_add", keys: ["comms-board"], responsibleSource: "operator_override" });
+      expect(await everything()).toBe(before);
+      expect(await overrideActivity()).toHaveLength(0);
+
+      const live = await real(companyId, { responsibleUserId: target, actedByUserId: operator });
+      await waitForScheduledDefaultMcpSetups();
+      expect(outcomeOf(live, agent.id)).toMatchObject({ result: "added", keys: ["comms-board"], responsibleSource: "operator_override" });
+      expect((await stateOf(agent.id)).entries["comms-board"]).toMatchObject({ ownerUserId: target });
+      const audit = await overrideActivity();
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({ companyId, actorType: "user", actorId: operator, entityType: "agent", entityId: agent.id });
+      expect(audit[0]!.details).toEqual({ responsibleUserId: target, keys: ["comms-board"] });
+      expect(JSON.stringify(audit)).not.toContain(BOARD_TOKEN);
+    });
+
+    it("never overrides an agent that already resolves an owner", async () => {
+      const companyId = await seedCompany();
+      await seedCommsTemplate(companyId);
+      const creator = await seedOwner(companyId);
+      const operator = await seedUser(companyId);
+      const target = await seedUser(companyId);
+      const agent = await arcanaOnlyAgent(companyId, creator);
+      enableFeature();
+      configureDownstream();
+      vi.stubGlobal("fetch", downstreamFetch());
+
+      const dry = await addMissingDefaultMcpEntries(db, { companyId, responsibleUserId: target, actedByUserId: operator });
+      expect(outcomeOf(dry, agent.id)).toMatchObject({ result: "would_add", responsibleSource: "audit_log" });
+      const live = await real(companyId, { responsibleUserId: target, actedByUserId: operator });
+      await waitForScheduledDefaultMcpSetups();
+      expect(outcomeOf(live, agent.id)).toMatchObject({ result: "added", responsibleSource: "audit_log" });
+      expect((await stateOf(agent.id)).entries["comms-board"]).toMatchObject({ ownerUserId: creator });
+      expect(await overrideActivity()).toHaveLength(0);
+    });
+
+    it("rejects a non-member, unverified, inactive or non-user target for the whole request and changes nothing", async () => {
+      const companyId = await seedCompany();
+      const otherCompanyId = await seedCompany();
+      const operator = await seedUser(companyId);
+      const agent = await arcanaOnlyAgent(companyId, null);
+      enableFeature();
+      const nonMember = await seedUser(otherCompanyId);
+      const unverified = await seedUser(companyId, { verified: false });
+      const inactive = await seedUser(companyId, { status: "suspended" });
+      const principalIsAgent = await seedUser(null);
+      await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: principalIsAgent, status: "active", membershipRole: "member" });
+      const before = await everything();
+
+      for (const responsibleUserId of [nonMember, unverified, inactive, principalIsAgent, "does-not-exist"]) {
+        await expect(addMissingDefaultMcpEntries(db, { companyId, responsibleUserId, actedByUserId: operator })).rejects.toBeInstanceOf(MissingEntryInvalidResponsibleUserError);
+        await expect(real(companyId, { responsibleUserId, actedByUserId: operator })).rejects.toBeInstanceOf(MissingEntryInvalidResponsibleUserError);
+      }
+      expect(await everything()).toBe(before);
+      expect(await overrideActivity()).toHaveLength(0);
+      expect(outcomeOf(await addMissingDefaultMcpEntries(db, { companyId }), agent.id)).toMatchObject({ reason: "owner_required" });
+    });
+
+    it("without the field behaves as before: owner_required, and audit-log agents report responsibleSource audit_log", async () => {
+      const companyId = await seedCompany();
+      await seedCommsTemplate(companyId);
+      const creator = await seedOwner(companyId);
+      const orphan = await arcanaOnlyAgent(companyId, null);
+      const owned = await arcanaOnlyAgent(companyId, creator);
+      enableFeature();
+
+      const dry = await addMissingDefaultMcpEntries(db, { companyId });
+      expect(outcomeOf(dry, orphan.id)).toMatchObject({ result: "skipped", reason: "owner_required" });
+      expect(outcomeOf(dry, owned.id)).toMatchObject({ result: "would_add", responsibleSource: "audit_log" });
+    });
   });
 
   it("honours legacy access conflicts", async () => {

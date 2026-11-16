@@ -186,4 +186,19 @@ describe("POST /companies/:companyId/default-mcp/missing-entry-enrollment", { se
     expect((await url(app, { dryRun: false, confirm: "add-missing-default-mcp-entries", limit: 3, afterId })).status).toBe(200);
     expect(mockAddMissing).toHaveBeenCalledWith(expect.anything(), { companyId, dryRun: false, confirm: "add-missing-default-mcp-entries", limit: 3, afterId });
   });
+
+  it("passes responsibleUserId and the calling user to the service, validates it, maps an invalid user to 400 and keeps non-managers out", async () => {
+    const app = await createApp(member("owner"));
+    expect((await url(app, { responsibleUserId: 5 })).status).toBe(400);
+    expect((await url(app, { responsibleUserId: "" })).status).toBe(400);
+    expect(mockAddMissing).not.toHaveBeenCalled();
+    expect((await url(app, { responsibleUserId: "dan-user" })).status).toBe(200);
+    expect(mockAddMissing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ companyId, dryRun: true, responsibleUserId: "dan-user", actedByUserId: "board-user" }));
+    const { MissingEntryInvalidResponsibleUserError } = await import("../services/default-mcp-missing-entry-enrollment.js");
+    mockAddMissing.mockRejectedValueOnce(new MissingEntryInvalidResponsibleUserError());
+    expect((await url(app, { responsibleUserId: "dan-user" })).status).toBe(400);
+    mockAddMissing.mockClear();
+    expect((await url(await createApp(member("member")), { responsibleUserId: "dan-user" })).status).toBe(403);
+    expect(mockAddMissing).not.toHaveBeenCalled();
+  });
 });
