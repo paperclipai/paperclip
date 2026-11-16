@@ -32,7 +32,7 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 /**
- * TECH-8806: `lockCurrentPrincipalAuthorization` is the final authorization
+ * `lockCurrentPrincipalAuthorization` is the final authorization
  * fence at the task-mutation boundary. Provider-specific resolution (the
  * GitHub chat configuration, Speko voice sessions) returns its own resolved
  * user or sponsor; the fence must evaluate that resolved identity against the
@@ -285,5 +285,12 @@ describeEmbeddedPostgres("chat inbound provider authorization fence", () => {
     voiceAuthorize.mockResolvedValue({ allowed: false, linkedDenied: true, userId: null });
     const voiceDenied = await authority().lockCurrentPrincipalAuthorization(db, base.endpoint, caller.id);
     expect(voiceDenied).toMatchObject({ allowed: false, linkedDenied: true });
+
+    // An unsponsored voice endpoint without an acting identity stays open by design.
+    const unsponsored = await seedEndpoint({ provider: "speko", sponsorUserId: null });
+    const unsponsoredCaller = await principalRow(unsponsored.companyId, "speko", `voice:${randomUUID()}`);
+    voiceAuthorize.mockResolvedValue({ allowed: true, linkedDenied: false, userId: null });
+    const unsponsoredAllowed = await authority().lockCurrentPrincipalAuthorization(db, unsponsored.endpoint, unsponsoredCaller.id);
+    expect(unsponsoredAllowed).toMatchObject({ allowed: true, linkedDenied: false, userId: null });
   });
 });

@@ -2466,7 +2466,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
       // Negative: the endpoint sponsor E may direct the agent, but the guest's
       // sponsor S may not. Admission resolves S through the GitHub
-      // configuration, so the message is filtered (TECH-8806).
+      // configuration, so the message is filtered.
       await db.insert(principalPermissionGrants).values({
         companyId: fixture.companyId, principalType: "user", principalId: "owner-user",
         permissionKey: "tasks:assign", scope: null,
@@ -2721,7 +2721,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
       // The sender's assignment grant is revoked while the run is active. Both
       // direct GitHub tool consumers must re-check the per-agent gate
-      // (TECH-8806) instead of trusting the access snapshot from task start.
+      // instead of trusting the access snapshot from task start.
       await db.delete(principalPermissionGrants).where(and(
         eq(principalPermissionGrants.companyId, f.companyId),
         eq(principalPermissionGrants.principalId, "owner-user"),
@@ -6127,6 +6127,108 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         details_url: `https://current-vanity.example/${company.issuePrefix}/apps/chat/${f.endpoint.id}/reviews`,
       })]);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(0);
+    });
+
+    it("evaluates configured responsible user authority for automatic GitHub events against a protected agent", async () => {
+      const f = await reviewBotFixture();
+      await db.update(agents).set({
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).where(eq(agents.id, f.assignedAgentId));
+
+      const authorUserId = "author-no-grant-u";
+      const responsibleUserId = "responsible-has-grant-u";
+      const now = new Date();
+      await db.insert(authUsers).values([
+        { id: authorUserId, name: "Author", email: `${authorUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
+        { id: responsibleUserId, name: "Responsible", email: `${responsibleUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
+      ]);
+      await db.insert(companyMemberships).values([
+        { companyId: f.companyId, principalType: "user", principalId: authorUserId, status: "active", membershipRole: "member" },
+        { companyId: f.companyId, principalType: "user", principalId: responsibleUserId, status: "active", membershipRole: "member" },
+      ]);
+      // Link the PR author (externalId: "42") to authorUserId
+      await db.update(chatIdentityLinks).set({ paperclipUserId: authorUserId }).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id),
+        eq(chatIdentityLinks.principalId, f.principal.id),
+      ));
+
+      // Case 1: Author has NO grant, but configured responsible user HAS tasks:assign grant -> allowed
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: responsibleUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: config.revision,
+        configuration: {
+          ...config.configuration,
+          memberAccess: "all_linked",
+          responsibleUserId,
+          defaults: {
+            ...config.configuration.defaults,
+            invocation: "linked_authors",
+          },
+        },
+      }, "owner-user");
+
+      const deliveryId1 = randomUUID();
+      const payload1 = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 881, title: "Automatic review authorized", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      };
+      const send1 = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId1, payload: payload1, webhookSecret: f.webhookSecret,
+      }));
+      expect((await send1()).status).toBeLessThan(300);
+      await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
+      await send1();
+      const reviews = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      expect(reviews).toHaveLength(1);
+      const [task1] = await readIssuesById(reviews[0].issueId);
+      expect(task1).toBeDefined();
+      expect(task1.responsibleUserId).toBe(responsibleUserId);
+
+      // Case 2: Reverse: Author HAS tasks:assign grant, but configured responsible user has NO grant -> filtered
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: authorUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, f.companyId),
+        eq(principalPermissionGrants.principalId, responsibleUserId),
+        eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+      ));
+
+      const deliveryId2 = randomUUID();
+      const payload2 = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 882, title: "Automatic review filtered", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      };
+      const send2 = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId2, payload: payload2, webhookSecret: f.webhookSecret,
+      }));
+      expect((await send2()).status).toBeLessThan(300);
+      await expect.poll(async () => {
+        const deliveries2 = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+        return deliveries2.find(r => r.providerEventId.includes(deliveryId2))?.state;
+      }, { timeout: 10_000 }).toBe("filtered");
+      const deliveries2 = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      const filteredDelivery = deliveries2.find(r => r.providerEventId.includes(deliveryId2));
+      expect(filteredDelivery?.redactedError).toBe("Sender is not authorized to direct this agent");
+
+      await f.service.shutdown();
     });
     it.each(["succeeded", "failed", "cancelled"] as const)("keeps a report-only GitHub check neutral after a %s run without an assessment", async status => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
@@ -11000,7 +11102,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     // An instance administrator linked over Slack, holding no company
     // assignment grant. The chat gate must evaluate company grants without
-    // the instance-admin bypass, matching task creation (TECH-8806).
+    // the instance-admin bypass, matching task creation.
     const adminUserId = `instance-admin-${label}`;
     const now = new Date();
     await db.insert(authUsers).values({
@@ -22350,6 +22452,130 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ),
         ),
     ).resolves.toHaveLength(1);
+    await service.shutdown();
+  });
+
+  it("denies a signed Slack session stop against a protected agent when the linked user lacks tasks:assign", async () => {
+    const fixture = await seedCompany();
+    const cancelRun = vi.fn();
+    const { endpoint, service } =
+      await configuredSlackEndpoint(fixture, { cancelRun });
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    await db.update(agents).set({
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+    }).where(eq(agents.id, fixture.assignedAgentId));
+
+    const externalUserId = "USTOPPERDENIED";
+    const stopperUserId = "stopper-denied-u";
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: stopperUserId,
+      name: "Stopper Denied",
+      email: `${stopperUserId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: stopperUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    const [principal] = await db.insert(chatExternalPrincipals).values({
+      companyId: fixture.companyId,
+      provider: "slack",
+      providerAccountId: "T-PAPERCLIP",
+      externalId: externalUserId,
+    }).returning();
+    await db.insert(chatIdentityLinks).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      principalId: principal.id,
+      paperclipUserId: stopperUserId,
+      status: "linked",
+      confirmedAt: now,
+    });
+
+    const channelId = "CSTOPSESSION1";
+    const threadTs = `${Math.floor(Date.now() / 1_000) - 5}.200000`;
+    const thread = makeThread({
+      channelId,
+      id: `slack:${channelId}:${threadTs}`,
+      name: "slack-session-stop-denied",
+    });
+    const [task] = await db.insert(issues).values({
+      companyId: fixture.companyId,
+      title: "Cancellable run",
+      status: "in_progress",
+      assigneeAgentId: fixture.assignedAgentId,
+      responsibleUserId: "owner-user",
+    }).returning();
+    const [conversation] = await db.insert(chatConversations).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      issueId: task.id,
+      externalConversationId: `slack:${channelId}`,
+      externalThreadId: thread.thread.id,
+      externalLabel: "stop-denied-thread",
+      providerUrl: "https://slack.example/test",
+      status: "active",
+      sessionGeneration: 1,
+    }).returning();
+
+    const eventSecond = Math.floor(Date.now() / 1_000);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      createdAt: new Date((eventSecond - 2) * 1_000),
+      startedAt: new Date((eventSecond - 1) * 1_000),
+      contextSnapshot: { issueId: task.id },
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, task.id));
+
+    const body = JSON.stringify({
+      type: "event_callback",
+      team_id: (await service.get(endpoint.id)).providerAccountId,
+      event_id: "EvSlackSessionStopDenied1",
+      event: {
+        type: "agent_session_stopped",
+        channel: channelId,
+        thread_ts: threadTs,
+        event_ts: `${eventSecond}.234567`,
+        streaming_message_ts: [`${eventSecond - 1}.500000`],
+        user: externalUserId,
+      },
+    });
+    const webhookUrl = `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`;
+    const response = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      signedSlackWebhookRequest({
+        body,
+        contentType: "application/json",
+        url: webhookUrl,
+      }),
+    );
+    expect(response.status).toBe(202);
+    await service.processPendingSlackSessionStops(25);
+
+    const allActions = await db
+      .select()
+      .from(chatActions)
+      .where(eq(chatActions.endpointId, endpoint.id));
+    const stopAction = allActions.find(a => a.kind === "slack_session_stop");
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(stopAction).toMatchObject({
+      status: "cancelled",
+      result: expect.objectContaining({
+        code: "slack_session_stop_no_longer_authorized",
+      }),
+    });
+
     await service.shutdown();
   });
 

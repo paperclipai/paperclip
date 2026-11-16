@@ -51,15 +51,17 @@ type InboundAuthorityOptions = {
 };
 /**
  * Whether the acting user (or endpoint sponsor) holds permission to direct/assign
- * the endpoint's assigned agent (TECH-8806).
+ * the endpoint's assigned agent. Unsponsored self-hosted endpoints without an
+ * acting user stay open by design.
  */
 export async function principalMayDirectAssignedAgent(
   executor: DbOrTransaction,
-  endpoint: { companyId: string; assignedAgentId?: string | null; sponsorUserId?: string | null },
+  endpoint: { companyId: string; assignedAgentId: string; sponsorUserId?: string | null },
   userId?: string | null,
 ): Promise<boolean> {
   const actingUserId = userId ?? endpoint.sponsorUserId;
-  if (!actingUserId || !endpoint.assignedAgentId) return true;
+  // Unsponsored endpoints (e.g. self-hosted local boards without user binding) stay open.
+  if (!actingUserId) return true;
   const decision = await authorizationService(executor).decide({
     // Evaluate company-scoped membership grants without instance-admin bypass.
     actor: { type: "board", userId: actingUserId, source: "session", ignoreInstanceAdmin: true },
@@ -288,7 +290,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       const actor = result.userId ?? result.sponsorUserId ?? endpoint.sponsorUserId;
       const allowed = await principalMayDirectAssignedAgent(tx, endpoint, actor);
       if (!allowed) {
-        return { ...result, allowed: false, linkedDenied: true, userId: null };
+        return { ...result, allowed: false, linkedDenied: true, userId: null, sponsorUserId: null };
       }
       return result;
     }
@@ -395,7 +397,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       sponsorMembership?.status === "active" &&
       sponsorMembership.membershipRole !== "viewer";
     if (allowed && !(await principalMayDirectAssignedAgent(tx, endpoint, null))) {
-      return { allowed: false, linkedDenied: true, userId: null };
+      return { allowed: false, linkedDenied: true, userId: null, sponsorUserId: null };
     }
     return {
       allowed,

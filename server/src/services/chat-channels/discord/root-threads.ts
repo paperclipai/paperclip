@@ -31,6 +31,7 @@ import {
   conflict,
 } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
+import { principalMayDirectAssignedAgent } from "../inbound/authorization.js";
 
 import {
   DiscordAdapterCompatibilityError,
@@ -173,6 +174,7 @@ export function createDiscordRootThreads(db: Db, options: DiscordRootThreadsOpti
               .then((rows) => rows[0] ?? null);
             let allowed: boolean;
             let linkedDenied = false;
+            let assignmentDenied = false;
             if (principal) {
               const authorization = await lockCurrentPrincipalAuthorization(
                 tx,
@@ -184,7 +186,8 @@ export function createDiscordRootThreads(db: Db, options: DiscordRootThreadsOpti
             } else if (!endpoint.allowUnlinkedPeople) {
               allowed = false;
             } else if (!endpoint.sponsorUserId) {
-              allowed = true;
+              allowed = await principalMayDirectAssignedAgent(tx, endpoint, null);
+              if (!allowed) assignmentDenied = true;
             } else {
               const sponsor = await tx
                 .select({
@@ -204,13 +207,19 @@ export function createDiscordRootThreads(db: Db, options: DiscordRootThreadsOpti
               allowed =
                 sponsor?.status === "active" &&
                 sponsor.membershipRole !== "viewer";
+              if (allowed && !(await principalMayDirectAssignedAgent(tx, endpoint, null))) {
+                allowed = false;
+                assignmentDenied = true;
+              }
             }
             if (!allowed) {
               reason = linkedDenied
                 ? "Linked Paperclip account is not currently permitted"
-                : endpoint.allowUnlinkedPeople
-                  ? "Endpoint sponsor can no longer authorize external guests"
-                  : "External identity must be linked to a Paperclip account";
+                : assignmentDenied
+                  ? "Sender is not authorized to direct this agent"
+                  : endpoint.allowUnlinkedPeople
+                    ? "Endpoint sponsor can no longer authorize external guests"
+                    : "External identity must be linked to a Paperclip account";
             }
           }
           if (!reason) {

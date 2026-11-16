@@ -1735,25 +1735,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (endpoint.provider === "speko" && principalResolution.userId === null && !principalResolution.linkedDenied) {
         publicVoiceTaskAllowed = await authorizeSpekoPublicVoiceTask(db, endpoint, principalResolution.principal.externalId, voiceStore.authorizePrincipal);
       }
-      const githubAccess = endpoint.provider === "github"
+      const githubAutomaticContext = githubAutomatic?.context ?? githubIssue?.context;
+      const githubAutomaticAdmissionResult = (endpoint.provider === "github" && githubAutomaticContext)
+        ? await githubAutomaticAdmission(db, endpoint, githubAutomaticContext)
+        : null;
+      const githubAccess = endpoint.provider === "github" && !githubAutomaticContext
         ? await githubChatPrincipalAccess(db, endpoint, principalResolution.principal.id)
         : null;
-      const actingUserId = githubAccess
-        ? (githubAccess.userId ?? githubAccess.sponsorUserId ?? null)
-        : principalResolution.userId;
+      const actingUserId = githubAutomaticContext
+        ? (githubAutomaticAdmissionResult?.responsibleUserId ?? null)
+        : githubAccess
+          ? (githubAccess.userId ?? githubAccess.sponsorUserId ?? null)
+          : principalResolution.userId;
       const mayDirectAssignedAgent = await principalMayDirectAssignedAgent(
         db,
         endpoint,
         actingUserId,
       );
-      const principalIdentityAllowed =
-        principalResolution.userId !== null ||
-        guestSponsorAllowed ||
-        publicVoiceTaskAllowed ||
-        (githubAccess?.allowed ?? false);
+      const principalIdentityAllowed = githubAutomaticContext
+        ? (githubAutomaticAdmissionResult?.allowed ?? false)
+        : (principalResolution.userId !== null ||
+          guestSponsorAllowed ||
+          publicVoiceTaskAllowed ||
+          (githubAccess?.allowed ?? false));
       const principalAllowed =
         !principalResolution.linkedDenied &&
         !(githubAccess && !githubAccess.allowed) &&
+        !(githubAutomaticContext && !githubAutomaticAdmissionResult?.allowed) &&
         mayDirectAssignedAgent &&
         principalIdentityAllowed;
       // Destination wake policy, Slack channels only. A channel can opt its
@@ -2438,8 +2446,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           );
         const automaticContext = githubAutomatic?.context ?? githubIssue?.context;
         const automaticAdmission = automaticContext ? await githubAutomaticAdmission(tx, currentEndpoint, automaticContext) : null;
-        if (automaticContext && !automaticAdmission?.allowed) currentPrincipalAuthorization.allowed = false;
-        if (automaticAdmission?.allowed) currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;
+        if (automaticContext) {
+          if (!automaticAdmission?.allowed) {
+            currentPrincipalAuthorization.allowed = false;
+          } else {
+            const responsibleAllowed = !automaticAdmission.responsibleUserId ||
+              (await principalMayDirectAssignedAgent(tx, currentEndpoint, automaticAdmission.responsibleUserId));
+            currentPrincipalAuthorization.allowed = responsibleAllowed;
+            currentPrincipalAuthorization.linkedDenied = !responsibleAllowed;
+            currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;
+          }
+        }
         const endpointStillAllowed =
           currentEndpoint.status === "verifying" ||
           currentEndpoint.status === "active";
