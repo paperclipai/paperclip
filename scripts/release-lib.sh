@@ -572,12 +572,18 @@ wait_for_npm_package_versions() {
 verify_npm_installable() {
   local package_spec="$1"
   local expected_version="$2"
+  local install_timeout_seconds="${3:-}"
   local install_dir
   local installed_version
+  local install=(npm install --prefix "" "$package_spec" --no-audit --no-fund)
 
   install_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-install.XXXXXX")"
+  install[3]="$install_dir"
+  if [ -n "$install_timeout_seconds" ] && command -v timeout >/dev/null 2>&1; then
+    install=(timeout --kill-after=10 "$install_timeout_seconds" "${install[@]}")
+  fi
 
-  if ! npm install --prefix "$install_dir" "$package_spec" --no-audit --no-fund; then
+  if ! "${install[@]}"; then
     rm -rf "$install_dir"
     return 1
   fi
@@ -591,16 +597,22 @@ verify_npm_installable() {
 wait_for_npm_installable() {
   local package_spec="$1"
   local expected_version="$2"
-  local attempts="${3:-40}"
+  local deadline_seconds="${3:-1200}"
   local delay_seconds="${4:-30}"
+  local deadline=$(( $(date +%s) + deadline_seconds ))
   local attempt=1
+  local remaining
 
-  until verify_npm_installable "$package_spec" "$expected_version"; do
-    if [ "$attempt" -ge "$attempts" ]; then
-      return 1
+  while :; do
+    remaining=$(( deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    if verify_npm_installable "$package_spec" "$expected_version" "$remaining"; then
+      return 0
     fi
-    release_warn "${package_spec} did not install yet (attempt ${attempt}/${attempts}); a large tarball can lag its metadata. Retrying in ${delay_seconds}s."
-    sleep "$delay_seconds"
+    remaining=$(( deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    release_warn "${package_spec} did not install yet (attempt ${attempt}, ${remaining}s left); a large tarball can lag its metadata. Retrying in $(( delay_seconds < remaining ? delay_seconds : remaining ))s."
+    sleep $(( delay_seconds < remaining ? delay_seconds : remaining ))
     attempt=$((attempt + 1))
   done
 }

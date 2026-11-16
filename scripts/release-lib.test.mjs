@@ -498,23 +498,41 @@ test("a canary version is accepted only for the master commit whose position num
   assert.throws(() => confirm("2026.1116.0-canary.2600", side), /is not on origin\/master/);
 });
 
-test("a canary install is retried while its tarball lags the metadata, within a bound", () => {
+function installRetryFixture({ failures = 0, hangSeconds = 0 }) {
   const dir = mkdtempSync(join(tmpdir(), "paperclip-install-retry-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
   const counter = join(dir, "attempts");
-  const run = (failures, attempts) => {
-    writeFileSync(counter, "0");
-    const script = `source "${repoRoot}/scripts/release-lib.sh"
-verify_npm_installable() { local n; n=$(( $(cat "$1") + 1 )); echo "$n" > "$1"; [ "$n" -gt "$2" ]; }
-wait_for_npm_installable "${counter}" "${failures}" "${attempts}" 0`;
-    const result = spawnSync("bash", ["-c", script], { encoding: "utf8" });
-    return { status: result.status, attempts: Number(readFileSync(counter, "utf8")), stderr: result.stderr };
+  writeFileSync(counter, "0");
+  writeExecutable(join(bin, "npm"), `#!/usr/bin/env bash
+n=$(( $(cat "${counter}") + 1 )); echo "$n" > "${counter}"
+if [ "${hangSeconds}" -gt 0 ]; then sleep "${hangSeconds}"; fi
+if [ "$n" -le "${failures}" ]; then echo "npm error code E404" >&2; exit 1; fi
+prefix="$3"; mkdir -p "$prefix/node_modules/paperclipai"
+printf '{"version":"1.2.3"}' > "$prefix/node_modules/paperclipai/package.json"
+`);
+  const run = (deadline, delay = 0) => {
+    const started = Date.now();
+    const result = spawnSync("bash", ["-c", `source "${repoRoot}/scripts/release-lib.sh"; wait_for_npm_installable paperclipai@canary 1.2.3 ${deadline} ${delay}`],
+      { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    return { status: result.status, seconds: (Date.now() - started) / 1000, attempts: Number(readFileSync(counter, "utf8")), stderr: result.stderr };
   };
-  assert.deepEqual(run(0, 5).status, 0);
-  const recovered = run(3, 5);
+  return { run };
+}
+
+test("a release install is retried while its tarball lags the metadata", () => {
+  const recovered = installRetryFixture({ failures: 3 }).run(60);
   assert.equal(recovered.status, 0);
   assert.equal(recovered.attempts, 4);
-  assert.match(recovered.stderr, /attempt 3\/5/);
-  const exhausted = run(9, 4);
+  assert.match(recovered.stderr, /attempt 3, \d+s left/);
+  assert.equal(installRetryFixture({}).run(60).attempts, 1);
+});
+
+test("install retries stop at the deadline, including an install that hangs", () => {
+  const exhausted = installRetryFixture({ failures: 1000 }).run(3, 1);
   assert.notEqual(exhausted.status, 0);
-  assert.equal(exhausted.attempts, 4);
+  assert.ok(exhausted.seconds < 8, `took ${exhausted.seconds}s`);
+  const hung = installRetryFixture({ hangSeconds: 120 }).run(3, 1);
+  assert.notEqual(hung.status, 0);
+  assert.ok(hung.seconds < 20, `a hung install outlived the deadline: ${hung.seconds}s`);
 });
