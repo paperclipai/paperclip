@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings, subscribeDatabaseWork } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings, museCredentials, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { notifyMuseContactVerification, parseMuseVerificationHint } from "../modules/external-agents/index.js";
+import * as externalAgents from "../modules/external-agents/index.js";
+import { museCredentialHash } from "./muse-identity.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { startMuseMaintenance } from "./muse-maintenance.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 
 const effects = vi.hoisted(() => ({
-  endQualification: vi.fn(), revokeOAuthGrant: vi.fn(), reconcileTerminalAssignments: vi.fn(),
+  verify: vi.fn(), endQualification: vi.fn(), revokeOAuthGrant: vi.fn(), reconcileTerminalAssignments: vi.fn(),
   start: vi.fn(), stop: vi.fn(),
 }));
 vi.mock("./muse-runner-broker.js", () => ({ museRunnerBroker: () => effects }));
@@ -59,7 +62,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
       operatorId: "synthetic-operator", qualificationId: expiresAt ? randomUUID() : null, qualificationExpiresAt: expiresAt }).returning();
     return binding;
   }
-  async function start(failFirstUpdate = false) {
+  async function start(failFirstUpdate = false, waitForAllOwners = true) {
     const observed = new Proxy(db, { get(target, key) {
       if (!["select", "update", "insert", "delete", "execute", "transaction"].includes(String(key))) return Reflect.get(target, key);
       return (...args: unknown[]) => {
@@ -72,6 +75,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
       canReconcile: () => enabled, onError: error => errors.push(error) });
     stop = startMuseMaintenance(observed, coordinator);
     await stop.ready;
+    if (waitForAllOwners) await settle();
   }
   async function settle() {
     await vi.advanceTimersByTimeAsync(0);
@@ -271,6 +275,104 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     await vi.advanceTimersByTimeAsync(600_000);
     expect(calls).toEqual(baseline);
   });
+  it("keeps local qualification work responsive while startup Cloud continuity is pending and retries only its debt", async () => {
+    const flags = await instanceSettingsService(db).getExperimentalReadOnly();
+    await instanceSettingsService(db).updateExperimental({ enableMuse: true, enableNativeRunner: true });
+    const stable = await fixture(new Date(Date.now() + 3_600_000));
+    const changed = await fixture(new Date(Date.now() + 3_600_000));
+    const uncovered = await fixture(new Date(Date.now() + 3_600_000));
+    const expired = await fixture(new Date(Date.now() - 1000));
+    const at = new Date(Date.now() + 1000), near = await fixture(at);
+    await db.update(museAgentBindings).set({ pairedAt: new Date(), receiverContactAt: new Date(), workerActivityAt: new Date() })
+      .where(eq(museAgentBindings.id, changed.id));
+    await db.insert(museCredentials).values({ companyId: changed.companyId, bindingId: changed.id,
+      bindingGeneration: changed.generation, kind: "refresh", familyId: randomUUID(),
+      tokenHash: museCredentialHash(randomUUID()), expiresAt: new Date(Date.now() + 4 * 3_600_000) });
+    const credentialBefore = await db.select().from(museCredentials).where(eq(museCredentials.bindingId, changed.id));
+    // Existing broker port: record the ordinary challenge request's revision
+    // commit, never seed an authenticated reply or a successful qualification.
+    effects.verify.mockImplementation(async (_companyId: string, _agentId: string,
+      input: { bindingId: string; generation: number; expectedRevision: number }) => {
+      expect(input.bindingId).toBe(changed.id);
+      const rows = await db.update(museAgentBindings).set({ challengeHash: museCredentialHash(randomUUID()),
+        challengeExpiresAt: new Date(Date.now() + 600_000), revision: input.expectedRevision + 1 })
+        .where(and(eq(museAgentBindings.id, input.bindingId), eq(museAgentBindings.companyId, _companyId),
+          eq(museAgentBindings.generation, input.generation), eq(museAgentBindings.revision, input.expectedRevision))).returning();
+      expect(rows).toHaveLength(1);
+    });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let mode: "pending" | "outage" | "owned" = "pending";
+    // Controlled scheduling boundary only. recoverMuseReceiverContinuity's
+    // authenticated Cloud transport/projection implementation is unchanged.
+    const recover = vi.spyOn(externalAgents, "recoverMuseReceiverContinuity").mockImplementation(async (_owner, signal) => {
+      if (mode === "pending") await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        gate.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+      });
+      signal.throwIfAborted();
+      if (mode !== "owned") throw new Error("Controlled Cloud continuity unavailable");
+      return new Map([[stable.id, stable.generation]]);
+    });
+    const starting = start(false, false);
+    void starting.catch(() => {});
+    let primaryFailed = false;
+    let primaryFailure: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(recover).toHaveBeenCalledTimes(1);
+        expect(effects.endQualification).toHaveBeenCalledWith(expect.objectContaining({ bindingId: expired.id }));
+        expect(effects.verify).toHaveBeenCalledWith(changed.companyId, changed.agentId,
+          { bindingId: changed.id, generation: changed.generation, expectedRevision: changed.revision });
+      });
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0); // Real unresolved startup owner remains held.
+      expect(coordinator.nextWakeAt()).toBe(at.getTime());
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
+      await vi.waitFor(() => expect(effects.endQualification).toHaveBeenCalledWith(expect.objectContaining({ bindingId: near.id })));
+      expect(errors).toEqual([]);
+      mode = "outage"; release(); await starting; await settle();
+      expect(errors).toHaveLength(1);
+      expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      await vi.advanceTimersByTimeAsync(5000); await settle();
+      expect(recover).toHaveBeenCalledTimes(2); expect(errors).toHaveLength(2);
+      mode = "owned";
+      await vi.advanceTimersByTimeAsync(5000); await settle();
+      expect(recover).toHaveBeenCalledTimes(3);
+      const rows = await db.select().from(museAgentBindings);
+      expect(rows.find(row => row.id === stable.id)?.cadenceEvidenceIncompleteAt).toBeNull();
+      expect(rows.find(row => row.id === changed.id)).toMatchObject({ revision: changed.revision + 1,
+        verifiedReplyAt: null, cadenceEvidenceIncompleteAt: null });
+      expect(rows.find(row => row.id === uncovered.id)?.cadenceEvidenceIncompleteAt).toBeInstanceOf(Date);
+      expect(await db.select().from(museCredentials).where(eq(museCredentials.bindingId, changed.id))).toEqual(credentialBefore);
+      // Let the original remaining qualification deadlines expire normally;
+      // then startup recovery is complete and no empty five-second duty remains.
+      await vi.advanceTimersByTimeAsync(3_600_000); await settle();
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const baseline = [...calls];
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(calls).toEqual(baseline); expect(recover).toHaveBeenCalledTimes(3);
+    } catch (error) {
+      primaryFailed = true; primaryFailure = error;
+    } finally {
+      mode = "owned"; release();
+      const cleanupFailures: unknown[] = [];
+      const attempt = async (cleanup: () => unknown) => {
+        try { await cleanup(); } catch (error) { cleanupFailures.push(error); }
+      };
+      await attempt(() => starting);
+      await attempt(() => coordinator?.stop());
+      await attempt(() => stop?.());
+      await attempt(() => recover.mockRestore());
+      await attempt(() => instanceSettingsService(db).updateExperimental({
+        enableMuse: flags.enableMuse, enableNativeRunner: flags.enableNativeRunner }));
+      if (primaryFailed && cleanupFailures.length) throw new AggregateError(
+        [primaryFailure, ...cleanupFailures], "Muse continuity assertion and cleanup failed", { cause: primaryFailure });
+      if (primaryFailed) throw primaryFailure;
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Muse continuity cleanup failed");
+    }
+  });
+
   it("moves a scheduled deadline earlier on a committed change", async () => {
     const binding = await fixture(new Date(Date.now() + 600_000)); await start();
     const at = new Date(Date.now() + 60_000);
@@ -346,9 +448,9 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     expect(effects.reconcileTerminalAssignments).toHaveBeenCalledTimes(1);
     expect(coordinator.nextWakeAt()).toBeNull();
   });
-  it("retries startup evidence marking before reconciliation", async () => {
+  it("retries startup evidence marking without blocking independent reconciliation", async () => {
     await fixture(); await start(true);
-    expect(effects.reconcileTerminalAssignments).not.toHaveBeenCalled();
+    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(5000); await settle();
     expect(effects.reconcileTerminalAssignments).toHaveBeenCalledTimes(1);
     expect(calls.filter(c => c === "update")).toHaveLength(2);
