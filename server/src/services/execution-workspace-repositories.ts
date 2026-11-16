@@ -4,8 +4,6 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
@@ -22,13 +20,12 @@ import { captureRunIdentity } from "./run-identity.js";
 import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
-import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
+import { execRepositoryGit, materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
 import { requiresAnonymousRepositoryAcquisition, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
 
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 
-const execFile = promisify(execFileCallback);
 type RepositoryRow = typeof executionWorkspaceRepositories.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const controllerAcquisitionMessage = "New controller repository acquisition requires a trusted task. Existing verified public checkouts remain available.";
@@ -595,13 +592,13 @@ export function executionWorkspaceRepositoryService(db: Db) {
                   if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
                 }
                 const pinnedCommit = await measureRunPhase("workspace.repository.git_commit", async () =>
-                  (await execFile("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { timeout: 30_000, signal: input.signal })).stdout.trim());
+                  (await execRepositoryGit("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { timeout: 30_000, signal: input.signal })).stdout.trim());
                 await measureRunPhase("workspace.repository.ownership_write", () => fs.writeFile(path.join(cloneCwd, ".git", "paperclip-workspace-owner.json"), JSON.stringify({ version: 1, repositoryId: row.id, pinnedCommit }), { flag: "wx", mode: 0o600 }));
               },
             }));
             if (result.warning) throw conflict(result.warning);
           }
-          const git = async (...args: string[]) => (await execFile("git", ["-C", cwd, ...args], { timeout: 30_000, signal: input.signal, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
+          const git = async (...args: string[]) => (await execRepositoryGit("git", ["-C", cwd, ...args], { timeout: 30_000, signal: input.signal, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
           const origin = normalizeProjectRepositoryUrl(await measureRunPhase("workspace.repository.git_origin", () => git("remote", "get-url", "origin")));
           if (origin.url.toLowerCase() !== row.repositoryIdentity) throw conflict("Repository checkout belongs to a different origin");
           const ownership = await readOwnership();

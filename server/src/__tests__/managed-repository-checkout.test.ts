@@ -5,7 +5,7 @@ import * as objectCache from "../services/repository-object-cache.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, readManagedRepositoryPreparationFailure } from "../services/managed-repository-checkout.js";
+import { execRepositoryGit, materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, readManagedRepositoryPreparationFailure } from "../services/managed-repository-checkout.js";
 
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
@@ -67,6 +67,39 @@ describe("atomic managed repository publication", () => {
       expect((await readFile(started, "utf8")).trim().split("\n")).toHaveLength(1);
       expect(resolveGitAuth).toHaveBeenCalledTimes(1);
       expect(beforePublish).not.toHaveBeenCalled();
+      expect(await stat(target).catch(() => null)).toBeNull();
+      expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+    } finally {
+      if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      await result;
+    }
+  });
+  it("waits for the publication Git child before cleaning staging after cancellation", async () => {
+    const { root, source, target } = await fixture();
+    const bin = path.join(root, "bin");
+    const started = path.join(root, "publication-started");
+    const stopped = path.join(root, "publication-stopped");
+    await mkdir(bin);
+    await writeFile(path.join(bin, "git"), `#!${process.execPath}\n`
+      + `const fs = require('node:fs'); const path = require('node:path');\n`
+      + `process.on('SIGTERM', () => setTimeout(() => { fs.mkdirSync(process.argv[3], { recursive: true }); fs.writeFileSync(path.join(process.argv[3], 'late-write'), 'late'); fs.writeFileSync(${JSON.stringify(stopped)}, 'stopped'); process.exit(0); }, 200));\n`
+      + `fs.writeFileSync(${JSON.stringify(started)}, String(process.pid)); setTimeout(() => process.exit(1), 5000);\n`, { mode: 0o755 });
+    const controller = new AbortController();
+    const reason = new Error("lease lost during publication Git");
+    const result = materializeManagedProjectWorkspace(target, {
+      repoUrl: source, signal: controller.signal,
+      beforePublish: async cloneCwd => {
+        vi.stubEnv("PATH", bin);
+        await execRepositoryGit("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { signal: controller.signal });
+      },
+    }).then(() => null, (error: unknown) => error);
+    let pid: number | undefined;
+    try {
+      await vi.waitFor(async () => { pid = Number(await readFile(started, "utf8")); });
+      controller.abort(reason);
+      expect(await result).toBe(reason);
+      await vi.waitFor(async () => expect(await readFile(stopped, "utf8")).toBe("stopped"));
+      expect(() => process.kill(pid!, 0)).toThrow();
       expect(await stat(target).catch(() => null)).toBeNull();
       expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
     } finally {

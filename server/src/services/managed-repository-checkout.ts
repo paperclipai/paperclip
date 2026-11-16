@@ -14,7 +14,7 @@ import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
 
 const execFileAsync = promisify(execFileCallback);
-async function execFile(file: string, args: string[], options: ExecFileOptions = {}) {
+export async function execRepositoryGit(file: string, args: string[], options: ExecFileOptions = {}) {
   const result = execFileAsync(file, args, { ...options, encoding: "utf8" });
   if (!options.signal) return result;
   const child = result.child;
@@ -64,7 +64,7 @@ function managedRepositoryPreparationError(message: string, error: unknown): Err
 }
 
 async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }, signal?: AbortSignal) {
-  const git = (directory: string, args: string[]) => execFile("git", ["-C", directory, ...args], {
+  const git = (directory: string, args: string[]) => execRepositoryGit("git", ["-C", directory, ...args], {
     env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0" },
     timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, signal,
   });
@@ -95,7 +95,7 @@ async function isMissingRef(cloneCwd: string, ref: string, checkoutError: unknow
   const stderr = String((checkoutError as { stderr?: unknown } | null)?.stderr ?? "");
   if (!/did not match any file\(s\) known to git|invalid reference/.test(stderr)) return false;
   for (const candidate of [`${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`]) {
-    const exitCode = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000, signal })
+    const exitCode = await execRepositoryGit("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000, signal })
       .then(() => 0, (error: { code?: unknown }) => error.code);
     if (exitCode !== 1) return false;
   }
@@ -179,7 +179,7 @@ export async function materializeManagedProjectWorkspace(
       const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", async () => {
         recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
         if (input.gitObjectSource) return copyManagedGitObjects(cloneTmpDir, input.repoUrl!, input.gitObjectSource, input.signal);
-        await execFile(
+        await execRepositoryGit(
           "git",
           [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
           {
@@ -223,11 +223,11 @@ export async function materializeManagedProjectWorkspace(
         if (baseline) await disposeDirectorySnapshot(baseline);
         await disposeGitWorkspaceSnapshot(snapshot);
       }
-      await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
+      await execRepositoryGit("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
     } else if (input.repoRef) {
       const repoRef = input.repoRef;
       try {
-        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], {
+        await measureRunPhase("workspace.checkout.git_ref", () => execRepositoryGit("git", ["-C", cloneTmpDir, "checkout", repoRef], {
           // Untranslated Git messages keep missing-ref classification locale independent.
           timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, signal: input.signal, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" },
         }));
@@ -242,7 +242,7 @@ export async function materializeManagedProjectWorkspace(
         );
       }
     }
-    if (input.gitObjectSource) await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
+    if (input.gitObjectSource) await execRepositoryGit("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000, signal: input.signal });
     input.signal?.throwIfAborted();
     await input.beforePublish?.(cloneTmpDir);
     input.signal?.throwIfAborted();
@@ -292,7 +292,7 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   if (gitEntry.isSymbolicLink()) throw new Error("Workspace Git metadata must not be a symlink");
   let excludePath: string;
   try {
-    const result = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
+    const result = await execRepositoryGit("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
       timeout: 10_000, env: { ...process.env, LC_ALL: "C" },
     });
     excludePath = path.resolve(cwd, result.stdout.trim());
