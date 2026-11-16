@@ -206,9 +206,13 @@ Every answer includes `presentation`, the task's current interruption state.
 
 ## Difficulty Routing
 
-An agent can turn on difficulty routing in `runtimeConfig.difficultyRouting`. Then, before the agent's first run on a task, the company decision model rates the task as `L1`, `L2`, or `L3`. The run uses the model and effort that the agent sets for that tier. The task stores the result in `difficultyRouting`.
+An agent can turn on difficulty routing in `runtimeConfig.difficultyRouting`. Then, before the agent's first run on a task, Paperclip rates the task as `L1`, `L2`, or `L3`. The run uses the model and effort that the agent sets for that tier. The task stores the result in `difficultyRouting`.
 
-A model or effort in the task's `assigneeAdapterOverrides` always wins. When it is set, routing does not run. When the decision model is off, has no budget, or fails, the run uses the agent's own settings.
+A model or effort in the task's `assigneeAdapterOverrides` always wins. When it is set, routing does not run. Paperclip tries these classifiers in order and records the one that answered in `difficultyRouting.classifier`:
+
+1. `decision_model`: the company decision model, when it is on and has budget.
+2. `agent_cli`: one short request through the agent's own managed sign-in, for example a ChatGPT or Claude subscription. It uses the official Codex or Claude CLI on the Paperclip host with the agent's cheapest tier model, low effort, and no tools. Supported for Codex and Claude harnesses.
+3. `rules`: fixed rules on the task's length and keywords. These always give a tier.
 
 ### Pin a Tier
 

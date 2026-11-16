@@ -7,7 +7,7 @@ import { ToggleField } from "./agent-config-primitives";
 export type DifficultyEffortOption = { id: string; label: string };
 
 export const DIFFICULTY_ROUTING_HELP =
-  "Before an agent's first run on a task, the company decision model rates the task's difficulty and picks the tier's model and effort. Tasks with a manual model or effort override keep it. Needs the decision model to be enabled in company settings.";
+  "Before an agent's first run on a task, Paperclip rates the task's difficulty and picks the tier's model and effort. It uses the company decision model when it is on. Otherwise it uses this agent's own sign-in, such as a ChatGPT or Claude subscription, and then fixed rules. Tasks with a manual model or effort override keep it.";
 
 export function AgentDifficultyRoutingFields({
   value,

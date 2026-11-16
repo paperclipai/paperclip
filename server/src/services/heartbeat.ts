@@ -47,6 +47,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { difficultyRoutingRunEventMessage, resolveIssueDifficultyRouting, withDifficultyRoutingOverrides } from "./heartbeat/difficulty-routing.js";
+import { createAgentCliClassifier, stringEnvironment } from "./heartbeat/difficulty-classifiers.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
@@ -319,8 +320,9 @@ import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import {
   prepareManagedAiRuntime,
   assertManagedAiProjectAuth,
+  withManagedAiProbe,
 } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, readDifficultyRoutingConfig, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import {
   getExecutionBlocker,
@@ -2487,6 +2489,25 @@ export function heartbeatService(
       const difficultyRouting = issueContext && !isConversation(issueContext)
         ? await timePreparation("difficulty_routing", () => resolveIssueDifficultyRouting({
             db, decide: decisionModelService(db, { budgetHooks }).decide, agent, runId: run.id, issue: issueContext!,
+            classifyWithAgentCli: createAgentCliClassifier({
+              agent, config: readDifficultyRoutingConfig(agent.runtimeConfig),
+              // Rate the task with the agent's own managed login (for example a
+              // ChatGPT or Claude subscription) so no API key is required.
+              withCredentials: async (use) => {
+                const parsedBinding = agent.adapterConfig?.homeMode === "preconfigured" || !agent.runtimeConfig?.aiConnection
+                  ? undefined : aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection);
+                const binding = parsedBinding?.success && parsedBinding.data.mode !== "router" ? parsedBinding.data : null;
+                if (!binding) return null;
+                const responsibleUserId = await resolveResponsibleUserIdForRun({
+                  run, contextSnapshot: context, issueContext,
+                  routineEnvContext: await getRoutineEnvForExecutionIssue(agent.companyId, issueContext),
+                });
+                return withManagedAiProbe(db, {
+                  companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding,
+                  config: { ...(agent.adapterConfig ?? {}), env: {} },
+                }, (managed) => use(stringEnvironment(managed.config.env)));
+              },
+            }),
             signal: executionControl.controller.signal,
           }))
         : null;

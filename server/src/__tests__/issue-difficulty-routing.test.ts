@@ -13,6 +13,7 @@ import { aiConnectionService } from "../services/ai-connections.js";
 import { decisionModelService } from "../services/decision-models.js";
 import { decisionReceipt, type DecisionProviderOutcome } from "../services/decision-model-provider.js";
 import { buildDifficultyRequest, resolveIssueDifficultyRouting, withDifficultyRoutingOverrides } from "../services/heartbeat/difficulty-routing.js";
+import type { AgentCliClassify } from "../services/heartbeat/difficulty-classifiers.js";
 import { issueDifficultyRoutingRoutes } from "../routes/issue-difficulty-routing.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -57,9 +58,8 @@ async function fixture(options: { decisions?: boolean; runtimeConfig?: Record<st
   }
   const loadIssue = async () => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
   const agent = { id: agentId, companyId, adapterType: options.adapterType ?? "codex_local", adapterConfig: options.adapterConfig ?? {}, runtimeConfig };
-  const resolve = async (issue?: Awaited<ReturnType<typeof loadIssue>>) => resolveIssueDifficultyRouting({
-    db, decide: service.decide, agent, runId, issue: issue ?? await loadIssue(),
-  });
+  const resolve = async (issue?: Awaited<ReturnType<typeof loadIssue>>, extra: { classifyWithAgentCli?: AgentCliClassify; signal?: AbortSignal } = {}) =>
+    resolveIssueDifficultyRouting({ db, decide: service.decide, agent, runId, issue: issue ?? await loadIssue(), ...extra });
   return { companyId, agentId, issueId, runId, provider, loadIssue, resolve, agent };
 }
 
@@ -68,7 +68,7 @@ describe("issue difficulty routing", () => {
     const f = await fixture();
     const first = await f.resolve();
     expect(first).toMatchObject({ applied: true, reused: false, adapterConfig: { model: "gpt-mini", modelReasoningEffort: "low" },
-      routing: { tier: "L1", source: "auto", agentId: f.agentId, model: "gpt-mini", effort: "low", confidence: 0.8 } });
+      routing: { tier: "L1", source: "auto", classifier: "decision_model", agentId: f.agentId, model: "gpt-mini", effort: "low", confidence: 0.8 } });
     expect(f.provider).toHaveBeenCalledOnce();
     const [invocation] = await db.select().from(decisionInvocations).where(eq(decisionInvocations.companyId, f.companyId));
     expect(invocation).toMatchObject({ feature: "issue.difficulty_routing", issueId: f.issueId, runId: f.runId, status: "succeeded" });
@@ -78,16 +78,48 @@ describe("issue difficulty routing", () => {
     expect(f.provider).toHaveBeenCalledOnce();
   });
 
-  it("uses the agent defaults when the decision model is not configured", async () => {
+  it("falls back to rules when the decision model is not configured and no subscription classifier is available", async () => {
     const f = await fixture({ decisions: false });
-    expect(await f.resolve()).toEqual({ applied: false, reason: "unavailable", detail: "not_configured" });
+    expect(await f.resolve()).toMatchObject({ applied: true, reused: false, routing: { tier: "L1", source: "auto", classifier: "rules", confidence: null } });
+    expect((await f.loadIssue()).difficultyRouting).toMatchObject({ tier: "L1", classifier: "rules" });
+  });
+
+  it("rates with the agent's subscription CLI when the decision model is not configured", async () => {
+    const f = await fixture({ decisions: false });
+    const cli = vi.fn<AgentCliClassify>().mockResolvedValue("L3");
+    expect(await f.resolve(undefined, { classifyWithAgentCli: cli })).toMatchObject({ applied: true,
+      adapterConfig: { model: "gpt-max", modelReasoningEffort: "high" }, routing: { tier: "L3", classifier: "agent_cli" } });
+    expect(cli).toHaveBeenCalledWith(expect.objectContaining({ title: "Fix a typo in the README" }), undefined);
+  });
+
+  it("does not call the subscription CLI when the decision model answers", async () => {
+    const f = await fixture();
+    const cli = vi.fn<AgentCliClassify>().mockResolvedValue("L3");
+    expect(await f.resolve(undefined, { classifyWithAgentCli: cli })).toMatchObject({ routing: { tier: "L1", classifier: "decision_model" } });
+    expect(cli).not.toHaveBeenCalled();
+  });
+
+  it("falls back to rules when the subscription CLI fails or gives no tier", async () => {
+    const failed = await fixture({ decisions: false });
+    expect(await failed.resolve(undefined, { classifyWithAgentCli: vi.fn<AgentCliClassify>().mockRejectedValue(new Error("codex exited with 1")) }))
+      .toMatchObject({ applied: true, routing: { tier: "L1", classifier: "rules" } });
+    const unanswered = await fixture({ decisions: false });
+    expect(await unanswered.resolve(undefined, { classifyWithAgentCli: vi.fn<AgentCliClassify>().mockResolvedValue(null) }))
+      .toMatchObject({ routing: { classifier: "rules" } });
+  });
+
+  it("stops without a tier when the run is cancelled during the subscription check", async () => {
+    const f = await fixture({ decisions: false });
+    const controller = new AbortController();
+    const cli = vi.fn<AgentCliClassify>().mockImplementation(async () => { controller.abort(); throw new Error("aborted"); });
+    await expect(f.resolve(undefined, { classifyWithAgentCli: cli, signal: controller.signal })).rejects.toThrow("aborted");
     expect((await f.loadIssue()).difficultyRouting).toBeNull();
   });
 
-  it("uses the agent defaults when the decision answer is not a tier", async () => {
+  it("falls back to rules when the decision answer is not a tier", async () => {
     const f = await fixture();
     f.provider.mockResolvedValue(answer("L9"));
-    expect(await f.resolve()).toMatchObject({ applied: false, reason: "failed", detail: "invalid_answer" });
+    expect(await f.resolve()).toMatchObject({ applied: true, routing: { classifier: "rules" } });
   });
 
   it("keeps a manual model or effort override and does not call the decision model", async () => {
@@ -108,13 +140,12 @@ describe("issue difficulty routing", () => {
     expect(f.provider).not.toHaveBeenCalled();
   });
 
-  it("uses the agent defaults when the decision call throws", async () => {
+  it("falls back to rules when the decision call throws", async () => {
     const f = await fixture();
     const outcome = await resolveIssueDifficultyRouting({
       db, decide: vi.fn().mockRejectedValue(new Error("request too large")), agent: f.agent, runId: f.runId, issue: await f.loadIssue(),
     });
-    expect(outcome).toEqual({ applied: false, reason: "failed", detail: "decision_error" });
-    expect((await f.loadIssue()).difficultyRouting).toBeNull();
+    expect(outcome).toMatchObject({ applied: true, routing: { tier: "L1", classifier: "rules" } });
   });
 
   it("keeps a newer tier choice when a run reuses an older snapshot", async () => {

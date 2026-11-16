@@ -22,9 +22,14 @@ export const difficultyRoutingConfigSchema = z.object({
 }).strict();
 export type DifficultyRoutingConfig = z.infer<typeof difficultyRoutingConfigSchema>;
 
+/** What rated an automatic tier: the company decision model, the agent's own subscription CLI, or fixed rules. */
+export const DIFFICULTY_CLASSIFIERS = ["decision_model", "agent_cli", "rules"] as const;
+export type DifficultyClassifier = (typeof DIFFICULTY_CLASSIFIERS)[number];
+
 export const issueDifficultyRoutingSchema = z.object({
   tier: difficultyTierSchema,
   source: z.enum(["auto", "manual"]),
+  classifier: z.enum(DIFFICULTY_CLASSIFIERS).optional(),
   agentId: z.string().uuid().nullable(),
   model: z.string().nullable(),
   effort: z.string().nullable(),

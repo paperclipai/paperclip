@@ -4689,7 +4689,7 @@ registry.registerPath({
   path: "/api/issues/{id}/difficulty-routing",
   tags: ["issues"],
   summary: "Return the task to automatic difficulty routing",
-  description: "Clears the stored tier. The decision model rates the task again before the next run.",
+  description: "Clears the stored tier. Paperclip rates the task again before the next run: with the decision model, the assignee's own sign-in, or fixed rules.",
   request: { params: z.object({ id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

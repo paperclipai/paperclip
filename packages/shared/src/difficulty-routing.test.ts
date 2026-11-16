@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  difficultyEffortConfigKey, difficultyRoutingSupported, difficultyTierAdapterConfig, hasManualModelOrEffortOverride, readDifficultyRoutingConfig,
+  difficultyEffortConfigKey, difficultyRoutingSupported, difficultyTierAdapterConfig, hasManualModelOrEffortOverride, issueDifficultyRoutingSchema,
+  readDifficultyRoutingConfig,
 } from "./difficulty-routing.js";
 import { agentRuntimeConfigSchema } from "./validators/agent.js";
 
@@ -42,5 +43,13 @@ describe("difficulty routing contract", () => {
     expect(readDifficultyRoutingConfig({ difficultyRouting: value })).toEqual(value);
     expect(readDifficultyRoutingConfig({ difficultyRouting: { ...value, enabled: false } })).toBeNull();
     expect(readDifficultyRoutingConfig({})).toBeNull();
+  });
+
+  it("records which classifier rated an automatic tier and accepts older rows without it", () => {
+    const routing = { tier: "L2", source: "auto", agentId: null, model: null, effort: null, confidence: null,
+      decidedAt: "2026-11-16T00:00:00.000Z", decisionInvocationId: null };
+    expect(issueDifficultyRoutingSchema.safeParse(routing).success).toBe(true);
+    expect(issueDifficultyRoutingSchema.safeParse({ ...routing, classifier: "agent_cli" }).success).toBe(true);
+    expect(issueDifficultyRoutingSchema.safeParse({ ...routing, classifier: "guess" }).success).toBe(false);
   });
 });
