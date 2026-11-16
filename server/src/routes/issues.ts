@@ -8288,93 +8288,110 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
-    const issue = await svc.getById(issueId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    if (issue.companyId !== companyId) {
-      res.status(422).json({ error: "Issue does not belong to company" });
-      return;
-    }
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
-
-    const company = await companiesSvc.getById(companyId);
-    const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
-
     try {
-      await runSingleFileUpload(req, res, attachmentMaxBytes);
-    } catch (err) {
-      if (err instanceof multer.MulterError) {
-        if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
-          return;
-        }
-        res.status(400).json({ error: err.message });
+      assertCompanyAccess(req, companyId);
+      const issue = await svc.getById(issueId);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
         return;
       }
-      throw err;
+      if (issue.companyId !== companyId) {
+        res.status(422).json({ error: "Issue does not belong to company" });
+        return;
+      }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+      const company = await companiesSvc.getById(companyId);
+      const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
+
+      try {
+        await runSingleFileUpload(req, res, attachmentMaxBytes);
+      } catch (err) {
+        if (err instanceof multer.MulterError) {
+          if (err.code === "LIMIT_FILE_SIZE") {
+            res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
+            return;
+          }
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+
+      const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
+      if (!file) {
+        res.status(400).json({ error: "Missing file field 'file'" });
+        return;
+      }
+      const contentType = normalizeContentType(file.mimetype);
+      if (file.buffer.length <= 0) {
+        res.status(422).json({ error: "Attachment is empty" });
+        return;
+      }
+
+      const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {});
+      if (!parsedMeta.success) {
+        res.status(400).json({ error: "Invalid attachment metadata", details: parsedMeta.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const stored = await storage.putFile({
+        companyId,
+        namespace: `issues/${issueId}`,
+        originalFilename: file.originalname || null,
+        contentType,
+        body: file.buffer,
+      });
+
+      const attachment = await svc.createAttachment({
+        issueId,
+        issueCommentId: parsedMeta.data.issueCommentId ?? null,
+        provider: stored.provider,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.attachment_added",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          attachmentId: attachment.id,
+          originalFilename: attachment.originalFilename,
+          contentType: attachment.contentType,
+          byteSize: attachment.byteSize,
+        },
+      });
+
+      res.status(201).json(withContentPath(attachment));
+    } catch (err) {
+      // Known request-level failures (403/404/422 etc.) propagate unchanged so
+      // the central handler returns their intended status.
+      if (err instanceof HttpError) throw err;
+      // Anything else is unexpected (e.g. control-plane schema drift making
+      // companiesSvc.getById select a missing column, or a storage backend
+      // failure). Previously this surfaced as a bare
+      // `500 {"error":"Internal server error"}` with no way to diagnose without
+      // server-log access (see AGE-759). Log with a stable `code` and return it
+      // in the response body so any recurrence is self-diagnosing.
+      logger.error(
+        { err, companyId, issueId, code: "attachment_upload_failed" },
+        "attachment upload failed",
+      );
+      throw new HttpError(500, "Attachment upload failed", { code: "attachment_upload_failed" });
     }
-
-    const file = (req as Request & { file?: { mimetype: string; buffer: Buffer; originalname: string } }).file;
-    if (!file) {
-      res.status(400).json({ error: "Missing file field 'file'" });
-      return;
-    }
-    const contentType = normalizeContentType(file.mimetype);
-    if (file.buffer.length <= 0) {
-      res.status(422).json({ error: "Attachment is empty" });
-      return;
-    }
-
-    const parsedMeta = createIssueAttachmentMetadataSchema.safeParse(req.body ?? {});
-    if (!parsedMeta.success) {
-      res.status(400).json({ error: "Invalid attachment metadata", details: parsedMeta.error.issues });
-      return;
-    }
-
-    const actor = getActorInfo(req);
-    const stored = await storage.putFile({
-      companyId,
-      namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
-      contentType,
-      body: file.buffer,
-    });
-
-    const attachment = await svc.createAttachment({
-      issueId,
-      issueCommentId: parsedMeta.data.issueCommentId ?? null,
-      provider: stored.provider,
-      objectKey: stored.objectKey,
-      contentType: stored.contentType,
-      byteSize: stored.byteSize,
-      sha256: stored.sha256,
-      originalFilename: stored.originalFilename,
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
-
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.attachment_added",
-      entityType: "issue",
-      entityId: issueId,
-      details: {
-        attachmentId: attachment.id,
-        originalFilename: attachment.originalFilename,
-        contentType: attachment.contentType,
-        byteSize: attachment.byteSize,
-      },
-    });
-
-    res.status(201).json(withContentPath(attachment));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
