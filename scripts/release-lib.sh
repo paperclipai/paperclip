@@ -298,7 +298,26 @@ next_canary_version_from_source() {
     fi
     release_fail "canary numbering needs the full master history; this checkout is shallow."
   fi
-  printf '%s-canary.%s\n' "$stable_version" "$((position * 100 + run_attempt - 1))"
+  local candidate=$((position * 100 + run_attempt - 1))
+  local range_end=$((position * 100 + 99))
+  local published
+  published="$(node -e '
+    const [file, stable, low, high] = process.argv.slice(1);
+    let cache = {};
+    try { cache = JSON.parse(require("node:fs").readFileSync(file, "utf8")); } catch {}
+    const pattern = new RegExp(`^${stable.replace(/\./g, "\\.")}-canary\\.(\\d+)$`);
+    const numbers = new Set();
+    for (const versions of Object.values(cache)) for (const version of Array.isArray(versions) ? versions : []) {
+      const number = Number(pattern.exec(version)?.[1]);
+      if (number >= Number(low) && number <= Number(high)) numbers.add(number);
+    }
+    process.stdout.write([...numbers].join(" "));
+  ' "${RELEASE_PACKAGE_VERSIONS_FILE:-}" "$stable_version" "$candidate" "$range_end")"
+  while [[ " $published " == *" $candidate "* ]]; do
+    candidate=$((candidate + 1))
+  done
+  [ "$candidate" -le "$range_end" ] || release_fail "every canary number for master position ${position} is already published."
+  printf '%s-canary.%s\n' "$stable_version" "$candidate"
 }
 
 require_canary_number_from_master_commit() {

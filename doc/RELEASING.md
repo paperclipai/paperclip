@@ -98,7 +98,7 @@ Every push to `master` runs the canary path inside [`.github/workflows/release.y
 `release.yml` (`publish_canary`):
 
 - verifies the pushed commit
-- computes the canary version `YYYY.MDD.P-canary.N` for the current UTC date. `N` is 100 × the commit's position on master (`git rev-list --count HEAD`) plus the run attempt minus 1. Each commit owns its own range of 100, so neither a rerun nor an overlapping canary can take another commit's number, and the number does not depend on what npm shows yet. This needs the full history; a publishing canary refuses a shallow checkout, and a dry run falls back to the next registry number. Nightly, beta and stable numbering are unchanged.
+- computes the canary version `YYYY.MDD.P-canary.N` for the current UTC date. `N` is 100 × the commit's position on master (`git rev-list --count HEAD`) plus the run attempt minus 1. Each commit owns its own range of 100, so neither a rerun nor an overlapping canary can take another commit's number. A number already published in that range (the same commit published again outside a GitHub rerun) is skipped, without leaving the range. This needs the full history; a publishing canary refuses a shallow checkout, and a dry run falls back to the next registry number. Nightly, beta and stable numbering are unchanged.
 - publishes workspace packages dependency-first under npm dist-tag `canary`
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
 - dispatches `canary-finalize.yml` with the version, the source commit and its own run id (`release.sh canary --defer-registry-confirmation`)

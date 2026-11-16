@@ -431,11 +431,20 @@ function nextCanary(fixture, { allowFallback = false, attempt = "1" } = {}) {
   }).trim();
 }
 
-test("a canary is numbered from its master position and run attempt, without reading npm", () => {
+test("a canary is numbered from its master position and run attempt, ignoring other commits' numbers", () => {
   const fixture = canaryNumberFixture({ commits: 25, publishedVersions: ["2026.1116.0-canary.2600", "2026.1116.0-canary.9999"] });
   assert.equal(nextCanary(fixture), "2026.1116.0-canary.2500");
   assert.equal(nextCanary(fixture, { attempt: "2" }), "2026.1116.0-canary.2501");
   assert.equal(nextCanary(fixture, { attempt: "99" }), "2026.1116.0-canary.2598");
+});
+
+test("publishing the same commit again outside a rerun moves to the next free number in its own range", () => {
+  const fixture = canaryNumberFixture({ commits: 25, publishedVersions: ["2026.1116.0-canary.2500", "2026.1116.0-canary.2501", "2026.1116.0-canary.2600", "2026.1115.0-canary.2502"] });
+  assert.equal(nextCanary(fixture), "2026.1116.0-canary.2502");
+  assert.equal(nextCanary(fixture, { attempt: "3" }), "2026.1116.0-canary.2502");
+  assert.equal(nextCanary(fixture, { attempt: "4" }), "2026.1116.0-canary.2503");
+  const full = canaryNumberFixture({ commits: 25, publishedVersions: Array.from({ length: 100 }, (_, index) => `2026.1116.0-canary.${2500 + index}`) });
+  assert.throws(() => nextCanary(full), /every canary number for master position 25 is already published/);
 });
 
 test("reruns of one commit never reach the next commit's numbers", () => {
