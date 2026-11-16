@@ -1,4 +1,6 @@
 {
+  "autoMemoryEnabled": false,
+  "env": { "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "/usr/local/bin/rh-memory-hook recall", "timeout": 10 }] }

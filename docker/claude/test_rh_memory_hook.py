@@ -356,6 +356,13 @@ class HelpersTest(unittest.TestCase):
 
 
 class ManagedSettingsTest(unittest.TestCase):
+    def test_auto_memory_is_disabled(self) -> None:
+        # TECH-8749: the rh-memory-mcp hook is the memory path; Claude Code's own
+        # auto memory (notes under $CLAUDE_CONFIG_DIR/projects/*/memory) stays off.
+        settings = json.loads(_PATH.with_name("managed-settings.json").read_text())
+        self.assertIs(settings["autoMemoryEnabled"], False)
+        self.assertEqual(settings["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
+
     def test_registers_both_hooks(self) -> None:
         settings = json.loads(_PATH.with_name("managed-settings.json").read_text())
         commands = {
