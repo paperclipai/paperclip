@@ -823,9 +823,13 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const failedRunId=runId;
     // A real offered assignment plus current durable checkpoint/header must
     // precede the fault. No useful business operation has been sent yet.
+    // Initial Runner startup shares the existing absolute 90-second setup cap;
+    // this is not the later business Retry deadline or either strict quiet window.
+    const initialAssignmentRemaining=setupDeadline-performance.now();
+    expect(initialAssignmentRemaining,"Original setup budget exhausted before initial assignment").toBeGreaterThan(0);
     await vi.waitFor(async()=>{
       expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId))).toHaveLength(1);
-    },{timeout:30_000,interval:50});
+    },{timeout:initialAssignmentRemaining,interval:50});
     const checkpointObservationStarted=performance.now();
     let lastCheckpointOracle:{recoveryMode:Awaited<ReturnType<typeof nativeProviderRecoveryEvidence>>["recoveryMode"];
       checkpointExists:boolean;providerSessionEstablished:boolean;providerEventsExist:boolean;observedAtMs:number}|undefined;
