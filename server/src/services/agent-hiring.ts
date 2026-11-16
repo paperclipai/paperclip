@@ -56,7 +56,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
   const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
   const adapterType = data.adapterType ?? "process";
   const rawAdapterConfig = isPlainRecord(data.adapterConfig)
-    ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
+    ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType, actor: { userId: options?.createdByUserId ?? null } })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
   const profile = { adapterType, adapterConfig };

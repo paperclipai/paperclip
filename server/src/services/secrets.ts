@@ -65,6 +65,7 @@ import type {
 import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
+import { normalizeAdapterAiConnectionFields } from "./adapter-ai-connection-fields.js";
 import { logActivity } from "./activity-log.js";
 import { retireTailscaleSecret } from "./connectors/tailscale/deletion.js";
 import { isTailscaleNodeState } from "./connectors/tailscale/network.js";
@@ -2028,7 +2029,7 @@ export function secretService(db: Db | DbTransaction) {
         normalized[key] = value;
       }
     }
-    return normalized;
+    return normalizeAdapterAiConnectionFields(db as Db, companyId, normalized, opts);
   }
 
   async function listAdapterSchemaSecretFieldKeys(adapterType: string | null | undefined): Promise<string[]> {

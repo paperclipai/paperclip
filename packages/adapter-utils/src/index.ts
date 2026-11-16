@@ -31,6 +31,8 @@ export type {
   HireApprovedHookResult,
   ConfigFieldOption,
   ConfigFieldSchema,
+  ConfigFieldAiConnectionMeta,
+  AdapterAiConnectionRuntimeValue,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
   AcpTargetDescriptor,

@@ -108,7 +108,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     const normalizedAdapterConfig = await secretService(db).normalizeAdapterConfigForPersistence(
       existing.companyId,
       normalizedPatch.adapterConfig,
-      { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+      { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string, actor: { userId: options?.recordRevision?.createdByUserId ?? null, agentId: existing.id } },
     );
     normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
       (normalizedPatch.adapterType ?? existing.adapterType) as string,
