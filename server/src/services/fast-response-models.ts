@@ -7,5 +7,8 @@ import type { AiConnectionMetadata } from "@paperclipai/shared";
 /** Catalogs follow the saved API connection, never the host CLI's credentials or environment. */
 export function fastResponseCatalogModels(connection: Pick<AiConnectionMetadata, "provider" | "routing">) {
   if (connection.routing) return connection.routing.models ?? [];
-  return { anthropic, openai, google, xai, openrouter: [], github: [], kimi: [], deepseek: [] }[connection.provider];
+  // Kimi and DeepSeek expose no fast-response catalog. They stay undefined rather
+  // than an empty list, so the picker cannot configure a fast response that
+  // fastResponseProvider would fall back to sending through its xAI client.
+  return { anthropic, openai, google, xai, openrouter: [], github: [], kimi: undefined, deepseek: undefined }[connection.provider];
 }
