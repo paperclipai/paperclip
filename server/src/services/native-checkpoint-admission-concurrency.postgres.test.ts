@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, dotAgentBindings,
   dotRunnerAssignments, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, agentWakeupRequests,
@@ -102,9 +102,43 @@ describe("native checkpoint Retry beside a status commit", () => {
   }
 
   it.each([false, true])("retries the same saved native Retry after status-commit contention without duplicate work: running=%s", async running => {
-    const f = await nativeCheckpointRetryFixture(running);
+    // Save the actual request while failed. A click on an already-running
+    // source lawfully coalesces at request creation and never enters this race.
+    const f = await nativeCheckpointRetryFixture(false);
     const receipt = await requestTaskRetry(f.input);
     if (!receipt.requestId) throw new Error("Normal Retry did not save its durable receipt");
+    if (running) {
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId));
+      expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null,
+        requestedByActorId: f.input.actorId, payload: { taskRetry: { sourceRunId: f.run.id } } });
+      // PREMISE ONLY, not proof of restoration: arrange the same canonical
+      // already-restored tuple used by nativeCheckpointRetryFixture(true).
+      // The saved Retry is untouched; Queue must authorize and coalesce it.
+      const restored = await db.transaction(async tx => {
+        const [task] = await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.id, f.input.issueId), eq(issues.companyId, f.input.companyId),
+          eq(issues.executionRunId, f.run.id), eq(issues.checkoutRunId, f.run.id),
+        )).for("update");
+        if (!task) throw new Error("Restored-source fixture task changed");
+        const [owner] = await tx.update(nativeRunFinalizations).set({ phase: "observed", recoveryState: null,
+          nextAttemptAt: null, failureDetail: null, leaseOwner: "component-original-controller",
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        }).where(and(eq(nativeRunFinalizations.companyId, f.input.companyId),
+          eq(nativeRunFinalizations.issueId, f.input.issueId), eq(nativeRunFinalizations.runId, f.run.id),
+          eq(nativeRunFinalizations.phase, "retryable_failure"), isNull(nativeRunFinalizations.resultId),
+          isNull(nativeRunFinalizations.leaseOwner),
+        )).returning();
+        if (!owner) throw new Error("Restored-source fixture coordinator changed");
+        const [run] = await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, nativePhase: "observed" })
+          .where(and(eq(heartbeatRuns.id, f.run.id), eq(heartbeatRuns.companyId, f.input.companyId),
+            eq(heartbeatRuns.agentId, f.run.agentId), eq(heartbeatRuns.nativeIssueId, f.input.issueId),
+            eq(heartbeatRuns.status, "failed"))).returning();
+        if (!run) throw new Error("Restored-source fixture run changed");
+        return { owner, run };
+      });
+      f.owner = restored.owner; f.run = restored.run;
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId)))[0]).toEqual(saved);
+    }
     const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId));
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.input.issueId));
     const applicationName = "checkpoint-status-" + randomUUID();
