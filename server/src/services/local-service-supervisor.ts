@@ -634,6 +634,11 @@ export async function terminateLocalService(
     const result = await terminateWindowsOwnedTree({
       rootPid: record.pid,
       ...(rootCreatedAtMs === null ? {} : { rootCreatedAtMs }),
+      killRootByHandle: () => {
+        try {
+          process.kill(record.pid, signal);
+        } catch {}
+      },
     });
     if (result.status === "terminated" || result.status === "already_gone") {
       if (await waitUntilGone(opts?.verifyAfterMs ?? 2_000)) return;
