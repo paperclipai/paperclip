@@ -1,3 +1,4 @@
+import { LOCAL_WORKSPACE_COMMAND_PHASES } from "./workspace-operation-phases.js";
 import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
@@ -146,9 +147,7 @@ export function isOwnerStampedWorkspaceOperationLive(operationId: string): boole
   return liveOwnerStampedOperationIds.has(operationId);
 }
 
-export const LOCAL_WORKSPACE_COMMAND_PHASES: readonly WorkspaceOperationPhase[] = ["worktree_prepare",
-  "workspace_config_freshness", "workspace_provision", "workspace_seed", "workspace_runtime_provision",
-  "workspace_repair", "workspace_teardown", "worktree_cleanup"];
+export { LOCAL_WORKSPACE_COMMAND_PHASES } from "./workspace-operation-phases.js";
 
 type NativeFinalizationActivityScope = {
   operationId: string;
