@@ -7,7 +7,8 @@ import { workSignalDebug } from "./work-signal-debug.js";
 // triggers, tables, timers, or query replay. Only registered work fetches an XID.
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
-type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
+type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean;
+  reconnectHints?: Map<string, string> };
 type PendingNotification = { hints: Set<string>; unscoped: boolean };
 type Context = { scope: Scope; transaction?: Transaction; pending?: Map<string, PendingNotification>; settled?: Array<[string, string | undefined]>; ended?: boolean };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
@@ -215,8 +216,21 @@ export function reconcileDatabaseWorkNotifications(owner: object): void {
   const scope = contexts.get(owner)?.scope;
   if (scope) for (const topic of scope.listeners.keys()) {
     if (workSignalDebug.enabled) workSignalDebug.event(topic, "notification_reconnect");
-    publish(scope, topic);
+    const hint = scope.reconnectHints?.get(topic);
+    publish(scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
   }
+}
+
+/**
+ * The hint a topic receives when the notification connection opens or
+ * reconnects, instead of an unscoped reload. Only a hint lost from another
+ * server is missing, so a queue that can find those writes from its own rows
+ * declares how to look. Process-local; never sent to another server.
+ */
+export function setDatabaseWorkReconnectHint(owner: object, topic: string, hint: string): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope) return;
+  (scope.reconnectHints ??= new Map()).set(topic, hint);
 }
 
 export function databaseWorkPending(owner: object, topic: string): boolean {
