@@ -63,3 +63,45 @@ test("fold, keyboard, overflow and parent navigation preserve personal unread st
   await parent.click();
   await expect(group.getByLabel("Unread")).toHaveCount(9);
 });
+
+for (const theme of ["light", "dark"]) test(`parent status icons align with leaves and the child guide, with the fold control on the right in ${theme}`, async ({ page }) => {
+  for (const state of ["expanded", "collapsed", "narrow", "parent-unread-children-read"]) {
+    await open(page, state, theme);
+    const parent = page.getByRole("link", { name: /Ship the project workspace/ });
+    const leaf = page.getByRole("link", { name: /Review the company dashboard/ });
+    const parentIcon = await parent.locator('[data-slot="sidebar-nav-icon"]').boundingBox();
+    const leafIcon = await leaf.locator('[data-slot="sidebar-nav-icon"]').boundingBox();
+    const parentBounds = await parent.boundingBox();
+    const fold = await page.getByRole("button", { name: /^(Collapse|Expand) subtasks of Ship/ }).boundingBox();
+    expect(parentIcon).not.toBeNull();
+    expect(leafIcon).not.toBeNull();
+    expect(Math.abs(parentIcon!.x - leafIcon!.x)).toBeLessThanOrEqual(0.5);
+    expect(fold!.x).toBeGreaterThanOrEqual(parentBounds!.x + parentBounds!.width);
+    if (state !== "collapsed") {
+      const guide = await page.getByRole("group", { name: "Subtasks of Ship the project workspace", exact: true }).boundingBox();
+      expect(Math.abs(guide!.x + 0.5 - (parentIcon!.x + parentIcon!.width / 2))).toBeLessThanOrEqual(0.5);
+    }
+  }
+});
+
+test("Classic parent actions remain separate from the right fold control", async ({ page }) => {
+  await open(page, "classic");
+  const parent = page.getByRole("link", { name: /Ship the project workspace/ });
+  const leaf = page.getByRole("link", { name: /Review the company dashboard/ });
+  expect((await parent.boundingBox())!.x).toBe((await leaf.boundingBox())!.x);
+  const fold = page.getByRole("button", { name: "Collapse subtasks of Ship the project workspace", exact: true });
+  const menu = page.getByRole("button", { name: "More actions for Ship the project workspace", exact: true });
+  await parent.hover();
+  await expect(menu).toBeVisible();
+  const menuBounds = (await menu.boundingBox())!;
+  const foldBounds = (await fold.boundingBox())!;
+  expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(foldBounds.x);
+  const url = page.url();
+  await menu.click();
+  await expect(page.getByRole("menuitem", { name: "Rename", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(fold).toHaveAttribute("aria-expanded", "true");
+  await fold.click();
+  await expect(page.getByRole("button", { name: "Expand subtasks of Ship the project workspace", exact: true })).toHaveAttribute("aria-expanded", "false");
+  expect(page.url()).toBe(url);
+});

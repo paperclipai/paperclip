@@ -51,7 +51,8 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
   }
 
   /** One server: a coordinator and the recovery queues, with recorded checks. */
-  async function server(behavior: { deferUntil: Map<string, number>; suppressed: () => boolean; checks: Array<{ id: string; at: number }> }) {
+  async function server(behavior: { deferUntil: Map<string, number>; suppressed: () => boolean; checks: Array<{ id: string; at: number }>;
+    rolling?: Set<string> }) {
     const coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, canReconcile: () => true,
       onError: error => { throw error; } });
     running.add(coordinator);
@@ -65,6 +66,7 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
       behavior.checks.push({ id: scope.issueId, at: Date.now() });
       const until = behavior.deferUntil.get(scope.issueId);
       if (until !== undefined && until > Date.now()) scope.onDeferredDeadline(until);
+      if (behavior.rolling?.has(scope.issueId)) scope.onDeferredDeadline(Date.now() + 30_000);
     };
     const work = registerIssueRecoveryWork(state.db, coordinator, {
       stranded, orphanBlockers: async () => {}, recoveryActions: async () => {},
@@ -178,6 +180,35 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
     await server(behavior);
     await advance(MINUTE);
     expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(0);
+  }, TEST_TIMEOUT_MS);
+
+  it("writes a task's deferral a few times, not on every check, while it defers every 30 seconds", async () => {
+    const f = await bounded(seed(10), () => "the fixture to be seeded");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const target = f.tasks[2]!;
+    const behavior = { deferUntil: new Map<string, number>(), rolling: new Set([target]), suppressed: () => false,
+      checks: [] as Array<{ id: string; at: number }> };
+    const statements: string[] = [];
+    const priorDebug = state.db.$client.options.debug;
+    state.db.$client.options.debug = (_connection, query) => { statements.push(query); };
+    try {
+      await server(behavior);
+      await advance(20 * MINUTE);
+    } finally { state.db.$client.options.debug = priorDebug; }
+    const checks = behavior.checks.filter(check => check.id === target).length;
+    const writes = statements.filter(query => /insert into issue_recovery_deferrals/i.test(query)).length;
+    // The saved deadline still moves forward, so the row of a task that keeps
+    // deferring never looks stale to the prune (10 minutes past its deadline).
+    const [row] = await bounded(state.db.select({ dueAt: issueRecoveryDeferrals.dueAt }).from(issueRecoveryDeferrals)
+      .where(and(eq(issueRecoveryDeferrals.queue, "stranded-assignments"), eq(issueRecoveryDeferrals.issueId, target))),
+      () => "the deferral to be read");
+    const savedBehind = row ? Date.now() - row.dueAt.getTime() : null;
+    console.info(`rolling-deferral census: ${JSON.stringify({ minutes: 20, checks, deferralWrites: writes, savedBehindMs: savedBehind })}`);
+    expect(checks).toBeGreaterThanOrEqual(30);
+    expect(writes).toBeLessThanOrEqual(5);
+    expect(writes).toBeGreaterThan(1);
+    expect(savedBehind, "the saved deferral was not kept").not.toBeNull();
+    expect(savedBehind!).toBeLessThan(6 * MINUTE);
   }, TEST_TIMEOUT_MS);
 
   it("checks every task again after scheduling suppression, even with a recent saved full pass", async () => {

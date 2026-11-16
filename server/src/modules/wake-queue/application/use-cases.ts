@@ -1,5 +1,5 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
-import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
   decideQueuedCommentAction,
@@ -392,6 +392,7 @@ async function promoteDeferredWake(
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
+        selfAuthorship.includesPersonComment ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
         // The agent watching the task posted it while the run that closed the
         // task was active. That agent receives the completed result and can
@@ -978,12 +979,16 @@ export function createAdmitWakeBehindIssueExecution(deps: {
           });
 
     if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
-      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
+      const mergedDeferredContext = withMergedWakeReasons(
+        deps.helpers.mergeCoalescedContextSnapshot(
+          existingDeferred.deferredContext,
+          input.contextSnapshot,
+          {
+            preserveExistingInteractionContinuation: true,
+          },
+        ),
         existingDeferred.deferredContext,
         input.contextSnapshot,
-        {
-          preserveExistingInteractionContinuation: true,
-        },
       );
       const mergedPayload = {
         ...existingDeferred.payload,
