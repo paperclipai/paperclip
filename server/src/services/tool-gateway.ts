@@ -2095,6 +2095,46 @@ export function createToolGatewayService(
     const tools = [...allTools(), ...allConnectedTools.filter((tool) => !isOnDemandRemoteTool(tool))].filter(
       (tool) => session.agentId || (tool.providerType !== "paperclip_self" && tool.providerType !== "paperclip_plugin"),
     );
+    // Собственное подключение агента задаёт канонические имена — ДО фильтрации
+    // политики: неймспейсы назначены по полному объединению подключений компании
+    // (синк личностей заводит по подключению на агента, имя оканчивается на
+    // «-<role_slug>» из metadata агента), а чужие дубликаты затем отфильтруются
+    // политикой — группа в видимом списке бы схлопнулась и канонизация не
+    // сработала. На полном наборе: у собственного подключения — каноническое имя
+    // из ТЗ, чужие дубликаты остаются в неймспейсах. Урок E2E 16.11 (пробы 1–5).
+    if (session.agentId && allConnectedTools.length > 0) {
+      const [agentRow] = await db
+        .select({ meta: agents.metadata })
+        .from(agents)
+        .where(and(eq(agents.id, session.agentId), eq(agents.companyId, session.companyId)));
+      const roleSlug = agentRow?.meta?.role_slug ?? null;
+      const ownConnectionIds = new Set<string>();
+      if (roleSlug) {
+        const suffix = `-${roleSlug}`;
+        const ownRows = await db
+          .select({ id: toolConnections.id, name: toolConnections.name })
+          .from(toolConnections)
+          .where(eq(toolConnections.companyId, session.companyId));
+        for (const row of ownRows) {
+          if (row.name.endsWith(suffix)) ownConnectionIds.add(row.id);
+        }
+      }
+      if (ownConnectionIds.size > 0) {
+        const byUpstream = new Map<string, ToolGatewayDescriptor[]>();
+        for (const tool of tools) {
+          const upstream = tool.upstreamToolName ?? null;
+          if (upstream == null) continue;
+          const group = byUpstream.get(upstream) ?? [];
+          group.push(tool);
+          byUpstream.set(upstream, group);
+        }
+        for (const [upstream, group] of byUpstream) {
+          if (group.length < 2) continue;
+          const own = group.find((tool) => tool.connectionId != null && ownConnectionIds.has(tool.connectionId));
+          if (own && own.name !== upstream) own.name = upstream;
+        }
+      }
+    }
     const decisions = await Promise.all(tools.map(async (tool) => {
       const decision = await policyService.decide(policyInputForTool({ session, tool }));
       return { tool, decision };
