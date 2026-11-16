@@ -380,7 +380,9 @@ export async function prepareManagedAiRuntime(
       env.KIMI_MODEL_NAME = setting(configuredEnv.KIMI_MODEL_NAME)
         ?? setting(input.config.model)?.replace(/^kimi-code\//, "")
         ?? "kimi-for-coding";
-      env.KIMI_MODEL_BASE_URL = setting(configuredEnv.KIMI_MODEL_BASE_URL) ?? KIMI_CODING_API_BASE_URL;
+      // A Coding Plan key is scoped to this endpoint, so the agent config must
+      // not be able to point the saved credential at a different host.
+      env.KIMI_MODEL_BASE_URL = KIMI_CODING_API_BASE_URL;
       env.KIMI_MODEL_PROVIDER_TYPE = setting(configuredEnv.KIMI_MODEL_PROVIDER_TYPE) ?? "kimi";
       // Kimi resolves its data dir as `KIMI_CODE_HOME ?? join(HOME, ".kimi-code")`,
       // so a blank value is not a fallback: the CLI would call mkdir(""). Point it

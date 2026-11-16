@@ -5824,10 +5824,20 @@ export function agentRoutes(
     const retainedBinding = aiRuntimeConnectionBindingSchema.safeParse(
       requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection,
     ).data;
+    // A fixed binding carries identity only, so isAiConnectionCompatible() cannot
+    // judge its provider: it accepts any fixed API-key binding on a managed
+    // harness. The saved connection metadata holds the real provider, and the
+    // capability table is the same rule aiConnectionService.select() enforces,
+    // so an OpenAI key switched onto the Kimi harness is cleared here instead of
+    // failing the save as incompatible.
+    const bindingProviderFitsHarness = (candidate: AiConnectionBinding) =>
+      isAiConnectionCompatible({ provider: candidate.provider, method: candidate.method },
+        requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent);
     if (!adapterUsesManagedAiConnection(requestedHarness)
       || (requestedHarness !== aiRoutingHarness(existing.adapterType, existing.adapterConfig.provider, existing.adapterConfig.acpxAgent)
         && retainedBinding && retainedBinding.mode !== "router"
-        && !isAiConnectionCompatible(retainedBinding, requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+        && (!isAiConnectionCompatible(retainedBinding, requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent)
+          || !bindingProviderFitsHarness(retainedBinding)))) {
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig) };
       delete requestedRuntimeConfig.aiConnection;
     }

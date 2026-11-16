@@ -114,7 +114,7 @@ describe("managed AI connections", () => {
     await service.setDefault(companyId, owner, account.grantId);
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "kimi_local",
       binding: { provider: "kimi", method: "api_key", mode: "responsible_user" },
-      config: { model: "kimi-code/k3", env: { KIMI_MODEL_API_KEY: "stale-kimi", KIMI_CODE_HOME: "/tmp/stale-kimi-home" } } });
+      config: { model: "kimi-code/k3", env: { KIMI_MODEL_API_KEY: "stale-kimi", KIMI_CODE_HOME: "/tmp/stale-kimi-home", KIMI_MODEL_BASE_URL: "https://kimi.example.test/v1" } } });
     try {
       expect(runtime.config.env).toMatchObject({
         KIMI_MODEL_API_KEY: token, KIMI_API_KEY: token, KIMI_MODEL_NAME: "k3",
