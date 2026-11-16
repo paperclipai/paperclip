@@ -5,6 +5,7 @@ import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
   completeConnectionIntentSchema,
+  connectionIntentPayloadSchema,
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
@@ -187,7 +188,7 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   });
 
   router.post("/connection-intents/:interactionId/phase", async (req, res) => {
-    const { userId } = await addressedIntent(req);
+    const { loaded, userId } = await addressedIntent(req);
     const phase = req.body?.phase;
     if (phase !== "requested" && phase !== "authorizing" && phase !== "needs_retry") {
       res.status(422).json({ error: "phase must be requested, authorizing, or needs_retry" });
@@ -195,6 +196,8 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
     }
     res.json(await service.updatePhase(req.params.interactionId as string, phase, userId, {
       bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+      canManageOrganizationGrant: await canManageCompanyConnections(req, loaded.issue.companyId),
+      setupAccess: connectionIntentPayloadSchema.shape.setupAccess.parse(req.body?.setupAccess),
     }));
   });
 

@@ -6,7 +6,7 @@ Status: canonical explanatory contract for the Paperclip runner V1 surface.
 
 This document keeps three independent meanings of **group** separate. PRP families describe wire evidence and controller commands; capability placement decides who owns an operation; behavioral eval groups organize the 106 scenario corpus. None of the three axes can be used as a substitute for another.
 
-The generated totals are **107 PRP events in 32 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **70 reconciled semantic operations** (19 always, 51 optional), and **106 scenarios in 16 behavior groups**.
+The generated totals are **108 PRP events in 32 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **70 reconciled semantic operations** (19 always, 51 optional), and **106 scenarios in 16 behavior groups**.
 
 ## Axis 1: PRP v1 event and command families
 
@@ -22,7 +22,7 @@ PRP records ordered, replayable execution evidence. It is not the model's Paperc
 | `workspace` | Workspace readiness. | `workspace.ready`<br>`workspace.change.updated`<br>`workspace.diff.recorded`<br>`workspace.file.referenced` | 4 |
 | `auth` | Content-free harness credential changes observed by the runner. | `auth.credentials.updated` | 1 |
 | `harness` | Provider harness startup, readiness, exit, and diagnostics. | `harness.starting`<br>`harness.ready`<br>`harness.exited`<br>`harness.diagnostic` | 4 |
-| `plan` | Complete provider-authored within-turn checklist snapshots, separate from durable Paperclip Plan documents. | `plan.updated` | 1 |
+| `plan` | Complete provider-authored within-turn checklist snapshots, and provider-proposed plan documents that Paperclip may synchronize into the durable Plan document for approval. | `plan.updated`<br>`plan.proposed` | 2 |
 | `tool` | Provider-neutral process, MCP, dynamic, and built-in execution activity. | `tool.execution.started`<br>`tool.execution.progressed`<br>`tool.execution.completed` | 3 |
 | `research` | Provider-reported search, page-open, and in-page research activity. | `research.started`<br>`research.progressed`<br>`research.completed` | 3 |
 | `delegation` | Child-agent delegation lifecycle and aggregate status. | `delegation.started`<br>`delegation.updated`<br>`delegation.completed` | 3 |

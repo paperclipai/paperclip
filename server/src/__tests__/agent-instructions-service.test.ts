@@ -59,6 +59,33 @@ describe("agent instructions service", () => {
     if (entry === "../invalid") expect(bundle.warnings.length).toBeGreaterThan(0);
   });
 
+  it("records creation on new unversioned supporting files, then modification on updates", async () => {
+    const root = await makeTempDir("external-new-file-"); cleanupDirs.add(root);
+    await fs.writeFile(path.join(root, "AGENTS.md"), "instructions");
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root });
+    const svc = agentInstructionsService();
+    const first = await svc.writeFile(agent, "NOTES.md", "first");
+    expect(Number.isFinite(Date.parse(first.file.createdAt!))).toBe(true);
+    expect(first.file.updatedAt).toBeUndefined();
+    const second = await svc.writeFile(agent, "NOTES.md", "second");
+    expect(second.file.createdAt).toBeUndefined();
+    expect(Number.isFinite(Date.parse(second.file.updatedAt!))).toBe(true);
+  });
+
+  it("returns actual modification dates without inventing creation dates", async () => {
+    const root = await makeTempDir("external-file-dates-"); cleanupDirs.add(root);
+    const filename = path.join(root, "AGENTS.md");
+    await fs.writeFile(filename, "instructions");
+    const updated = new Date("2026-10-01T12:00:00.000Z");
+    await fs.utimes(filename, updated, updated);
+    const agent = makeAgent({ instructionsBundleMode: "external", instructionsRootPath: root });
+    const svc = agentInstructionsService();
+    const file = await svc.readFile(agent, "AGENTS.md");
+    expect(file.updatedAt).toBe(updated.toISOString());
+    expect(file.createdAt).toBeUndefined();
+    expect((await svc.getBundle(agent)).files[0]?.updatedAt).toBe(updated.toISOString());
+  });
+
   it("lists external bundles containing large binary assets", async () => {
     const root = await makeTempDir("external-large-assets-"); cleanupDirs.add(root);
     await fs.writeFile(path.join(root, "AGENTS.md"), "external instructions");
@@ -120,6 +147,38 @@ describe("agent instructions service", () => {
     expect(result.bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "docs/TOOLS.md"]);
     await expect(fs.readFile(path.join(result.bundle.managedRootPath, "AGENTS.md"), "utf8")).resolves.toBe("# External Agent\n");
     await expect(fs.readFile(path.join(result.bundle.managedRootPath, "docs", "TOOLS.md"), "utf8")).resolves.toBe("## Tools\n");
+  });
+
+  it("refuses an external root without the entry file when the entry must already exist", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-home-");
+    const managedRoot = path.join(paperclipHome, "instances", "test-instance", "companies", "company-1", "agents", "agent-1", "instructions");
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-existing-external-");
+    cleanupDirs.add(paperclipHome);
+    cleanupDirs.add(externalRoot);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Managed Agent\n", "utf8");
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+    const missingRoot = path.join(externalRoot, "missing");
+
+    await expect(svc.updateBundle(agent, { mode: "external", rootPath: missingRoot, entryFile: "AGENTS.md", requireExistingEntry: true }))
+      .rejects.toThrow(`No directory exists at ${missingRoot}`);
+    await expect(fs.stat(missingRoot)).rejects.toThrow();
+    await expect(svc.updateBundle(agent, { mode: "external", rootPath: externalRoot, entryFile: "AGENTS", requireExistingEntry: true }))
+      .rejects.toThrow(`AGENTS was not found in ${externalRoot}`);
+    expect(await fs.readdir(externalRoot)).toEqual([]);
+
+    await fs.writeFile(path.join(externalRoot, "AGENTS"), "# External Agent\n", "utf8");
+    const result = await svc.updateBundle(agent, { mode: "external", rootPath: externalRoot, entryFile: "AGENTS", requireExistingEntry: true });
+    expect(result.bundle).toMatchObject({ mode: "external", rootPath: externalRoot, entryFile: "AGENTS" });
+    await expect(fs.readFile(path.join(externalRoot, "AGENTS"), "utf8")).resolves.toBe("# External Agent\n");
   });
 
   it("creates the target entry file when switching to a new external root", async () => {

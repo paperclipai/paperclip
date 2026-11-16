@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -7,6 +9,27 @@ import path from 'node:path';
 import { parse } from 'yaml';
 import { admitDispatch, cases, targetSha, validateSelection, evidencePolicy } from './chat-completion-testops-contract.mjs';
 import { actualContext } from './chat-completion-testops-cli.mjs';
+import { fullCatalogCases, catalogTargetSha, catalogLauncherSha256 } from './chat-full-catalog-testops-manifest.mjs';
+import { paidWorker } from './chat-completion-testops-host-control.mjs';
+
+test('reusable workers bind named environment secrets without inherited or extra credentials', async () => {
+  const definition = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
+  const called = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'));
+  const named = { OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}',
+    ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}', ALLURE_TOKEN: '${{ secrets.ALLURE_TOKEN }}' };
+  const supported = structuredClone(definition);
+  for (const id of ['chat', 'chat_external']) supported.jobs[id].secrets = { ...named };
+  assert.equal(paidWorker(supported, called), called.jobs.chat);
+  assert.equal(paidWorker(definition, called), called.jobs.chat);
+  for (const id of ['chat', 'chat_external']) {
+    assert.deepEqual(definition.jobs[id].secrets, named);
+    for (const secrets of [{ ...named, OPENROUTER_API_KEY: '' }, { ...named, EXTRA: '${{ secrets.EXTRA }}' },
+      { ...named, ALLURE_TOKEN: '${{ secrets.OTHER_TOKEN }}' }, 'inherit']) {
+      const mutant = structuredClone(supported); mutant.jobs[id].secrets = secrets;
+      assert.throws(() => paidWorker(mutant, called), /Workflow caller boundary mismatch/);
+    }
+  }
+});
 
 function fixture() {
   const env = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REPOSITORY: 'paperclipai/paperclip',
@@ -96,44 +119,17 @@ test('the executable guard binds the actual original GitHub run before service o
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('the real workflow separates metadata authority, provider execution and result reporting', async () => {
-  const text = await readFile(new URL('../../.github/workflows/chat-completion-testops.yml', import.meta.url), 'utf8');
-  const w = parse(text);
-  assert.deepEqual(Object.keys(w.on.workflow_dispatch.inputs).sort(), ['ALLURE_JOB_RUN_ID', 'ALLURE_USERNAME', 'operation']);
-  assert.equal(w.concurrency['cancel-in-progress'], false);
-  assert.equal(w.jobs.chat.strategy['max-parallel'], 1); assert.equal(w.jobs.chat.strategy['fail-fast'], false);
-  assert.equal(w.jobs.select.environment, 'runner-e2e-testops-reporting');
-  assert.equal(w.jobs.chat.environment, 'runner-e2e-private-paid');
-  assert.equal(w.jobs.report.environment, 'runner-e2e-private-history');
-  assert.equal(w.jobs.upload.environment, 'runner-e2e-testops-reporting');
-  for (const [name, job] of Object.entries(w.jobs)) {
-    assert.ok(job.steps.slice(0, 3).some(step => step.run?.endsWith('chat-completion-testops-cli.mjs guard')), name);
-    if (name !== 'chat') assert.ok(!JSON.stringify(job).includes('secrets.OPENROUTER_API_KEY'), name);
-    if (!['select', 'upload'].includes(name)) assert.ok(!JSON.stringify(job).includes('secrets.ALLURE_TOKEN'), name);
-  }
-  assert.ok(w.jobs.upload.if.includes("needs.report.result == 'success'"));
-  assert.ok(w.jobs.report.needs.includes('build'));
-  assert.ok(w.jobs.report.if.includes("needs.build.result == 'success'"));
-  assert.ok(w.jobs.report.if.includes("needs.chat.result == 'failure'"));
-  assert.ok(!text.includes('<<:')); assert.ok(!text.includes('target_branch:'));
-  assert.equal(w.jobs.build.steps.find(step => step.name?.startsWith('Resolve the fixed')).run.includes('--ignore-scripts'), true);
-  const paid = w.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);
-  assert.equal(paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS, 'v1');
-  assert.equal(paid.env.ALLURE_JOB_RUN_ID, '${{ inputs.ALLURE_JOB_RUN_ID }}');
-  assert.ok(paid.run.includes('--max-automatic-retries 0'));
-  assert.ok(w.jobs.build.steps.some(step => step.run?.includes('chat-completion-testops-host-control.mjs')));
-  assert.ok(w.jobs.chat.steps.indexOf(paid) > w.jobs.chat.steps.findIndex(step => step.name?.startsWith('Verify source-bound')));
-});
-
 test('target checkout cannot populate or overwrite the trusted helper path', async () => {
-  const definition = parse(await readFile(new URL('../../.github/workflows/chat-completion-testops.yml', import.meta.url), 'utf8'));
+  const definition = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8'));
+  const called = parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'));
+  const jobs = [definition.jobs.build, called.jobs.chat];
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'testops-checkout-boundary-')));
   try {
     const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], { cwd: root, stdio: 'pipe' });
     git('init'); await writeFile(path.join(root, 'fixture.txt'), 'normal target'); git('add', '.');
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'normal target');
-    for (const job of [definition.jobs.build, definition.jobs.chat]) {
-      const target = job.steps.findIndex(step => step.with?.ref === '${{ needs.authorize.outputs.target_sha }}');
+    for (const job of jobs) {
+      const target = job.steps.findIndex(step => ['${{ needs.authorize.outputs.target_sha }}', '${{ inputs.target_sha }}'].includes(step.with?.ref));
       const boundary = job.steps.findIndex(step => step.id === 'target_boundary');
       const trusted = job.steps.findIndex(step => step.with?.path === '.testops-trusted');
       assert.ok(target >= 0 && boundary > target && trusted > boundary, 'Reject reserved target paths, then check out trusted main last');
@@ -143,9 +139,32 @@ test('target checkout cannot populate or overwrite the trusted helper path', asy
     await mkdir(path.join(root, '.testops-trusted'));
     await writeFile(path.join(root, '.testops-trusted', 'helper.js'), 'candidate-controlled helper'); git('add', '.testops-trusted');
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'reserved path in target');
-    for (const job of [definition.jobs.build, definition.jobs.chat]) {
+    for (const job of jobs) {
       const guard = job.steps.find(step => step.id === 'target_boundary');
       assert.throws(() => execFileSync('bash', ['-euo', 'pipefail', '-c', guard.run], { cwd: root, stdio: 'pipe' }));
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('full catalog evidence authority binds every singleton to the reviewed candidate launcher', () => {
+  const manifest = JSON.parse(readFileSync(new URL('./chat-full-catalog-testops-manifest.json', import.meta.url)));
+  const snapshot = manifest.source.repairMetadata.candidateLauncherSnapshot;
+  assert.equal(snapshot.targetSha, catalogTargetSha);
+  assert.equal(snapshot.sourcePath, 'tests/runner-e2e/launch.ts');
+  const bytes = readFileSync(new URL(snapshot.path, import.meta.url));
+  const actualDigest = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex'), snapshot.gitBlobOid);
+  assert.equal(catalogLauncherSha256, actualDigest);
+  const f = fixture();
+  f.env.GITHUB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF.replace('chat-completion-testops.yml', 'chat-catalog-testops.yml');
+  const context = admitDispatch(f.env, f.event, 42);
+  const selection = { ...f.selection, ...context, catalog: 'full', cases: fullCatalogCases.map((row, index) => ({ ...row, caseId: index + 1 })) };
+  for (const row of selection.cases) {
+    const policy = evidencePolicy({ ...selection, cases: [row] }, context, '77');
+    assert.equal(policy.approvals[0].targetSha, catalogTargetSha);
+    assert.equal(policy.approvals[0].launchSha256, actualDigest);
+  }
+  const pilot = evidencePolicy(f.selection, f.context, '77');
+  assert.equal(pilot.approvals[0].launchSha256, 'f2e69957c350b220b06edca49194a4bd07d70bc882f80838eeb7203184c0bd0d');
 });

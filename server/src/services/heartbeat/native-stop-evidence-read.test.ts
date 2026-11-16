@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { isAcknowledgedNativeStop } from "../acknowledged-native-stop.js";
@@ -31,7 +31,7 @@ describe.skipIf(!runControlPostgresSupport.supported)("native Stop evidence read
       contextSnapshot: { savedInput: bulk }, runnerProfileJson: { savedInput: bulk }, stdoutExcerpt: bulk,
       stderrExcerpt: bulk, resultJson: result }).returning();
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     let evidence: Awaited<ReturnType<typeof readNativeStopExecutionEvidence>>;
     try { evidence = await readNativeStopExecutionEvidence(db, company.id, id); }
@@ -68,7 +68,7 @@ describe.skipIf(!runControlPostgresSupport.supported)("native Stop evidence read
       runtimeMode: "native", status: "cancelled" }).returning();
     await db.execute(sql`update ${heartbeatRuns} set result_json = ${JSON.stringify(saved)}::jsonb where id = ${run.id}`);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const evidence = await readNativeStopExecutionEvidence(db, company.id, run.id);

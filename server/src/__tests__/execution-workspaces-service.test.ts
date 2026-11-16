@@ -268,7 +268,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-        ?? { state: "unknown", headRef: null, headSha: null }
+        ?? { state: "unknown" as const, headRef: null, headSha: null }
       ),
       // Disable the reaper cooldown for the delivery, terminal, race, and
       // cleanup tests. They assert immediate reaping. The cooldown gets its own
@@ -606,7 +606,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       expect(scan.mock.calls.filter(([input]) => input.operation === "execution_workspaces.close_readiness_status"))
         .toHaveLength(3);
       expect(select.mock.calls.filter(([fields]) => fields && "completedAt" in fields && "cancelledAt" in fields))
-        .toHaveLength(4);
+        .toHaveLength(1);
     } finally {
       scan.mockRestore();
       select.mockRestore();
@@ -673,6 +673,50 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(await service.sweepTerminalWorkspaces(2)).toMatchObject({ checked: 1, archived: 1 });
     expect(service.hasTerminalWorkspaceSweepContinuation()).toBe(false);
     expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+  });
+
+  it("inspects only the workspaces a hint reaches, however many trees stay open", async () => {
+    const open = [await seedTerminalWorkspace({ childStatus: "todo" }), await seedTerminalWorkspace({ childStatus: "todo" }),
+      await seedTerminalWorkspace({ childStatus: "todo" })];
+    const seed = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0,
+      resolvePullRequestDetails: async () => ({ state: "merged", headRef: "PAP-16015-delivery", headSha: seed.headSha }),
+    });
+    const original = db.select.bind(db);
+    let treeReads = 0;
+    const select = vi.spyOn(db, "select").mockImplementation(((fields: any) => {
+      if (fields?.completedAt && fields?.cancelledAt) treeReads += 1;
+      return original(fields);
+    }) as typeof db.select);
+    try {
+      expect(await service.sweepTerminalWorkspaces(50, undefined, { targets: { workspaceIds: [], issueIds: [child!.id] } }))
+        .toMatchObject({ checked: 1, archived: 1 });
+      expect(treeReads).toBe(1);
+      expect(await service.sweepTerminalWorkspaces(50, undefined, {
+        targets: { workspaceIds: [open[0]!.executionWorkspaceId], issueIds: [] } })).toMatchObject({ checked: 1, skippedNonTerminalTree: 1 });
+      expect(treeReads).toBe(2);
+    } finally { select.mockRestore(); }
+  });
+
+  it("hints the former parent and workspace when a task moves or is removed", async () => {
+    const seed = await seedTerminalWorkspace({ childStatus: "todo" });
+    const [child] = await db.select().from(issues).where(eq(issues.parentId, seed.sourceIssueId));
+    await db.update(issues).set({ executionWorkspaceId: seed.executionWorkspaceId }).where(eq(issues.id, child!.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.terminalWorkspaces, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await issueService(db).update(child!.id, { parentId: null });
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`]));
+      await db.update(issues).set({ parentId: seed.sourceIssueId }).where(eq(issues.id, child!.id));
+      hints.length = 0;
+      await issueService(db).remove(child!.id);
+      expect(hints).toEqual(expect.arrayContaining([`issue:${child!.id}`, `issue:${seed.sourceIssueId}`,
+        `workspace:${seed.executionWorkspaceId}`]));
+    } finally { unsubscribe(); }
   });
 
   it("retries unread rows from a failed full page before it can park recovery", async () => {
@@ -834,7 +878,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       return executionWorkspaceService(flakyDb, {
         resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
           pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-          ?? { state: "unknown", headRef: null, headSha: null }
+          ?? { state: "unknown" as const, headRef: null, headSha: null }
         ),
         workspaceReaperCooldownDays: 0,
       });
@@ -1300,7 +1344,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       return executionWorkspaceService(db, {
         resolvePullRequestDetails: async (companyId, reference) =>
           pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-          ?? { state: "unknown", headRef: null, headSha: null },
+          ?? { state: "unknown" as const, headRef: null, headSha: null },
         now: () => new Date(nowMs),
         workspaceReaperCooldownDays: cooldownDays,
       });
@@ -1553,7 +1597,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         await fs.writeFile(path.join(seeded.worktreePath, "late-work.txt"), "not delivered\n", "utf8");
@@ -1583,7 +1627,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const newerReason = "newer_archive_lifecycle_marker";
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         // Stand in for a reopen and a fresh archive that ran after this sweep
@@ -2187,7 +2231,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const newerReason = "newer_archive_lifecycle_marker";
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         await db
@@ -2233,7 +2277,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     let refUpdateFailure = "";
     const lockingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         try {
@@ -2242,7 +2286,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           commitFailure = error instanceof Error ? error.message : String(error);
         }
         try {
-          await runGit(seeded.worktreePath, ["update-ref", "HEAD", seeded.headSha]);
+          await runGit(seeded.worktreePath, ["update-ref", "HEAD", seeded.headSha!]);
         } catch (error) {
           refUpdateFailure = error instanceof Error ? error.message : String(error);
         }
@@ -2419,6 +2463,129 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   });
 
+  async function seedSharedLocalWorkspace(cwd: string, options: { metadata?: Record<string, unknown> } = {}) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: { enabled: true },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd,
+      metadata: options.metadata ?? null,
+    });
+    return { executionWorkspaceId };
+  }
+
+  it("treats an existing workspace directory that is not a git repository as ready", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    await fs.writeFile(path.join(workspaceDir, "notes.txt"), "plain files\n", "utf8");
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({
+      state: "ready_with_warnings",
+      isDestructiveCloseAllowed: true,
+      git: { repoRoot: null, hasDirtyTrackedFiles: false, hasUntrackedFiles: false },
+    });
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.warnings.some((warning) => warning.startsWith("Could not inspect git status"))).toBe(false);
+  });
+
+  it("plans removal of a runtime-created plain workspace directory", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-runtime-"));
+    tempDirs.add(parentDir);
+    const workspaceDir = path.join(parentDir, "task");
+    await fs.mkdir(workspaceDir);
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir, {
+      metadata: { createdByRuntime: true },
+    });
+    await db.update(projectWorkspaces).set({ cwd: path.join(parentDir, "primary") })
+      .where(eq(projectWorkspaces.cwd, workspaceDir));
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.git).toMatchObject({ repoRoot: null, createdByRuntime: true });
+    expect(readiness?.plannedActions.map((action) => action.kind)).toContain("remove_local_directory");
+  });
+
+  it("still blocks close when an ancestor directory holds an unreadable .git marker", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ancestor-git-workspace-"));
+    tempDirs.add(parentDir);
+    await fs.writeFile(path.join(parentDir, ".git"), `gitdir: ${path.join(parentDir, "missing-git-dir")}\n`, "utf8");
+    const workspaceDir = path.join(parentDir, "nested", "task");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+  });
+
+  it("still blocks close when the workspace .git marker is a dangling symlink", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dangling-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    await fs.symlink(path.join(workspaceDir, "unmounted-repo", ".git"), path.join(workspaceDir, ".git"));
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+  });
+
+  it("still blocks close when a workspace git repository cannot be inspected", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-broken-git-workspace-"));
+    tempDirs.add(workspaceDir);
+    // A worktree-style .git pointer whose git dir is missing: git refuses to read it.
+    await fs.writeFile(path.join(workspaceDir, ".git"), `gitdir: ${path.join(workspaceDir, "missing-git-dir")}\n`, "utf8");
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+  });
+
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -2592,6 +2759,50 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         branchName: "paperclip/open",
       }),
     ]);
+  });
+
+  it("limits summaries to the requested ids while keeping company scope and the read condition", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const requestedId = randomUUID();
+    const hiddenId = randomUUID();
+    const unrequestedId = randomUUID();
+    const otherCompanyWorkspaceId = randomUUID();
+
+    await db.insert(companies).values([
+      { id: companyId, name: "Paperclip", issuePrefix: `I${companyId.slice(0, 5).toUpperCase()}`, requireBoardApprovalForNewAgents: false },
+      { id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 5).toUpperCase()}`, requireBoardApprovalForNewAgents: false },
+    ]);
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Ids", status: "in_progress" },
+      { id: otherProjectId, companyId: otherCompanyId, name: "Other ids", status: "in_progress" },
+    ]);
+    const workspace = (id: string, owner: string, project: string, name: string) => ({
+      id,
+      companyId: owner,
+      projectId: project,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name,
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/${id}`,
+    });
+    await db.insert(executionWorkspaces).values([
+      workspace(requestedId, companyId, projectId, "Requested"),
+      workspace(hiddenId, companyId, projectId, "Hidden by read condition"),
+      workspace(unrequestedId, companyId, projectId, "Not requested"),
+      workspace(otherCompanyWorkspaceId, otherCompanyId, otherProjectId, "Other company"),
+    ]);
+
+    const summaries = await svc.listSummaries(companyId, {
+      ids: [requestedId, hiddenId, otherCompanyWorkspaceId],
+      readCondition: sql<boolean>`${executionWorkspaces.id} <> ${hiddenId}`,
+    });
+
+    expect(summaries.map((summary) => summary.id)).toEqual([requestedId]);
   });
 
   it("reconciles a forward branch record, comments on the source issue, and resolves matching workspace recovery", async () => {
@@ -3822,7 +4033,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
     });
 
-    let releaseBlockingTransaction: (() => void) | null = null;
+    let releaseBlockingTransaction = null as (() => void) | null;
     const releaseBlockingTransactionPromise = new Promise<void>((resolve) => {
       releaseBlockingTransaction = resolve;
     });
@@ -3984,6 +4195,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           cwd: worktreePath,
           branchName: "feature/current",
           worktreePath,
+          branchCreatedByRuntime: false,
           warnings: [],
           created: false,
         },
@@ -4553,7 +4765,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const workspaces = await svc.list(companyId);
     const readyService = workspaces
       .find((workspace) => workspace.id === readyWorkspaceId)
-      ?.runtimeServices.find((service) => service.id === readyServiceId);
+      ?.runtimeServices?.find((service) => service.id === readyServiceId);
     expect(readyService).toMatchObject({
       url: httpsUrl,
       port: 42_010,
@@ -4564,7 +4776,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     const provisioningService = workspaces
       .find((workspace) => workspace.id === provisioningWorkspaceId)
-      ?.runtimeServices.find((service) => service.id === provisioningServiceId);
+      ?.runtimeServices?.find((service) => service.id === provisioningServiceId);
     expect(provisioningService?.url).toBeNull();
     expect(provisioningService?.exposure).toMatchObject({ state: "pending", publicUrl: null });
     expect(JSON.stringify(provisioningService)).not.toContain("http://127.0.0.1:42020");

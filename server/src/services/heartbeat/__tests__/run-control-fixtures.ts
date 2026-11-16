@@ -58,6 +58,7 @@ export function callbacks(db: Db): TestCallbacks {
     startNextQueuedRunForAgent: vi.fn<HeartbeatRunControlDependencies["startNextQueuedRunForAgent"]>(),
     sweepPendingCleanupLeases: vi.fn<HeartbeatRunControlDependencies["sweepPendingCleanupLeases"]>(),
     timerClaimWasFirstHeartbeat: vi.fn<HeartbeatRunControlDependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
+    scheduleBoundedRetry: vi.fn<HeartbeatRunControlDependencies["scheduleBoundedRetry"]>(),
     wakeQueue: { releaseIssueExecution: vi.fn<HeartbeatRunControlDependencies["wakeQueue"]["releaseIssueExecution"]>(async () => ({ outcome: { kind: "released" }, postCommitEffects: [] })) },
     applyWakeQueuePostCommitEffects: vi.fn(async () => undefined),
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),

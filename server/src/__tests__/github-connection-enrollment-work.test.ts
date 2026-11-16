@@ -90,6 +90,13 @@ const support = await getEmbeddedPostgresTestSupport();
       grantId = grant!.id;
       const env = { PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: origin, PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test" };
       const service = githubConnectionEventService(db, { env });
+      const reserved: Awaited<ReturnType<typeof db.$client.reserve>>[] = [];
+      try {
+        for (let slot = 0; slot < 4; slot++) reserved.push(await db.$client.reserve());
+        await Promise.all(reserved.map(connection => connection`SELECT 1`));
+      } finally {
+        for (const connection of reserved) connection.release();
+      }
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: e => errors.push(e) });
       const selects = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction"), executes = vi.spyOn(db, "execute");

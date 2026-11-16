@@ -1,4 +1,6 @@
+import { assertAgentToolAssignmentInteractions } from "../../connection-management.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
+import { createConnectionProfileConfigurationReader } from "./connection-configuration.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertProfileEntryInputs } from "../../tool-profile-entry-validation.js";
 import { randomUUID } from "node:crypto";
@@ -360,6 +362,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
     }
   }
   return {
+    listConnectionProfileConfiguration: createConnectionProfileConfigurationReader(db),
+
     listProfiles: async (
       companyId: string,
     ): Promise<ToolProfileWithDetails[]> => {
@@ -840,6 +844,10 @@ export function createToolProfileService(db: Db, now: () => Date) {
         input.targetId,
         tx,
       );
+      if (input.targetType === "agent") await assertAgentToolAssignmentInteractions(db,
+        actor?.managementContext?.actor.type === "agent" ? actor.managementContext.actor.agentId : actor?.actorType === "agent" ? actor.actorId : null,
+        profile.companyId, [input.targetId]);
+
       const [row] = await db
         .insert(toolProfileBindings)
         .values({
@@ -876,6 +884,9 @@ export function createToolProfileService(db: Db, now: () => Date) {
         input.targetId,
         tx,
       );
+      if (input.targetType === "agent") await assertAgentToolAssignmentInteractions(db,
+        managementContext?.actor.type === "agent" ? managementContext.actor.agentId : null, profile.companyId, [input.targetId]);
+
       const rows = await db
         .delete(toolProfileBindings)
         .where(

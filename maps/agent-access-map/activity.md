@@ -199,8 +199,7 @@ Agent access: `available` — REST / native call_api.
 Policy: Same company plus visibility/audit/cost/run permissions where the route requires
 them.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/activity.ts#L224) at
-the reviewed commit above.
+Evidence: `source-only` — [implementation](../../server/src/routes/companies.ts).
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.

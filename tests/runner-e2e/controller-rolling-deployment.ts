@@ -3,7 +3,9 @@ import type { MatrixExecution } from "./types.js";
 import type { ControllerOutageReceipt } from "./controller-outage.js";
 
 export const ROLLING_WEB_DEPLOYMENT_SUITE = "rolling-web-deployment";
-export const isRollingWebDeployment = (execution: Pick<MatrixExecution, "suite">) => execution.suite.id === ROLLING_WEB_DEPLOYMENT_SUITE;
+export const ROLLING_WEB_DEPLOYMENT_WARM_SUITE = "rolling-web-deployment-warm";
+export const isRollingWebDeployment = (execution: Pick<MatrixExecution, "suite">) =>
+  [ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE].includes(execution.suite.id);
 
 export interface ControllerRollingDeploymentReceipt extends Omit<ControllerOutageReceipt, "schema" | "holdMs" | "signal"> {
   schema: "paperclip.e2e.controller-rolling-deployment/v1";

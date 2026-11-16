@@ -105,6 +105,17 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
+  it.each([
+    { enabled: true, storageProviderPluginId: randomUUID() },
+    { enabled: false, storageProviderPluginId: null },
+  ])("keeps the private empty source for a project with no repository and saved storage %j", async (policy) => {
+    const f = await assignedTask();
+    await db.update(projects).set({ executionWorkspacePolicy: policy }).where(eq(projects.id, f.projectId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null });
+    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" }, projectId: null, projectWorkspaceId: null });
+  });
+
   it("does not use a foreign organizational project as private scratch authority", async () => {
     const f = await assignedTask(), foreignCompanyId = randomUUID(), foreignProjectId = randomUUID();
     await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign owner", issuePrefix: foreignCompanyId.slice(0, 8) });
@@ -130,13 +141,50 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     }
   });
 
-  it("still rejects an actual repository reference before any workspace is created", async () => {
+  it("attaches a referenced project's repositories as editable task copies", async () => {
     const f = await fixture(true);
-    await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
-      projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
-      code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
-    });
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
+      name: "Second repository", sourceType: "git_repo", repoUrl: "https://example.test/team/second.git", repoRef: "release" });
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true });
+    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty", repositories: [
+      { projectId: f.projectId, repoUrl: "https://example.test/team/repository.git", ref: null },
+      { projectId: f.projectId, repoUrl: "https://example.test/team/second.git", ref: "release" },
+    ] }, referencedProjectFailures: [], warnings: [] });
+    if (result.authority !== "remote") throw new Error("Expected remote task copies");
+    expect(result.source.repositories).toHaveLength(2);
+    for (const repository of result.source.repositories!) {
+      expect(repository.readOnly).not.toBe(true);
+      expect(repository.relativePath).toMatch(/^\.paperclip-repositories\/[^/]+$/);
+      expect(repository.projectWorkspaceId).toBe(repository.id);
+    }
+    expect(new Set(result.source.repositories!.map(repository => repository.relativePath)).size).toBe(2);
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("keeps the selected anchor and adds the other project's writable repository", async () => {
+    const f = await assignedTask(true), referencedProjectId = randomUUID();
+    await db.insert(projects).values({ id: referencedProjectId, companyId: f.companyId, name: "Skill sources" });
+    const [repository] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: referencedProjectId,
+      name: "Skills", sourceType: "git_repo", repoUrl: "https://example.test/team/skills.git" }).returning();
+    await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      body: `Write a skill in [@Skill sources](${buildProjectMentionHref(referencedProjectId)}).` });
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: f.projectId, projectWorkspaceId: null });
+    expect(result).toMatchObject({ authority: "remote", projectId: f.projectId,
+      source: { kind: "git", repoUrl: "https://example.test/team/repository.git", repositories: [
+        { id: repository.id, projectId: referencedProjectId, repoUrl: "https://example.test/team/skills.git" },
+      ] } });
+    expect(result.authority === "remote" && result.source.repositories).toHaveLength(1);
+    expect(result.authority === "remote" && result.source.repositories![0]!.readOnly).not.toBe(true);
+  });
+
+  it.each([null, "feature"])("uses a referenced repository's default ref unless overridden by %s", async repoRef => {
+    const f = await fixture(true);
+    await db.update(projectWorkspaces).set({ defaultRef: "release", repoRef }).where(eq(projectWorkspaces.projectId, f.projectId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true });
+    expect(result).toMatchObject({ authority: "remote", source: { repositories: [{ ref: repoRef ?? "release" }] } });
   });
 
   it("does not treat a configured source without a repository URL as metadata-only", async () => {
@@ -144,7 +192,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Configured source" });
     await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
       projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
-      resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
+      resultJson: { reason: "remote_workspace_source_unavailable", projectId: f.projectId },
     });
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
@@ -163,15 +211,17 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     }
   });
 
-  it("keeps a real repository denied when a source-less reference is also mentioned", async () => {
+  it("attaches a repository when a source-less project is also mentioned", async () => {
     const f = await fixture(true), metadataProjectId = randomUUID();
     await db.insert(projects).values({ id: metadataProjectId, companyId: f.companyId, name: "Metadata" });
     await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       body: `Also mention [@Metadata](${buildProjectMentionHref(metadataProjectId)}).` });
-    await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
-      projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
-      resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
-    });
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true });
+    expect(result).toMatchObject({ authority: "remote", source: { repositories: [
+      { projectId: f.projectId, repoUrl: "https://example.test/team/repository.git" },
+    ] }, referencedProjectFailures: [{ projectId: metadataProjectId, reason: "resolution" }] });
+    expect(result.authority === "remote" && result.source.repositories).toHaveLength(1);
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
@@ -183,6 +233,31 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       projectId: null, projectWorkspaceId: null, taskDirectory: true });
     expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" },
       referencedProjectFailures: [], warnings: [] });
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("does not attach a project outside the run's low-trust boundary", async () => {
+    const f = await fixture(true);
+    const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+      trustBoundary: { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId, projectIds: [] } } };
+    await db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
+    await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true });
+    expect(result).toMatchObject({ authority: "remote", source: { kind: "empty" },
+      referencedProjectFailures: [{ projectId: f.projectId, reason: "authorization" }] });
+    expect(result.authority === "remote" && result.source.repositories).toBeUndefined();
+  });
+
+  it("does not apply a referenced project's restricted trust policy to an ordinary task", async () => {
+    const f = await fixture(true);
+    await db.update(projects).set({ executionWorkspacePolicy: { trustPreset: "low_trust_review", authorizationPolicy: {
+      trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId: f.companyId,
+        rootIssueId: f.issueId, projectIds: [f.projectId] },
+    } } }).where(eq(projects.id, f.projectId));
+    await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({ status: 403 });
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
 
@@ -204,5 +279,59 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     expect(result.authority === "remote" && result.warnings?.length).toBe(1);
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId)))
       .toEqual([workspace]);
+  });
+
+  it.each(["saved", "read-only", "foreign-project", "restricted-trust", "low-trust-boundary"])("preserves %s repository authority on a later turn", async scenario => {
+    const f = await fixture(true);
+    const [repository] = await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.projectId, f.projectId));
+    const savedRepository = { id: repository.id, projectWorkspaceId: repository.id, projectId: f.projectId,
+      relativePath: ".paperclip-repositories/saved-skills", repoUrl: repository.repoUrl!, ref: "saved-branch",
+      pinnedCommit: "a".repeat(40), ...(scenario === "read-only" ? { readOnly: true } : {}) };
+    const source = { kind: "empty" as const, repositories: [savedRepository] };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId,
+      sourceIssueId: f.issueId, mode: "isolated_workspace", strategyType: "project_primary",
+      name: "Saved task copies", providerType: "cloud_sandbox", cwd: "/workspaces/saved",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 2, snapshotId: randomUUID(),
+        source, location: null, writerRunId: null, dirty: false } },
+    }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, f.issueId));
+    if (scenario === "foreign-project") {
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Other company", issuePrefix: companyId.slice(0, 8) });
+      await db.update(projects).set({ companyId }).where(eq(projects.id, f.projectId));
+    } else {
+      await db.update(projectWorkspaces).set({ repoRef: "new-default" }).where(eq(projectWorkspaces.id, repository.id));
+      await db.delete(issueComments).where(eq(issueComments.issueId, f.issueId));
+    }
+    if (scenario === "restricted-trust") {
+      await db.update(projects).set({ executionWorkspacePolicy: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustPreset: "low_trust_review", trustBoundary: { mode: "low_trust_review", companyId: f.companyId,
+          rootIssueId: f.issueId, projectIds: [f.projectId] },
+      } } }).where(eq(projects.id, f.projectId));
+    } else if (scenario === "low-trust-boundary") {
+      const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+        trustBoundary: { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId, projectIds: [] } } };
+      await db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
+      await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
+    }
+    const resolve = () => resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, existingWorkspace: toExecutionWorkspace(workspace) });
+    if (scenario === "saved") {
+      const result = await resolve();
+      expect(result).toMatchObject({ authority: "remote", source });
+      expect(result.authority === "remote" && result.source.repositories).toHaveLength(1);
+    } else if (scenario === "read-only") {
+      await expect(resolve()).rejects.toMatchObject({
+        resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
+      });
+    } else if (scenario === "low-trust-boundary") {
+      await expect(resolve()).rejects.toMatchObject({ status: 403, message: "Project is outside this low-trust boundary." });
+    } else await expect(resolve()).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      message: "A saved project folder is no longer accessible or its trust policy no longer permits this task.",
+      resultJson: { reason: "remote_workspace_source_access_denied", projectId: f.projectId },
+    });
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)))[0]).toEqual(workspace);
   });
 });

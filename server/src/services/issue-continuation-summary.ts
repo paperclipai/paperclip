@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, readRunFailureCause, withoutSqlStatementText, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
 import { summarizeRunErrorForModel } from "./heartbeat-run-summary.js";
 
@@ -146,7 +146,9 @@ export function buildContinuationSummaryMarkdown(input: {
   const terminalFailureCategory = terminalFailure && typeof terminalFailure === "object" && !Array.isArray(terminalFailure)
     ? ((terminalFailure as Record<string, unknown>).category ?? "unknown")
     : null;
-  const modelError = summarizeRunErrorForModel(run.error, terminalFailureCategory);
+  // Rows saved before SQL text was kept out of run errors still carry it.
+  const modelError = summarizeRunErrorForModel(
+    run.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run.error, terminalFailureCategory);
   const recentActions = [
     `Run \`${run.id}\` finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",

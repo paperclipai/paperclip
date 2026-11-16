@@ -6,6 +6,14 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults legacy composer submission off and accepts only explicit boolean patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableLegacyComposerSubmit).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({})).not.toHaveProperty("enableLegacyComposerSubmit");
+    for (const enabled of [true, false]) {
+      expect(patchInstanceExperimentalSettingsSchema.parse({ enableLegacyComposerSubmit: enabled })).toEqual({ enableLegacyComposerSubmit: enabled });
+    }
+    expect(patchInstanceExperimentalSettingsSchema.safeParse({ enableLegacyComposerSubmit: "true" }).success).toBe(false);
+  });
   it("keeps Notebook disabled by default and accepts only explicit boolean rollout values", () => {
     expect(instanceExperimentalSettingsSchema.parse({ enableApps: true, enableMemoryConnectors: true }).enablePaperclipNotebook).toBe(false);
     expect(patchInstanceExperimentalSettingsSchema.parse({})).toEqual({});

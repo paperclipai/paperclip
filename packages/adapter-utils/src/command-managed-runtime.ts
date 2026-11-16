@@ -12,6 +12,7 @@ import {
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
+  type SandboxSyncOptions,
   type SandboxSyncResult,
   type WorkspaceDurableSeedPaths,
   type WorkspaceInboundMode,
@@ -116,9 +117,9 @@ export interface CommandManagedRuntimeRunner {
    * orchestrator either uses the native path for both directions or falls back
    * to the base64 transport for both.
    */
-  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncIn?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /** Optional native outbound file transfer. See {@link syncIn}. */
-  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncOut?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /**
    * Optional persistent duplex channel. Present only when the sandbox provider's
    * effective capability grants `duplexCommandStream`. The runner opens one
@@ -528,15 +529,17 @@ export function createCommandManagedRuntimeClient(input: {
   client.allowConcurrentSyncOperations = hasNativeBoth
     ? input.runner.allowConcurrentSyncOperations === true
     : true;
-  client.syncIn = async (operations) => {
+  client.syncIn = async (operations, options) => {
     assertPostUploadCommandsConfined(operations);
     if (hasNativeBoth) {
-      return await nativeSyncIn!(operations);
+      return await (options === undefined ? nativeSyncIn!(operations) : nativeSyncIn!(operations, options));
     }
     return await fallbackSyncIn(operations);
   };
   if (hasNativeBoth) {
-    client.syncOut = (operations) => nativeSyncOut!(operations);
+    client.syncOut = (operations, options) => options === undefined
+      ? nativeSyncOut!(operations)
+      : nativeSyncOut!(operations, options);
   }
 
   return client;

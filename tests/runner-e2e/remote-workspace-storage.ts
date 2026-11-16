@@ -1,4 +1,5 @@
 import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
 import { createHash } from "node:crypto";
 import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "../../packages/shared/src/remote-workspace.js";
 import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
@@ -23,9 +24,13 @@ export interface RemoteWorkspaceStorageCheckpoint {
   providerType: string;
   proofSha256: string;
   fileSource: string;
+  fileSnapshotId?: string;
+  locationState?: "retained" | "released";
 }
 
 export interface RemoteWorkspaceStorageEvidence {
+  expectedFileSource?: "live" | "saved";
+  expectedLocation?: "retained" | "released";
   initial?: RemoteWorkspaceStorageCheckpoint;
   final?: RemoteWorkspaceStorageCheckpoint;
   browserReadPhases: string[];
@@ -47,6 +52,8 @@ export function remoteWorkspaceProofDigest(content: string): string {
 
 export async function readRemoteWorkspaceStorageCheckpoint(input: {
   api: Pick<RunnerApi, "get">; companyId: string; agentId: string; issueId: string; environmentId: string;
+  expectedFileSource?: "live" | "saved";
+  expectedLocation?: "retained" | "released";
 }): Promise<{ point?: RemoteWorkspaceStorageCheckpoint; content?: string }> {
   const view = await input.api.get<{ issueId: string; workspace: ExecutionWorkspace | null }>(`/api/issues/${input.issueId}/workspace`);
   const workspace = view.workspace;
@@ -54,8 +61,11 @@ export async function readRemoteWorkspaceStorageCheckpoint(input: {
   if (view.issueId !== input.issueId || !workspace || workspace.companyId !== input.companyId
     || workspace.providerType !== "cloud_sandbox" || !authorityResult.success) return {};
   const authority = authorityResult.data;
-  if (!authority.snapshotId || authority.dirty || authority.writerRunId || !authority.location
-    || authority.location.environmentId !== input.environmentId) return {};
+  const expectedSource = input.expectedFileSource ?? "live";
+  const expectedLocation = input.expectedLocation ?? (expectedSource === "saved" ? "released" : "retained");
+  if (!authority.snapshotId || authority.dirty || authority.writerRunId) return {};
+  if (expectedLocation === "retained" && (!authority.location || authority.location.environmentId !== input.environmentId)) return {};
+  if (expectedLocation === "released" && authority.location !== null) return {};
   const runs = await input.api.get<RunSummary[]>(`/api/issues/${input.issueId}/runs`);
   const latest = runs.filter(run => run.runtimeMode === "native" && run.status === "succeeded"
     && run.agentId === input.agentId && typeof run.runId === "string")
@@ -68,19 +78,28 @@ export async function readRemoteWorkspaceStorageCheckpoint(input: {
   if (!receiptResult.success) return {};
   const receipt = receiptResult.data;
   if (receipt.state !== "saved" || receipt.snapshotId !== authority.snapshotId
-    || receipt.workspaceId !== workspace.id || receipt.epoch !== authority.epoch
-    || receipt.leaseId !== authority.location.leaseId || receipt.providerLeaseId !== authority.location.providerLeaseId
-    || receipt.remoteCwd !== authority.location.remoteCwd) return {};
+    || receipt.workspaceId !== workspace.id || receipt.epoch !== authority.epoch) return {};
+  if (authority.location && (receipt.leaseId !== authority.location.leaseId
+    || receipt.providerLeaseId !== authority.location.providerLeaseId || receipt.remoteCwd !== authority.location.remoteCwd)) return {};
+  if (expectedSource === "saved") {
+    const leases = await input.api.get<Array<{ id: string; companyId: string; issueId: string; providerLeaseId: string }>>(
+      `/api/environments/${input.environmentId}/leases`);
+    if (!leases.some(lease => lease.id === receipt.leaseId && lease.companyId === input.companyId
+      && lease.issueId === input.issueId && lease.providerLeaseId === receipt.providerLeaseId)) return {};
+  }
   const file = await input.api.get<WorkspaceFileContent>(`/api/issues/${input.issueId}/file-resources/content?workspace=execution&path=${REMOTE_WORKSPACE_PROOF_FILE}`);
   if (file.content?.encoding !== "utf8" || typeof file.content.data !== "string") throw new Error("Remote workspace file oracle did not return text bytes");
-  if (file.resource?.source?.kind !== "live" || file.resource.workspaceKind !== "execution_workspace"
+  if (file.resource?.source?.kind !== expectedSource || file.resource.workspaceKind !== "execution_workspace"
     || file.resource.workspaceId !== workspace.id) return {};
+  const fileSnapshotId = file.resource.source.kind === "saved" ? file.resource.source.snapshotId ?? undefined : undefined;
+  if (expectedSource === "saved" && fileSnapshotId !== authority.snapshotId) return {};
   return { content: file.content.data, point: {
     workspaceId: workspace.id, snapshotId: authority.snapshotId, runId: run.id,
     runSnapshotId: receipt.snapshotId, runSaveState: receipt.state,
     authoritySchema: authority.schema, authorityDirty: authority.dirty,
     authorityWriter: authority.writerRunId, providerType: workspace.providerType,
-    proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind,
+    proofSha256: remoteWorkspaceProofDigest(file.content.data), fileSource: file.resource?.source?.kind, fileSnapshotId,
+    locationState: authority.location ? "retained" : "released",
   } };
 }
 
@@ -91,7 +110,10 @@ export function gradeRemoteWorkspaceStorage(evidence: RemoteWorkspaceStorageEvid
     && point.snapshotId === point.runSnapshotId && point.runSaveState === "saved"
     && point.authoritySchema === "paperclip.remote-workspace.v1" && point.authorityDirty === false
     && point.authorityWriter === null && point.providerType === "cloud_sandbox"
-    && point.fileSource === "live" && /^[a-f0-9]{64}$/.test(point.proofSha256));
+    && point.fileSource === (evidence.expectedFileSource ?? "live")
+    && (!evidence.expectedLocation || point.locationState === evidence.expectedLocation)
+    && (point.fileSource !== "saved" || point.fileSnapshotId === point.snapshotId)
+    && /^[a-f0-9]{64}$/.test(point.proofSha256));
   return [
     { id: "remote-workspace-initial-save", passed: committed(evidence.initial), detail: "The initial task admission commits a remote workspace snapshot and a matching saved run receipt." },
     { id: "remote-workspace-final-save", passed: committed(evidence.final), detail: "The later admission commits its files before finalization succeeds." },
@@ -119,8 +141,9 @@ export function remoteWorkspaceStorageServerEnvironment(input: {
   env: NodeJS.ProcessEnv;
   instanceId: string;
 }): NodeJS.ProcessEnv | undefined {
-  if (!input.executions.some(isRemoteWorkspaceStorageExecution)) return undefined;
-  if (!input.executions.length || !input.executions.every(isRemoteWorkspaceStorageExecution)) {
+  const requiresStorage = (execution: MatrixExecution) => isRemoteWorkspaceStorageExecution(execution) || isLegacyWorkspaceMigration(execution);
+  if (!input.executions.some(requiresStorage)) return undefined;
+  if (!input.executions.length || !input.executions.every(requiresStorage)) {
     throw new Error("Remote workspace storage qualification must run alone");
   }
   const bucket = input.env.PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET?.trim();

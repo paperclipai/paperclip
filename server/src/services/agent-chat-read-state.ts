@@ -2,11 +2,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { issueComments, issueReadStates, type Db } from "@paperclipai/db";
 
 export async function withConversationReadState<T extends { id: string }>(db: Db, companyId: string, userId: string, conversations: T[]) {
-  if (!conversations.length) return [] as Array<T & { isUnreadForMe: boolean; lastExternalCommentAt: Date | null }>;
+  if (!conversations.length) return [] as Array<T & { isUnreadForMe: boolean; unreadMessageCount: number; lastExternalCommentAt: Date | null }>;
   const rows = await db.select({
     issueId: issueComments.issueId,
     latest: sql<Date>`max(${issueComments.createdAt})`,
-    unread: sql<boolean>`bool_or(${issueComments.createdAt} > coalesce(${issueReadStates.lastReadAt}, to_timestamp(0)))`,
+    unreadMessageCount: sql<number>`count(*) filter (where ${issueComments.createdAt} > coalesce(${issueReadStates.lastReadAt}, to_timestamp(0)))`.mapWith(Number),
   }).from(issueComments).leftJoin(issueReadStates, and(
     eq(issueReadStates.companyId, companyId), eq(issueReadStates.issueId, issueComments.issueId), eq(issueReadStates.userId, userId),
   )).where(and(eq(issueComments.companyId, companyId), inArray(issueComments.issueId, conversations.map(chat => chat.id)),
@@ -16,6 +16,7 @@ export async function withConversationReadState<T extends { id: string }>(db: Db
     eq(issueComments.origin, "comment"),
   )).groupBy(issueComments.issueId);
   const byId = new Map(rows.map(row => [row.issueId, row]));
-  return conversations.map(chat => ({ ...chat, isUnreadForMe: byId.get(chat.id)?.unread ?? false,
+  return conversations.map(chat => ({ ...chat, isUnreadForMe: (byId.get(chat.id)?.unreadMessageCount ?? 0) > 0,
+    unreadMessageCount: byId.get(chat.id)?.unreadMessageCount ?? 0,
     lastExternalCommentAt: byId.get(chat.id)?.latest ?? null }));
 }

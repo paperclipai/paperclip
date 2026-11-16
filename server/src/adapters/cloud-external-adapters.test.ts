@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 let home: string;
 let localPackage: string;
@@ -34,6 +34,29 @@ function writePackage(packageDir: string, type: string): void {
   `);
   fs.writeFileSync(path.join(packageDir, "ui-parser.mjs"), parserSource);
 }
+
+// The registry imports every built-in adapter. The first import in a worker
+// pays the one-time transform of that whole graph: about 15s on contended CI
+// runners (the first case timed out at 15s while the next case took 1.1s) and
+// 20-30s on a loaded local machine. Pay it here, not inside the first case's
+// budget. Each case still gets fresh module state from vi.resetModules() below,
+// and its re-import measured 0.4-1.5s. The warm-up uses an empty home and a
+// managed signal, so it reads and runs no persisted adapter package. The 90s
+// limit is three times the slowest measured cold import.
+beforeAll(async () => {
+  const warmHome = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-cloud-adapters-warm-"));
+  vi.stubEnv("PAPERCLIP_HOME", warmHome);
+  vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "");
+  try {
+    const registry = await import("./registry.js");
+    await registry.waitForExternalAdapters();
+    await import("./plugin-loader.js");
+    await import("../services/adapter-plugin-store.js");
+  } finally {
+    vi.unstubAllEnvs();
+    fs.rmSync(warmHome, { recursive: true, force: true });
+  }
+}, 90_000);
 
 beforeEach(() => {
   vi.resetModules();

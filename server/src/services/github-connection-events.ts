@@ -1,7 +1,14 @@
+import { parseSlackFormOperation } from "./chat-channels/slack/cloud-forms.js";
+import { acknowledgeSlackFormDeliveries } from "./chat-channels/slack/form-normal-ack.js";
+import { readSlackFormRetainedConsumer } from "./chat-channels/slack/cloud-consumer.js";
+import { reconcileRegisteredSlackFormWork } from "./chat-channels/slack/form-owner.js";
+import { SlackCloudReceiptError } from "./chat-channels/slack/cloud-event.js";
+import { reconcilePendingSlackCloudEnrollments } from "./chat-channels/slack/cloud-enrollment.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
+import { dispatchSlackCloudEvent } from "./chat-channels/slack/cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -146,7 +153,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
   return compact(base);
 }
 
-function bindingRows(rows: Array<{
+export function githubConnectionEventBindings(rows: Array<{
   grant: typeof connectionGrants.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
 }>): GitHubBinding[] {
@@ -224,6 +231,9 @@ export function githubConnectionEventService(
 ) {
   const now = options.now ?? (() => new Date());
   let nextPollAt = 0;
+  let nextEnrollmentAt: number | null = null;
+  let nextEnrollmentDiagnosticAt = 0;
+  const slackDiagnostics = new Map<string, number>();
   let configuredConnector: {
     config: NonNullable<ReturnType<typeof paperclipCloudConnectorConfigFromEnv>>;
     connector: PaperclipCloudConnector;
@@ -259,7 +269,7 @@ export function githubConnectionEventService(
         eq(toolConnections.enabled, true),
         sql`exists (select 1 from companies where id = ${connectionGrants.companyId} and status <> 'archived')`,
       ));
-    return bindingRows(rows);
+    return githubConnectionEventBindings(rows);
   }
 
   async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, effects: Array<(committedDb: Db) => Promise<void>>) {
@@ -503,10 +513,52 @@ export function githubConnectionEventService(
       nextPollAt = Number.POSITIVE_INFINITY;
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
+    try {
+      return await drainConnectorEvents(connector);
+    } finally {
+      try {
+        nextEnrollmentAt = await reconcilePendingSlackCloudEnrollments(db, now());
+      } catch {
+        const time = now().getTime();
+        nextEnrollmentAt = time + 5_000;
+        if (time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "enrollment_reconcile_unavailable" }, "Slack enrollment responsibility retained");
+        }
+      }
+      let formsAt: number | null = null;
+      try { formsAt = await reconcileRegisteredSlackFormWork(db, now()); }
+      catch { formsAt = now().getTime() + 5_000; }
+      const next = Math.min(nextEnrollmentAt ?? Number.POSITIVE_INFINITY, formsAt ?? Number.POSITIVE_INFINITY);
+      nextEnrollmentAt = Number.isFinite(next) ? next : null;
+    }
+  }
+
+  async function drainConnectorEvents(connector: PaperclipCloudConnector): Promise<GitHubConnectionEventPollResult> {
     const bindings = await activeBindings();
-    const bots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const bots = [...githubBots, ...slackBots];
     let identity: { subject: string; companyId: string } | null = bindings[0] ?? (bots[0] ? { subject: "github-bot-events", companyId: bots[0].companyId } : null);
-    const hasConsumer = bindings.length > 0 || bots.length > 0;
+    let hasConsumer = bindings.length > 0 || bots.length > 0;
+    if (!identity) {
+      try {
+        const retained = await readSlackFormRetainedConsumer(db, connector);
+        identity = retained.owner;
+        hasConsumer ||= retained.owner !== null;
+        const time = now().getTime();
+        if (retained.attention.length && time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "form_retained_owner_invalid", count: retained.attention.length }, "Slack form custody requires attention");
+        }
+      } catch {
+        const time = now().getTime();
+        if (time >= nextEnrollmentDiagnosticAt) {
+          nextEnrollmentDiagnosticAt = time + 300_000;
+          logger.warn({ reason: "form_retained_owner_unavailable" }, "Slack form custody requires attention");
+        }
+      }
+    }
     if (!identity) {
       const [history] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
         .innerJoin(toolConnections, and(eq(toolConnections.id, connectionGrants.connectionId), eq(toolConnections.companyId, connectionGrants.companyId)))
@@ -517,7 +569,7 @@ export function githubConnectionEventService(
       if (grant && subject) identity = { subject, companyId: grant.companyId };
     }
     if (!identity) {
-      const [history] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`)).limit(1);
+      const [history] = await db.select().from(chatEndpoints).where(sql`(${chatEndpoints.provider} = 'github' AND ${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null) OR (${chatEndpoints.provider} = 'slack' AND ${chatEndpoints.setup}->'slackCloudEvents' is not null)`).limit(1);
       if (history) identity = { subject: "github-bot-events", companyId: history.companyId };
     }
     if (!identity) {
@@ -542,7 +594,33 @@ export function githubConnectionEventService(
       failed: lease.failedEventIds?.length ?? 0,
     };
     const acknowledge: string[] = [];
+    const formCompanies = new Map<string, string>();
     for (const event of lease.events) {
+      if (event.provider === "slack") {
+        try {
+          await dispatchSlackCloudEvent(db, event);
+          if (/^slack_form_[a-f0-9]{64}$/.test(event.id)) {
+            const packet = event.payload.slackFormOpen;
+            if (!packet || typeof packet !== "object" || Array.isArray(packet)) throw new SlackCloudReceiptError("form_ack_company_missing", "attention");
+            formCompanies.set(event.id, parseSlackFormOperation(Reflect.get(packet, "operation")).binding.companyId);
+          }
+          acknowledge.push(event.id); result.processed += 1;
+        }
+        catch (error) {
+          const code = error instanceof SlackCloudReceiptError ? error.code : "owner_or_admission_unavailable";
+          const disposition = error instanceof SlackCloudReceiptError ? error.disposition : "retry";
+          const time = now().getTime();
+          if (time - (slackDiagnostics.get(event.id) ?? Number.NEGATIVE_INFINITY) >= 300_000) {
+            if (slackDiagnostics.size >= 1000) slackDiagnostics.delete(slackDiagnostics.keys().next().value!);
+            slackDiagnostics.set(event.id, time);
+            logger.warn({ deliveryId: event.id.slice(0, 200), reason: code, disposition,
+              recoveryExpiresAt: Number.isFinite(Date.parse(event.createdAt)) ? new Date(Date.parse(event.createdAt) + 30 * 24 * 60 * 60_000).toISOString() : null }, "Slack connector receipt requires attention");
+          }
+          if (disposition === "invalid") { acknowledge.push(event.id); result.ignored += 1; }
+          else result.failed += 1;
+        }
+        continue;
+      }
       if (event.payload.githubApp !== undefined) {
         try { await dispatchGitHubBotCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
         catch { result.failed += 1; }
@@ -568,12 +646,8 @@ export function githubConnectionEventService(
       }
     }
     if (acknowledge.length > 0) {
-      await connector.acknowledgeEvents({
-        subject: first.subject,
-        companyId: first.companyId,
-        leaseId: lease.leaseId,
-        deliveryIds: acknowledge,
-      });
+      await acknowledgeSlackFormDeliveries(db, { connector,
+        values: { subject: first.subject, companyId: first.companyId, leaseId: lease.leaseId, deliveryIds: acknowledge }, companies: formCompanies });
     }
     for (const deliveryId of lease.failedEventIds ?? []) {
       logger.warn({ deliveryId, reason: "inner_event_authentication_failed" },
@@ -583,14 +657,14 @@ export function githubConnectionEventService(
   }
 
   return {
-    nextPollAt: () => Number.isFinite(nextPollAt) ? nextPollAt : null,
+    nextPollAt: () => { const next = Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY); return Number.isFinite(next) ? next : null; },
     pollOnce(input: { forSetup?: boolean; forDelivery?: boolean } = {}): Promise<GitHubConnectionEventPollResult> {
       // A manager actively awaiting a dedicated App's signed ping must not
       // inherit a personal connection's old empty-queue backoff. This is a
       // bounded readiness probe, not an additional background polling loop.
       if (inFlight) return inFlight;
       const time = now().getTime();
-      if (!input.forDelivery && time < (input.forSetup ? nextSetupPollAt : nextPollAt)) {
+      if (!input.forDelivery && time < (input.forSetup ? nextSetupPollAt : Math.min(nextPollAt, nextEnrollmentAt ?? Number.POSITIVE_INFINITY))) {
         return Promise.resolve({ leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 });
       }
       nextSetupPollAt = time + 5_000;

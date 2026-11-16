@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, type Issue, type IssueSummary } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -20,6 +20,8 @@ type RecentTasksUpdatedDetail = {
 };
 
 const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
+/** Summary chunks in flight at once for a history longer than one request. */
+export const RECENT_TASK_SUMMARY_CONCURRENCY = 3;
 
 export function useRecentTasks({
   companyId,
@@ -38,9 +40,9 @@ export function useRecentTasks({
     entries: storageKey && companyId ? readRecentTasks(storageKey, companyId) : [],
   }));
   // A scope change must not request the previous account's IDs for one render.
-  const entries = snapshot.storageKey === storageKey
+  const entries = useMemo(() => snapshot.storageKey === storageKey
     ? snapshot.entries
-    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [];
+    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [], [snapshot, storageKey, companyId]);
   const setEntries = (next: RecentTaskEntry[]) => setSnapshot({ storageKey, entries: next });
 
   useEffect(() => {
@@ -81,9 +83,25 @@ export function useRecentTasks({
   }), [queryClient, scope]);
   const summaryQuery = useQuery({
     queryKey: summaryKey,
-    queryFn: ({ signal }) => issuesApi.summaries(companyId!, queryIds, { signal }),
+    queryFn: async ({ signal }) => {
+      // One request covers a typical list. Longer lists fetch their chunks a
+      // few at a time rather than one after another or all at once.
+      const chunks: string[][] = [];
+      for (let offset = 0; offset < queryIds.length; offset += ISSUE_SUMMARIES_MAX_IDS) {
+        chunks.push(queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS));
+      }
+      const results: IssueSummary[][] = new Array(chunks.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < chunks.length) {
+          const index = next++;
+          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal, navigation: true });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(RECENT_TASK_SUMMARY_CONCURRENCY, chunks.length) }, worker));
+      return results.flat();
+    },
     enabled: Boolean(companyId && queryIds.length),
-    retry: false,
     staleTime: 30_000,
   });
   // Observe completion even when structural sharing preserves the data object.
@@ -91,12 +109,16 @@ export function useRecentTasks({
   const fetchingSummaries = summaryQuery.isFetching;
   const updateCount = queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0;
   const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
-  const confirmed = new Map((summaries ?? []).filter((issue) => issue.companyId === companyId)
-    .map((issue) => [issue.id, issue]));
-  const refreshedEntries = entries.map((entry) => {
+  // A failed background refresh must not flatten already loaded task groups.
+  // Only successful responses below may update/prune the stored history.
+  const confirmed = useMemo(() => new Map((summaryQuery.data ?? []).filter((issue) => issue.companyId === companyId)
+    .map((issue) => [issue.id, issue])), [summaryQuery.data, companyId]);
+  const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.map((entry) => {
     const issue = confirmed.get(entry.id);
-    return issue ? mergeRecentTaskSnapshot(entry, issue) : entry;
-  });
+    // Relationship/read state is session data, never a localStorage snapshot.
+    return issue ? { ...mergeRecentTaskSnapshot(entry, issue), parentId: issue.parentId,
+      isUnreadForMe: issue.isUnreadForMe, subtaskCount: issue.subtaskCount, unreadSubtaskCount: issue.unreadSubtaskCount } : entry;
+  }), [entries, confirmed]);
   const processed = useRef<{ scope: string; revision: number } | null>(null);
 
   useEffect(() => {
@@ -118,7 +140,8 @@ export function useRecentTasks({
 
   useEffect(() => {
     if (!storageKey || !companyId || !summaries) return;
-    const authorizedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    const summaryById = new Map(summaries.filter((issue) => issue.companyId === companyId).map((issue) => [issue.id, issue]));
+    const authorizedIds = new Set(summaryById.keys());
     const mergeCached = (value: unknown) => {
       if (!value || typeof value !== "object") return;
       const issue = value as Issue;
@@ -127,7 +150,7 @@ export function useRecentTasks({
         || !issue.updatedAt || !Object.hasOwn(issue, "projectId")) return;
       // At equal task versions, the summary's independently computed readiness
       // is newer than an already-cached full detail response.
-      const summary = summaries.find((item) => item.id === issue.id);
+      const summary = summaryById.get(issue.id);
       if (!summary || new Date(issue.updatedAt).getTime() <= new Date(summary.updatedAt).getTime()) return;
       updateRecentTaskSnapshots(storageKey, companyId, [issue]);
     };
@@ -154,11 +177,14 @@ export function useRecentTasks({
     return () => window.clearTimeout(timeout);
   }, [activityRevision, membership, settledOrder, storageKey]);
 
-  const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
-  const hasSameMembership = settledOrder.length === entries.length && settledOrder.every((id) => entryById.has(id));
+  const orderedEntries = useMemo(() => {
+    const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
+    const hasSameMembership = settledOrder.length === refreshedEntries.length && settledOrder.every((id) => entryById.has(id));
+    return hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries;
+  }, [refreshedEntries, settledOrder]);
 
   return {
-    entries: hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries,
+    entries: orderedEntries,
     storageKey,
   };
 }

@@ -8,9 +8,11 @@ import { answerResumeQuestionThroughUi } from "../question-resume-ui.js";
 import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState } from "./agent-flows.js";
 import { clarificationQuestionFailure, gradeClarificationEvidence, type ClarificationReadback } from "./clarification-evidence.js";
+import { openDocumentAuthoring } from "./task-document-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
+export const DOCUMENT_READBACK_MS = 120_000;
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 
 export async function waitForClarificationDocument(visible: Locator, answer: string, deadlineAt: number) {
@@ -108,8 +110,13 @@ export async function runClarificationJourney(context: JourneyContext, session: 
     const href = `/${encodeURIComponent(context.company.issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}#document-${encodeURIComponent(document.key)}`;
     await context.page.goto(new URL(href, context.api.origin).href, { waitUntil: "domcontentloaded" });
     await context.page.reload({ waitUntil: "domcontentloaded" });
+    // With the task chat shell and Artifacts V1, saved documents render in the
+    // properties pane's Artifacts tab, not the center column. Open it as a user would.
+    await openDocumentAuthoring(context);
     const visible = context.page.locator(`[id=${JSON.stringify(`document-${document.key}`)}]:visible, [id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`);
-    await waitForClarificationDocument(visible, scenario.answer, options.deadlineAt);
+    // The API already returned the saved document, so this is a bounded UI readback,
+    // not agent work time: a missing view must not hold the worker until the case deadline.
+    await waitForClarificationDocument(visible, scenario.answer, Math.min(options.deadlineAt, Date.now() + DOCUMENT_READBACK_MS));
     const persisted = await context.api.get<Row>(`/api/issues/${issue.id}/documents/${encodeURIComponent(document.key)}`);
     readback = { issueId: persisted.issueId, key: persisted.key, revisionId: persisted.latestRevisionId, body: persisted.body, visibleBody: await visible.innerText() };
     await options.capture("reloaded", "Saved answers after reload", "clarification-reloaded.png");

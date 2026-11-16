@@ -128,7 +128,7 @@ describe("managed worktree seed source through the server spawn path", () => {
       const workspace = {
         baseCwd, cwd, source: "project_primary" as const, projectId: "project-1",
         workspaceId: "project-workspace-1", repoUrl: null, repoRef: "HEAD",
-        strategy: "git_worktree" as const, branchName: null, worktreePath: cwd,
+        strategy: "git_worktree" as const, branchName: null, branchCreatedByRuntime: false, worktreePath: cwd,
         warnings: [], created: false,
       };
       expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");
@@ -174,7 +174,7 @@ describe("managed worktree seed source through the server spawn path", () => {
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(path.join(repoRoot, "README.md"), "server spawn regression\n", "utf8");
     await fs.copyFile(
-      fileURLToPath(new URL("../../../scripts/provision-worktree.sh", import.meta.url)),
+      fileURLToPath(new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url)),
       path.join(repoRoot, "scripts", "provision-worktree.sh"),
     );
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);

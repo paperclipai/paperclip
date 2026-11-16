@@ -409,6 +409,60 @@ describeEmbeddedPostgres("runner goal service", () => {
     expect(session).toMatchObject({ goalSourceId: `${runnerId}:${nextRunId}`, goalSourceCursor: 2 });
   });
 
+  it.each(["current", "current_complete", "not_current", "reassigned", "blocked", "prior_running", "next_finished", "foreign_runner", "missing_session", "unfinished_goal", "unreadable_goal", "conversation_reset"] as const)("fences a fresh goal source by current execution authority (%s)", async kind => {
+    const binding = await seed(), priorRunId = randomUUID(), nextRunId = randomUUID();
+    const priorRunnerId = randomUUID(), nextRunnerId = randomUUID();
+    const priorSessionId = randomUUID(), nextSessionId = randomUUID();
+    const eventBinding = { ...binding, adapterType: "paperclip_runner" };
+    await db.insert(heartbeatRuns).values([
+      { id: priorRunId, ...binding, nativeIssueId: binding.issueId, runtimeMode: "native", status: "failed",
+        runnerInstanceId: priorRunnerId, nativeSessionId: priorSessionId },
+      { id: nextRunId, ...binding, nativeIssueId: binding.issueId, runtimeMode: "native", status: "running",
+        runnerInstanceId: nextRunnerId, nativeSessionId: nextSessionId },
+    ]);
+    await db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, binding.issueId));
+    const priorEvent = { eventType: "session.goal.updated", sourceInstanceId: priorRunnerId,
+      sourceRunId: priorRunId, sourceSeq: 20,
+      payload: { goal: { objective: "Retained goal", status: kind === "current_complete" ? "complete" : "active" } } };
+    await applyRunnerGoalPrpEvent(db, eventBinding, priorEvent);
+    if (kind !== "unfinished_goal" && kind !== "current_complete") await applyRunnerGoalPrpEvent(db, eventBinding, {
+      ...priorEvent, eventType: "session.goal.cleared", sourceSeq: 21, payload: { goal: null },
+    });
+    if (kind === "not_current") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, binding.issueId));
+    if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, binding.issueId));
+    if (kind === "blocked") await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, binding.issueId));
+    if (kind === "prior_running") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, priorRunId));
+    if (kind === "next_finished") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, nextRunId));
+    if (kind === "foreign_runner") await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, nextRunId));
+    if (kind === "missing_session") await db.update(heartbeatRuns).set({ nativeSessionId: null }).where(eq(heartbeatRuns.id, nextRunId));
+    if (kind === "unreadable_goal") await db.update(agentTaskSessions).set({ goalJson: { legacy: "unknown" } }).where(eq(agentTaskSessions.taskKey, binding.issueId));
+    if (kind === "conversation_reset") await db.update(issues).set({ conversationAgentId: binding.agentId,
+      conversationUserId: "goal-reset-user", conversationState: "active", conversationSessionGeneration: 2,
+    }).where(eq(issues.id, binding.issueId));
+    const nextEvent = { eventType: "session.goal.updated", sourceInstanceId: nextRunnerId,
+      sourceRunId: nextRunId, sourceSeq: 1,
+      payload: { goal: { objective: "Current fresh session", status: "active" } } };
+    const changed = await applyRunnerGoalPrpEvent(db, eventBinding, nextEvent);
+    const [session] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, binding.issueId));
+    if (kind !== "current" && kind !== "current_complete") {
+      expect(changed).toBeNull();
+      expect(session.goalSourceId).toBe(`${priorRunnerId}:${priorRunId}`);
+      expect(session.goalSourceCursor).toBe(kind === "unfinished_goal" ? 20 : 21);
+      return;
+    }
+    expect(changed?.goal).toMatchObject({ objective: "Current fresh session", status: "active" });
+    expect(session).toMatchObject({ goalSourceId: `${nextRunnerId}:${nextRunId}`, goalSourceCursor: 1 });
+    await applyRunnerGoalPrpEvent(db, eventBinding, { ...nextEvent, eventType: "session.goal.cleared",
+      sourceSeq: 2, payload: { goal: null } });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, nextRunId));
+    for (const stale of [{ ...priorEvent, sourceSeq: 1_000 }, nextEvent,
+      { eventType: "session.goal.updated", sourceSeq: 2_000, payload: priorEvent.payload }]) {
+      expect(await applyRunnerGoalPrpEvent(db, eventBinding, stale)).toBeNull();
+    }
+    expect(await runnerGoalService(db).projection(binding.companyId, binding.issueId)).toMatchObject({ goal: null });
+    expect(await db.select().from(agentSessionGoalActions)).toHaveLength(0);
+  });
+
   it("keeps a missing resumed goal blocked across restored empty snapshots", async () => {
     const binding = await seed();
     const eventBinding = { ...binding, adapterType: "paperclip_runner" };

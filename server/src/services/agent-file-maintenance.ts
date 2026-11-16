@@ -3,21 +3,23 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { agentFileRoots, agents, fileStorageDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageProvider, StorageService } from "../storage/types.js";
 import { adoptAgentFiles, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { durableAgentFilesEnabled } from "./agent-file-durability.js";
+import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 
 export const AGENT_FILE_OBJECT_GRACE_MS = 30 * 24 * 60 * 60_000;
 
-/** One-time operator migration on the host that owns the volume. Cloud must
- * stop ingress and execution writers before apply; row locks also serialize
- * ordinary file mutations. A dry run never adopts or rewrites local files. */
+/** Run on the host that owns the legacy volume. The canonical agent row lock
+ * serializes file writers and new admission. First adoption also requires its
+ * local working copies to be settled. A dry run never adopts local files. */
 export async function migrateAgentFiles(db: Db, input: {
   apply: boolean; writersStopped: boolean; companyId?: string; after?: string; limit?: number;
 }) {
-  if (input.apply && (!input.writersStopped || !durableAgentFilesEnabled())) {
-    throw new Error("Agent file migration requires stopped writers and PAPERCLIP_DURABLE_AGENT_FILES=true");
+  if (input.apply && !durableAgentFilesEnabled()) {
+    throw new Error("Agent file migration requires PAPERCLIP_DURABLE_AGENT_FILES=true");
   }
   const limit = input.limit ?? 25;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Migration limit must be between 1 and 100");
@@ -31,18 +33,22 @@ export async function migrateAgentFiles(db: Db, input: {
       const [agent] = await tx.select().from(agents).where(eq(agents.id, candidate.id)).for("update");
       if (!agent) return "removed";
       if (agentInstructionsBundleMode(agent) === "external") return "external_instructions";
-      const [run] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-        inArray(heartbeatRuns.status, ["running", "queued"]),
-      )).limit(1);
-      if (run) return "active_execution";
       const [head] = await tx.select({ generation: agentFileRoots.generation }).from(agentFileRoots)
         .where(and(eq(agentFileRoots.companyId, agent.companyId), eq(agentFileRoots.agentId, agent.id)));
+      // Current shared authority needs no local rewrite, even during a run.
+      if (head) return "durable";
+      const [run] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+        input.writersStopped && process.env.PAPERCLIP_EPHEMERAL_MIGRATION === "true"
+          ? offlineMigrationExecutionWhere() : inArray(heartbeatRuns.status, ["running", "queued"]),
+      )).limit(1);
+      if (run) return "active_execution";
+      if (await hasUnsettledLocalInstructionCopies(tx, { companyId: agent.companyId, agentId: agent.id }))
+        return "working_copy_unsettled";
       if (input.apply) {
         await adoptAgentFiles(tx, agent);
         return "durable";
       }
-      if (head) return "durable";
       const root = resolveManagedInstructionsRoot(agent);
       const stored = agent.adapterConfig.instructionsRootPath;
       if (typeof stored === "string" && (path.resolve(stored) !== root

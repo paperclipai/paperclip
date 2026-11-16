@@ -1,3 +1,4 @@
+import { makeDirectoryTreeRemovable } from "./directory-cleanup.js";
 /** Credential-free full-server overlap characterization. No model or Runner
  * continuity is claimed. Requires an explicitly selected disposable S3 service.
  * node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/rolling-deployment-smoke.ts */
@@ -11,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { reserveRunnerE2EServerPort } from "./ports.js";
+import { releaseInstance } from "./instance-retention.js";
 import { createRunnerE2ETemporaryRoot } from "./server-config.js";
 import { openRollingDeploymentBrowser } from "./rolling-deployment-browser.js";
 import { startRollingDeploymentProcess } from "./rolling-deployment-process.js";
@@ -208,7 +210,7 @@ try {
   proxy.routeTo(b.origin);
   await delay(500);
   await a.stop({ requireGraceful: true });
-  await rm(a.home, { recursive: true, force: true });
+  await makeDirectoryTreeRemovable(a.home); await rm(a.home, { recursive: true });
   await delay(1_000);
   report.handoffElapsedMs = Math.round(performance.now() - switchedAt);
   if (browser) await check("Existing browser reconnects and opens an old lazy chunk after A removal", async () => {
@@ -270,7 +272,7 @@ try {
       if (fixture.seeded) assert.equal((await api(b.origin, `${route}?path=AGENTS.md`)).content, "Durable original");
     }
   });
-  await b.stop({ requireGraceful: true }); await rm(b.home, { recursive: true, force: true });
+  await b.stop({ requireGraceful: true }); await makeDirectoryTreeRemovable(b.home); await rm(b.home, { recursive: true });
   const c = await start("C", false); proxy.routeTo(c.origin);
   await check("Fresh C restores files after both homes are deleted, even with adoption opt-in disabled", async () => {
     assert.equal((await api(c.origin, `${fileRoute}?path=reference.txt`)).content, content);
@@ -304,7 +306,12 @@ try {
   report.cleanupConfirmed = cleanupErrors.length === 0;
   if (cleanupErrors.length) report.cleanupErrors = cleanupErrors;
   report.passed = !report.error && checks.length > 0 && checks.every(item => item.passed) && report.cleanupConfirmed;
-  await saveReport();
+  try {
+    await saveReport();
+  } finally {
+    await releaseInstance(root, { keep: false, stopFailed: !report.cleanupConfirmed, owner: "rolling-deployment-smoke", retain: entry => entry === path.basename(reportPath) || /\.(log|png)$/.test(entry) })
+      .catch(error => console.warn(`Temporary root cleanup failed at ${root}: ${String(error)}`));
+  }
   console.info(JSON.stringify({ passed: report.passed, checks, evidence: reportPath, cleanupConfirmed: report.cleanupConfirmed }));
 }
 if (!report.passed) process.exitCode = 1;

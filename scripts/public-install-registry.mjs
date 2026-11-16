@@ -54,7 +54,7 @@ export async function startPackedRegistry(directory) {
     if (!packageName.test(path)) { response.writeHead(404).end(); return; }
     const entry = packages.get(path);
     if (!entry) {
-      response.writeHead(302, { location: `https://registry.npmjs.org/${encodeURIComponent(path)}` }).end();
+      response.writeHead(302, { location: `https://registry.npmjs.org/${path.replace('/', '%2f')}` }).end();
       return;
     }
     const { manifest, integrity } = entry;

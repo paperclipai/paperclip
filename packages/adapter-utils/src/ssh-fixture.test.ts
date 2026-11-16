@@ -14,11 +14,15 @@ import {
   runSshCommand,
   syncDirectoryFromSsh,
   syncDirectoryToSsh,
+  shellQuote,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
   type SshEnvLabFixtureState,
 } from "./ssh.js";
+import { runChildProcess } from "./server-utils.js";
+import { startAdapterExecutionTargetProcessSessionBridge } from "./execution-target.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { managedRemoteHomeEnvironment } from "./remote-execution-env.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 const UNREACHABLE_SSH_SPEC = {
@@ -202,6 +206,71 @@ describe("ssh env-lab fixture", () => {
 
     const stopped = await readSshEnvLabFixtureStatus(statePath);
     expect(stopped.running).toBe(false);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("isolates managed agent credentials over real SSH and copies refreshes back before cleanup", async context => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "managed SSH account test");
+    if (!started) { context.skip();return; }
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    const selected = path.join(rootDir, "selected-account"), other = path.join(rootDir, "other-account");
+    await mkdir(selected, { mode: 0o700 });await mkdir(other, { mode: 0o700 });
+    await writeFile(path.join(selected, "auth.json"), '{"account":"configured-agent","token":"fixture-before"}', { mode: 0o600 });
+    await writeFile(path.join(other, "auth.json"), '{"account":"another-agent"}', { mode: 0o600 });
+    const first = await prepareRemoteManagedRuntime({ spec, runId: "selected", adapterKey: "codex", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true,
+      assets: [{ key: "home", localDir: selected, restore: async ({ assetDir, readFile }) => { await writeFile(path.join(selected, "auth.json"), await readFile(path.posix.join(assetDir, "auth.json")), { mode: 0o600 }); } }] });
+    let second: Awaited<ReturnType<typeof prepareRemoteManagedRuntime>> | undefined;
+    try {
+      second = await prepareRemoteManagedRuntime({ spec, runId: "other", adapterKey: "codex", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true, assets: [{ key: "home", localDir: other }] });
+      expect(second.runtimeRootDir).not.toBe(first.runtimeRootDir);
+      expect((await stat(first.runtimeRootDir)).mode & 0o777).toBe(0o700);
+      const read = await runSshCommand(spec, 'cat "$CODEX_HOME/auth.json"', { env: { ...managedRemoteHomeEnvironment(first.runtimeRootDir), CODEX_HOME: first.assetDirs.home! } });
+      expect(JSON.parse(read.stdout).account).toBe("configured-agent");
+      const provider = await runChildProcess("selected-account-fixture", "sh", ["-c", 'cat "$CODEX_HOME/auth.json"; printf "\\n"; cat'], {
+        cwd: started.workspaceDir, env: { ...managedRemoteHomeEnvironment(first.runtimeRootDir), CODEX_HOME: first.assetDirs.home! },
+        remoteExecution: spec, stdin: "provider-input\n", timeoutSec: 10, graceSec: 1, onLog: async () => {},
+      });
+      expect(provider.exitCode).toBe(0);
+      expect(provider.stdout).toBe('{"account":"configured-agent","token":"fixture-before"}\nprovider-input\n');
+      const refreshed = '{"account":"configured-agent","token":"fixture-refreshed"}';
+      await runSshCommand(spec, `printf '%s' ${shellQuote(refreshed)} > ${shellQuote(path.posix.join(first.assetDirs.home!, "auth.json"))}`);
+      await first.restoreWorkspace();
+      expect(await readFile(path.join(selected, "auth.json"), "utf8")).toBe(refreshed);
+      await expect(stat(first.runtimeRootDir)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(JSON.parse(await readFile(path.join(second.assetDirs.home!, "auth.json"), "utf8")).account).toBe("another-agent");
+    } finally {
+      try {
+        await Promise.all([first.restoreWorkspace(), second?.restoreWorkspace()]);
+      } finally {
+        await stopSshEnvLabFixture(started);
+      }
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("runs the ACP process bridge through real SSH with the selected account's home", async context => {
+    const root = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(root, "state.json"), "SSH ACP bridge test");
+    if (!started) { context.skip(); return; }
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    const runtime = await prepareRemoteManagedRuntime({ spec, runId: "acp", adapterKey: "custom", workspaceLocalDir: started.workspaceDir, syncWorkspace: false, privateRuntime: true });
+    let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetProcessSessionBridge>>;
+    try {
+      bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "acp-ssh-fixture", target: { kind: "remote", transport: "ssh", spec, remoteCwd: spec.remoteCwd },
+        runtimeRootDir: runtime.runtimeRootDir, adapterKey: "custom", cwd: spec.remoteCwd, command: "node",
+        args: ["-e", 'process.stdin.on("data", data => { process.stdout.write(JSON.stringify({home:process.env.HOME, input:data.toString()})+"\\n"); process.exit(0); });'],
+        env: managedRemoteHomeEnvironment(runtime.runtimeRootDir), timeoutSec: 15, onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+      const result = await runChildProcess("acp-proxy-fixture", "sh", ["-c", bridge!.agentCommand], {
+        cwd: root, env: {}, stdin: "hello\n", timeoutSec: 15, graceSec: 1, onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ home: runtime.runtimeRootDir, input: "hello\n" });
+    } finally {
+      try { await bridge!?.stop(); }
+      finally { await runtime.restoreWorkspace(); await stopSshEnvLabFixture(started); }
+    }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("resolves a relative statePath to the same absolute state across start, status, and stop", async () => {
@@ -474,11 +543,11 @@ describe("ssh env-lab fixture", () => {
       env: { FOO: "bar" },
     });
 
-    // The remote script rides the last ssh argument. The SSH target is an
+    // The remote script travels through stdin. The SSH target is an
     // operator-configured host that can expose `node` only through a login
     // profile, so the wrapper sources the profiles. It no longer sources
     // `nvm.sh`; a profile that adds nvm still runs.
-    const remoteScript = String(target.args.at(-1) ?? "");
+    const remoteScript = Buffer.from(target.stdinPrefix.trim(), "base64").toString("utf8");
     expect(remoteScript).not.toContain("nvm.sh");
     expect(remoteScript).not.toContain("NVM_DIR");
     // Source /etc/profile so a host that exposes the PATH through
@@ -490,8 +559,6 @@ describe("ssh env-lab fixture", () => {
     // Fall back to .bashrc when no .bash_profile exists, so a host that adds
     // nvm in .bashrc still resolves node under a non-login SSH command.
     expect(remoteScript).toContain(".bashrc");
-    // The last ssh argument wraps the script as `sh -c '...'`, so the inner
-    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
     expect(remoteScript).toContain("cd ");
     expect(remoteScript).toContain("/srv/paperclip/workspace");
     expect(remoteScript).toContain("exec env ");
@@ -1153,6 +1220,8 @@ describe("ssh env-lab fixture", () => {
 
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("dirty remote\n");
+    // The index follows the imported HEAD: only the remote's uncommitted edit shows, unstaged.
+    expect(await git(localRepo, ["diff", "--cached", "--name-status"])).toBe("");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("propagates remote commits to the local worktree with no git remote configured (no-remote-git contract)", async () => {

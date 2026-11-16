@@ -44,6 +44,25 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("completes a reviewer's done report from its own recorded final-stage approval", () => {
+    // Retained live failure: the reviewer approved its stage, then cited free-text
+    // evidence; the report was graded as incomplete and the task reopened.
+    const freeText = assessment({ objectiveSatisfied: false, allCriteriaSatisfied: false, verificationPassed: false });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review" }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .toMatchObject({ toStatus: "done", reasonCode: "execution_stage_approved" });
+    // The decision authorizes completion only for a clean done report.
+    expect(arbitrate({ assessment: { ...freeText, hasBlockingRemainingWork: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, hasFailedVerification: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, reportedDisposition: "needs_review" }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    // A still-pending stage keeps governing the task.
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true, governanceGate: { kind: "execution_stage", id: "run" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
   it("cannot complete an explicitly required quality review from claims or file evidence", () => {
     expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
       .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
@@ -75,6 +94,18 @@ describe("native status authority", () => {
       statusAction: "preserve", toStatus: "in_progress", reasonCode: "case_handoff_waiting_for_release",
       effects: [{ kind: "release_checkout" }],
     });
+  });
+
+  it("preserves the task status after a context compaction run", () => {
+    for (const priorIssueStatus of ["in_progress", "in_review", "blocked", "todo"] as const) {
+      expect(arbitrate({
+        contextCompactionRun: true,
+        priorIssueStatus,
+        assessment: assessment({ reportedDisposition: "yielded", objectiveSatisfied: false, allCriteriaSatisfied: false }),
+      })).toMatchObject({
+        statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "context_compaction_status_preserved", effects: [],
+      });
+    }
   });
 
   it("keeps workspace repair ahead of an accepted case handoff", () => {
@@ -120,6 +151,26 @@ describe("native status authority", () => {
     expect(decision.effects.some((effect) => ["enqueue_continuation", "schedule_retry"].includes(effect.kind))).toBe(false);
   });
 
+  it("lets a reviewer stopped by a tool-call loop continue through its queued review wake instead of a resume recovery", () => {
+    const decision = arbitrate({ priorIssueStatus: "in_review", nativeReviewOutcome: "pending", toolCallLoopContinuation: true });
+    expect(decision).toMatchObject({ statusAction: "preserve", toStatus: "in_review", reasonCode: "native_review_unresolved" });
+    expect(decision.effects).toEqual([{ kind: "release_checkout" }]);
+  });
+
+  it("continues a turn stopped at its tool receipt limit in a fresh session, within its bound", () => {
+    const stopped = arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true });
+    expect(stopped).toMatchObject({ statusAction: "preserve", toStatus: "in_progress", reasonCode: "semantic_tool_turn_receipt_limit" });
+    expect(stopped.effects).toEqual([
+      { kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit", summary: "Continue the task in a fresh session.", agentId: expect.any(String) },
+      { kind: "release_run_resources" },
+    ]);
+    expect(arbitrate({ terminalState: "failed", toolReceiptLimitStopped: true }).effects)
+      .toEqual([expect.objectContaining({ kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit" })]);
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, failureRetryCount: 2 }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, priorIssueStatus: "blocked" }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled" }).reasonCode).toBe("cancellation_run_only");
+  });
+
   it("treats only the authorized Board response_wake as passive and preserves governance", () => {
     const passive = assessment({
       reportedDisposition: "yielded",
@@ -137,8 +188,9 @@ describe("native status authority", () => {
       effects: [],
     });
     expect(arbitrate({ assessment: passive })).toMatchObject({
-      reasonCode: "live_continuation_registered",
-      effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
+      reasonCode: "response_wake_waiting_for_input",
+      toStatus: "in_progress",
+      effects: [],
     });
     expect(
       arbitrate({ assessment: passive, boardResponseWaitOrigin: true }),
@@ -354,13 +406,9 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        reasonCode: "live_continuation_registered",
-        effects: [
-          expect.objectContaining({
-            kind: "enqueue_continuation",
-            continuationKind: "response_wake",
-          }),
-        ],
+        statusAction: "in_progress",
+        reasonCode: "response_wake_waiting_for_input",
+        effects: [],
       }),
     );
     expect(arbitrate({ terminalState: "cancelled" })).toEqual(
@@ -570,7 +618,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v13",
+        policyVersion: "phase6-v14",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

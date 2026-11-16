@@ -125,7 +125,10 @@ export function observeRemoteRestartBoundary(run: StoryRun, rows: readonly Row[]
   const events = projectRemoteRestartEvents(run, rows);
   const starts = events.filter(event => event.eventType === "turn.started" && event.sourceKind === "runner");
   const completed = events.filter(event => event.toolCompleted && event.sourceKind === "runner" && event.toolExecutionId);
-  if (starts.length !== 1 || !id(starts[0]!.turnId) || completed.length === 0
+  const originalStart = starts[0];
+  const sameStart = originalStart && id(originalStart.turnId) && starts.every(event =>
+    event.turnId === originalStart.turnId && event.payloadSha256 === originalStart.payloadSha256);
+  if ((!recovered && starts.length !== 1) || !sameStart || completed.length === 0
     || completed.some(event => event.turnId !== starts[0]!.turnId)
     || (!recovered && events.some(event => ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "run.terminal"].includes(event.eventType)))) {
     throw new Error("Remote restart boundary has no completed tool in an active original provider turn");
