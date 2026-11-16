@@ -33,6 +33,7 @@ import {
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { hasPendingNativeChildCompletion } from "../services/native-runtime/native-child-completion-delivery.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { isRetiredExternalChatQuestionSource, questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
@@ -2207,7 +2208,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     const childCompletionIntentId = randomUUID();
     const childCompletionWakeId = randomUUID();
-    const childCompletionContext = { issueId, taskId: issueId, wakeReason: "issue_children_completed" };
+    const childCompletionContext = { issueId, taskId: issueId, wakeReason: "issue_children_completed",
+      nativeChildCompletionDecisionId: randomUUID(), completedChildIssueId: randomUUID() };
     await db.insert(agentWakeupRequests).values([{
       id: childCompletionIntentId, companyId, agentId, source: "automation", triggerDetail: "system",
       reason: "issue_children_completed", status: "coalesced",
@@ -2238,6 +2240,47 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       return run?.status === "succeeded";
     }, 90_000);
   }
+
+  it("keeps a pending child completion visible to the finish gate after a person's comment merges into its deferred wake", async () => {
+    const gateway = await createControlledGatewayServer();
+    try {
+      const { companyId, agentId, issueId, heartbeat, firstRun, childCompletionWakeId } =
+        await startAssignedRunWithDeferredChildCompletion({ gateway, title: "Child result and person comment behind a run" });
+      const pendingChildCompletion = () => hasPendingNativeChildCompletion(db, {
+        companyId, issueId, agentId, runId: firstRun.id, sourceIntentId: null,
+      });
+      expect(await pendingChildCompletion()).toBe(true);
+
+      const personComment = await db.insert(issueComments)
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Also include the summary table"))
+        .returning().then((rows) => rows[0]);
+      expect(await heartbeat.wakeup(agentId, {
+        source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId, commentId: personComment.id },
+        contextSnapshot: { issueId, taskId: issueId, commentId: personComment.id, wakeCommentId: personComment.id,
+          wakeReason: "issue_commented" },
+        requestedByActorType: "user", requestedByActorId: "user-1",
+      })).toBeNull();
+      const merged = await selectDeferredWakeForAgent(companyId, agentId);
+      expect(merged?.id).toBe(childCompletionWakeId);
+      expect((merged?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
+        wakeReason: "issue_commented",
+        wakeReasons: ["issue_children_completed", "issue_commented"],
+        wakeCommentIds: [personComment.id],
+      });
+      expect(await pendingChildCompletion()).toBe(true);
+
+      await closeIssueAndFinishFirstRun(gateway, issueId, firstRun.id);
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs[1]?.wakeupRequestId).toBe(childCompletionWakeId);
+      expect(String(gateway.getAgentPayloads()[1]?.message ?? "")).toContain("Also include the summary table");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
 
   it("reopens a finished task when a person's comment joined a deferred system wake during the run", async () => {
     const gateway = await createControlledGatewayServer();

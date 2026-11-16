@@ -1,5 +1,5 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
-import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
   decideQueuedCommentAction,
@@ -979,12 +979,16 @@ export function createAdmitWakeBehindIssueExecution(deps: {
           });
 
     if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
-      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
+      const mergedDeferredContext = withMergedWakeReasons(
+        deps.helpers.mergeCoalescedContextSnapshot(
+          existingDeferred.deferredContext,
+          input.contextSnapshot,
+          {
+            preserveExistingInteractionContinuation: true,
+          },
+        ),
         existingDeferred.deferredContext,
         input.contextSnapshot,
-        {
-          preserveExistingInteractionContinuation: true,
-        },
       );
       const mergedPayload = {
         ...existingDeferred.payload,
