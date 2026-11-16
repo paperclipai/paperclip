@@ -6,7 +6,11 @@ import {
 } from "./slack-access.js";
 import { slackClient } from "./slack-client.js";
 import type { SlackTaskAuthority } from "./slack-authority.js";
-import type { Db } from "@paperclipai/db";
+import {
+  chatActions,
+  chatEndpointResources,
+  type Db,
+} from "@paperclipai/db";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { tooManyRequests, unprocessable } from "../../errors.js";
 const authority = {
@@ -226,6 +230,76 @@ describe("Slack access and publication boundaries", () => {
       is_private: false,
     });
     expect(inserted).toHaveLength(0);
+  });
+});
+
+describe("Slack private-source markers after the publication-gate removal (TECH-8774)", () => {
+  // Dispatch select rows per table so a fixture can hold legacy
+  // slack_private_source markers in chat_actions at the same time as an
+  // Allowed Channels row in chat_endpoint_resources.
+  const markerDb = (resources: unknown[], markers: unknown[]) =>
+    ({
+      select: () => ({
+        from: (table: unknown) => ({
+          where: async () =>
+            table === chatEndpointResources
+              ? resources
+              : table === chatActions
+                ? markers
+                : [],
+        }),
+      }),
+    }) as unknown as Db;
+  const legacyMarkers = [
+    {
+      kind: "slack_private_source",
+      payload: { channelId: "G2", requesterId: "U1", allowedDmChannel: null },
+    },
+  ];
+  it("lets a private-source marker coexist with a post to another Allowed Channel", async () => {
+    // The marker records research read in a different private channel; it no
+    // longer vetoes writing to a destination the operator allowlisted.
+    await expect(
+      authorizeSlackWrite(
+        markerDb([{ providerResourceId: "C1" }], legacyMarkers),
+        authority,
+        apiFor({}),
+        "C1",
+      ),
+    ).resolves.toMatchObject({ id: "C1" });
+  });
+  it("still denies destinations outside Allowed Channels with the existing error, marker or not", async () => {
+    for (const markers of [legacyMarkers, []]) {
+      await expect(
+        authorizeSlackWrite(markerDb([], markers), authority, apiFor({}), "C1"),
+      ).rejects.toThrow(
+        "Responses are disabled in this channel. Enable it in connection Settings first.",
+      );
+    }
+  });
+  it("still denies private channels the linked user does not belong to, regardless of markers", async () => {
+    const nonMember = vi.fn(async (method: string) =>
+      method === "conversations.info"
+        ? { channel: { id: "G1", is_private: true, is_member: true } }
+        : method === "users.info"
+          ? { user: { id: "U1", team_id: "T1" } }
+          : { members: ["UOTHER"], response_metadata: {} },
+    );
+    await expect(
+      authorizeSlackWrite(
+        markerDb([{ providerResourceId: "G1" }], legacyMarkers),
+        authority,
+        nonMember,
+        "G1",
+      ),
+    ).rejects.toThrow("must belong");
+    await expect(
+      authorizeSlackChannel(authority, nonMember, "G1"),
+    ).rejects.toThrow("must belong");
+    expect(nonMember).toHaveBeenCalledWith("conversations.members", {
+      channel: "G1",
+      limit: 200,
+    });
   });
 });
 describe("Slack contracts and transport", () => {
