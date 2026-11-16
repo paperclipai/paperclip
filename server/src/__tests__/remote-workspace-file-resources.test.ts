@@ -562,35 +562,92 @@ describeDatabase("remote workspace ordinary file routes", () => {
       .rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
   });
 
+  // Snapshot I/O receives a composite signal. Only the index slot/shared-build
+  // waits register directly on this caller's signal; observe that normal wait
+  // without replacing its listener, promise, or cancellation result.
+  function observeIndexWait(signal: AbortSignal) {
+    let waiting = false;
+    const add = signal.addEventListener;
+    const observer = vi.spyOn(signal, "addEventListener").mockImplementation((...args) => {
+      const result = Reflect.apply(add, signal, args);
+      if (args[0] === "abort") waiting = true;
+      return result;
+    });
+    return { waiting: () => waiting, restore: () => observer.mockRestore() };
+  }
+
+  async function expectSavedResult(archive: Awaited<ReturnType<ReturnType<typeof createSavedWorkspaceArchiveOpener>>>) {
+    const entry = archive.entry("docs/result.md");
+    expect(entry).toBeDefined();
+    if (!entry) throw new Error("Missing saved result entry");
+    const chunks: Buffer[] = [];
+    for await (const chunk of await archive.read(entry, 0, entry.size)) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("Remote useful result\n");
+  }
+
   it("lets a cancelled saved open stop waiting for a busy manifest build", async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const held = async () => {
       const f = await savedFileFixture(false);
       const getObject = f.storage.getObject.bind(f.storage);
-      vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
-        if (args[2]?.range?.start === 19) await gate;
+      let reading = false;
+      const storage = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+        if (args[2]?.range?.start === 19) { reading = true; await gate; }
         return getObject(...args);
       });
       const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
-      return { opener, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id } };
+      return { opener, reading: () => reading, storage, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id } };
     };
     const [first, second, third] = [await held(), await held(), await held()];
-    const busy = [first.opener(first.input), second.opener(second.input)];
-    await new Promise(resolve => setTimeout(resolve, 50));
+    const busy = Promise.allSettled([first.opener(first.input), second.opener(second.input)]);
     const queued = new AbortController(), sharing = new AbortController();
-    const queuedOpen = third.opener({ ...third.input, signal: queued.signal });
-    const sharedOpen = first.opener({ ...first.input, signal: sharing.signal });
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const started = performance.now();
-    queued.abort(new Error("request closed")); sharing.abort(new Error("request closed"));
-    await expect(queuedOpen).rejects.toThrow("request closed");
-    await expect(sharedOpen).rejects.toThrow("request closed");
-    expect(performance.now() - started).toBeLessThan(1000);
-    release();
-    for (const archive of await Promise.all(busy)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
-    const reopened = await third.opener(third.input);
-    expect(reopened.entry("docs/result.md")).toBeDefined(); reopened.close();
+    const queuedWait = observeIndexWait(queued.signal), sharedWait = observeIndexWait(sharing.signal);
+    const queuedReason = new Error("request closed"), sharedReason = new Error("request closed");
+    let cancelled: Promise<PromiseSettledResult<Awaited<ReturnType<typeof first.opener>>>[]> | undefined;
+    let primary: unknown;
+    try {
+      await vi.waitFor(() => {
+        expect(first.reading()).toBe(true); expect(second.reading()).toBe(true);
+      }, { timeout: 5000 });
+      // Both real build slots are held before the third opener queues. Attach
+      // both rejection observers before either caller can be aborted.
+      cancelled = Promise.allSettled([
+        third.opener({ ...third.input, signal: queued.signal }),
+        first.opener({ ...first.input, signal: sharing.signal }),
+      ]);
+      await vi.waitFor(() => {
+        expect(queuedWait.waiting()).toBe(true); expect(sharedWait.waiting()).toBe(true);
+      }, { timeout: 5000 });
+      const started = performance.now();
+      queued.abort(queuedReason); sharing.abort(sharedReason);
+      const results = await cancelled;
+      expect(results.map(result => result.status)).toEqual(["rejected", "rejected"]);
+      for (const [index, result] of results.entries()) {
+        if (result.status !== "rejected") throw new Error("Cancelled index wait unexpectedly opened an archive");
+        expect(result.reason).toBe(index === 0 ? queuedReason : sharedReason);
+      }
+      expect(performance.now() - started).toBeLessThan(1000);
+      release();
+      for (const result of await busy) {
+        if (result.status !== "fulfilled") throw result.reason;
+        await expectSavedResult(result.value);
+      }
+      const reopened = await third.opener(third.input);
+      try { await expectSavedResult(reopened); }
+      finally { reopened.close(); }
+    } catch (error) { primary = error; throw error; }
+    finally {
+      release(); queued.abort(queuedReason); sharing.abort(sharedReason);
+      queuedWait.restore(); sharedWait.restore();
+      const cleanup: unknown[] = [];
+      for (const result of [...await busy, ...(cancelled ? await cancelled : [])]) {
+        if (result.status === "fulfilled") { try { result.value.close(); } catch (error) { cleanup.push(error); } }
+        else if (result.reason !== queuedReason && result.reason !== sharedReason) cleanup.push(result.reason);
+      }
+      for (const owner of [first, second, third]) owner.storage.mockRestore();
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary] : []), ...cleanup], "Saved archive cancellation cleanup failed");
+    }
   });
 
   it("retries a failed shared manifest build once for all of its waiters", async () => {
@@ -598,24 +655,48 @@ describeDatabase("remote workspace ordinary file routes", () => {
     const getObject = f.storage.getObject.bind(f.storage);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    let reading = false;
     let manifestReads = 0, failed = false;
-    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+    const storage = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
       if (args[2]?.range?.start === 19) {
         manifestReads++;
-        if (!failed) { failed = true; await gate; throw new Error("transient storage failure"); }
+        if (!failed) { failed = true; reading = true; await gate; throw new Error("transient storage failure"); }
       }
       return getObject(...args);
     });
     const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
     const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
-    const first = opener(input);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const waiters = [opener(input), opener(input), opener(input)];
-    await new Promise(resolve => setTimeout(resolve, 50));
-    release();
-    await expect(first).rejects.toThrow("transient storage failure");
-    for (const archive of await Promise.all(waiters)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
-    expect(manifestReads).toBe(3);
+    const first = Promise.allSettled([opener(input)]);
+    const controllers = [new AbortController(), new AbortController(), new AbortController()];
+    const observing = controllers.map(controller => observeIndexWait(controller.signal));
+    let waiters: typeof first | undefined, primary: unknown;
+    try {
+      await vi.waitFor(() => expect(reading).toBe(true), { timeout: 5000 });
+      waiters = Promise.allSettled(controllers.map(controller => opener({ ...input, signal: controller.signal })));
+      await vi.waitFor(() => {
+        for (const observer of observing) expect(observer.waiting()).toBe(true);
+      }, { timeout: 5000 });
+      release();
+      const [failure] = await first;
+      expect(failure.status).toBe("rejected");
+      if (failure.status !== "rejected") throw new Error("Failed index build unexpectedly opened an archive");
+      expect(failure.reason).toMatchObject({ message: "transient storage failure" });
+      for (const result of await waiters) {
+        if (result.status !== "fulfilled") throw result.reason;
+        await expectSavedResult(result.value);
+      }
+      expect(manifestReads).toBe(3);
+    } catch (error) { primary = error; throw error; }
+    finally {
+      release();
+      const cleanup: unknown[] = [];
+      for (const result of [...await first, ...(waiters ? await waiters : [])]) {
+        if (result.status === "fulfilled") { try { result.value.close(); } catch (error) { cleanup.push(error); } }
+      }
+      for (const observer of observing) observer.restore();
+      storage.mockRestore();
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary] : []), ...cleanup], "Saved archive retry cleanup failed");
+    }
   });
 
   it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
