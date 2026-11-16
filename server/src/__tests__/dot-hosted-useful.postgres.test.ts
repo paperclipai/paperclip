@@ -539,7 +539,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       }catch(error){errors.push(error);res.writeHead(500).end();}
     });callbackOrigin=await listen(callback);
     const makeAppOwner=async()=>{
-      db=createDb(url!,{maxConnections:2,applicationName:"dot-principal-parent-observer"});
+      // Local qualification profile: normal idle reaping must fit the unchanged 15-second settlement.
+      db=createDb(url!,{maxConnections:2,applicationName:"dot-principal-parent-observer",idleTimeoutSeconds:1});
+      expect(db.$client.options.idle_timeout).toBe(1);
       // Parent observer has no delivery/Native/plugin owner. These normal setup
       // writes happen BEFORE generation1 starts, so both process snapshots read
       // the same persisted authorized fixture configuration.

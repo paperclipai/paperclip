@@ -52,7 +52,9 @@ export async function startNormalDotAppGeneration(input: {
   };
   const healthStatuses:number[]=[];let healthOverflow=0;
   const linuxBootstrap=await prepareOwnedLinuxDistribution(input.linuxInput);
-  const db=createDb(input.databaseUrl,{maxConnections:2,applicationName:"dot-principal-normal-app"});
+  // Local qualification profile; preserve the production default and the original settlement deadline.
+  const db=createDb(input.databaseUrl,{maxConnections:2,applicationName:"dot-principal-normal-app",idleTimeoutSeconds:1});
+  assert.equal(db.$client.options.idle_timeout,1);
   let stopDatabaseBackups:(()=>Promise<void>)|undefined;
   const nativeSockets=new Set<Socket>();
   let dispatchWork:ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]>|undefined;
