@@ -136,6 +136,11 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import {
+  enforceSchemaDriftGate,
+  readSchemaDriftEscapeHatch,
+  type SchemaDriftGateTarget,
+} from "./schema-drift-gate.js";
 import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
@@ -763,9 +768,30 @@ async function startServerWithDatabaseTeardown(
   startupDatabase.close = closeDatabaseClients;
   startupTimeline.mark("database");
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
+
+  const allowSchemaDrift = readSchemaDriftEscapeHatch();
+  const driftTargets: SchemaDriftGateTarget[] = [
+    { url: activeDatabaseConnectionString, label: "serving database (DATABASE_URL)" },
+  ];
+  if (
+    startupConfig.databaseUrl &&
+    startupConfig.databaseMigrationUrl &&
+    startupConfig.databaseMigrationUrl !== activeDatabaseConnectionString
+  ) {
+    driftTargets.push({
+      url: startupConfig.databaseMigrationUrl,
+      label: "plugin/migration database (DATABASE_MIGRATION_URL)",
+    });
+    logger.warn(
+      "DATABASE_MIGRATION_URL differs from DATABASE_URL; the plugin subsystem reads a different database than the app. Verifying both for schema drift.",
+    );
+  }
+  await enforceSchemaDriftGate(driftTargets, { allowDrift: allowSchemaDrift, logger });
+  startupTimeline.mark("schema_drift_gate");
+
   await migrateCloudConfiguration(db as any);
   await initializeAdapterSettings(db as any);
-  
+
   await initializeCloudRuntimeConfig(db as any);
   let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
   const deploymentListenUrl = assertEphemeralServerConfig(config);
