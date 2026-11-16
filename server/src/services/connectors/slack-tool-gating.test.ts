@@ -5,7 +5,7 @@ import { executeSlackTool, executeGovernedSlackTool } from "./slack.js";
 import { executeSlackWrite } from "./slack-writes.js";
 import { registerSlackTaskAuthority, type SlackTaskAuthority } from "./slack-authority.js";
 import { slackEnabledToolsForSetup } from "./slack-opt-ins.js";
-import { syncSlackBotTools } from "./slack-catalog.js";
+import { LEGACY_OPEN_DM_PRE_RELEASE_HASH, syncSlackBotTools } from "./slack-catalog.js";
 
 /**
  * TECH-7988: a tool this agent did not enable must be rejected before any Slack
@@ -504,20 +504,19 @@ describe("Slack endpoint selector validation", () => {
 });
 
 describe("Slack catalog sync status transitions (TECH-8783)", () => {
-  it("keeps existing disabled slack_open_dm disabled, and flips removed to active", async () => {
+  it("pins expected legacy pre-release hash for slack_open_dm", () => {
+    expect(LEGACY_OPEN_DM_PRE_RELEASE_HASH).toBe("6633e05f3435459ee4e34b8f59a246b684ada735282a80e1c4ad381e166bf0d5");
+  });
+
+  function setupMockTx(existingEntries: any[], connectionEnabled = true) {
     const writes: Array<{ values: any; set: any }> = [];
     const mockTx = {
       execute: vi.fn(async () => undefined),
       select: () => ({
         from: (table: any) => ({
           where: async () => {
-            if (table === toolConnections) return [{ id: "conn-1", applicationId: "app-1", enabled: true }];
-            if (table === toolCatalogEntries) {
-              return [
-                { name: "slack_bot:slack_open_dm", status: "disabled", versionHash: "old-hash", reviewedByUserId: "u1", reviewedAt: new Date() },
-                { name: "slack_bot:slack_upload_file", status: "active", versionHash: "old-hash" },
-              ];
-            }
+            if (table === toolConnections) return [{ id: "conn-1", applicationId: "app-1", enabled: connectionEnabled }];
+            if (table === toolCatalogEntries) return existingEntries;
             return [];
           },
         }),
@@ -537,57 +536,98 @@ describe("Slack catalog sync status transitions (TECH-8783)", () => {
         }),
       }),
     } as any;
+    return { mockTx, writes };
+  }
 
-    const endpoint = {
-      id: "ep-1",
-      companyId: "c-1",
-      connectionId: "conn-1",
-      setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
-    } as any;
+  const endpoint = {
+    id: "ep-1",
+    companyId: "c-1",
+    connectionId: "conn-1",
+    setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
+  } as any;
 
+  it("revives old system-gated slack_open_dm row with legacy hash when active siblings exist", async () => {
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_open_dm", status: "removed", versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: null, reviewedAt: null },
+      { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
+    ]);
     await syncSlackBotTools(mockTx, endpoint, "u1", true);
+    const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    expect(write).toBeDefined();
+    expect(write?.set.status).toBe("active");
+  });
 
-    const openDmDisabledWrite = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
-    expect(openDmDisabledWrite).toBeDefined();
-    expect(openDmDisabledWrite?.set.status).toBe("disabled");
+  it("preserves removed status when slack_open_dm has current hash (operator removed post-release)", async () => {
+    const currentHash = "d27e1ef5fc870b93aacbfd512dd5fdd23b9a04253d098555b39be7d2b7515c9b";
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_open_dm", status: "removed", versionHash: currentHash, reviewedByUserId: "u1", reviewedAt: new Date() },
+      { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
+    ]);
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
+    const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    // With current hash and removed status, if written, set.status must remain "removed"
+    if (write) {
+      expect(write.set.status).toBe("removed");
+    }
+  });
 
-    // Now test flipping from removed to active
-    writes.length = 0;
-    const mockTx2 = {
-      execute: vi.fn(async () => undefined),
-      select: () => ({
-        from: (table: any) => ({
-          where: async () => {
-            if (table === toolConnections) return [{ id: "conn-1", applicationId: "app-1", enabled: true }];
-            if (table === toolCatalogEntries) {
-              return [
-                { name: "slack_bot:slack_open_dm", status: "removed", versionHash: "old-hash", reviewedByUserId: null, reviewedAt: null },
-              ];
-            }
-            return [];
-          },
-        }),
-      }),
-      insert: () => ({
-        values: (vals: any) => ({
-          returning: () => [{ id: "prof-1", ...vals }],
-          onConflictDoNothing: () => ({
-            returning: () => [{ id: "prof-1", ...vals }],
-          }),
-          onConflictDoUpdate: ({ set }: any) => {
-            writes.push({ values: vals, set });
-            return {
-              returning: () => [{ id: "prof-1" }],
-            };
-          },
-        }),
-      }),
-    } as any;
+  it("preserves operator disabled or quarantined status on slack_open_dm", async () => {
+    for (const operatorStatus of ["disabled", "quarantined"] as const) {
+      const { mockTx, writes } = setupMockTx([
+        { name: "slack_bot:slack_open_dm", status: operatorStatus, versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: "u1", reviewedAt: new Date() },
+        { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
+      ]);
+      await syncSlackBotTools(mockTx, endpoint, "u1", true);
+      const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+      expect(write).toBeDefined();
+      expect(write?.set.status).toBe(operatorStatus);
+    }
+  });
 
-    await syncSlackBotTools(mockTx2, endpoint, "u1", true);
+  it("preserves removed status on other tools like slack_post_message", async () => {
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_post_message", status: "removed", versionHash: "old-post-hash", reviewedByUserId: "u1", reviewedAt: new Date() },
+      { name: "slack_bot:slack_open_dm", status: "active", versionHash: "some-hash" },
+    ]);
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
+    const write = writes.find((w) => w.values.name === "slack_bot:slack_post_message");
+    expect(write).toBeDefined();
+    expect(write?.set.status).toBe("removed");
+  });
 
-    const openDmRemovedWrite = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
-    expect(openDmRemovedWrite).toBeDefined();
-    expect(openDmRemovedWrite?.set.status).toBe("active");
+  it("does not revive slack_open_dm when all sibling entries are also removed (mixed-catalog guard)", async () => {
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_open_dm", status: "removed", versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: null, reviewedAt: null },
+      { name: "slack_bot:slack_post_message", status: "removed", versionHash: "some-hash" },
+      { name: "slack_bot:slack_upload_file", status: "removed", versionHash: "some-hash" },
+    ]);
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
+    const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    expect(write).toBeDefined();
+    expect(write?.set.status).toBe("removed");
+  });
+
+  it("does not revive slack_open_dm when connection is disabled", async () => {
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_open_dm", status: "removed", versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: null, reviewedAt: null },
+      { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
+    ], false);
+    await syncSlackBotTools(mockTx, endpoint, "u1", false);
+    const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    if (write) {
+      expect(write.set.status).toBe("removed");
+    }
+  });
+
+  it("is idempotent on re-sync after revival", async () => {
+    const currentHash = "d27e1ef5fc870b93aacbfd512dd5fdd23b9a04253d098555b39be7d2b7515c9b";
+    const { mockTx, writes } = setupMockTx([
+      { name: "slack_bot:slack_open_dm", status: "active", versionHash: currentHash, reviewedByUserId: null, reviewedAt: null },
+      { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
+    ]);
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
+    // Because open_dm already has current hash and active status, it takes early continue and is not rewritten
+    const openDmWrite = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    expect(openDmWrite).toBeUndefined();
   });
 });
