@@ -2764,8 +2764,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
       }).where(eq(agents.id, f.assignedAgentId));
 
-      const authorUserId = "author-no-grant-u";
-      const responsibleUserId = "responsible-has-grant-u";
+      const authorUserId = `author-no-grant-${randomUUID()}`;
+      const responsibleUserId = `responsible-has-grant-${randomUUID()}`;
       const now = new Date();
       await db.insert(authUsers).values([
         { id: authorUserId, name: "Author", email: `${authorUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
@@ -6228,8 +6228,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
       }).where(eq(agents.id, f.assignedAgentId));
 
-      const authorUserId = "author-no-grant-u";
-      const responsibleUserId = "responsible-has-grant-u";
+      const authorUserId = `author-no-grant-${randomUUID()}`;
+      const responsibleUserId = `responsible-has-grant-${randomUUID()}`;
       const now = new Date();
       await db.insert(authUsers).values([
         { id: authorUserId, name: "Author", email: `${authorUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
