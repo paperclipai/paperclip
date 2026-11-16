@@ -157,7 +157,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     if (!["in_progress", "blocked"].includes(issue.status) || issue.assigneeUserId) return;
     const latest = await latestRunWaitingOnAiRepair(db, issue, sourceRunId, isAiAuthenticationRepairable);
     if (!latest) return;
-    await connectionIntentService(db).requestForRunAuthFailure(latest.id).catch(() => null);
+    await connectionIntentService(db).requestForRunAuthFailure(latest.id);
   }
 
   async function wakeLinkedAiRepairTasks(interaction: typeof issueThreadInteractions.$inferSelect, connectionRestored: boolean) {

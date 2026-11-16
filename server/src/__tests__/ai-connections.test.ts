@@ -8,6 +8,20 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
+const repairCardFault = vi.hoisted(() => ({ failNext: false }));
+vi.mock("../services/connection-intents.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/connection-intents.js")>();
+  return { ...original, connectionIntentService: (db: Parameters<typeof original.connectionIntentService>[0]) => {
+    const service = original.connectionIntentService(db);
+    return { ...service, requestForRunAuthFailure: async (runId: string) => {
+      if (repairCardFault.failNext) {
+        repairCardFault.failNext = false;
+        throw new Error("repair card write failed");
+      }
+      return service.requestForRunAuthFailure(runId);
+    } };
+  } };
+});
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -2268,6 +2282,30 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(wakeup.mock.calls.map(([agentId]) => agentId)).toEqual([linked.agentId]);
       expect(wakeup).toHaveBeenCalledWith(linked.agentId, expect.objectContaining({
         payload: expect.objectContaining({ issueId: linked.issueId }) }));
+    });
+
+    it("keeps the delivery due when the linked task's own repair card cannot be raised, then resumes it after reconnect", async () => {
+      const f = await latchedFleet("replacement-fault", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.find(task => task !== owner)!;
+      const replacement = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair replacement-fault C",
+        apiKey: "fixture", agentIds: [owner.agentId], allAgents: false }, "fixture-repair-replacement-fault-c");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: replacement.connectionId, grantId: replacement.grantId } } })
+        .where(eq(agents.id, owner.agentId));
+      await connectionIntentService(db).complete(card!.id, replacement.connectionId, f.userId);
+      repairCardFault.failNext = true;
+      await expect(f.deliverAll([card!.id])).rejects.toThrow("repair card write failed");
+      const [receipt] = await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, card!.id));
+      expect(receipt!.deliveredAt).toBeNull();
+      await db.update(connectionIntentDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(connectionIntentDeliveries.interactionId, card!.id));
+      const retry = await f.deliverAll([card!.id]);
+      expect(retry.mock.calls.map(([agentId]) => agentId)).toEqual([owner.agentId]);
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll((await f.cardsFor(f.tasks.map(task => task.issueId))).map(row => row.id));
+      expect(wakeup.mock.calls.map(([agentId]) => agentId)).toEqual([linked.agentId]);
     });
 
     it("raises a separate card when a task's agent moves to another broken connection", async () => {
