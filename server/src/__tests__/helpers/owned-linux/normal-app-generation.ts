@@ -20,7 +20,7 @@ import type { createDeliveryWorkCoordinator } from "../../../services/delivery-w
 import { createDb, closeRegisteredClients, authUsers, agents } from "@paperclipai/db";
 import { prepareOwnedLinuxDistribution } from "./normal-distribution-bootstrap.js";
 import { heartbeatService } from "../../../services/heartbeat.js";
-import { dotRunnerBroker } from "../../../modules/external-agents/dot.js";
+import { dotRunnerBroker } from "../../../modules/external-agents/index.js";
 import { registerEnvironmentCleanupWork } from "../../../services/environment-cleanup-work.js";
 import { setupRunnerPrpWebSocketServer } from "../../../realtime/runner-prp-ws.js";
 import { migrateCloudConfiguration } from "../../../services/cloud-configuration-migration.js";
