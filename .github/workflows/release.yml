@@ -638,7 +638,7 @@ jobs:
       (needs.smoke_nightly.result == 'success' ||
        (needs.smoke_nightly.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.dry_run))
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 170
     environment: npm-canary
     # The workflow-level concurrency group is per event, so a forced dispatch
     # nightly could otherwise overlap the scheduled one and race it to the
@@ -927,7 +927,7 @@ jobs:
       (needs.verify_beta_candidate.result == 'success' ||
        (needs.verify_beta_candidate.result == 'skipped' && needs.select_beta.outputs.mode == 'promote'))
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 170
     environment: npm-beta
     # Serialize beta publishes so two dispatches cannot race to the same next
     # -beta.N version; release.sh additionally refuses to double-publish a
@@ -1392,7 +1392,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run && needs.preflight_stable.result == 'success' && needs.verify_stable.result == 'success' && needs.release_runner_source.result == 'success' && (needs.release_runner_source.outputs.required == 'false' || needs.release_runner_binaries.result == 'success') }}
     needs: [preflight_stable, verify_stable, release_runner_source, release_runner_binaries]
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 170
     environment: npm-stable
     permissions:
       contents: write

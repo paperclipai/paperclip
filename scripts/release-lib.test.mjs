@@ -395,15 +395,22 @@ test("the workflow budget fails closed after the last registry check", () => {
   assert.equal(result.calls.match(/^sleep /gm)?.length, budget.verifyAttempts - 1);
 });
 
-test("every publish job budgets for build time and four delayed packages", () => {
+test("every publish job budgets for build time, four delayed packages and the install deadline", () => {
   const { verifyAttempts, verifyDelaySeconds } = workflowVerifyBudget();
   const pollingSeconds = (verifyAttempts - 1) * verifyDelaySeconds;
-  const requiredSeconds = 30 * 60 + 4 * pollingSeconds;
+  const releaseScript = readFileSync(new URL("./release.sh", import.meta.url), "utf8");
+  const installDeadlineSeconds = Number(releaseScript.match(/NPM_INSTALL_VERIFY_TIMEOUT_SECONDS:-(\d+)/)?.[1]);
+  assert.ok(installDeadlineSeconds > 0);
 
-  for (const job of ["publish_canary", "publish_nightly", "publish_beta", "publish_stable"]) {
+  for (const [job, requiredSeconds] of [
+    ["publish_canary", 30 * 60 + 4 * pollingSeconds],
+    ["publish_nightly", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+    ["publish_beta", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+    ["publish_stable", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+  ]) {
     const body = releaseWorkflow.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z_]+:\n/)[0] ?? "";
     const timeoutMinutes = Number(body.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
-    assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build and polling`);
+    assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build, polling and the install deadline`);
   }
 });
 
