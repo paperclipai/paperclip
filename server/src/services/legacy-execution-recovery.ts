@@ -535,9 +535,10 @@ export async function settleCancelledLegacyPreparation(
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
       resolvedAt: now, updatedAt: now,
-      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
-        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
-        else ${issueRecoveryActions.evidence} end`,
+      // A verified false positive no longer has a conservative no-replay
+      // disposition. Remove its marker so read projections do not retain the
+      // obsolete hold; the resolution and activity log retain the correction.
+      evidence: sql`${issueRecoveryActions.evidence} - 'automaticRecovery'`,
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });
