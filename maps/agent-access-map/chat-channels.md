@@ -159,13 +159,13 @@ request for every agent, so `slack_open_dm`/`slack_post_message` do not depend o
 a Proactive DMs opt-in. A legacy installation without the granted scope requires
 the privileged manifest refresh and reconnect/reinstall flow; a GET/capability
 refresh and an existing bot token do not grant it. Channel management and file
-upload remain optional groups. Inbound DM receipt still requires the sender to be
-authorized to use the endpoint's assigned agent; receiving a message alone is
-not sufficient. The private-source publication boundary remains in force.
+upload remain optional groups. Outbound DM rollout requires deployment of
+TECH-8806 (PR #410), which adds per-agent inbound task authorization; until
+TECH-8806 is deployed, inbound message routing does not evaluate per-agent
+assignment grants. The private-source publication boundary remains in force.
 Sources: [Slack scopes](../../packages/shared/src/slack-scopes.ts),
 [manifest refresh](../../server/src/services/connectors/slack/setup/opt-in-manifest.ts),
-[Slack capability resolution](../../server/src/services/connectors/slack-capabilities.ts),
-and [inbound authorization](../../server/src/services/chat-channels/inbound/authorization.ts).
+and [Slack capability resolution](../../server/src/services/connectors/slack-capabilities.ts).
 
 Slack eyes acknowledge the authorized task/comment commit before attachment
 preparation or scheduler acceptance. This server-owned receipt grants no agent
