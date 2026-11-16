@@ -20,6 +20,7 @@ import type { createDeliveryWorkCoordinator } from "../../../services/delivery-w
 import { createDb, closeRegisteredClients, authUsers, agents } from "@paperclipai/db";
 import { prepareOwnedLinuxDistribution } from "./normal-distribution-bootstrap.js";
 import { heartbeatService } from "../../../services/heartbeat.js";
+import { dotRunnerBroker } from "../../../modules/external-agents/dot.js";
 import { registerEnvironmentCleanupWork } from "../../../services/environment-cleanup-work.js";
 import { setupRunnerPrpWebSocketServer } from "../../../realtime/runner-prp-ws.js";
 import { migrateCloudConfiguration } from "../../../services/cloud-configuration-migration.js";
@@ -64,7 +65,20 @@ export async function startNormalDotAppGeneration(input: {
   let owner:ReturnType<typeof heartbeatService>|undefined;
   let appServer:ReturnType<typeof createServer>|undefined;
   let stopping:Promise<void>|undefined;
+  // Passive generation2 HTTP/broker boundary only; no request data is retained.
+  const freshRequest={httpEntries:0,brokerEntries:0,brokerFulfilled:0,brokerRejected:0,brokerPending:0,
+    firstEntryMs:undefined as number|undefined,lastBrokerSettledMs:undefined as number|undefined,
+    cleanupStartedMs:undefined as number|undefined,port:undefined as number|undefined,observerErrors:0};
+  let restoreFreshBroker:(()=>void)|undefined;
+  const observeFreshRequest=(update:()=>void)=>{try{update();}catch{freshRequest.observerErrors++;}};
+
   const stop=()=>stopping??=(async()=>{
+    if(input.generation===2)observeFreshRequest(()=>{
+      freshRequest.cleanupStartedMs=freshRequest.firstEntryMs===undefined?undefined:performance.now()-freshRequest.firstEntryMs;
+      // One fixed credential-free snapshot BEFORE the existing shutdown awaits.
+      process.stdout.write(JSON.stringify({kind:"owned_second_app_fresh_request_frontier",generation:2,...freshRequest})+"\n");
+    });
+    try{restoreFreshBroker?.();}catch{freshRequest.observerErrors++;}
     const shutdownErrors:unknown[]=[];
     const attempt=async(stage:string,action:()=>unknown|Promise<unknown>)=>{
       try{await action();}catch(error){
@@ -137,6 +151,25 @@ export async function startNormalDotAppGeneration(input: {
         const [user]=await db.select().from(authUsers).where(eq(authUsers.id,input.userId));
         return user?{session:{id:"principal-hop-session",userId:input.userId},user}:null;}});
     assert.equal(getStorageService(),storageService,"App and Native must share the normal configured storage owner");
+    if(input.generation===2){
+      // createApp's real Dot extension already installed this same Db-keyed broker.
+      const broker=dotRunnerBroker(db),original=broker.requestWork;
+      const observed:typeof original=function(this:typeof broker,...args:Parameters<typeof original>){
+        observeFreshRequest(()=>{freshRequest.firstEntryMs??=performance.now();freshRequest.brokerEntries++;freshRequest.brokerPending++;});
+        let result:ReturnType<typeof original>;
+        try{result=original.apply(this,args);}
+        catch(error){observeFreshRequest(()=>{freshRequest.brokerRejected++;freshRequest.brokerPending--;freshRequest.lastBrokerSettledMs=performance.now()-freshRequest.firstEntryMs!;});throw error;}
+        // The existing MCP extension immediately awaits this original promise.
+        // Return it unchanged, preserving its original rejection for that owner.
+        try{void result.then(
+          ()=>observeFreshRequest(()=>{freshRequest.brokerFulfilled++;freshRequest.brokerPending--;freshRequest.lastBrokerSettledMs=performance.now()-freshRequest.firstEntryMs!;}),
+          ()=>observeFreshRequest(()=>{freshRequest.brokerRejected++;freshRequest.brokerPending--;freshRequest.lastBrokerSettledMs=performance.now()-freshRequest.firstEntryMs!;}));
+        }catch{freshRequest.observerErrors++;}
+        return result;
+      };
+      broker.requestWork=observed;
+      restoreFreshBroker=()=>{if(broker.requestWork===observed)broker.requestWork=original;else freshRequest.observerErrors++;};
+    }
     await app.locals.bundledPluginsStartup;
     const actualApp=app;
     appServer=createServer((req,res)=>{
@@ -145,12 +178,17 @@ export async function startNormalDotAppGeneration(input: {
         if(input.health()==="wake-once-then-unavailable")input.consumedWakeHealth();
         else{res.writeHead(503,{"content-type":"application/json"}).end(JSON.stringify({status:"unavailable"}));return;}
       }
+      if(input.generation===2&&req.method==="POST"&&(req.url??"").split("?",1)[0]==="/mcp/runner"
+        &&req.headers["mcp-name"]==="paperclip_dot_request_work"){
+        observeFreshRequest(()=>{freshRequest.firstEntryMs??=performance.now();freshRequest.httpEntries++;});
+      }
       actualApp(req,res);
     });
     appServer.on("connection",socket=>{nativeSockets.add(socket);socket.once("close",()=>nativeSockets.delete(socket));});
     setupRunnerPrpWebSocketServer(appServer);
     await new Promise<void>((resolve,reject)=>{appServer!.once("error",reject);appServer!.listen(0,"127.0.0.1",resolve);});
     const address=appServer.address();assert(address&&typeof address!=="string");
+    freshRequest.port=address.port;
     const origin=`http://127.0.0.1:${address.port}`;
     Object.assign(process.env,{PAPERCLIP_API_URL:origin,PAPERCLIP_RUNTIME_API_URL:origin,PAPERCLIP_LISTEN_HOST:"127.0.0.1",PAPERCLIP_LISTEN_PORT:String(address.port)});
     const coordinator:ReturnType<typeof createDeliveryWorkCoordinator>=app.locals.deliveryWork;assert(coordinator&&typeof coordinator.register==="function");
@@ -244,6 +282,7 @@ export async function startNormalDotAppGeneration(input: {
     return {origin,db,heartbeat:owner,workerManager:linuxBootstrap.workerManager,stop,
       snapshot:()=>({pid:process.pid,nativeRecovery:{gate:nativeGate,counts:{...nativeEventCounts},last32:[...nativeTrace],droppedEarlier:nativeTraceDropped},worker:idleWorkSnapshot(),taskDrain:owner!.getTaskDrainStatus(),nativeSockets:nativeSockets.size,
         unexpectedDecisionWakes,errorCount:errors.length,sessionCalls,healthStatuses:[...healthStatuses],healthOverflow,
-        runtimeIdentity:{stackId:getCloudRuntimeIdentity()?.stackId,canonicalOrigin:getCloudRuntimeIdentity()?.canonicalOrigin}})};
+        runtimeIdentity:{stackId:getCloudRuntimeIdentity()?.stackId,canonicalOrigin:getCloudRuntimeIdentity()?.canonicalOrigin},
+        ...(input.generation===2?{freshRequest:{...freshRequest}}:{})})};
   }catch(primary){try{await stop();}catch(cleanup){throw new AggregateError([primary,cleanup],"normal_dot_child_start_cleanup_failed");}throw primary;}
 }
