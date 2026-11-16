@@ -26,7 +26,7 @@ import { isGeneralTaskDocumentKey } from "../lib/issue-artifacts";
 import { useDraftOwner } from "../hooks/useDraftOwner";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
-import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "./IssueDocumentAnnotations";
+import { DocumentAnnotationsCountChip, IssueDocumentAnnotations, type IssueDocumentAnnotationsProps } from "./IssueDocumentAnnotations";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { DocumentMarkdownBody } from "./DocumentMarkdownBody";
@@ -322,6 +322,7 @@ function AccountIssueDocumentsSection({
   canDeleteDocuments,
   canManageDocumentLocks = false,
   generalDocumentsOnly = false,
+  annotationPanelPlacement,
   feedbackVotes = [],
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -342,6 +343,7 @@ function AccountIssueDocumentsSection({
   canManageDocumentLocks?: boolean;
   /** The chat shell keeps Plans in the conversation and file reviews on their work products. */
   generalDocumentsOnly?: boolean;
+  annotationPanelPlacement?: IssueDocumentAnnotationsProps["panelPlacement"];
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -1544,6 +1546,7 @@ function AccountIssueDocumentsSection({
 
                       return documentSubject.annotations && (!waitingForLinkedRevision || activeDraft) ? (
                         <IssueDocumentAnnotations
+                          panelPlacement={annotationPanelPlacement}
                           issueId={documentSubject.annotations.issueId}
                           target={annotationTarget}
                           doc={doc}
