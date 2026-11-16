@@ -144,7 +144,7 @@ describe("legacy quota prestart retry", () => {
       }).returning();
       if (index === ordinaryRetries - 1 && tamper !== "none") {
         await db.update(heartbeatRuns).set({ contextSnapshot: { ...retry.contextSnapshot,
-          ...(tamper === "selection" ? { aiRouterSelection: { ...retry.contextSnapshot?.aiRouterSelection, memberId: randomUUID() } }
+          ...(tamper === "selection" ? { aiRouterSelection: { ...(retry.contextSnapshot?.aiRouterSelection as Record<string, unknown>), memberId: randomUUID() } }
             : { aiPoolFailover: { sourceRunId: randomUUID() } }),
         } }).where(eq(heartbeatRuns.id, retry.id));
       }
