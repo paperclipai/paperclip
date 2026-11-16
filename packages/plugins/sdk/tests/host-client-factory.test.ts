@@ -307,6 +307,55 @@ describe("createHostClientHandlers invocation company scope", () => {
   });
 });
 
+describe("createHostClientHandlers agents.sessions.sendMessage attribution", () => {
+  const context = { invocationScope: { companyId: "company-a" } };
+
+  function sessionHandlers(capabilities: Parameters<typeof createHostClientHandlers>[0]["capabilities"]) {
+    const sendMessage = vi.fn(async () => ({ runId: "run-a" }));
+    const services = { agentSessions: { sendMessage } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({ pluginId: "paperclip.test", capabilities, services });
+    return { handlers, sendMessage };
+  }
+
+  it("rejects actorUserId when only agent.sessions.send is granted", async () => {
+    const { handlers, sendMessage } = sessionHandlers(["agent.sessions.send"]);
+
+    await expect(
+      handlers["agents.sessions.sendMessage"]({
+        sessionId: "session-a", companyId: "company-a", prompt: "hi", actorUserId: "user-a",
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("forwards actorUserId once agent.sessions.send_human_attributed is also granted", async () => {
+    const { handlers, sendMessage } = sessionHandlers(["agent.sessions.send", "agent.sessions.send_human_attributed"]);
+    const params = { sessionId: "session-a", companyId: "company-a", prompt: "hi", actorUserId: "user-a" };
+
+    await expect(handlers["agents.sessions.sendMessage"](params, context)).resolves.toEqual({ runId: "run-a" });
+    expect(sendMessage).toHaveBeenCalledWith(params);
+  });
+
+  it("does not let agent.sessions.send_human_attributed stand in for agent.sessions.send", async () => {
+    const { handlers, sendMessage } = sessionHandlers(["agent.sessions.send_human_attributed"]);
+
+    await expect(
+      handlers["agents.sessions.sendMessage"]({
+        sessionId: "session-a", companyId: "company-a", prompt: "hi", actorUserId: "user-a",
+      }, context),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("forwards projectId with only agent.sessions.send", async () => {
+    const { handlers, sendMessage } = sessionHandlers(["agent.sessions.send"]);
+    const params = { sessionId: "session-a", companyId: "company-a", prompt: "hi", projectId: "project-a" };
+
+    await expect(handlers["agents.sessions.sendMessage"](params, context)).resolves.toEqual({ runId: "run-a" });
+    expect(sendMessage).toHaveBeenCalledWith(params);
+  });
+});
+
 describe("createHostClientHandlers capability gating for LOOA-641 methods", () => {
   const context = { invocationScope: { companyId: "company-a" } };
 
