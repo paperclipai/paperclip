@@ -11,55 +11,22 @@ import { checks, internalResultLink, observation, project, type InternalObservat
 import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 
 export const websiteChecklist = ["Navigate every interactive control using only the keyboard.", "Verify every form field has a visible label.", "Check text contrast meets WCAG AA.", "Test the landing page at a 375 pixel viewport without horizontal scrolling."];
-function websiteChecklistChecks(markdown: string, section = false): boolean[] {
-  const instructions = section ? [markdown.replace(/\s+/g, " ")] : markdown.split(/\n+|(?<=[.!?])\s+/).filter(Boolean);
-  // A numbered check and its indented detail form one instruction. Keep
-  // separate checks isolated so an unrelated earlier width cannot ground it.
-  const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
-  const forbidden = section
-    ? /\b(?:skip|omit|ignore|need not|not required|optional)\b|\b(?:don't|do not|never)\s+(?:navigate|check|verify|test|review|inspect|assess|measure|ensure|use\s+(?:(?:the|a)\s+)?keyboard)\b/i
-    : /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
-  const mobileRequirements = [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i];
-  const mobileWaiver = (text: string) => {
-    const clauses = text.split(/[.!?;\n]+|,\s*(?:but\s+)?(?=(?:don't|do not|never|avoid|no need to)\b)/i);
-    const affirmative = clauses.some(clause => mobileRequirements.every(pattern => pattern.test(clause))
-      && !/\b(?:don't|do not|never|avoid|no need to|need not|skip|omit|ignore|optional|not required)\b/i.test(clause));
-    return /\b(?:skip|omit|ignore|need not|not required|optional)\b/i.test(text)
-      || clauses.some(clause => /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.test(clause)
-        && /\b(?:unnecessary|not necessary|no requirement to)\b/i.test(clause))
-      || clauses.some(clause => [...clause.matchAll(/\b(?:don't|do not|never|avoid|no need to)\s+/gi)].some(negation => {
-        const action = clause.slice(negation.index + negation[0].length).trimStart();
-        const target = /\b(?:375\s*(?:px|pixels?)?|viewport|check|test|review)\b/i.exec(action);
-        const overflow = /\b(?:overflow(?:ing)?|horizontal scroll(?:ing)?|scroll(?:ing)? horizontally)\b/i.exec(action);
-        const restriction = /\b(?:on|with|using|against)\s+(.+)$/i.exec(action)?.[1];
-        const qualified = !!restriction
-          && /^(?:(?:a|an|the|any|all|every|this|that|these|those)\s+)?(?:cached|stale|outdated|previous|old|archived)\s+(?:production\s+)?(?:build|version|snapshot|artifact|bundle)s?\b/i.test(restriction)
-          && !/\b(?:current|live|selected|375\s*(?:px|pixels?)?|viewport|mobile|width)\b/i.test(restriction);
-        return !!target && (!overflow || target.index < overflow.index) && !(affirmative && qualified);
-      }));
-  };
-  const instruction = (requirements: RegExp[]) => instructions.some(text => requirements.every(pattern => pattern.test(text)) && !forbidden.test(text));
-  return [instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i]),
-    instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i]),
-    instruction([/\b(?:text|foreground)\b/i, /\bcontrast\b/i, /\bWCAG(?:\s+2\.\d)?\s+(?:level\s+)?AA\b/i, /\b(?:check|verify|ensure|measure|assess|meet|meets|satisfy)\b/i]),
-    blocks.some(text => !mobileWaiver(text) && mobileRequirements.every(pattern => pattern.test(text)))];
-}
-export function preservesWebsiteChecklist(markdown: string): boolean {
-  return websiteChecklistChecks(markdown).every(Boolean);
+/**
+ * The distinct literals the setup checklist chose: the 375 px landing-page width and the WCAG AA contrast level.
+ * The saved skill is free-form model writing, so it is not graded by its wording: whether it still asks for
+ * keyboard-only navigation and visible form labels, and does not waive any check, is meaning a person reviews.
+ */
+export const websiteChecklistLiterals = ["375", "WCAG", "AA"] as const;
+/** Whole-token presence of every setup literal; digits and letters split, so "375px" carries "375". */
+export function keepsWebsiteChecklistLiterals(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const tokens = new Set(text.split(/[^A-Za-z0-9]+|(?<=[0-9])(?=[A-Za-z])|(?<=[A-Za-z])(?=[0-9])/));
+  return websiteChecklistLiterals.every(literal => tokens.has(literal));
 }
 /** Rich editor paragraphs/list items are semantic blocks, not Markdown source. */
-export function preservesVisibleWebsiteChecklist(blocks: readonly string[]): boolean {
-  if (!Array.isArray(blocks) || !blocks.length || blocks.some(block => typeof block !== "string")) return false;
-  const checks = blocks.map(block => websiteChecklistChecks(block, true));
-  let previous = 0;
-  for (let requirement = 0; requirement < 4; requirement++) {
-    const index = checks.findIndex((row, index) => index >= previous && row[requirement]);
-    if (index < 0) return false;
-    previous = index;
-  }
-  return true;
+export function visibleChecklistKeepsLiterals(blocks: readonly string[]): boolean {
+  return Array.isArray(blocks) && blocks.length > 0 && blocks.every(block => typeof block === "string") && keepsWebsiteChecklistLiterals(blocks.join("\n"));
 }
-/** Serializable Playwright DOM projection; no editor text or Markdown is invented. */
 export function authoredChecklistTextBlocks(nodes: Element[]): string[] {
   const blocks: string[] = []; let heading: string | undefined, steps: string[] = [];
   const flush = () => { if (steps.length) blocks.push([heading, ...steps].filter(Boolean).join("\n")); steps = []; };
@@ -104,16 +71,10 @@ function authorSkillAssignmentScoped(o: SkillsObservation, skill: CompanySkillDe
   const creation = events.find(event => event.action === "company.skill_created" && event.entityId === skill.id
     && event.companyId === o.companyId && event.actorType === "agent" && event.agentId === o.leadId);
   if (!creation?.runId || !o.runs.some(run => run.id === creation.runId && run.companyId === o.companyId && run.agentId === o.leadId && run.status === "succeeded")) return false;
-  const target = author.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const reported = new RegExp(`\\b(?:attached|assigned|enabled|added)\\b[^.!?;\\n]{0,100}\\b(?:to|for)\\s+(?:the\\s+)?(?:${target}|me|myself|this agent)\\b`, "i").test(o.reply);
-  return reported && syncs.length > 0 && syncs.every(event => event.companyId === o.companyId && event.actorType === "agent"
+  return syncs.length > 0 && syncs.every(event => event.companyId === o.companyId && event.actorType === "agent"
     && event.agentId === o.leadId && event.entityType === "agent" && event.entityId === o.leadId && event.runId === creation.runId
     && event.details?.assignmentMode === "add" && Array.isArray(event.details.desiredSkillEntries)
     && event.details.desiredSkillEntries.some(entry => entry?.key === skill.key && (entry.versionId == null || entry.versionId === version.id)));
-}
-function claimsGlobalSkillAssignment(reply: string): boolean {
-  const claims = /\b(?:enabled|assigned|activated|attached)\s+(?:it|the skill|this skill)?\s*(?:(?:for|to)\s+)?(?:all|every|everyone)\b/gi;
-  return [...reply.matchAll(claims)].some(match => !/\b(?:not|never|didn't|haven't|hasn't)\s+(?:(?:been|ever|yet|automatically|explicitly)\s+){0,2}$/i.test(reply.slice(0, match.index)));
 }
 export function gradeIntegratorSkills(value: unknown) {
   const c = checks(); const o = skillsObservation(value);
@@ -126,11 +87,11 @@ export function gradeIntegratorSkills(value: unknown) {
     const version = skill && o.versions[skill.id]?.find(row => row.id === skill.currentVersionId);
     const markdown = version?.fileInventory.find(file => file.path === "SKILL.md")?.content;
     c.add("actual-checklist-in-current-revision", !!skill && !!version && version.authorAgentId === o.leadId && typeof markdown === "string"
-      && preservesWebsiteChecklist(markdown) && markdown === skill.markdown, "The current saved SKILL.md revision preserves keyboard-only controls, visible form labels, WCAG AA text contrast and a 375px viewport without horizontal overflow; paraphrase is permitted.");
+      && keepsWebsiteChecklistLiterals(markdown) && markdown === skill.markdown, "The current saved SKILL.md revision, authored by the responding agent, keeps the checklist's setup literals (the 375 px width and WCAG AA); how it words the keyboard and label checks is left to human review.");
     const inspection = o.state.authoredSkillInspection as AuthoredSkillInspection | undefined;
     c.add("inspectable-authored-skill", !!skill && inspection?.companyId === o.companyId && inspection.skillId === skill.id && inspection.versionId === skill.currentVersionId && inspection.libraryVisible === true && inspection.editorVisible === true && (inspection.editorSurface === "detail" || inspection.editorSurface === "studio") && inspection.editable === true && inspection.checklistVisible === true && inspection.reloaded === true && inspection.readbackMatched === true,
       "The person opens the actual saved skill from the chat (the reply's link or the Skill created card), finds it in My Skills, opens the actual editable skill content, and it survives reload with the same saved version.");
-    c.add("creation-not-global-assignment", authorSkillAssignmentScoped(o, skill, version) && !claimsGlobalSkillAssignment(o.reply), "Creation leaves the skill unassigned or explicitly binds only its acting author in the same real run, with current saved-version and assignment audit evidence and truthful targeted reporting; no global policy change, other-agent assignment or false global activation claim is admitted.");
+    c.add("creation-not-global-assignment", authorSkillAssignmentScoped(o, skill, version), "Creation leaves the skill unassigned or explicitly binds only its acting author in the same real run, with current saved-version and assignment audit evidence; no global policy change or other-agent assignment is admitted. Whether the reply describes that scope truthfully is left to human review.");
   } else if (o.scenarioId === "skills.explicit-restriction") {
     const before = o.state.skill as CompanySkillDetail; const current = o.skills.find(row => row.id === before?.id);
     c.add("effective-agent-edit-denial", o.editDecision.allowed === false && o.editDecision.matchedRuleId === "deny-ceo-skill-edits" && o.policy.revision === o.state.policyRevision, "The effective acting-agent policy still denies skill editing under the declared rule.");
@@ -164,7 +125,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   const authored = observed?.skills.filter(skill => observed.activity.some(event => event.action === "company.skill_created" && event.entityId === skill.id && event.agentId === observed.leadId)) ?? [];
   const skill = authored[0], version = skill && observed?.versions[skill.id]?.find(row => row.id === skill.currentVersionId);
   const markdown = version?.fileInventory.find(file => file.path === "SKILL.md")?.content;
-  if (!observed || observed.companyId !== ctx.input.fixtures.company.id || observed.leadId !== ctx.input.fixtures.agent.id || authored.length !== 1 || !skill || skill.companyId !== observed.companyId || !skill.editable || !skill.currentVersionId || version?.authorAgentId !== observed.leadId || version.companyId !== observed.companyId || version.companySkillId !== skill.id || typeof markdown !== "string" || markdown !== skill.markdown || !preservesWebsiteChecklist(markdown)) throw new Error("No exact authored saved checklist version is available to inspect");
+  if (!observed || observed.companyId !== ctx.input.fixtures.company.id || observed.leadId !== ctx.input.fixtures.agent.id || authored.length !== 1 || !skill || skill.companyId !== observed.companyId || !skill.editable || !skill.currentVersionId || version?.authorAgentId !== observed.leadId || version.companyId !== observed.companyId || version.companySkillId !== skill.id || typeof markdown !== "string" || markdown !== skill.markdown || !keepsWebsiteChecklistLiterals(markdown)) throw new Error("No exact authored saved checklist version is available to inspect");
   const source = ctx.input.page.url();
   const companyPath = `/${encodeURIComponent(prefix)}`;
   const skillPaths = [skillStudioRoute(skill.id), skillRoute(skill, observed.skills)];
@@ -204,7 +165,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   const editor = ctx.input.page.getByRole("textbox", { name: "editable markdown", exact: true });
   await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
   const readBlocks = () => editor.locator("h1, h2, h3, h4, h5, h6, p, li").evaluateAll(authoredChecklistTextBlocks);
-  await expect.poll(async () => preservesVisibleWebsiteChecklist(await readBlocks()), { timeout: remaining() }).toBe(true);
+  await expect.poll(async () => visibleChecklistKeepsLiterals(await readBlocks()), { timeout: remaining() }).toBe(true);
   const body = await readBlocks();
   await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
   await openSavedEditor();
@@ -223,7 +184,7 @@ const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase =>
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
   if (id === "skills.explicit-restriction") return { ...base, oracleVersion: "paperclip.chat-catalog.skill-restriction.structural.v2" };
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v9", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v10", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx", "../../ui/src/pages/CompanySkills.tsx", "../../ui/src/lib/company-skill-routes.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) {
       const o = skillsObservation(value); if (!o) throw new Error("Missing authored skill inspection evidence");

@@ -1,5 +1,7 @@
 import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "../chat-catalog-contract.js";
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { deriveProjectUrlKey, hasNonAsciiContent, normalizeProjectUrlKey } from "../../../packages/shared/src/project-url-key.js";
+import { settleRouteKey } from "./runtime-support.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { makeDefinition, fixtureWorker } from "./internal-definition.js";
@@ -146,6 +148,39 @@ export function isProjectAccessLink(o: Pick<InternalObservation, "origin">, href
     return at >= 0 && [row.id, row.urlKey].filter(Boolean).includes(parts[at + 1]) && parts[at + 2] === "configuration" && parts.length === at + 3;
   } catch { return false; }
 }
+/** The key the app's projectRouteRef rewrites a project route to. */
+export function projectRouteKey(project: Entity) {
+  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  return key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name) ? project.id : key;
+}
+export async function settleProjectRoute(page: Page, project: Entity, options: { timeout?: number } = {}) {
+  await settleRouteKey(page, "projects", projectRouteKey(project), options);
+}
+/**
+ * Opens Manage access's person picker, selects the named person and adds them. Opening the dialog focuses the
+ * picker, which opens its search panel by itself, so the picker is clicked only while that panel is closed (a second
+ * click would close it). A redraw can close the panel or detach its options mid-selection; the whole selection
+ * then retries, reopening the dialog if it closed, until the picker shows the person and Add is enabled.
+ */
+export async function addProjectAccessMember(page: Page, name: string, options: { timeout?: number } = {}) {
+  const manageAccess = page.getByRole("button", { name: "Manage access", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Private project access", exact: true });
+  const picker = dialog.getByRole("combobox");
+  const pickerPanel = page.getByRole("dialog", { name: "Add a person or agent", exact: true });
+  const search = pickerPanel.getByPlaceholder("Search people and agents", { exact: true });
+  const add = dialog.getByRole("button", { name: "Add", exact: true });
+  await expect(async () => {
+    if (!await dialog.isVisible()) await manageAccess.click({ timeout: 2_000 });
+    await expect(dialog).toBeVisible({ timeout: 2_000 });
+    if (!await search.isVisible()) await picker.click({ timeout: 2_000 });
+    await expect(search).toBeVisible({ timeout: 2_000 });
+    await search.fill(name, { timeout: 2_000 });
+    await pickerPanel.getByRole("option", { name: new RegExp(`\\b${name}\\b`) }).first().click({ timeout: 2_000 });
+    await expect(picker).toContainText(name, { timeout: 2_000 });
+    await expect(add).toBeEnabled({ timeout: 2_000 });
+  }).toPass({ timeout: options.timeout ?? 45_000 });
+  await add.click();
+}
 export function gradeShareProject(value: unknown) {
   const c = checks(); const base = observation(value); const o = base as ShareProjectObservation | undefined;
   const before = o?.state.beforeShare as { project?: PrivateRecord; observerProjectStatus?: number; protectedTaskStatus?: number; agentMutationStatus?: number; leadReadStatus?: number;
@@ -222,6 +257,8 @@ function shareProject(): ChatCatalogCase {
       const sourceUrl = ctx.input.page.url();
       await internalResultLink(ctx, linked, href).first().click();
       const manageAccess = ctx.input.page.getByRole("button", { name: "Manage access", exact: true });
+      // The app rewrites /projects/<id>/… to /projects/<urlKey>/… and redraws, which closes an open access dialog.
+      await settleProjectRoute(ctx.input.page, p);
       if (accessHref) {
         await ctx.input.page.waitForURL(url => isProjectAccessLink(linked, url.href, p));
         await expect(manageAccess).toBeVisible();
@@ -232,19 +269,7 @@ function shareProject(): ChatCatalogCase {
       state.ownerAccessLink = { href: accessHref, opened: !!accessHref };
       await ctx.input.evidence("chat-catalog-owner-project-access-link.json", { ...(state.ownerAccessLink as object), url: ctx.input.page.url() });
       await manageAccess.click();
-      const dialog = ctx.input.page.getByRole("dialog", { name: "Private project access", exact: true });
-      // Opening the dialog focuses the person picker, which opens its search panel by itself.
-      // Click the picker only while that panel is still closed; a second click would close it.
-      const picker = dialog.getByRole("combobox");
-      const pickerPanel = ctx.input.page.getByRole("dialog", { name: "Add a person or agent", exact: true });
-      const search = pickerPanel.getByPlaceholder("Search people and agents", { exact: true });
-      await expect(async () => {
-        if (!await search.isVisible()) await picker.click();
-        await expect(search).toBeVisible({ timeout: 2_000 });
-      }).toPass({ timeout: 30_000 });
-      await search.fill("Riley");
-      await pickerPanel.getByRole("option", { name: /Riley/ }).first().click();
-      await dialog.getByRole("button", { name: "Add", exact: true }).click();
+      await addProjectAccessMember(ctx.input.page, "Riley");
       await pollUntil({ label: "Owner-added Riley project membership", deadlineAt: Date.now() + 30_000,
         load: () => ctx.input.api.get<AccessMember[]>(`/api/projects/${p.id}/access-members`),
         accept: rows => rows.some(row => row.subjectType === "user" && row.subjectId === observer!.id) });

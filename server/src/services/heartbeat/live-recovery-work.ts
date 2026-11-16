@@ -7,6 +7,12 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
 import type { LiveResourceRecoveryScope, LiveRunRecoveryScope } from "../live-run-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { leaseReleaseRetryDueAt, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
+
+function leaseDueAt(metadata: Record<string, unknown> | null) {
+  const deferral = readLeaseReleaseDeferral(metadata);
+  return deferral ? leaseReleaseRetryDueAt(deferral) : 0;
+}
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
 const SETTLED_PENDING_BASE_DELAY_MS = 30_000;
@@ -64,7 +70,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
             dueAt: kind === "orphanLease"
               // A run lease is judged by its holder proof, not by age. A run-less
               // (login/probe) lease keeps its idle backoff until its kind moves.
-              ? row.runId ? row.updatedAt.getTime() : row.updatedAt.getTime() + 5 * 60_000
+              ? row.runId ? Math.max(row.updatedAt.getTime(), leaseDueAt(row.metadata))
+                : row.updatedAt.getTime() + 5 * 60_000
               : Date.parse(String((row.metadata?.legacyShutdownWorkspaceSettlement as Record<string, unknown>)?.deadlineAt)) || Date.now(),
           }));
         } else if (kind === "settled") {

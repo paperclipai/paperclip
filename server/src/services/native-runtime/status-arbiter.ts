@@ -1,6 +1,7 @@
 import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, type CompletionReviewStageEntry } from "../issue-execution-policy.js";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS } from "./native-tool-receipt-limit.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -256,6 +257,7 @@ export function arbitrateNativeStatus(input: {
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
   providerFailureSuperseded?: boolean;
+  toolReceiptLimitStopped?: boolean;
   failureRetryCount?: number;
   /**
    * This run was itself the automatic continuation of an earlier failed turn.
@@ -365,6 +367,20 @@ export function arbitrateNativeStatus(input: {
       effects: [
         { kind: "schedule_retry", cause: NATIVE_PROVIDER_OVERLOADED_CODE, summary: "Retry after model capacity becomes available.", agentId: input.agentId },
         ...(input.nativeReviewOutcome === "pending" ? [{ kind: "release_checkout" as const }] : []),
+      ],
+    };
+  }
+  if (input.toolReceiptLimitStopped && input.terminalState !== "succeeded" && !input.nativeReviewOutcome &&
+      !input.governanceGate && !input.hasUnresolvedIssueBlockers && !input.hasActivePauseHold &&
+      input.priorIssueStatus !== "blocked" &&
+      (input.failureRetryCount ?? 0) < NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, unblockDescriptor: null,
+      effects: [
+        { kind: "schedule_retry", cause: NATIVE_TOOL_RECEIPT_LIMIT_CODE, summary: "Continue the task in a fresh session.", agentId: input.agentId },
+        ...(input.terminalState === "cancelled" ? [{ kind: "release_run_resources" as const }] : []),
       ],
     };
   }

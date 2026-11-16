@@ -7046,4 +7046,13 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
   });
+
+  it("stores an agent's made-up-host board link as a relative route, and a person's as written", async () => {
+    const [{ issuePrefix }] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+    const written = `I updated [Morgan](https://paperclip.local/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`;
+    const agentComment = await svc.addComment(issueId, written, { agentId });
+    expect(agentComment.body).toBe(`I updated [Morgan](/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`);
+    const userComment = await svc.addComment(issueId, written, { userId: "board-user" });
+    expect(userComment.body).toBe(written);
+  });
 });

@@ -670,7 +670,7 @@ export function documentService(db: Db) {
           });
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
         const [restoredRevision] = await tx
@@ -754,7 +754,7 @@ export function documentService(db: Db) {
           };
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         await tx
           .update(documents)
@@ -805,7 +805,7 @@ export function documentService(db: Db) {
           };
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         await tx
           .update(documents)
@@ -857,7 +857,7 @@ export function documentService(db: Db) {
           });
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));

@@ -42,6 +42,7 @@ import {
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, legacyControllerBootId, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { NATIVE_STATUS_COMMITTER_ACTOR_ID } from "../issue-rewake-throttle.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
@@ -322,6 +323,8 @@ type LatestIssueRun =
       retryOfRunId?: string | null;
       scheduledRetryReason?: string | null;
       runnerProfileJson?: unknown;
+      runtimeMode?: string | null;
+      controllerBootId?: string | null;
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
@@ -1099,6 +1102,8 @@ export function recoveryService(
         retryOfRunId: heartbeatRuns.retryOfRunId,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        runtimeMode: heartbeatRuns.runtimeMode,
+        controllerBootId: heartbeatRuns.controllerBootId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1208,8 +1213,11 @@ export function recoveryService(
    * a live execution; another process proves it with its unexpired controller
    * lease, which it clears once settlement (retry scheduling, claim release)
    * is done. This process's own lease without a live execution is stale. */
-  async function terminalRunSettlingUntil(companyId: string, runId: string): Promise<Date | null> {
+  async function terminalRunSettlingUntil(companyId: string, runId: string,
+    known?: { runtimeMode?: string | null; controllerBootId?: string | null }): Promise<Date | null> {
     if (deps.liveRunExecutions?.has(runId)) return new Date(Date.now() + 30_000);
+    if (known?.runtimeMode !== undefined && (known.runtimeMode !== "legacy" || !known.controllerBootId
+      || known.controllerBootId === legacyControllerBootId)) return null;
     const [run] = await db.select({ leaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
         eq(heartbeatRuns.runtimeMode, "legacy"), sql`${heartbeatRuns.controllerBootId} is not null`,
@@ -1252,7 +1260,15 @@ export function recoveryService(
         .where(
           and(
             eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            or(
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              and(
+                eq(agentWakeupRequests.requestedByActorType, "system"),
+                eq(agentWakeupRequests.requestedByActorId, NATIVE_STATUS_COMMITTER_ACTOR_ID),
+                inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+                isNull(agentWakeupRequests.runId),
+              ),
+            ),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
             agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
           ),
@@ -4755,7 +4771,7 @@ export function recoveryService(
         || await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
       // Another server is still settling the run: look again when its lease
       // lapses, since later generic skips may never reach their own check.
-      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id);
+      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id, latestRun);
       if (settlingUntil) {
         onDeferredDeadline?.(settlingUntil.getTime());
         handled.add(issue.id);
@@ -4937,7 +4953,7 @@ export function recoveryService(
       // and releases the claim itself. Escalating in that window clears the
       // claim the retry needs. Re-check once its controller lease lapses.
       const settlingUntil = latestRun && isTerminalIssueRun(latestRun)
-        ? await terminalRunSettlingUntil(issue.companyId, latestRun.id) : null;
+        ? await terminalRunSettlingUntil(issue.companyId, latestRun.id, latestRun) : null;
       if (settlingUntil) {
         opts?.onDeferredDeadline?.(settlingUntil.getTime());
         result.skipped += 1;

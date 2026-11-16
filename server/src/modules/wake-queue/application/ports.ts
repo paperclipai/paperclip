@@ -178,7 +178,7 @@ export interface WakeQueueTransaction {
     issueId: string;
     finishingRunId: string;
     commentIds: string[];
-  }): Promise<{ allSelfAuthored: boolean }>;
+  }): Promise<{ allSelfAuthored: boolean; includesPersonComment: boolean }>;
   /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
   isCompletedDelegationMention(input: {
     companyId: string;

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { gradeProjectDefaults, gradeProjectDefaultsSetup, projectReadCalls } from "./internal-project-defaults.js";
-import { callApiInputDigest, gradeRoutineAudit, localClock, morningTimezone } from "./internal-routine-audit.js";
+import { callApiInputDigest, gradeRoutineAudit, localClock, morningTimezone, MORNING_CANDIDATE_TIMEZONES, sameZoneClock } from "./internal-routine-audit.js";
 import { gradeWorkTimeline } from "./internal-work-timeline.js";
 import { gradeArchivePartial } from "./internal-archive-partial.js";
 function base(scenarioId: string) { return { scenarioId, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: {} as Record<string, unknown>, tasks: [] as any[], projects: [] as any[], goals: [] as any[], comments: [] as any[], activity: [] as any[], documents: [], revisions: [], links: [] as string[], reply: "", humanQueries: [], runs: [] as any[] }; }
@@ -100,6 +100,28 @@ it("picks a real timezone where the evaluation clock reads 08:xx in every season
   for (const year of [2026, 2027]) for (let month = 0; month < 12; month++) for (const day of [1, 15]) for (let hour = 0; hour < 24; hour++) {
     const now = new Date(Date.UTC(year, month, day, hour, 17)); expect(localClock(now, morningTimezone(now)).hour).toBe(8);
   }
+});
+// Browsers report a zone by their own canonical name. Chrome reports America/Argentina/Buenos_Aires as
+// America/Buenos_Aires, which failed every 11:xx UTC dispatch in cohort 16 under a name comparison.
+const BROWSER_ALIASES: Readonly<Record<string, readonly string[]>> = { "America/Argentina/Buenos_Aires": ["America/Buenos_Aires"], "Pacific/Pago_Pago": ["Pacific/Samoa", "US/Samoa"],
+  "Pacific/Honolulu": ["US/Hawaii"], "America/Phoenix": ["US/Arizona"], "Asia/Dhaka": ["Asia/Dacca"], "Asia/Tokyo": ["Japan"], "Asia/Singapore": ["Singapore"] };
+it("accepts the browser's report of every candidate zone, at every hour, by its clock rather than its name", () => {
+  for (const zone of MORNING_CANDIDATE_TIMEZONES) {
+    const reported = [zone, new Intl.DateTimeFormat("en-US", { timeZone: zone }).resolvedOptions().timeZone, ...(BROWSER_ALIASES[zone] ?? [])];
+    for (let hour = 0; hour < 24; hour++) for (const month of [0, 6]) {
+      const now = new Date(Date.UTC(2026, month, 15, hour, 52));
+      for (const name of reported) expect(sameZoneClock(name, zone, now), `${name} for ${zone} at ${now.toISOString()}`).toBe(true);
+    }
+  }
+  for (let hour = 0; hour < 24; hour++) {
+    const now = new Date(Date.UTC(2026, 10, 15, hour, 52)); const zone = morningTimezone(now);
+    expect(sameZoneClock(zone === "America/Argentina/Buenos_Aires" ? "America/Buenos_Aires" : zone, zone, now)).toBe(true);
+  }
+  // A different clock, a zone with daylight saving time, or an unknown name is still an override that did not apply.
+  const now = new Date(Date.UTC(2026, 10, 15, 11, 52));
+  expect(sameZoneClock("UTC", "America/Argentina/Buenos_Aires", now)).toBe(false);
+  expect(sameZoneClock("America/Santiago", "America/Argentina/Buenos_Aires", now)).toBe(false);
+  expect(sameZoneClock("Not/AZone", "America/Argentina/Buenos_Aires", now)).toBe(false);
 });
 it("accepts a real edit before a failed scheduled morning run that the chat run read", () => expect(gradeRoutineAudit(routine()).passed).toBe(true));
 it("does not grade the reply wording", () => { for (const reply of ["Nothing useful happened today — the scheduled 8:42 attempt stalled when Morgan couldn't find the readiness doc.", "Short answer: no. Details are on the routine page."]) { const o = routine(); o.reply = reply; expect(gradeRoutineAudit(o).passed).toBe(true); } });

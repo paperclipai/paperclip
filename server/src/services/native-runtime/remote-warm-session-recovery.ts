@@ -53,10 +53,10 @@ export async function waitForLiveWarmSessionOwner(input: {
   const finishedAt = prior?.finishedAt ?? null;
   const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
     idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
-  if (!retryAt) return;
+  if (!retryAt || !owner.controllerBootId) return;
   const checkpointedAt = await input.checkpointedAt();
   if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
-  throw new NativeControllerRecoveryWaitingError(retryAt);
+  throw new NativeControllerRecoveryWaitingError(retryAt, { runId: input.priorRunId, controllerBootId: owner.controllerBootId });
 }
 
 export type RemoteWarmSessionRecovery = {
@@ -228,7 +228,9 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
   const liveOwnerRetryAt = await liveWarmSessionOwnerRetryAt({ owner: prior.owner, finishedAt: prior.run.finishedAt,
     idleTimeoutMs: previous.session?.lifecyclePolicy?.idleTimeoutMs ?? null });
-  if (liveOwnerRetryAt) throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt);
+  if (liveOwnerRetryAt) {
+    throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt, { runId: identity.runId, controllerBootId: prior.owner.controllerBootId });
+  }
   if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
