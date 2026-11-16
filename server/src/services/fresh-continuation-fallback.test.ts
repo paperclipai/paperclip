@@ -16,7 +16,7 @@ import {
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { currentProcessSpaceHash, observedProcessStartedAt } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
@@ -748,8 +748,11 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   // The recorded process identity (host, PID space, start time) of this process.
-  const liveIdentity = () => ({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
-    processStartedAt: new Date(Date.now() - process.uptime() * 1_000) });
+  const liveIdentity = async () => {
+    const startedAt = await observedProcessStartedAt(process.pid);
+    if (startedAt === null) throw new Error("This host cannot report this process's start time");
+    return { processPid: process.pid, processHostHash: currentProcessSpaceHash(), processStartedAt: new Date(startedAt) };
+  };
 
   /** Moves the recorded start of the pending wait into the past. */
   async function waitedFor(actionId: string, ms: number) {
@@ -759,7 +762,7 @@ suite("fresh-continuation fallback", () => {
 
   it("lets a previous process still running on this host settle first, for about ten minutes at most", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
-    await db.update(heartbeatRuns).set(liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(heartbeatRuns).set(await liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
     const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
     expect(first).toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
     // Rechecks back off from one minute.
@@ -792,7 +795,7 @@ suite("fresh-continuation fallback", () => {
   it("does not mistake a recycled PID for the old writer", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
     // The PID is alive now, but it belongs to a process that started after the old one was recorded.
-    await db.update(heartbeatRuns).set({ ...liveIdentity(), processStartedAt: new Date("2020-01-01T00:00:00Z") })
+    await db.update(heartbeatRuns).set({ ...(await liveIdentity()), processStartedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued" });

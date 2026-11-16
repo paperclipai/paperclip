@@ -1,6 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -12,7 +11,7 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
-import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
+import { REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH } from "./remote-workspace-archive-io.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
@@ -474,8 +473,6 @@ export type RemoteWorkspaceSavePhaseTiming = {
   captureMs?: number;
   /** Provider download of the captured archive. */
   transferMs?: number;
-  /** Server-side re-hash of the downloaded archive. */
-  verifyMs?: number;
   byteSize?: number;
   entries?: number;
 };
@@ -626,15 +623,12 @@ async function captureSandboxWorkspaceArchive(input: {
       files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
     }], receipt.byteSize);
     timing.transferMs = elapsedSince(transferStarted);
-    const verifyStarted = performance.now();
-    const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
-    timing.verifyMs = elapsedSince(verifyStarted);
-    if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
+    const transferred = await lstat(archivePath);
+    if (!transferred.isFile() || transferred.size !== receipt.byteSize) throw new Error(REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH);
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
-    if (!(error instanceof Error && error.message === "remote_workspace_capture_transfer_mismatch")) noteProviderRefusal("download", error);
+    if (!(error instanceof Error && error.message === REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH)) noteProviderRefusal("download", error);
     throw error;
   }
 }

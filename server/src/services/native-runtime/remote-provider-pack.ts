@@ -1,5 +1,5 @@
 import { redactSensitiveText } from "../../redaction.js";
-import type { NativeRunTrace } from "./native-run-trace.js";
+import { nativeRunFailureCheck, type NativeRunTrace } from "./native-run-trace.js";
 import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Qualified ACPX releases carry their Linux image manifest and daemon. */
@@ -11,6 +11,15 @@ export function shouldUseBundledAcpxImageAssets(input: {
   return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
     input.provider.kind === "acpx" &&
     ["cursor", "copilot", "kimi"].includes(input.provider.agent);
+}
+
+/** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */
+export function providerPackProvenanceReuseAllowed(input: {
+  retainProviderPack: boolean;
+  explicitProviderPackSelection: boolean;
+  authoritySelectable: boolean;
+}): boolean {
+  return !input.retainProviderPack && !input.explicitProviderPackSelection && input.authoritySelectable;
 }
 
 type VerificationCommandResult = {
@@ -55,24 +64,27 @@ export async function runRemoteProviderVerification(
 export async function prepareVerifiedRemoteProviderPack(input: {
   trace?: NativeRunTrace;
   verifyStaged: () => Promise<void>;
-  usePreinstalled: () => Promise<boolean>;
+  usePreinstalled: (onRejected: (check: string) => void) => Promise<boolean>;
   stageAndVerify: () => Promise<void>;
 }): Promise<"staged" | "preinstalled" | "uploaded"> {
   const scope = input.trace?.start("provider_pack.select");
   let failed = false;
+  let preinstalledCheck = "no_preinstalled_pack";
   const select = async () => {
     try {
       await input.verifyStaged();
       return "staged" as const;
     } catch {}
-    if (await input.usePreinstalled()) return "preinstalled" as const;
+    let rejected = false;
+    if (await input.usePreinstalled(check => { if (!rejected) preinstalledCheck = check; rejected = true; })) return "preinstalled" as const;
     await input.stageAndVerify();
     return "uploaded" as const;
   };
   try {
     const source = scope ? await input.trace!.run(scope, select) : await select();
     if (scope) input.trace!.annotate(scope, { stateSource: source,
-      reason: source === "uploaded" ? "cached_packs_unverified" : "verified_pack_reused" });
+      reason: source === "uploaded" ? "cached_packs_unverified" : "verified_pack_reused",
+      ...(source === "uploaded" ? { check: preinstalledCheck } : {}) });
     return source;
   } catch (error) {
     failed = true;
@@ -85,12 +97,14 @@ export async function prepareVerifiedRemoteProviderPack(input: {
 export async function useVerifiedPreinstalledRemoteProviderPack(input: {
   candidates: readonly string[];
   verifyAndLink: (root: string) => Promise<void>;
+  onRejected?: (check: string) => void;
 }): Promise<boolean> {
   for (const candidate of input.candidates) {
     try {
       await input.verifyAndLink(candidate);
       return true;
-    } catch {
+    } catch (error) {
+      input.onRejected?.(nativeRunFailureCheck(error) ?? "verification_failed");
     }
   }
   return false;

@@ -51,6 +51,7 @@ import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import { isObjectJournalBusyError } from "./object-byte-journal.js";
 import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { announceInstanceSettingsChange } from "./instance-settings-cache.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -2027,6 +2028,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           getOperatorSettingDefaults(),
         );
         if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+          await announceInstanceSettingsChange(tx);
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
           await tx

@@ -543,6 +543,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
+      if (params.origin === "provider" && !state.awaitingProviderTurn) await state.recoveryReconciled;
       // A start replayed for an earlier generation's turn (for example, one
       // the runner recorded after the previous controller detached and then
       // lost on restore) is history, never a start of this session's turn. A
@@ -590,6 +591,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         { status: text(turn.status, "inProgress"), ...(providerStartedTurn ? { origin: "provider" } : {}) },
         { turnId },
       );
+      if (providerStartedTurn) state.captureBoundary(state.sourceSequence);
       return;
     }
     if (notification.method === "turn/completed") {
