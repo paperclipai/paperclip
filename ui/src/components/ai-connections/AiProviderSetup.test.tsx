@@ -32,6 +32,23 @@ it("reconnects an older OpenRouter account without adding routing metadata", asy
   }
 });
 
+it("connects a Kimi API key like the other native providers", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const kimi = Array.from(container.querySelectorAll("button[aria-label]")).find(button => button.getAttribute("aria-label") === "Kimi") as HTMLButtonElement | undefined;
+    expect(kimi, "Kimi is missing from the provider list").toBeDefined();
+    await act(async () => kimi!.click());
+    expect(credentialProps).toMatchObject({ provider: "kimi" });
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
 const providerSources = ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
 it("shows advanced providers directly when entered from advanced connection mode", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

@@ -7,7 +7,7 @@ import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, adapterUsesManagedAiConnection, isAiConnectionCompatible } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
@@ -1868,11 +1868,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
                     // so the old adapter's values don't bleed through via eff()
-                    setOverlay((prev) => ({
-                      ...prev,
-                      adapterType: t,
-                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
-                      adapterConfig: {
+                    setOverlay((prev) => {
+                      const nextAdapterConfig = {
                         model:
                           t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
@@ -1897,8 +1894,36 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                                 ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
                               }
                           : {}),
-                      },
-                    }));
+                      };
+                      const nextRuntime = { ...prev.runtime };
+                      const nextConfig = nextAdapterConfig as Record<string, unknown>;
+                      // A harness switch drops a binding the new harness cannot
+                      // consume: it may sign in itself (Cursor) or expect a
+                      // different provider or model (Codex -> Claude). The
+                      // server applies the same rule; clearing here shows the
+                      // missing selection instead of a stale error.
+                      const nextHarness = aiRoutingHarness(t, nextConfig.provider, nextConfig.acpxAgent);
+                      const currentBinding = aiRuntimeConnectionBindingSchema.safeParse(
+                        (prev.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig?.aiConnection,
+                      ).data;
+                      const clearsBinding = !adapterUsesManagedAiConnection(nextHarness)
+                        || Boolean(currentBinding && currentBinding.mode !== "router"
+                          && !isAiConnectionCompatible(currentBinding, t, nextConfig.model, nextConfig.provider, nextConfig.acpxAgent));
+                      if (clearsBinding) {
+                        const nextRuntimeConfig = {
+                          ...((prev.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig),
+                        };
+                        delete nextRuntimeConfig.aiConnection;
+                        nextRuntime.runtimeConfig = nextRuntimeConfig;
+                      }
+                      return {
+                        ...prev,
+                        adapterType: t,
+                        runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
+                        adapterConfig: nextAdapterConfig,
+                        ...(clearsBinding ? { runtime: nextRuntime } : {}),
+                      };
+                    });
                   }
                 }}
               />

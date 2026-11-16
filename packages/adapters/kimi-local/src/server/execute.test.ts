@@ -91,9 +91,11 @@ describe("kimi_local execute", () => {
     prepareRuntimeMock.mockClear();
     resolveCommandForLogsMock.mockClear();
     runProcessMock.mockReset();
+    vi.stubEnv("KIMI_MODEL_NAME", "");
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
@@ -221,6 +223,25 @@ describe("kimi_local execute", () => {
 
     expect(seenArgs).toContain("-m");
     expect(seenArgs[seenArgs.indexOf("-m") + 1]).toBe("kimi-code/k3");
+  });
+
+  it("omits -m when the KIMI_MODEL_* env provider is active", async () => {
+    const root = await makeTempRoot();
+    let seenArgs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      return { exitCode: 0, signal: null, timedOut: false, stdout: KIMI_STDOUT, stderr: "" };
+    });
+
+    await execute(makeContext(root, {
+      config: {
+        cwd: root,
+        model: "kimi-code/k3",
+        env: { KIMI_MODEL_NAME: "k3", KIMI_MODEL_API_KEY: "test-key" },
+      },
+    }));
+
+    expect(seenArgs).not.toContain("-m");
   });
 
   it("resumes with -r when the stored session cwd matches the run cwd", async () => {

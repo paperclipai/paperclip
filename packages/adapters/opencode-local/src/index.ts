@@ -75,6 +75,8 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat" },
+  { id: "deepseek/deepseek-reasoner", label: "deepseek/deepseek-reasoner" },
 ];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration

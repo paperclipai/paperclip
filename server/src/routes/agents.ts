@@ -14,7 +14,7 @@ import { connectionManagementService, continuingConnectionManagement } from "../
 import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId, aiLoginUserAction } from "./connection-management-authz.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE } from "../services/native-runtime/completed-turn-cleanup.js";
-import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessType, aiRoutingHarness, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
@@ -52,7 +52,7 @@ import { antigravityConnectionModels } from "../services/antigravity-connection-
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
+import { adapterUsesManagedAiConnection, isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
@@ -5813,6 +5813,23 @@ export function agentRoutes(
       && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+    }
+    const requestedHarness = aiRoutingHarness(requestedAdapterType, nextAiConfig.provider, nextAiConfig.acpxAgent);
+    // A harness switch invalidates a binding the new harness cannot consume:
+    // either it signs in itself (`cursor login`, ...) or the connection's
+    // provider cannot authenticate it (Codex -> Claude). Clear the binding
+    // instead of failing the save as incompatible; the UI then asks for a
+    // compatible connection. Changing only the model keeps the binding and
+    // still reports incompatibility.
+    const retainedBinding = aiRuntimeConnectionBindingSchema.safeParse(
+      requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection,
+    ).data;
+    if (!adapterUsesManagedAiConnection(requestedHarness)
+      || (requestedHarness !== aiRoutingHarness(existing.adapterType, existing.adapterConfig.provider, existing.adapterConfig.acpxAgent)
+        && retainedBinding && retainedBinding.mode !== "router"
+        && !isAiConnectionCompatible(retainedBinding, requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig) };
+      delete requestedRuntimeConfig.aiConnection;
     }
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {

@@ -1992,6 +1992,7 @@ const aiCatalogEntries = [
   { slug: "openai", name: "OpenAI", provider: "openai", subscription: true, envKey: "OPENAI_API_KEY", url: "https://api.openai.com/*" },
   { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
   { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
+  { slug: "kimi", name: "Kimi", provider: "kimi", envKey: "KIMI_MODEL_API_KEY", url: "https://api.kimi.com/coding/*", description: "Use Kimi Code with a Coding Plan API key." },
   { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
   { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
   { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },

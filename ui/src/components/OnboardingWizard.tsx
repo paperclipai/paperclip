@@ -159,7 +159,7 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
-const ONBOARDING_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
+const ONBOARDING_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "kimi_local", "opencode_local"]);
 
 function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown, savedCopilot?: unknown): AdapterType {
   if (savedAdapterType === "paperclip_runner" && provider === "pi") return "pi_local";
@@ -222,6 +222,7 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
  */
 const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
   claude_local: "/brands/claude-color.svg",
+  deepseek: "/brands/adapters/deepseek-color.svg",
 };
 
 
@@ -259,10 +260,22 @@ const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: stri
 const API_KEY_ENV_KEYS: Record<string, string> = {
   claude_local: ANTHROPIC_API_KEY_ENV_KEY,
   codex_local: "OPENAI_API_KEY",
+  kimi_local: "KIMI_MODEL_API_KEY",
+  opencode_local: "DEEPSEEK_API_KEY",
 };
 
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+/**
+ * Customer-facing name for a source. OpenCode is surfaced as DeepSeek in
+ * onboarding, because that is the provider the key they are pasting belongs to.
+ */
+function onboardingProviderName(adapterType: string, fallback: string): string {
+  return adapterType === "opencode_local"
+    ? "DeepSeek"
+    : (CONNECT_SOURCE_NAMES[adapterType] ?? fallback);
 }
 
 function ModelSourceMark({
@@ -680,7 +693,9 @@ function OnboardingWizardInner({
     ? selectedSavedKey.id
     : savedKeys.options[0]?.id;
   const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
-  const credentialMode = credentialModeChoice ?? (
+  const credentialMode = adapterType === "kimi_local" || adapterType === "opencode_local"
+    ? "api"
+    : credentialModeChoice ?? (
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
       ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
@@ -741,7 +756,7 @@ function OnboardingWizardInner({
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; grantId?: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding; grantId?: string; sessionId?: string } | null>(null);
   const defaultSelectionsRef = useRef(new Map<string, { pending: Promise<unknown>; queued: number; revision: number; grantId?: string | null }>());
-  const managedProvider = aiProviderForAdapter(adapterType);
+  const managedProvider = aiProviderForAdapter(adapterType, model);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType) return gatewayConnection.binding;
@@ -1096,7 +1111,7 @@ function OnboardingWizardInner({
   const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
-    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
+    name: `My ${onboardingProviderName(adapterType, managedProvider ?? "model")} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
   }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
@@ -1152,7 +1167,7 @@ function OnboardingWizardInner({
    * means no active session for the caller.
    */
   const managedSubscriptionIntent: AiConnectionLoginIntent | undefined = managedSubscriptionProvider
-    ? { provider: managedSubscriptionProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true }
+    ? { provider: managedSubscriptionProvider, method: "subscription", name: `My ${onboardingProviderName(adapterType, managedProvider ?? "model")} subscription`, ownership: "personal", agentIds: [], allAgents: true }
     : undefined;
   const loginTarget = { environmentId: resolvedLoginEnvironmentId ?? "", aiConnection: managedSubscriptionIntent };
   const dismissedLoginResumes = useRef(new Set<string>());
@@ -1241,8 +1256,14 @@ function OnboardingWizardInner({
    * `adapterType` alone, because a restored draft can name an adapter this step
    * no longer offers — a selection the customer cannot see.
    */
+  const selectedSourceId =
+    adapterType === "opencode_local" && model.startsWith("deepseek/")
+      ? "deepseek"
+      : adapterType;
   const sourceSelected =
-    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+    sourcePicked && recommendedAdapters.some(
+      (opt) => (opt.onboardingSourceId ?? opt.type) === selectedSourceId,
+    );
 
   /**
    * Whether the connect step may advance.
@@ -1540,7 +1561,7 @@ function OnboardingWizardInner({
    * rather than offering — see `FooterNav`, where the label cross-fades over an
    * easing width so those changes read as one control rather than four.
    */
-  const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+  const connectSourceLabel = onboardingProviderName(adapterType, adapterType);
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     setupError ? { label: "Retry", icon: "arrow", disabled: false }
       : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
@@ -1999,7 +2020,7 @@ function OnboardingWizardInner({
     if (stored?.binding) return true;
     try {
       if (managedProvider) {
-        const grantId = stored?.grantId ?? (await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true })).grantId;
+        const grantId = stored?.grantId ?? (await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${onboardingProviderName(adapterType, managedProvider ?? "model")} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true })).grantId;
         apiKeySecretRef.current = { key, companyId, envKey, grantId };
         if (!isCurrent()) return false;
         if (!await selectManagedDefault(companyId, managedProvider, grantId, isCurrent)) return false;
@@ -3090,28 +3111,42 @@ function OnboardingWizardInner({
                     <ModelSourceTiles
                       label="Model source"
                       sources={recommendedAdapters.map((opt) => ({
-                        id: opt.type,
-                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
-                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                        id: opt.onboardingSourceId ?? opt.type,
+                        label:
+                          opt.onboardingLabel ??
+                          CONNECT_SOURCE_NAMES[opt.type] ??
+                          opt.label,
+                        icon: (
+                          <ModelSourceMark
+                            type={opt.onboardingSourceId ?? opt.type}
+                            Fallback={opt.icon}
+                          />
+                        ),
                       }))}
                       mode={credentialMode}
-                      selectedId={
-                        sourcePicked &&
-                        recommendedAdapters.some((opt) => opt.type === adapterType)
-                          ? adapterType
-                          : null
-                      }
+                      selectedId={sourceSelected ? selectedSourceId : null}
                       collapsed={connectCollapsed}
                       settling={connectPhase === "unwindRow"}
                       onSelect={(id) => {
                         if (connectPhase !== "idle") return;
+                        const source = recommendedAdapters.find(
+                          (opt) => (opt.onboardingSourceId ?? opt.type) === id,
+                        );
+                        const nextAdapter = source?.type ?? id;
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
-                        setAdapterType(id);
-                        if (id !== adapterType) setRunner("auto");
-                        if (id !== adapterType) {
-                          if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                          else if (id !== "codex_local") setModel("");
+                        setAdapterType(nextAdapter);
+                        if (nextAdapter !== adapterType) setRunner("auto");
+                        if (nextAdapter === "opencode_local") {
+                          setModel(
+                            source?.onboardingDefaultModel ??
+                              DEFAULT_OPENCODE_LOCAL_MODEL,
+                          );
+                        } else if (
+                          nextAdapter !== adapterType &&
+                          nextAdapter !== "codex_local"
+                        ) {
+                          setModel("");
                         }
                         setConnectPhase("collapsing");
                       }}
@@ -3119,7 +3154,7 @@ function OnboardingWizardInner({
 
                     {adapterRegistryLoaded && recommendedAdapters.length === 0 && (
                       <p role="status" className="text-sm text-muted-foreground">
-                        Claude and Codex are unavailable on this instance. Ask an administrator to enable one,
+                        Claude, Codex, Kimi, and DeepSeek are unavailable on this instance. Ask an administrator to enable one,
                         or exit setup and choose New Agent on the Agents page to use another provider.
                       </p>
                     )}
@@ -3147,7 +3182,7 @@ function OnboardingWizardInner({
                       transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
                     >
                       <div className="-ml-3 mt-1">
-                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                        {managedSubscriptionProvider && <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />}
                         {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
@@ -3198,7 +3233,7 @@ function OnboardingWizardInner({
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
                         instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
-                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
+                          onboardingProviderName(adapterType, adapterType)
                         } API key to connect`}
                       >
                         {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
@@ -3222,7 +3257,7 @@ function OnboardingWizardInner({
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
-                        {managedProvider && !selectedApiKey && !hasGatewaySelection && !connectionModels && <p className="text-xs text-muted-foreground">This will be your default {CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} account.</p>}
+                        {managedProvider && !selectedApiKey && !hasGatewaySelection && !connectionModels && <p className="text-xs text-muted-foreground">This will be your default {onboardingProviderName(adapterType, managedProvider ?? "model")} account.</p>}
                         {hasGatewaySelection && (gatewayLookupFailed ? <>
                           <p role="alert" className="text-sm text-destructive">Your saved gateway connection could not be loaded. Retry to choose a model and connect your agent.</p>
                           <Button type="button" variant="outline" disabled={loading || adapterEnvLoading} onClick={() => { void connectionModelState.refresh(); }}>

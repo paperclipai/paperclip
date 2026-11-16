@@ -25,6 +25,8 @@ export const AI_PROVIDERS: Record<
     subscriptionName: "Grok subscription",
     logo: "/brands/adapters/grok.svg",
   },
+  kimi: { name: "Kimi", logo: "/brands/adapters/kimi-color.svg" },
+  deepseek: { name: "DeepSeek", logo: "/brands/adapters/deepseek-color.svg" },
 };
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };

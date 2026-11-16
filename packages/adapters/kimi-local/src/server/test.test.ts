@@ -99,7 +99,7 @@ describe("kimi_local testEnvironment", () => {
     );
   });
 
-  it("passes -m to the hello probe when a model is configured", async () => {
+  it("omits -m when the KIMI_MODEL_* env provider is active", async () => {
     runProcessMock
       .mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, stdout: "kimi 0.27.0\n", stderr: "" })
       .mockResolvedValueOnce({
@@ -118,18 +118,40 @@ describe("kimi_local testEnvironment", () => {
         command: "kimi",
         cwd: "/tmp/project",
         model: "kimi-code/k3",
-        env: { KIMI_MODEL_NAME: "kimi-code/k3", KIMI_MODEL_API_KEY: "test-key" },
+        env: { KIMI_MODEL_NAME: "k3", KIMI_MODEL_API_KEY: "test-key" },
       },
     });
 
-    expect(runProcessMock).toHaveBeenNthCalledWith(
-      2,
-      expect.any(String),
-      null,
-      "kimi",
-      expect.arrayContaining(["-m", "kimi-code/k3"]),
-      expect.any(Object),
-    );
+    const probeArgs = runProcessMock.mock.calls[1]?.[3] as string[];
+    expect(probeArgs).toEqual(expect.arrayContaining(["--output-format", "stream-json", "-p", "Respond with hello."]));
+    expect(probeArgs).not.toContain("-m");
+  });
+
+  it("passes -m when only an ambient login supplies auth", async () => {
+    runProcessMock
+      .mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, stdout: "kimi 0.27.0\n", stderr: "" })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ role: "assistant", content: "hello" }),
+        stderr: "",
+      });
+
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "kimi_local",
+      config: {
+        engine: "cli",
+        command: "kimi",
+        cwd: "/tmp/project",
+        model: "kimi-code/k3",
+        env: { KIMI_API_KEY: "test-key" },
+      },
+    });
+
+    const probeArgs = runProcessMock.mock.calls[1]?.[3] as string[];
+    expect(probeArgs).toEqual(expect.arrayContaining(["-m", "kimi-code/k3"]));
   });
 
   it("downgrades missing auth and auth probe failures to warnings", async () => {

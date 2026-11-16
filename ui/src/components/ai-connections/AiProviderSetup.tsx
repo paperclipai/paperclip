@@ -40,6 +40,8 @@ const providers = [
   },
   { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
+  { id: "kimi", name: "Kimi", description: "Kimi Code API key" },
+  { id: "deepseek", name: "DeepSeek", description: "DeepSeek API key (OpenCode)" },
   {
     id: "openrouter",
     name: "OpenRouter",

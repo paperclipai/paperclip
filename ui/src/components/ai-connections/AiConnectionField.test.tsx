@@ -189,6 +189,20 @@ it("offers Pi account selection before choosing its required model", async () =>
   expect(document.body.textContent).toContain("Advanced provider setup");
 });
 
+it("offers Kimi account selection for the Kimi harness", async () => {
+  expect(aiProviderForAdapter("kimi_local")).toBe("kimi");
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Kimi" adapterType="kimi_local" model="kimi-code/k3"
+      value={{ provider: "kimi", method: "api_key", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(document.querySelector('[role="combobox"][aria-label="Connection"]')).not.toBeNull();
+  expect(container.textContent).not.toContain("does not support the current harness");
+  await click("Connect another account");
+  expect(credentialProps).toMatchObject({ provider: "kimi", initialMethod: "api_key" });
+});
+
 it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a matching saved Pi %s API-key account selectable", async provider => {
   const saved = account({ provider, method: "api_key", name: "Pi provider account", accountLabel: "avery@example.test", status: "connected" });
   mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [saved], canManageConnections: true });
