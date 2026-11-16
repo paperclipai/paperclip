@@ -100,3 +100,40 @@ it.each([
   expect(result).toBeNull();
   expect(readEnvironmentResourceObservationFailure(original)).toBe("lease_changed");
 });
+
+
+it.each(["initial_read", "inspection", "final_read"] as const)("returns at the original deadline during %s and suppresses late work", async blocked => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  let release!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  const original = new Error("original_command_failure");
+  let reads = 0, settled = false;
+  const inspect = vi.fn(async () => {
+    if (blocked === "inspection") await stalled;
+    return { providerLeaseId: "resource", state: "stopped" as const };
+  });
+  const result = observeStoppedExecutionResource({ expected: lease, originalError: original,
+    deadline: performance.now() + 50,
+    readCurrentLease: async () => {
+      reads++;
+      if (blocked === "initial_read" || (blocked === "final_read" && reads === 2)) await stalled;
+      return lease;
+    }, inspect,
+  }).then(value => { settled = true; return value; });
+  try {
+    await vi.advanceTimersByTimeAsync(51);
+    expect(settled, "The failed command must not wait for optional observation beyond its original deadline").toBe(true);
+    expect(await result).toBeNull();
+    expect(readEnvironmentResourceObservationFailure(original)).toBe("budget_exhausted");
+    const readsAtDeadline = reads, inspectionsAtDeadline = inspect.mock.calls.length;
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toBe(readsAtDeadline);
+    expect(inspect).toHaveBeenCalledTimes(inspectionsAtDeadline);
+    expect(readEnvironmentResourceObservationFailure(original)).toBe("budget_exhausted");
+  } finally {
+    release();
+    await result;
+    vi.useRealTimers();
+  }
+});
