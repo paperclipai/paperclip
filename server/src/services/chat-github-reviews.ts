@@ -44,6 +44,7 @@ import {
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
+import { principalMayDirectAssignedAgent } from "./chat-channels/inbound/authorization.js";
 import {
   effectiveGitHubReviewPolicy,
   githubReviewConclusion,
@@ -214,6 +215,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     );
     if (!access?.allowed)
       throw forbidden("The initiating GitHub person is no longer authorized");
+    const actingUserId = access.userId ?? access.sponsorUserId ?? source.endpoint.sponsorUserId;
+    if (!(await principalMayDirectAssignedAgent(db, source.endpoint, actingUserId)))
+      throw forbidden("The initiating GitHub person is not authorized to direct this agent");
     const automatic = (source.delivery.normalizedEvent.githubAutomatic ?? source.delivery.normalizedEvent.githubIssue) as
       { context: GitHubAutomaticEventContext } | undefined;
     if (

@@ -76,10 +76,12 @@ the queued older request retains its original snapshot. Integration fixtures
 cover the database and prompt contracts; they do not prove live provider delivery.
 
 For Slack, enable **Require at-mention** and **Allow direct messages**. Send a
-plain DM and follow up without a mention: both should reach the agent, with
-top-level replies to top-level DMs. Channel messages and thread replies still
-require a mention when that setting is enabled. Disable direct messages and
-confirm a plain DM is rejected. Use a private channel for threaded conversations.
+plain DM from an authorized linked sender and follow up without a mention: both
+should reach the assigned agent, with top-level replies to top-level DMs.
+Receiving a DM from an unauthorized sender must not trigger work. Channel
+messages and thread replies still require a mention when that setting is enabled.
+Disable direct messages and confirm a plain DM is rejected. Use a private channel
+for threaded conversations.
 
 For Slack acknowledgement latency, mention the bot with and without an attachment.
 Eyes should appear after authorized task/comment persistence, independently of

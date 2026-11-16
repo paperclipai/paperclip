@@ -152,6 +152,8 @@ apply. Top-level DM replies retain their linear conversation destination. Source
 [queued run policy](../../server/src/services/durable-chat-wakeup.ts). Live Slack
 verification of this exemption remains separate from provider-fixture coverage.
 
+TECH-8806 Inbound chat task authorization: an inbound message or direct reply requires the sender to be authorized to direct the endpoint's assigned agent (`tasks:assign`), rather than merely possessing channel access or receiving a bot DM. Unscoped board members and authorized guests pass; unauthorized senders are filtered silently without triggering task creation, comment creation, or agent execution. Sources: [inbound authorization](../../server/src/services/chat-channels/inbound/authorization.ts) and [chat admission](../../server/src/services/chat-channels.ts).
+
 Slack eyes acknowledge the authorized task/comment commit before attachment
 preparation or scheduler acceptance. This server-owned receipt grants no agent
 authority. Generation/credential fencing, durable retries and exact-source final

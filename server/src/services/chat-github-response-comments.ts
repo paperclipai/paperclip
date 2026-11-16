@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, forbidden, HttpError } from "../errors.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
+import { principalMayDirectAssignedAgent } from "./chat-channels/inbound/authorization.js";
 import { githubAutomaticAdmission } from "./chat-github-events.js";
 import { githubBotRepositoryToken, githubBotRequest } from "./chat-github-client.js";
 import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
@@ -158,6 +159,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       throw forbidden("GitHub request is no longer authorized");
     const access = await githubChatPrincipalAccess(db, row.endpoint, row.delivery.principalId);
     if (!access?.allowed) throw forbidden("The initiating GitHub person is no longer authorized");
+    const actingUserId = access.userId ?? access.sponsorUserId ?? row.endpoint.sponsorUserId;
+    if (!(await principalMayDirectAssignedAgent(db, row.endpoint, actingUserId)))
+      throw forbidden("The initiating GitHub person is not authorized to direct this agent");
     const automatic = (row.delivery.normalizedEvent.githubAutomatic ?? row.delivery.normalizedEvent.githubIssue) as
       { context: GitHubAutomaticEventContext } | undefined;
     if (automatic && !(await githubAutomaticAdmission(db, row.endpoint, automatic.context))?.allowed)
