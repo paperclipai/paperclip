@@ -64,9 +64,9 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
       awaitingNativeTaskLock = true;
       const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, sourceRun.nativeIssueId),
         eq(issues.companyId, sourceRun.companyId))).for("update", { noWait: true });
-      awaitingNativeTaskLock = false;
       if (issue) nativeCheckpointPending = await pendingNativeCheckpointRetry(tx, { companyId: sourceRun.companyId,
         issueId: sourceRun.nativeIssueId, agentId: sourceRun.agentId, runId });
+      awaitingNativeTaskLock = false;
       const [currentRun] = await tx.select({ agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
         runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
         eq(heartbeatRuns.companyId, sourceRun.companyId))).for("update", { skipLocked: true });

@@ -10,6 +10,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
+import { postgresErrorCode } from "../transient-lock-contention.js";
 
 export async function releaseNativeCheckpointRetryWaits(db: Db, input: {
   issue: Pick<typeof issues.$inferSelect, "id">;
@@ -94,17 +95,47 @@ export async function readNativeSessionResumptionAgent(db: Db, input: {
   return agent;
 }
 
+export class NativeCheckpointAdmissionBusyError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("native_checkpoint_admission_busy", options);
+    this.name = "NativeCheckpointAdmissionBusyError";
+  }
+}
+
+export function isNativeCheckpointAdmissionContention(error: unknown): boolean {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 4; depth += 1) {
+    if (current instanceof NativeCheckpointAdmissionBusyError) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Callers already hold the task. Never wait on a coordinator/run owner that
+ * may be committing a status decision in the opposite lock order. Contention
+ * throws: the caller must roll back before retrying this exact admission. */
+export async function lockNativeCheckpointAdmissionSource(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; runId: string;
+}) {
+  try {
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+      eq(nativeRunFinalizations.runId, input.runId),
+    )).for("update", { noWait: true }).limit(1);
+    const [run] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
+    )).for("update", { noWait: true }).limit(1);
+    return { coordinator, run };
+  } catch (error) {
+    if (postgresErrorCode(error) === "55P03") throw new NativeCheckpointAdmissionBusyError({ cause: error });
+    throw error;
+  }
+}
+
 export async function pendingNativeCheckpointRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string;
 }): Promise<boolean> {
-  const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
-    eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
-    eq(nativeRunFinalizations.runId, input.runId),
-  )).for("update").limit(1);
-  const [run] = await db.select().from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
-    eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
-  )).for("update").limit(1);
+  const { coordinator, run } = await lockNativeCheckpointAdmissionSource(db, input);
   return Boolean(run && coordinator && run.runtimeMode === "native" && run.status === "failed"
     && run.runnerProfileJson?.legacyWorkspaceRecoveryMigration == null
     && coordinator.phase === "retryable_failure" && coordinator.resultId === null

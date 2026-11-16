@@ -1,5 +1,5 @@
 import { isNativeRunnerOwnershipHeld } from "./native-runtime/native-runner-ownership.js";
-import { readNativeSessionResumptionAgent } from "./native-runtime/native-session-resumption-admission.js";
+import { readNativeSessionResumptionAgent, lockNativeCheckpointAdmissionSource } from "./native-runtime/native-session-resumption-admission.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -238,14 +238,9 @@ export async function coalesceRestoredNativeTaskRetry(db: Db, input: {
   if (!issue) return null;
   if (issue.assigneeAgentId !== input.agentId || issue.executionRunId !== input.sourceRunId ||
       (issue.checkoutRunId && issue.checkoutRunId !== input.sourceRunId)) return null;
-  const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
-    eq(nativeRunFinalizations.companyId, issue.companyId), eq(nativeRunFinalizations.issueId, issue.id),
-    eq(nativeRunFinalizations.runId, input.sourceRunId),
-  )).for("update").limit(1);
-  const [run] = await db.select().from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.nativeIssueId, issue.id),
-    eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.id, input.sourceRunId),
-  )).for("update").limit(1);
+  const { coordinator, run } = await lockNativeCheckpointAdmissionSource(db, {
+    companyId: issue.companyId, issueId: issue.id, agentId: input.agentId, runId: input.sourceRunId,
+  });
   if (!coordinator || !run || run.status !== "running" || run.runtimeMode !== "native" ||
       ["retryable_failure", "terminal_failure", "committed", "applied"].includes(coordinator.phase) ||
       coordinator.resultId !== null || isNativeRunnerOwnershipHeld(run) ||

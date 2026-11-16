@@ -1,4 +1,4 @@
-import { pendingNativeCheckpointRetry } from "../native-runtime/native-session-resumption-admission.js";
+import { pendingNativeCheckpointRetry, isNativeCheckpointAdmissionContention } from "../native-runtime/native-session-resumption-admission.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
@@ -5256,6 +5256,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           return { kind: "queued" as const, run: newRun };
         }))
         .catch((error) => {
+          // This admission rolled back. Keep native contention visible to the
+          // durable receipt owner so its existing deadline retries the source.
+          if (isNativeCheckpointAdmissionContention(error)) throw error;
           if (isExternalChatWaitAuthorizationContention(error))
             return { kind: "deferred" as const };
           throw error;
