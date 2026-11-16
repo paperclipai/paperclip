@@ -115,7 +115,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
   await withOwnedChildren(root, async start => {
     await stageRunnerBinary(process.execPath, destination);
     const previous = await stat(destination);
-    const old = start(destination, ["30"], "sleep");
+    const old = start(destination, ["-e", "setTimeout(() => {}, 30_000)"]);
     await old.spawned;
     await stageRunnerBinary(process.execPath, destination);
     const published = await stat(destination);
@@ -124,7 +124,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
-    const next = start(destination, ["0"], "sleep");
+    const next = start(destination, ["-e", "process.exit(0)"]);
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -150,7 +150,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(source), { recursive: true });
     await writeFile(source, "fn main() {}\n");
     await mkdir(path.dirname(built), { recursive: true });
-    await copyHostFixture("/bin/sh", built);
+    await copyHostFixture(process.execPath, built);
     const previousBuild = path.join(root, "previous-build");
     await copyHostFixture(process.execPath, previousBuild);
     await appendFile(built, "\npaperclip-rebuilt-fixture\n");
@@ -180,7 +180,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     const manifestPath = path.join(binaryRoot, "release-manifest.json");
     const manifest = JSON.stringify({ schema: "paperclip.runner.release-binaries.v1", sourceRevision: "a".repeat(40), platforms });
     await writeFile(manifestPath, manifest);
-    const old = start(hostTarget, ["30"], "sleep");
+    const old = start(hostTarget, ["-e", "setTimeout(() => {}, 30_000)"]);
     await old.spawned;
     const requirement = { repoRoot: root, nativeRunnerRequired: true };
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), true);
@@ -200,7 +200,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), false);
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
-    const next = start(selected.binary, ["-c", "exit 0"]);
+    const next = start(selected.binary, ["-e", "process.exit(0)"]);
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });

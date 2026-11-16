@@ -201,12 +201,10 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
     if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
-    const attemptedCredentialHashes = taskQuotaEvidence ? await failedPoolCredentialHashes(db, run, taskKey, selection.poolId) : [];
-  if (!attemptedCredentialHashes) return null;
-  const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
+    const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
     const next = await aiConnectionRouterService(tx as unknown as Db).transitionQuotaPin({ companyId: run.companyId,
       poolId: selection.poolId, agentId: run.agentId, taskKey, expectedSelection: pin.selection, userId,
-      adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], attemptedCredentialHashes, failureKind: kind,
+      adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
       sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
     if (next.kind !== "selected") return;
     const updated = { ...context, aiRouterSelection: next.selection,

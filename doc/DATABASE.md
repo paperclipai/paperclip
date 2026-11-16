@@ -423,4 +423,3 @@ up separately when you need full instance disaster recovery.
 | Response-size diagnostics, the postgres.js patch, transaction memory | [database-client-internals.md](database-client-internals.md) |
 | Remote workspace snapshot storage | [workspace-storage.md](workspace-storage.md#experimental-remote-workspace-snapshots) |
 | Execution admission tables | [server/src/modules/README.md](../server/src/modules/README.md#execution-admission-accounting) |
-
