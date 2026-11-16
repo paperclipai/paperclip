@@ -42,8 +42,6 @@ describe("collectExpectedSchema", () => {
     expect(expected.size).toBeGreaterThan(50);
     const companies = expected.get("companies");
     expect(companies).toBeDefined();
-    // Real companies columns from the drizzle schema; their absence from the
-    // live DB is exactly the AGE-759/AGE-764 drift pattern this gate catches.
     expect(companies?.has("issue_prefix")).toBe(true);
     expect(companies?.has("budget_monthly_cents")).toBe(true);
   });
@@ -101,9 +99,6 @@ describeEmbeddedPostgres("inspectSchemaDrift (live database)", () => {
     const connectionString = await createTempDatabase();
     await applyPendingMigrations(connectionString);
 
-    // Simulate the AGE-759 drift: the drizzle schema and the fully-applied
-    // migration journal both say companies.budget_monthly_cents exists, but the
-    // live column is gone.
     const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
     try {
       await sql.unsafe('ALTER TABLE "companies" DROP COLUMN "budget_monthly_cents"');

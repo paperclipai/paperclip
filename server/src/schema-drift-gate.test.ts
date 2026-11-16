@@ -21,8 +21,6 @@ const CLEAN_REPORT: SchemaDriftReport = {
   missingColumns: [],
 };
 
-// The AGE-759 drift: the migration journal claims up to date, but the column the
-// migration was supposed to add is absent from the live schema.
 const DRIFTED_REPORT: SchemaDriftReport = {
   drifted: true,
   checkedTables: 42,
@@ -54,8 +52,6 @@ describe("enforceSchemaDriftGate", () => {
       enforceSchemaDriftGate([SERVING_TARGET], { allowDrift: false, logger, assertNoDrift }),
     ).rejects.toThrow(/Refusing to start against a drifted schema/);
 
-    // Full report is logged: the structured payload carries the missing column
-    // and the formatted message names it.
     expect(error).toHaveBeenCalledTimes(1);
     const [payload, message] = error.mock.calls[0];
     expect(payload).toMatchObject({
