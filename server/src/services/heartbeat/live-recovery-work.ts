@@ -7,6 +7,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
 import type { LiveResourceRecoveryScope, LiveRunRecoveryScope } from "../live-run-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "../task-admission.js";
 import { leaseReleaseRetryDueAt, readLeaseReleaseDeferral } from "../environment-lease-release-deferral.js";
 
 function leaseDueAt(metadata: Record<string, unknown> | null) {
@@ -147,7 +148,9 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
       settledOutcomes.set(entry.id, { companyId: entry.companyId, parked: false, attempts, notBefore });
       return { ...entry, dueAt: notBefore };
     }
-    return registerScopedDeadlineWork<Entry, Scope>(coordinator, {
+    const subscriptions: Array<() => void> = [];
+    const worker = registerScopedDeadlineWork<Entry, Scope>(coordinator, {
+      onStop: () => { for (const stop of subscriptions.splice(0)) stop(); },
       queue,
       reconstructionIntervalMs: 30_000,
       beforePass: async () => { enabled = await owner.enabled(); },
@@ -192,6 +195,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);
+    subscriptions.push(subscribeTaskDrainChanges(worker.wake), subscribeTaskDrainExpiry(worker.wake));
+    return worker;
   }
   const workers = [register(DELIVERY_QUEUES.nativeProcessSessions, "native"),
     register(DELIVERY_QUEUES.nativeQuestionCancellations, "question"),

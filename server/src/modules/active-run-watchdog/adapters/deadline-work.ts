@@ -4,6 +4,7 @@ import type { createDeliveryWorkCoordinator } from "../../../services/delivery-w
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import type { LiveRunRecoveryScope } from "../../../services/live-run-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../../../services/scoped-deadline-work.js";
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "../../../services/task-admission.js";
 import type { ScanSilentActiveRunsOptions } from "../application/use-cases.js";
 import type { WatchdogRunReader } from "../application/ports.js";
 
@@ -17,7 +18,9 @@ export function registerActiveRunSilenceWork(db: Db,
 ) {
   const cursors = new Map<string, string>();
   let enabled = false;
-  return registerScopedDeadlineWork<Entry, LiveRunRecoveryScope>(coordinator, {
+  const subscriptions: Array<() => void> = [];
+  const worker = registerScopedDeadlineWork<Entry, LiveRunRecoveryScope>(coordinator, {
+    onStop: () => { for (const stop of subscriptions.splice(0)) stop(); },
     queue: DELIVERY_QUEUES.activeRunSilence,
     reconstructionIntervalMs: 30_000,
     beforePass: async () => { enabled = await owner.enabled(); },
@@ -59,4 +62,6 @@ export function registerActiveRunSilenceWork(db: Db,
       return next === null ? null : { ...entry, dueAt: next };
     },
   }, canRun);
+  subscriptions.push(subscribeTaskDrainChanges(worker.wake), subscribeTaskDrainExpiry(worker.wake));
+  return worker;
 }

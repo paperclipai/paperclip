@@ -320,6 +320,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const value=record({direction:"inbound",surface,path:pathKind((req.url??"").split("?",1)[0]??""),method:methodKind(req.method),hostMatch:req.headers.host===new URL(surface==="cloud"?cloudOrigin:origin).host});
     res.once("finish",()=>{value.status=res.statusCode;});
   };
+  // Controlled phase boundary in the existing real transport: park only the
+  // first signed safety GET after the real authenticated idle-hold POST replies.
+  // No response is synthesized; release forwards the original request unchanged.
+  let idleSleepReadBoundary:{postResponses:number;postValidated:boolean;ownerId?:string;
+    safetyRequests:number;parked:boolean;forwarded:number;released:Promise<void>;release:()=>void}|undefined;
   const mapped:typeof fetch=async(input,init)=>{
     const original=new Request(input,init),target=new URL(original.url);
     const surface=target.origin===cloudOrigin?"cloud":ownedTenantOrigins.has(target.origin)||target.origin===upstreamOrigin?"tenant":undefined;
@@ -329,14 +334,38 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     if(!surface){unexpectedFetches++;throw new Error("Unexpected off-host principal fixture request");}
     const base=surface==="cloud"?cloudLoopback:appLoopback;
     const headers=new Headers(original.headers);headers.set("host",new URL(surface==="cloud"?cloudOrigin:origin).host);
-    const body=original.body?Buffer.from(await original.arrayBuffer()):undefined;original.signal.throwIfAborted();
+    const body=original.body?Buffer.from(await original.arrayBuffer()):undefined;
+    const boundary=idleSleepReadBoundary;
+    const signedDrain=surface==="tenant"&&target.pathname==="/api/instance/task-drain"&&Boolean(headers.get("x-paperclip-cloud-control"));
+    const safetyRead=boundary&&signedDrain&&original.method==="GET"&&target.searchParams.get("idleSleepSafety")==="1"&&
+      boundary.postValidated&&target.searchParams.get("ownerId")===boundary.ownerId?boundary:undefined;
+    if(safetyRead){
+      safetyRead.safetyRequests++;
+      if(safetyRead.safetyRequests===1){safetyRead.parked=true;await safetyRead.released;}
+    }
+    original.signal.throwIfAborted();
+    if(safetyRead)safetyRead.forwarded++;
     const value=record({direction:"outbound",surface,path:pathKind(target.pathname),method:methodKind(original.method)});
     return new Promise<Response>((resolve,reject)=>{
       const sent=nodeRequest(new URL(target.pathname+target.search,base),{method:original.method,headers:Object.fromEntries(headers),signal:original.signal},res=>{
         const chunks:Buffer[]=[];let length=0;
         res.on("data",(part:Buffer)=>{length+=part.length;if(length>1_048_576){res.destroy(new Error("Canonical mapped response exceeds transport bound"));return;}chunks.push(part);});
         res.on("error",reject);res.on("end",()=>{value.status=res.statusCode;const responseHeaders=new Headers();for(const [name,header] of Object.entries(res.headers))if(header!==undefined)for(const item of Array.isArray(header)?header:[header])responseHeaders.append(name,item);
-          const status=res.statusCode!;if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));resolve(new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders}));});
+          const status=res.statusCode!;
+          if(boundary&&signedDrain&&original.method==="POST"){
+            boundary.postResponses++;
+            // Observe only an actual successful normal route response. Its
+            // middleware has authenticated the signature and its audit committed.
+            // Do not re-verify here: that would consume the real replay nonce.
+            try{
+              const idleRequest=z.object({purpose:z.literal("idle")}).safeParse(JSON.parse(body?.toString("utf8")??"null"));
+              const hold=z.object({draining:z.literal(true),ownerId:z.string().uuid(),expiresAt:z.string().datetime()}).safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+              if(status===200&&idleRequest.success&&hold.success&&Date.parse(hold.data.expiresAt)>Date.now()){
+                boundary.ownerId=hold.data.ownerId;boundary.postValidated=true;
+              }
+            }catch{/* Invalid real replies remain unchanged and cannot arm the boundary. */}
+          }
+          if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));resolve(new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders}));});
       });
       sent.on("error",error=>{const code="code" in error?error.code:undefined;value.error=code==="ECONNRESET"||code==="ECONNREFUSED"||code==="EPIPE"||code==="ABORT_ERR"||code==="ETIMEDOUT"?code:"other";reject(error);});sent.end(body);
     });
@@ -978,6 +1007,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     };
     const settleActualOwners=async(deadline:number)=>{
       await vi.waitFor(async()=>{
+        if(idleSleepReadBoundary){
+          expect(idleSleepReadBoundary.postResponses).toBe(1);expect(idleSleepReadBoundary.postValidated).toBe(true);
+          expect(idleSleepReadBoundary.parked).toBe(true);expect(idleSleepReadBoundary.safetyRequests).toBe(1);
+          expect(idleSleepReadBoundary.forwarded).toBe(0);
+        }
         const child=await syncChildObservation(deadline);
         expect(child.owner.taskDrain).toMatchObject({activeRuns:0,pendingWakes:0,quiescent:true});
         expect(child.owner.worker.active+idleWorkSnapshot().active).toBe(0);
@@ -991,21 +1025,51 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       },{timeout:deadline-performance.now(),interval:25});
     };
     const firstSettlementDeadline=performance.now()+15_000;
-    await settleActualOwners(firstSettlementDeadline);
+    let releaseSafetyRead!:()=>void;
+    const firstIdleBoundary={postResponses:0,postValidated:false,ownerId:undefined as string|undefined,
+      safetyRequests:0,parked:false,forwarded:0,released:new Promise<void>(resolve=>{releaseSafetyRead=resolve;}),release:()=>releaseSafetyRead()};
+    idleSleepReadBoundary=firstIdleBoundary;
+    // Launch the SAME actual owner operation before settlement. Only its first
+    // safety GET is parked; the real POST must already have committed its hold.
+    const sleepOutcome=Promise.resolve(cloudCall(`/v1/stacks/${slug}/sleep`,{reason:"idle"},true)).then(
+      response=>({ok:true as const,response}),error=>({ok:false as const,error}));
+    const sleepResponse=await(async()=>{
+      const failures:unknown[]=[];
+      let response:Awaited<ReturnType<typeof cloudCall>>|undefined;
+      try{
+        await settleActualOwners(firstSettlementDeadline);
+      }catch(error){failures.push(error);}
+      finally{
+        firstIdleBoundary.release();
+        try{
+          const outcome=await sleepOutcome;
+          if(!outcome.ok)throw outcome.error;
+          response=outcome.response;expect(response.status).toBe(200);
+          expect(firstIdleBoundary.postResponses).toBe(1);expect(firstIdleBoundary.safetyRequests).toBe(2);
+          expect(firstIdleBoundary.forwarded).toBe(2);
+        }catch(error){failures.push(error);}
+        finally{idleSleepReadBoundary=undefined;}
+      }
+      if(failures.length===1)throw failures[0];
+      if(failures.length>1)throw new AggregateError(failures,"Original settlement and actual Cloud sleep failed");
+      if(!response)throw new Error("Missing actual Cloud sleep response");
+      return response;
+    })();
+    // This is controlled local provider/HTTP availability, not deployed suspension.
+    // The unchanged Cloud controller also enforces real admission and wake alarms
+    // before its hold revalidation and normal provider stop can return success.
+    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"sleeping",sleepState:"sleeping",sleepReason:"idle"});
+    const idleAdmission=await registry.readIdleMcpWakeAdmission(stackId);expect(idleAdmission).toBeTruthy();
+    const admissionDigest=createHash("sha256").update(JSON.stringify(idleAdmission)).digest("hex");
     const beforeRead=databaseObservation.queries;expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");expect(databaseObservation.queries).toBeGreaterThan(beforeRead);
+    // Include the released real safety reads and all original DB assertions in
+    // the SAME original settlement deadline, before the unchanged strict window.
     await awaitPassiveConnectionClosure(firstSettlementDeadline);
     const before=await totalTenantSnapshot();let quietAfter:typeof before|undefined;const quietTraceStart=performance.now();
     // No SQL observer or child IPC request during this strict window. Only the
     // original actual tenant/Cloud owners can change the passive counters.
     await pause(15_000);const quietTraceEnd=performance.now();quietAfter=await totalTenantSnapshot();
     expect(quietAfter).toEqual(before);expect(errors).toEqual([]);
-    // The normal owner route acquires the signed tenant idle hold, reads the
-    // real current mirror/admission and calls the existing provider stop owner.
-    // This is controlled local provider/HTTP availability, not deployed suspension.
-    const sleepResponse=await cloudCall(`/v1/stacks/${slug}/sleep`,{reason:"idle"},true);expect(sleepResponse.status).toBe(200);
-    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"sleeping",sleepState:"sleeping",sleepReason:"idle"});
-    const idleAdmission=await registry.readIdleMcpWakeAdmission(stackId);expect(idleAdmission).toBeTruthy();
-    const admissionDigest=createHash("sha256").update(JSON.stringify(idleAdmission)).digest("hex");
     const [preWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
     await setChildHealth("wake-once-then-unavailable");
     const failedReadiness=await tool(raw,"paperclip_dot_tasks",{});expect(failedReadiness.status).toBe(503);expect(failedReadiness.body).toMatchObject({error:"temporarily_unavailable"});
