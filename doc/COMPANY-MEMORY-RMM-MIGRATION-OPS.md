@@ -1,14 +1,17 @@
 # rh-memory-mcp migration operations appendix
 
-**Status (13 Nov 2026):** importer PR 12155 is unmerged. The order is code and
-review/merge of the GET-by-id service change, importer PR 12155, and PRs 400/401
-(401 is merged); then, with Dan's explicit go, dsc-agent2 performs the one
-production `rh-memory-mcp` service apply. After that service deployment,
-smoke-test `GET /memories/{id}` before any import. Separately, pin one
-Paperclip image through dev first, then apply that image in production; the
-planned ~5-minute Paperclip downtime requires its own go and is not approved
-now. PR 400's final SHA is not known here. No pin, deploy, or production
-operation is performed by this runbook owner.
+**Status (16 Nov 2026):** the importer (rh-data-platform PR 12155), the filter
+(fork PR 402), capture-off for Claude/Codex (PR 401), and the `responsibleUserId`
+enrolment override (PR 414, merge `773eed4a`; say "once deployed" until it is) are all
+merged. The pipeline ran in production on 2026-11-13..16; see the
+[migration runbook](./COMPANY-MEMORY-RMM-MIGRATION.md) for the steps. No pin, deploy,
+or production operation is performed by this appendix.
+
+Production guard values used: schema `rh_memory_mcp_prod`, collection `memories`,
+role `rh_memory_app_prod`, model `text-embedding-3-small`, dims `1536`. The host
+fingerprint (`sha256:<12 hex>`) hashes host:port only and dev and prod share one
+Postgres, so schema + collection + role are the real guards. The importer's own README
+shows the non-prod values (`rh_memory_mcp`, `rh_memory_app`).
 
 ## Guards and exact command source
 
@@ -29,7 +32,8 @@ uv run python -m scripts.import_memories "${COMMON[@]}" "${GUARDS[@]}"
 RH_MEMORY_IMPORT_ALLOWED=true uv run python -m scripts.import_memories \
   "${COMMON[@]}" "${GUARDS[@]}" --expect-host-fingerprint "$HOST_FINGERPRINT" --apply
 uv run python -m scripts.import_memories "${COMMON[@]}" --verify
-uv run python -m scripts.import_memories "${COMMON[@]}" "${GUARDS[@]}" \
+RH_MEMORY_IMPORT_ALLOWED=true uv run python -m scripts.import_memories \
+  "${COMMON[@]}" "${GUARDS[@]}" \
   --expect-host-fingerprint "$HOST_FINGERPRINT" --rollback \
   --migration-id "$MIGRATION_ID" --apply
 ```
@@ -56,29 +60,32 @@ transport, then verify byte count and sha-256 at the destination **before**
 apply. If no proven transport exists, status is **BLOCKED**. Do not fabricate
 S3, credential, upload, or test-production commands.
 
-## Pilot, capture, and rollback
+## Capture and rollback
 
-The current `dan-costanza` pilot is additive into the already-enrolled five:
-Chief of Staff (6,912), CTO (541), and Talent (181) had rows at last census;
-ArcQA and LeadDeveloper did not. Recheck before action. The pilot has no
-enrollment or unenrollment and no global change. The old tenant is retained;
-there is no publish/flip/drain/prune. A production sweep/import requires
-separate explicit approval; this document alone authorizes none.
+The import is additive per agent. The old tenant is retained; there is no
+publish/flip/drain/prune. This document alone authorizes no production sweep, import,
+or enrolment.
 
-Imported rollback removes only rows identified by provenance (`source`,
-`migration_id`, agent, and import key). Ordinary post-cutover memory remains.
-It does not switch the backend or alter captures. The pilot needs no
-enrollment rollback. Backend restoration is a separate approved change and
-requires a complete prior configuration/environment snapshot, secret reference
-and version identifiers, and a credential revocation/rotation plan owned by
-the service owner. Do not put raw secrets in this runbook. There is no
-automatic unenrollment or rollback endpoint.
+Imported rollback (`--rollback --agent <id> --migration-id <uuid> --apply`, with the
+guards and `RH_MEMORY_IMPORT_ALLOWED=true`) removes only rows identified by provenance
+(`source`, `migration_id`, agent, and import key). Ordinary post-cutover memory remains.
+It does not switch the backend or alter captures. Keep each agent's import journal
+(0600) until sign-off. Backend restoration is a separate approved change and requires a
+complete prior configuration/environment snapshot, secret reference and version
+identifiers, and a credential revocation/rotation plan owned by the service owner. Do
+not put raw secrets in this runbook. There is no automatic unenrolment or rollback
+endpoint.
 
-New Claude/Codex enrollment defaults to capture-off per PR 401; already
-enrolled agents retain their existing setting. LeadDeveloper `RH_MEMORY_CAPTURE`
-off is a separate, explicit approved config patch after the new image.
-Recall-only has no manual-save tool. The Hermes `mem0-auto-sync-off` flag makes
-the adapter set `MEM0_AUTO_SYNC=false` to disable end-of-turn auto-sync after
-the patched image; explicit Mem0 tools remain available. Preserve existing env
-keys.
-Enrollment does not enable capture universally.
+Claude/Codex enrolment defaults to capture-off (`RH_MEMORY_CAPTURE=off`, PR 401) unless
+the server sets `PAPERCLIP_AGENT_MEMORY_CAPTURE=on`; an explicit agent
+`RH_MEMORY_CAPTURE` is preserved. Recall-only agents have no manual-save tool. The
+Hermes `mem0-auto-sync-off` flag makes the adapter set `MEM0_AUTO_SYNC=false` to disable
+end-of-turn auto-sync after the patched image; explicit Mem0 tools remain available.
+Preserve existing env keys. Enrolment does not enable capture universally.
+
+## Importer operating notes
+
+- Apply takes a per-agent Postgres advisory lock honoured only by this tool.
+- Importing two upgrades of one agent duplicates rows (`import_key` is new per upgrade).
+- Direct writes bypass the REST rate limiter; each record costs an OpenAI embedding call and a DB session.
+- `--sleep-interval` (default 0.05 s), `--verify-probes` (default 5) and `--output-dir` (journal directory) are importer flags.
