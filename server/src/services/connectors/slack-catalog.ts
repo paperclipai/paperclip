@@ -176,9 +176,7 @@ export async function syncSlackBotTools(
     // opt-in-driven removal is re-activated when the group comes back.
     const operatorStatus = existing?.status === "disabled" || existing?.status === "quarantined"
       ? existing.status : undefined;
-    const status = gated && operatorStatus
-      ? operatorStatus
-      : activated ? "active" as const : "removed" as const;
+    const status = operatorStatus ?? (activated ? "active" as const : "removed" as const);
     const values = {
       companyId: endpoint.companyId,
       applicationId: connection.applicationId,
@@ -214,7 +212,7 @@ export async function syncSlackBotTools(
           ...values,
           ...(existing
             ? {
-                status: gated ? values.status : existing.status,
+                status: values.status,
                 reviewedByUserId: existing.reviewedByUserId,
                 reviewedAt: existing.reviewedAt,
               }

@@ -36,3 +36,30 @@ describe("Slack permission group guidance", () => {
     expect(guidance("reconnect")).toContain("slack_upload_file");
   });
 });
+
+describe("Slack DM reconnect notice (TECH-8783)", () => {
+  it("renders reconnect notice when dmReconnectRequired is true", () => {
+    const capabilities: SlackToolCapabilities = {
+      grantedScopes: ["chat:write"],
+      missingScopes: ["im:write"],
+      dmReconnectRequired: true,
+      tools: [],
+    };
+    const element = document.createElement("div");
+    element.innerHTML = renderToStaticMarkup(<SlackCapabilitiesView capabilities={capabilities} />);
+    expect(element.textContent).toContain("Reconnect Slack to grant DM permission");
+    expect(element.textContent).toContain("slack_open_dm will fail until you reconnect");
+  });
+
+  it("hides reconnect notice when dmReconnectRequired is false or undefined", () => {
+    const capabilities: SlackToolCapabilities = {
+      grantedScopes: ["chat:write", "im:write"],
+      missingScopes: [],
+      dmReconnectRequired: false,
+      tools: [],
+    };
+    const element = document.createElement("div");
+    element.innerHTML = renderToStaticMarkup(<SlackCapabilitiesView capabilities={capabilities} />);
+    expect(element.textContent).not.toContain("Reconnect Slack to grant DM permission");
+  });
+});

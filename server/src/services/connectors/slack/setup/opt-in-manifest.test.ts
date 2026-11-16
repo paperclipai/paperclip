@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import {
@@ -13,12 +13,8 @@ import {
 } from "@paperclipai/db";
 import { buildSlackAppManifest, SLACK_OPT_IN_SCOPE_GROUPS } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../../__tests__/helpers/embedded-postgres.js";
-import {
-  applySlackOptInManifestChange,
-  canonicalJson,
-  recordInstalledSlackOptIns,
-  slackInstallManifestHash,
-} from "./opt-in-manifest.js";
+import { applySlackOptInManifestChange, canonicalJson, ensureSlackManifestScopesCurrent, recordInstalledSlackOptIns, slackInstallManifestHash } from "./opt-in-manifest.js";
+import { instanceSettingsService } from "../../../instance-settings.js";
 import { slackBotCatalogIsCurrent, syncSlackBotTools } from "../../slack-catalog.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -46,6 +42,7 @@ describe("Slack opt-in manifest machinery", () => {
   async function fixture() {
     database ??= await startEmbeddedPostgresTestDatabase("paperclip-slack-opt-in-");
     db ??= createDb(database.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const [company] = await db.insert(companies).values({ name: `Opt-in ${randomUUID()}`, issuePrefix: `SO${randomUUID().slice(0, 6).toUpperCase()}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Opt-in agent" }).returning();
     const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "Slack", type: "mcp_http" }).returning();
@@ -221,7 +218,7 @@ describe("Slack opt-in manifest machinery", () => {
         })
         .where(eq(chatEndpoints.id, f.endpoint.id));
       const [legacy] = await db!.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
-      expect(SLACK_OPT_IN_SCOPE_GROUPS).toHaveLength(3);
+      expect(SLACK_OPT_IN_SCOPE_GROUPS).toHaveLength(2);
       await db!.transaction((tx) => syncSlackBotTools(tx, legacy!, "user", true));
       const [upload] = await db!.select({ status: toolCatalogEntries.status })
         .from(toolCatalogEntries)
@@ -230,6 +227,257 @@ describe("Slack opt-in manifest machinery", () => {
           eq(toolCatalogEntries.name, "slack_bot:slack_upload_file"),
         ));
       expect(upload?.status).toBe("active");
+    });
+
+    it("quietly returns without throwing or writing when app configuration is invalid or missing", async () => {
+      const f = await fixture();
+      const [before] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      await expect(ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: null,
+        setup: f.endpoint.setup,
+      })).resolves.toBeUndefined();
+      await expect(ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: { not_an_app: true },
+        setup: f.endpoint.setup,
+      })).resolves.toBeUndefined();
+      const [after] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(after!.updatedAt).toEqual(before!.updatedAt);
+    });
+
+    it("marks permissions update pending and updates manifest with im:write when scopes drifted", async () => {
+      const f = await fixture();
+      // Simulate old manifest lacking im:write
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: f.endpoint.setup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+    });
+
+    it("is idempotent when called a second time with current scopes", async () => {
+      const f = await fixture();
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: f.endpoint.setup,
+      });
+      const [first] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: f.endpoint.setup,
+      });
+      const [second] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(second!.updatedAt).toEqual(first!.updatedAt);
+      expect(second!.manifestHash).toEqual(first!.manifestHash);
+    });
+
+    it("preserves slack_manifest_update_pending errorCode when refreshing scopes", async () => {
+      const f = await fixture();
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        errorCode: "slack_manifest_update_pending",
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: f.endpoint.setup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_manifest_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+    });
+
+    it("pushes manifest with im:write in the same call when existing app has drifted scopes", async () => {
+      const f = await fixture();
+      const webhookUrl = `https://paperclip.example/api/chat-webhooks/${f.endpoint.publicId}/slack`;
+      // Old manifest lacking im:write
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl,
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatEndpoints).set({
+        setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackSetupMethod}', '"automatic"'::jsonb)`,
+      }).where(eq(chatEndpoints.id, f.endpoint.id));
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        status: "configured",
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      const apiCalls: Array<{ method: string; args: any }> = [];
+      const fakeApi = vi.fn(async (method: string, args: any) => {
+        apiCalls.push({ method, args });
+        return { ok: true };
+      });
+
+      const { createCustomerOwnedSetup } = await import("./customer-owned.js");
+      const { createSlackRegistrationStore } = await import("./registration.js");
+
+      const store = createSlackRegistrationStore(db!, {
+        publicOrigin: () => "https://paperclip.example",
+        webhookOrigin: () => "https://paperclip.example",
+        withLock: async (_endpointId, work) => work({ assertOwned: async () => undefined } as any),
+        runtimeSigningSecret: async () => "signing-secret",
+        runtimeBotToken: async () => "xoxb-bot",
+        canWelcome: async () => true,
+        linkInstaller: async () => undefined,
+        configure: async () => undefined,
+        fetch: fakeApi as any,
+      });
+      (store as any).api = fakeApi;
+
+      const credentials = {
+        accessToken: async () => "xoxe-access-token",
+      } as any;
+
+      const setup = createCustomerOwnedSetup(store, credentials);
+      const actor = { userId: "user-1", sessionId: null, bypassPermissionCheck: true };
+
+      await setup.create(f.endpoint.id, actor, {
+        requestId: randomUUID(),
+        credentials: { configurationToken: "xoxe-test-token" },
+      });
+
+      const updateCall = apiCalls.find(c => c.method === "apps.manifest.update");
+      expect(updateCall).toBeDefined();
+      const pushedManifest = JSON.parse(updateCall!.args.manifest);
+      expect(pushedManifest.oauth_config.scopes.bot).toContain("im:write");
+
+      const [updatedRow] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(updatedRow!.status).toBe("install");
+      expect(updatedRow!.errorCode).toBeNull();
+    });
+
+    it("preserves legacy manifest opt-in scopes when refreshing an untouched legacy install lacking im:write", async () => {
+      const f = await fixture();
+      // Untouched legacy install: neither opt-in field present
+      const untouchedSetup = {
+        step: "complete" as const,
+        slackSetupMethod: "managed" as const,
+        slackApp: f.endpoint.setup.slackApp,
+        slackOptInScopeGroups: undefined,
+        slackInstalledOptInScopeGroups: undefined,
+      };
+      await db!.update(chatEndpoints).set({
+        setup: sql`(${chatEndpoints.setup} - 'slackOptInScopeGroups') - 'slackInstalledOptInScopeGroups'`,
+      }).where(eq(chatEndpoints.id, f.endpoint.id));
+
+      // Existing legacy manifest had full grant scopes but lacked im:write
+      const legacyScopesWithoutImWrite = [
+        "channels:history",
+        "chat:write",
+        "channels:manage",
+        "groups:write",
+        "files:write",
+      ];
+      const legacyManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (legacyManifest as any).oauth_config.scopes.bot = legacyScopesWithoutImWrite;
+      await db!.update(chatSlackRegistrations).set({
+        manifest: legacyManifest,
+        manifestHash: slackInstallManifestHash(legacyManifest),
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: untouchedSetup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+      // Retains channel and file opt-in scopes!
+      expect(botScopes).toContain("channels:manage");
+      expect(botScopes).toContain("groups:write");
+      expect(botScopes).toContain("files:write");
+    });
+
+    it("removes optional groups when explicitly requested as empty [] even if previous manifest had them", async () => {
+      const f = await fixture();
+      const explicitEmptySetup = {
+        ...f.endpoint.setup,
+        slackOptInScopeGroups: [],
+        slackInstalledOptInScopeGroups: ["file_upload" as const],
+      };
+      // Manifest previously had file_upload scope
+      const manifestWithFile = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (manifestWithFile as any).oauth_config.scopes.bot = ["chat:write", "files:write"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: manifestWithFile,
+        manifestHash: slackInstallManifestHash(manifestWithFile),
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: explicitEmptySetup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+      expect(botScopes).not.toContain("files:write");
     });
   });
 });

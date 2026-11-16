@@ -1,12 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { chatSlackRegistrations } from "@paperclipai/db";
-import { resolveAgentAppearance, buildSlackAppManifest, isSlackManifestUpdatePending, slackAppConfigurationSchema, slackRequestedOptInGroups, type SlackRegistrationInput, type SlackAvatarState } from "@paperclipai/shared";
+import { isProvisionedSlackSetup, resolveAgentAppearance, buildSlackAppManifest, isSlackManifestUpdatePending, slackAppConfigurationSchema, slackRequestedOptInGroups, type SlackRegistrationInput, type SlackAvatarState } from "@paperclipai/shared";
 import { conflict } from "../../../../errors.js";
 import { logger } from "../../../../middleware/logger.js";
 import type { CredentialMutationLeaseGuard } from "../../../chat-credential-mutation-lease.js";
 import { object, knownProviderErrors, providerFailure, type Registration, type SlackSetupActor, type SlackRegistrationStore } from "./registration.js";
 import type { SlackConfigurationCredentials } from "./configuration-credentials.js";
-import { slackInstallManifestHash } from "./opt-in-manifest.js";
+import { ensureSlackManifestScopesCurrent, slackInstallManifestHash } from "./opt-in-manifest.js";
 
 /** Resolve once, lazily: an early return must never trigger a rotation. */
 function once<T>(resolve: () => Promise<T>): () => Promise<T> {
@@ -30,11 +30,22 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore, credenti
       if (current.endpoint.setup.slackSetupMethod !== method) throw conflict("Resume the selected Slack setup method");
       if (previous && previous.managerGrantId !== (managed?.grantId ?? null)) throw conflict("Resume setup with the original Slack workspace");
       if (previous?.status === "removed") throw conflict("This registration was removed. Continue the selected manual setup.");
-      if (previous?.appId) {
-        if (isSlackManifestUpdatePending(previous.errorCode)) {
+      let activeRegistration = previous;
+      if (previous?.appId && isProvisionedSlackSetup(current.endpoint.setup.slackSetupMethod)) {
+        await ensureSlackManifestScopesCurrent(db, {
+          endpointId,
+          companyId: current.endpoint.companyId,
+          agentName: current.agentName,
+          app: current.endpoint.setup.slackApp,
+          setup: current.endpoint.setup,
+        });
+        activeRegistration = (await registration(endpointId)) ?? previous;
+      }
+      if (activeRegistration?.appId) {
+        if (isSlackManifestUpdatePending(activeRegistration.errorCode)) {
           const configurationToken = await token();
-          if (!await configureManifest(previous, actor, configurationToken, lease, method, api)) return;
-          if (current.endpoint.setup.slackAvatar?.status !== "uploaded") await configureAvatar(previous, actor, configurationToken, lease, api);
+          if (!await configureManifest(activeRegistration, actor, configurationToken, lease, method, api)) return;
+          if (current.endpoint.setup.slackAvatar?.status !== "uploaded") await configureAvatar(activeRegistration, actor, configurationToken, lease, api);
         }
         return;
       }

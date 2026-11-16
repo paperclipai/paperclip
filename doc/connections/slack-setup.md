@@ -26,33 +26,30 @@ not constitute successful configuration.
 
 ## Per-agent permission opt-ins
 
-Each agent's Slack app requests only the workspace's **Low risk** bot scopes by
-default: 28 scopes that cover reading channels and DMs, replying, reactions,
+Each agent's Slack app requests the standard bot scopes by default, including
+`im:write`. These scopes cover reading channels and DMs, replying, reactions,
 pins, bookmarks, canvases, lists, topics, and looking up workspace members
-(`users:read`, plus `users:read.email` so `slack_find_user` can match by email). Slack's app-approval rule can
-therefore auto-approve a managed or own-app install without a human review. This
-is a security boundary: a scope stays in the default set only when it is safe to
-grant every agent.
+(`users:read`, plus `users:read.email` so `slack_find_user` can match by email).
+Outbound DMs are therefore standard for every agent; there is no separate
+**Proactive DMs** checkbox. Workspace approval policy still determines whether
+Slack asks for administrator review.
 
-Three capabilities are not Low risk. They are grouped so an operator can see what
+Two additional capabilities remain optional. They are grouped so an operator can see what
 an agent gains:
 
 | Group | Bot scopes | What it adds |
 | --- | --- | --- |
 | Channel management | `channels:manage`, `groups:write` | Create channels and invite people. |
-| Proactive DMs | `im:write` | Open a DM with the person the agent works for. |
 | File upload | `files:write` | Upload task attachments into Slack. |
 
-An agent starts with every group **off**. Choose agent and the connection's
+An agent starts with every optional group **off**. Choose agent and the connection's
 **Settings → Slack permissions** section list each group with its description and
 exact scopes. Turning a group on adds its scopes to that agent's manifest only.
 
 ### Admin approval and reauthorization
 
-Adding a non-Low-risk scope moves the install out of the auto-approve bucket. The
-Slack approval rule then routes that agent's install to a workspace admin, who
-approves or denies the new permissions. A denial leaves the connection exactly as
-it was.
+Adding an optional scope may require workspace-admin approval under Slack's
+approval policy. A denial leaves the connection exactly as it was.
 
 Enabling a group for an app that is already installed does not change what the
 bot can do until Slack grants the new scopes. Until then the connection keeps its
@@ -67,6 +64,11 @@ group as:
 - **Enabled** — requested and granted by the current install.
 - **Enabled — stays on until you reinstall** — you removed it, but the running
   installation still holds it.
+
+The same applies to the default `im:write` scope. A legacy or existing
+installation that does not have it keeps its current grant; existing bot tokens
+do not acquire it automatically. Refresh the manifest and reconnect/reinstall
+the app before outbound DM tools become available.
 
 ### After a change
 
@@ -91,9 +93,11 @@ badges still describe the live grant, not the pending manifest.
 ### Legacy installations
 
 An installation that predates per-agent opt-ins carries no saved request. It
-keeps the full grant it was installed with, so Settings shows all three groups
-enabled and shows no reinstall prompt. Nothing is pending until an operator
-changes a group. The first change then becomes an ordinary pending change.
+keeps the full grant it was installed with, so Settings shows both optional
+groups enabled and shows no reinstall prompt. Nothing is pending until an
+operator changes a group. The first change then becomes an ordinary pending
+change. Its grant may still lack the now-default `im:write`; refresh the
+manifest and reconnect/reinstall to add that scope.
 
 New drafts always store an explicit (possibly empty) request, so a new agent never
 inherits the legacy full grant.

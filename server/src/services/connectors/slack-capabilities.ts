@@ -107,6 +107,7 @@ export async function slackCapabilities(
     grantedScopes: scopes,
     missingScopes: scopes ? [...required].filter((scope) => !scopes.includes(scope)) : [],
     missingGroups,
+    dmReconnectRequired: scopes ? !scopes.includes("im:write") : false,
     // Only tools this agent may actually call are listed: a gated-off group's
     // tool is neither offered nor reported as merely unavailable.
     tools: tools.map((t) => ({

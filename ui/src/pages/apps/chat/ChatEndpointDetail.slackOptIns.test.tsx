@@ -130,12 +130,12 @@ function buttonWithText(text: string) {
 describe("Slack permission opt-ins on the connection settings page", () => {
   it.each(["managed", "automatic"] as const)("keeps the %s configuration action after a pushed manifest is reverted to the live grant", async slackSetupMethod => {
     const pushed = slackEndpoint({ setup: { ...baseSetup, slackSetupMethod,
-      slackOptInScopeGroups: ["proactive_dms", "file_upload"], slackInstalledOptInScopeGroups: ["proactive_dms"],
+      slackOptInScopeGroups: ["channel_management", "file_upload"], slackInstalledOptInScopeGroups: ["channel_management"],
       slackRegistration: { status: "install", appId: "A123" },
     } });
     mocks.get.mockResolvedValue(pushed);
     mocks.update.mockResolvedValue(slackEndpoint({ setup: { ...baseSetup, slackSetupMethod,
-      slackOptInScopeGroups: ["proactive_dms"], slackInstalledOptInScopeGroups: ["proactive_dms"],
+      slackOptInScopeGroups: ["channel_management"], slackInstalledOptInScopeGroups: ["channel_management"],
       slackRegistration: { status: "install", appId: "A123", errorCode: "slack_permissions_update_pending" },
     } }));
     await render();
@@ -144,8 +144,8 @@ describe("Slack permission opt-ins on the connection settings page", () => {
     expect(buttonWithText(slackSetupMethod === "managed" ? "Reinstall in Slack" : "Update app and reinstall")).toBeDefined();
     expect(container.textContent).toContain("configuration still needs");
     expect(container.querySelectorAll('[data-slack-opt-in-status="enabled"]')).toHaveLength(1);
-    expect(optInCheckbox("Proactive DMs").getAttribute("aria-checked")).toBe("true");
-    expect(container.querySelectorAll('[data-slack-opt-in-status="off"]')).toHaveLength(2);
+    expect(optInCheckbox("Channel management").getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelectorAll('[data-slack-opt-in-status="off"]')).toHaveLength(1);
   });
 
   it("does not replace new permission choices with an older general-settings response", async () => {
@@ -164,15 +164,15 @@ describe("Slack permission opt-ins on the connection settings page", () => {
     await vi.waitFor(() => expect(optInCheckbox("File upload").getAttribute("aria-checked")).toBe("true"));
     await act(async () => resolveGeneral(older));
     await settle();
-    await act(async () => optInCheckbox("Proactive DMs").click());
+    await act(async () => optInCheckbox("Channel management").click());
     await vi.waitFor(() => expect(mocks.update).toHaveBeenLastCalledWith("endpoint-a", {
-      slackOptInScopeGroups: ["proactive_dms", "file_upload"],
+      slackOptInScopeGroups: ["channel_management", "file_upload"],
     }));
   });
-  it("renders the three groups off for an agent with no opt-ins", async () => {
+  it("renders both groups off for an agent with no opt-ins", async () => {
     await render();
     expect(container.textContent).toContain("Extra Slack permissions");
-    for (const label of ["Channel management", "Proactive DMs", "File upload"]) {
+    for (const label of ["Channel management", "File upload"]) {
       expect(optInCheckbox(label).getAttribute("aria-checked")).toBe("false");
     }
   });
@@ -219,7 +219,7 @@ describe("Slack permission opt-ins on the connection settings page", () => {
     await render();
     const boxes = [...container.querySelectorAll<HTMLButtonElement>('button[role="checkbox"]')];
     // Guard against a vacuous pass: the section must actually be rendered.
-    expect(boxes).toHaveLength(3);
+    expect(boxes).toHaveLength(2);
     expect(boxes.every((box) => box.getAttribute("aria-checked") === "true")).toBe(true);
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(buttonWithText("Reinstall in Slack")).toBeUndefined();

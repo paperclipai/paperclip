@@ -3,7 +3,7 @@ import { and, eq, sql, inArray } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
 import { authorizeSlackChannel } from "./slack-access.js";
-import { slackOtherUserDmsEnabled } from "./slack-opt-ins.js";
+import { SLACK_OTHER_USER_DM_OPTIONS } from "./slack-opt-ins.js";
 import type {
   SlackTaskAuthority,
   SlackTaskBinding,
@@ -60,11 +60,9 @@ export async function slackDelivery(
   }
   const args = object(action.payload.args);
   if (action.status === "uncertain" && typeof args.channel === "string") {
-    // Reconciling the bot's own uncertain post may look at a DM it wrote to when Proactive DMs is on; only the
+    // Reconciling the bot's own uncertain post may look at a DM it wrote to; only the
     // matching message's timestamp is returned, never message content.
-    await authorizeSlackChannel(authority, api, args.channel, {
-      allowOtherUserDm: await slackOtherUserDmsEnabled(db, authority.endpoint),
-    });
+    await authorizeSlackChannel(authority, api, args.channel, SLACK_OTHER_USER_DM_OPTIONS);
     let receipt: Record<string, unknown> | null = null;
     if (action.payload.name === "slack_post_message") {
       let cursor = "";

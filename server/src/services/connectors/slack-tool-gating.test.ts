@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import { toolCatalogEntries, toolConnections, type Db } from "@paperclipai/db";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { executeSlackTool, executeGovernedSlackTool } from "./slack.js";
 import { executeSlackWrite } from "./slack-writes.js";
 import { registerSlackTaskAuthority, type SlackTaskAuthority } from "./slack-authority.js";
 import { slackEnabledToolsForSetup } from "./slack-opt-ins.js";
+import { syncSlackBotTools } from "./slack-catalog.js";
 
 /**
  * TECH-7988: a tool this agent did not enable must be rejected before any Slack
@@ -41,11 +42,47 @@ describe("Slack tool dispatch opt-in gating", () => {
     } as unknown as SlackTaskAuthority;
   }
 
+  function mockDbForWrites() {
+    const actions: any[] = [];
+    const makeTx = () => ({
+      execute: vi.fn(async () => undefined),
+      select: () => ({
+        from: () => ({
+          where: async () => [{ id: "inv-1", status: "executing", approvalState: "approved" }],
+        }),
+      }),
+      insert: () => ({
+        values: (val: any) => ({
+          returning: () => [{ id: "act-1", ...val }],
+          onConflictDoNothing: () => ({
+            returning: () => {
+              const action = { id: "action-1", status: "received", ...val };
+              actions.push(action);
+              return [action];
+            },
+          }),
+        }),
+      }),
+      update: () => ({
+        set: (val: any) => ({
+          where: () => ({
+            returning: () => [{ ...actions[0], ...val }],
+          }),
+        }),
+      }),
+    });
+    const tx = makeTx();
+    return {
+      ...tx,
+      transaction: async (fn: any) => fn(tx),
+    } as unknown as Db;
+  }
+
   async function withAuthority<T>(
     setup: Record<string, unknown>,
     run: (db: Db) => Promise<T>,
   ): Promise<T> {
-    const db = {} as Db;
+    const db = mockDbForWrites();
     const unregister = registerSlackTaskAuthority(db, async () => authority(setup));
     try {
       return await run(db);
@@ -54,15 +91,137 @@ describe("Slack tool dispatch opt-in gating", () => {
     }
   }
 
-  it.each([
-    ["slack_upload_file", { attachmentId: "00000000-0000-4000-8000-000000000000", channel: "C1", idempotencyKey: "00000000-0000-4000-8000-000000000001" }],
-    ["slack_open_dm", { idempotencyKey: "00000000-0000-4000-8000-000000000002" }],
-  ])("rejects %s before any Slack call when the group is off", async (tool, args) => {
+  it("rejects slack_upload_file before any Slack call when the group is off", async () => {
     await withAuthority({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }, async (db) => {
       const fetchImpl = vi.fn();
-      await expect(executeSlackTool(db, binding, tool, args, fetchImpl as unknown as typeof fetch))
+      await expect(executeSlackTool(db, binding, "slack_upload_file", {
+        attachmentId: "00000000-0000-4000-8000-000000000000",
+        channel: "C1",
+        idempotencyKey: "00000000-0000-4000-8000-000000000001",
+      }, fetchImpl as unknown as typeof fetch))
         .rejects.toMatchObject({ status: 403, details: { code: "slack_tool_not_enabled" } });
       expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not reject slack_open_dm by opt-in gating when opt-ins are off", async () => {
+    await withAuthority({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }, async (db) => {
+      const fetchImpl = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("users.info")) {
+          return new Response(JSON.stringify({
+            ok: true,
+            user: { id: "U1", team_id: "T1", is_bot: false, deleted: false },
+          }), { headers: { "x-oauth-scopes": "im:history,im:read,im:write,chat:write" } });
+        }
+        if (url.includes("conversations.open")) {
+          return new Response(JSON.stringify({ ok: true, channel: { id: "D1" } }));
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      });
+      await expect(executeSlackTool(
+        db,
+        binding,
+        "slack_open_dm",
+        { idempotencyKey: "00000000-0000-4000-8000-000000000002" },
+        fetchImpl as unknown as typeof fetch,
+        "inv-1",
+      )).resolves.toMatchObject({ channel: "D1" });
+      expect(fetchImpl).toHaveBeenCalled();
+    });
+  });
+
+  it("fails fast with 403 slack_dm_scope_missing when grantedScopes lacks im:write and does not call conversations.open", async () => {
+    await withAuthority({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }, async (db) => {
+      const fetchImpl = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("users.info")) {
+          return new Response(JSON.stringify({
+            ok: true,
+            user: { id: "U1", team_id: "T1", is_bot: false, deleted: false },
+          }), { headers: { "x-oauth-scopes": "im:history,im:read,chat:write" } });
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      });
+      const error = await executeSlackTool(
+        db,
+        binding,
+        "slack_open_dm",
+        { idempotencyKey: "00000000-0000-4000-8000-000000000003" },
+        fetchImpl as unknown as typeof fetch,
+        "inv-1",
+      ).catch((e) => e);
+      expect(error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("Reconnect"),
+        details: { code: "slack_dm_scope_missing" },
+      });
+      const calls = fetchImpl.mock.calls.map(([req]) => String(req));
+      expect(calls.some((url) => url.includes("conversations.open"))).toBe(false);
+    });
+  });
+
+  it("proceeds with conversations.open when grantedScopes includes im:write", async () => {
+    await withAuthority({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }, async (db) => {
+      const fetchImpl = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("users.info")) {
+          return new Response(JSON.stringify({
+            ok: true,
+            user: { id: "U1", team_id: "T1", is_bot: false, deleted: false },
+          }), { headers: { "x-oauth-scopes": "im:history,im:read,im:write,chat:write" } });
+        }
+        if (url.includes("conversations.open")) {
+          return new Response(JSON.stringify({ ok: true, channel: { id: "D_GRANTED" } }));
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      });
+      const result = await executeSlackTool(
+        db,
+        binding,
+        "slack_open_dm",
+        { idempotencyKey: "00000000-0000-4000-8000-000000000004" },
+        fetchImpl as unknown as typeof fetch,
+        "inv-1",
+      );
+      expect(result).toMatchObject({ channel: "D_GRANTED" });
+      const calls = fetchImpl.mock.calls.map(([req]) => String(req));
+      expect(calls.some((url) => url.includes("conversations.open"))).toBe(true);
+    });
+  });
+
+  it("surfaces slack_dm_scope_missing when x-oauth-scopes header is absent and conversations.open rejects with missing_scope", async () => {
+    await withAuthority({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }, async (db) => {
+      const fetchImpl = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("users.info")) {
+          return new Response(JSON.stringify({
+            ok: true,
+            user: { id: "U1", team_id: "T1", is_bot: false, deleted: false },
+          }));
+        }
+        if (url.includes("conversations.open")) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: "missing_scope",
+            needed: "im:write",
+          }));
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      });
+      const error = await executeSlackTool(
+        db,
+        binding,
+        "slack_open_dm",
+        { idempotencyKey: "00000000-0000-4000-8000-000000000005" },
+        fetchImpl as unknown as typeof fetch,
+        "inv-1",
+      ).catch((e) => e);
+      expect(error).toMatchObject({
+        status: 403,
+        message: expect.stringContaining("Reconnect"),
+        details: { code: "slack_dm_scope_missing" },
+      });
     });
   });
 
@@ -197,7 +356,7 @@ describe("Slack gating fail-closed edges", () => {
  * tool is advertised but fails, or is callable while hidden.
  */
 describe("Slack listing and dispatch agree", () => {
-  const groups = ["channel_management", "proactive_dms", "file_upload"] as const;
+  const groups = ["channel_management", "file_upload"] as const;
   const subsets = (items: readonly (typeof groups)[number][]) =>
     items.reduce<(typeof groups)[number][][]>((acc, group) => [...acc, ...acc.map(set => [...set, group])], [[]]);
   const gatedTools = SLACK_TOOLS.filter(tool => tool.name !== "slack_search");
@@ -341,5 +500,94 @@ describe("Slack endpoint selector validation", () => {
     } finally {
       unregister();
     }
+  });
+});
+
+describe("Slack catalog sync status transitions (TECH-8783)", () => {
+  it("keeps existing disabled slack_open_dm disabled, and flips removed to active", async () => {
+    const writes: Array<{ values: any; set: any }> = [];
+    const mockTx = {
+      execute: vi.fn(async () => undefined),
+      select: () => ({
+        from: (table: any) => ({
+          where: async () => {
+            if (table === toolConnections) return [{ id: "conn-1", applicationId: "app-1", enabled: true }];
+            if (table === toolCatalogEntries) {
+              return [
+                { name: "slack_bot:slack_open_dm", status: "disabled", versionHash: "old-hash", reviewedByUserId: "u1", reviewedAt: new Date() },
+                { name: "slack_bot:slack_upload_file", status: "active", versionHash: "old-hash" },
+              ];
+            }
+            return [];
+          },
+        }),
+      }),
+      insert: () => ({
+        values: (vals: any) => ({
+          returning: () => [{ id: "prof-1", ...vals }],
+          onConflictDoNothing: () => ({
+            returning: () => [{ id: "prof-1", ...vals }],
+          }),
+          onConflictDoUpdate: ({ set }: any) => {
+            writes.push({ values: vals, set });
+            return {
+              returning: () => [{ id: "prof-1" }],
+            };
+          },
+        }),
+      }),
+    } as any;
+
+    const endpoint = {
+      id: "ep-1",
+      companyId: "c-1",
+      connectionId: "conn-1",
+      setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
+    } as any;
+
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
+
+    const openDmDisabledWrite = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    expect(openDmDisabledWrite).toBeDefined();
+    expect(openDmDisabledWrite?.set.status).toBe("disabled");
+
+    // Now test flipping from removed to active
+    writes.length = 0;
+    const mockTx2 = {
+      execute: vi.fn(async () => undefined),
+      select: () => ({
+        from: (table: any) => ({
+          where: async () => {
+            if (table === toolConnections) return [{ id: "conn-1", applicationId: "app-1", enabled: true }];
+            if (table === toolCatalogEntries) {
+              return [
+                { name: "slack_bot:slack_open_dm", status: "removed", versionHash: "old-hash", reviewedByUserId: null, reviewedAt: null },
+              ];
+            }
+            return [];
+          },
+        }),
+      }),
+      insert: () => ({
+        values: (vals: any) => ({
+          returning: () => [{ id: "prof-1", ...vals }],
+          onConflictDoNothing: () => ({
+            returning: () => [{ id: "prof-1", ...vals }],
+          }),
+          onConflictDoUpdate: ({ set }: any) => {
+            writes.push({ values: vals, set });
+            return {
+              returning: () => [{ id: "prof-1" }],
+            };
+          },
+        }),
+      }),
+    } as any;
+
+    await syncSlackBotTools(mockTx2, endpoint, "u1", true);
+
+    const openDmRemovedWrite = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
+    expect(openDmRemovedWrite).toBeDefined();
+    expect(openDmRemovedWrite?.set.status).toBe("active");
   });
 });

@@ -15,7 +15,6 @@ import {
   sameSlackOptInGroups,
   slackEnabledToolsForSetup,
   slackEndpointOptInsChanged,
-  slackOtherUserDmsEnabled,
   slackVerificationOptInScopes,
 } from "./slack-opt-ins.js";
 
@@ -30,23 +29,23 @@ function names(groups: SlackOptInScopeGroup[]): string[] {
 }
 
 describe("Slack tool opt-in gating", () => {
-  it("offers every tool except the four gated ones by default", () => {
+  it("offers every tool except the three gated ones by default", () => {
     const enabled = new Set(names([]));
-    for (const name of ["slack_create_channel", "slack_invite", "slack_open_dm", "slack_upload_file"]) {
+    for (const name of ["slack_create_channel", "slack_invite", "slack_upload_file"]) {
       expect(enabled.has(name)).toBe(false);
     }
+    expect(enabled.has("slack_open_dm")).toBe(true);
     for (const name of ["slack_history", "slack_thread", "slack_post_message", "slack_reactions", "slack_pins", "slack_canvases"]) {
       if (SLACK_TOOLS.some((tool) => tool.name === name)) expect(enabled.has(name)).toBe(true);
     }
     // Only the gated tools are excluded from the full catalog.
-    expect(enabled.size).toBe(SLACK_TOOLS.length - 4);
+    expect(enabled.size).toBe(SLACK_TOOLS.length - 3);
   });
 
   it("adds exactly the tools each group unlocks, and keeps search enabled", () => {
     expect(names(["channel_management"])).toEqual(
       names([]).concat(["slack_create_channel", "slack_invite"]).sort(),
     );
-    expect(names(["proactive_dms"])).toEqual(names([]).concat("slack_open_dm").sort());
     expect(names(["file_upload"])).toEqual(names([]).concat("slack_upload_file").sort());
     // search:read.* comes from the personal-search OAuth flow, never the manifest.
     expect(isSlackToolEnabledForSetup({ slackInstalledOptInScopeGroups: [] }, { name: "slack_search", scopes: ["search:read.public", "search:read.files"] })).toBe(true);
@@ -122,8 +121,8 @@ describe("Slack tool opt-in gating", () => {
   });
 
   it("matches the request helper's scope set", () => {
-    expect(slackBotScopes(["channel_management", "proactive_dms"])).toEqual(
-      expect.arrayContaining(["channels:manage", "groups:write", "im:write"]),
+    expect(slackBotScopes(["channel_management", "file_upload"])).toEqual(
+      expect.arrayContaining(["channels:manage", "groups:write", "files:write"]),
     );
   });
 });
@@ -164,17 +163,17 @@ describe("Slack opt-in change detection", () => {
     // as installed before writing the request, so the trim is pending.
     expect(slackEndpointOptInsChanged({
       slackOptInScopeGroups: [],
-      slackInstalledOptInScopeGroups: ["channel_management", "proactive_dms", "file_upload"],
+      slackInstalledOptInScopeGroups: ["channel_management", "file_upload"],
     })).toBe(true);
   });
 
   it("does not count duplicate or reordered entries as a change", () => {
     expect(slackEndpointOptInsChanged({
-      slackOptInScopeGroups: ["file_upload", "proactive_dms", "file_upload"],
-      slackInstalledOptInScopeGroups: ["proactive_dms", "file_upload"],
+      slackOptInScopeGroups: ["file_upload", "channel_management", "file_upload"],
+      slackInstalledOptInScopeGroups: ["channel_management", "file_upload"],
     })).toBe(false);
     expect(sameSlackOptInGroups(["file_upload", "file_upload"], ["file_upload"])).toBe(true);
-    expect(sameSlackOptInGroups(["file_upload", "file_upload"], ["file_upload", "proactive_dms"])).toBe(false);
+    expect(sameSlackOptInGroups(["file_upload", "file_upload"], ["file_upload", "channel_management"])).toBe(false);
   });
 });
 
@@ -278,7 +277,7 @@ describe("Slack tool gating: requested and installed", () => {
   });
 
   it("keeps listing and dispatch in agreement for every group combination", () => {
-    const groups = ["channel_management", "proactive_dms", "file_upload"] as const;
+    const groups = ["channel_management", "file_upload"] as const;
     const subsets = (items: readonly (typeof groups)[number][]) =>
       items.reduce<(typeof groups)[number][][]>((acc, group) => [...acc, ...acc.map(set => [...set, group])], [[]]);
     for (const requested of subsets(groups)) {
@@ -298,31 +297,37 @@ describe("Slack tool gating: requested and installed", () => {
   });
 });
 
-describe("Proactive DMs with other people (TECH-8286)", () => {
-  const endpoint = (setup: Parameters<typeof slackOtherUserDmsEnabled>[1]["setup"]) =>
-    ({ id: "endpoint", companyId: "company", setup }) as const;
-  // An explicit setup never touches the database (only a legacy install is looked up).
-  const db = null as never;
+describe("Legacy proactive_dms opt-in row compatibility (TECH-8783)", () => {
+  it("handles legacy row with proactive_dms in both fields without throwing", () => {
+    const setup = {
+      slackOptInScopeGroups: ["proactive_dms" as never],
+      slackInstalledOptInScopeGroups: ["proactive_dms" as never],
+    };
+    expect(() => slackEnabledToolsForSetup(setup)).not.toThrow();
+    const tools = slackEnabledToolsForSetup(setup).map((t) => t.name);
+    expect(tools).toContain("slack_open_dm");
+  });
 
-  it("is on only when the group is both requested and installed", async () => {
+  it("never reports an untouched legacy install with proactive_dms as changed", () => {
     expect(
-      await slackOtherUserDmsEnabled(
-        db,
-        endpoint({ slackOptInScopeGroups: ["proactive_dms"], slackInstalledOptInScopeGroups: ["proactive_dms"] }),
-      ),
-    ).toBe(true);
-    expect(
-      await slackOtherUserDmsEnabled(
-        db,
-        endpoint({ slackOptInScopeGroups: ["proactive_dms"], slackInstalledOptInScopeGroups: [] }),
+      slackEndpointOptInsChanged(
+        {
+          slackOptInScopeGroups: ["proactive_dms" as never],
+          slackInstalledOptInScopeGroups: ["proactive_dms" as never],
+        },
+        { legacyInstall: true },
       ),
     ).toBe(false);
+  });
+
+  it("returns empty verification opt-in scopes for legacy installed proactive_dms", () => {
     expect(
-      await slackOtherUserDmsEnabled(
-        db,
-        endpoint({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: ["proactive_dms"] }),
+      slackVerificationOptInScopes(
+        {
+          slackInstalledOptInScopeGroups: ["proactive_dms" as never],
+        },
+        "installed",
       ),
-    ).toBe(false);
-    expect(await slackOtherUserDmsEnabled(db, endpoint({ slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] }))).toBe(false);
+    ).toEqual([]);
   });
 });

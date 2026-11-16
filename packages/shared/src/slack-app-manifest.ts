@@ -9,10 +9,12 @@ import type { SlackAppConfiguration } from "./types/chat-channels.js";
 /**
  * The minimum bot scopes a manually created or existing app must hold for chat
  * to work at all. Unchanged from before TECH-7988 except `files:write`, which is
- * now the opt-in file-upload group. Tool-only scopes (pins, bookmarks, canvases,
- * lists, ...) stay optional for those apps and are reported as missing on the
- * connection's capabilities instead of blocking reconnect. A strict subset of
- * `SLACK_DEFAULT_BOT_SCOPES`.
+ * now the opt-in file-upload group. `im:write` must NOT be added here: existing
+ * apps installed before TECH-8783 lacking `im:write` must remain reconnectable
+ * rather than failing credential validation. Tool-only scopes (pins, bookmarks,
+ * canvases, lists, ...) stay optional for those apps and are reported as missing
+ * on the connection's capabilities instead of blocking reconnect. A strict
+ * subset of `SLACK_DEFAULT_BOT_SCOPES`.
  */
 export const SLACK_CHAT_BOT_SCOPES = [
   "app_mentions:read", "assistant:write", "channels:history", "channels:read",
@@ -158,6 +160,7 @@ export function slackRegistrationErrorMessage(code: string): string {
     slack_manifest_invalid: "Slack rejected this app configuration. Check the app details or use manual setup.",
     slack_manifest_update_pending: "Your Slack app is saved, but its event settings still need to be applied. Enter an app configuration access token to retry configuring the same app.",
     slack_permissions_update_pending: "This agent's Slack permissions changed. Update the Slack app and re-authorize it to apply them. Until then the agent keeps its current permissions.",
+    slack_dm_scope_missing: "Reconnect this agent's Slack app so Slack grants permission to open direct messages (im:write).",
     slack_tool_not_enabled: "This Slack action is not enabled for this agent. Enable the matching permission group in the agent's Slack setup, then reconnect so Slack grants it.",
     slack_setup_rate_limited: "Slack is limiting setup requests. Wait a minute and try again.",
     slack_setup_permission_denied: "Slack requires permission to create or install this app. Ask your workspace administrator.",

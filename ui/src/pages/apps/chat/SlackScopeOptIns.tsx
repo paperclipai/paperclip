@@ -29,12 +29,12 @@ const statusLabels: Record<SlackOptInGroupStatus, string> = {
 const preInstallRequestLabel = "Requested — applied at install";
 
 /**
- * TECH-7988: per-agent Slack permission opt-ins.
+ * TECH-7988 / TECH-8783: per-agent Slack permission opt-ins.
  *
- * Off by default so a new agent's manifest asks only for the workspace's
- * non-Low-risk-free default scopes, which an internal app-approval policy can
- * auto-approve. Each group adds scopes that are not Low risk, so enabling one
- * sends that agent's install to admin review.
+ * Direct messages are standard across all agents. The remaining two groups
+ * (channel management and file upload) are off by default because they require
+ * scopes rated above Low risk, so enabling either group may require Slack
+ * workspace admin approval.
  *
  * This component owns the reconnect notice: callers must not render a second
  * one next to it.
@@ -83,10 +83,10 @@ export function SlackScopeOptIns({
     <fieldset className="space-y-3" disabled={controlsDisabled}>
       <legend className="text-sm font-semibold">Extra Slack permissions</legend>
       <p className="text-sm text-muted-foreground">
-        Off by default. The install always requests Slack&apos;s{" "}
-        {SLACK_DEFAULT_BOT_SCOPES.length} low-risk scopes, which your workspace
-        can auto-approve. Reading, replying, and channel history work without
-        these groups.
+        Off by default. The install requests standard permissions including direct
+        messages ({SLACK_DEFAULT_BOT_SCOPES.length} scopes). Enabling either of these
+        remaining groups may require Slack workspace admin approval. Reading, replying,
+        direct messages, and channel history work without these groups.
       </p>
       <div className="space-y-3">
         {SLACK_OPT_IN_SCOPE_GROUPS.map((group) => {

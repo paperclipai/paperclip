@@ -77,7 +77,7 @@ export const SLACK_TOOLS = [
     "conversations.open",
     ["im:write"],
     "write",
-    "Open or resume this bot's DM with the current task's linked requester, or with another active workspace member when you pass their Slack user ID in `user`. Returns a channel ID for slack_post_message. Never DMs bots, deactivated users, guests or people outside this workspace.",
+    "Open or resume this bot's DM with the current task's linked requester, or with another active workspace member when you pass their Slack user ID in `user`. Direct messages with active members are standard; if permission is missing, reconnect the agent's Slack app. Returns a channel ID for slack_post_message. Never DMs bots, deactivated users, guests or people outside this workspace.",
     {
       ...write,
       user: user
@@ -492,6 +492,7 @@ export interface SlackSearchStatus {
 export interface SlackToolCapabilities {
   grantedScopes: string[] | null;
   missingScopes: string[];
+  dmReconnectRequired?: boolean;
   /**
    * A permission group not yet enabled, with the tools it would add. The action
    * distinguishes a group not requested yet from one awaiting reauthorization,

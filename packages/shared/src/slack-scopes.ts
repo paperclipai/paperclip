@@ -1,14 +1,15 @@
 import { z } from "zod";
 
 /**
- * TECH-7988: the bot scopes every Paperclip agent Slack app requests by
- * default.
+ * TECH-7988 / TECH-8783: the bot scopes every Paperclip agent Slack app
+ * requests by default.
  *
- * These are exactly the workspace's "Low risk" bucket, so an automated internal
- * app policy can auto-approve an install. Treat this list as a security
- * boundary: a scope only moves here when it is safe to grant every agent.
- * Scopes that are deliberately not Low risk live in
- * `SLACK_OPT_IN_BOT_SCOPE_GROUPS` and are requested per agent on request.
+ * This includes Slack's standard low-risk scopes plus `im:write` so direct
+ * messages with active workspace members are standard for all agents. Because
+ * `im:write` is rated above Slack's default low-risk tier, new installs may
+ * require workspace admin approval unless an internal policy auto-approves it.
+ * Scopes that remain opt-in live in `SLACK_OPT_IN_BOT_SCOPE_GROUPS` and are
+ * requested per agent on request.
  *
  * `users:read.email` lets `slack_find_user` match a person by email. Existing apps
  * keep the scopes they were created with until an admin updates them.
@@ -35,6 +36,7 @@ export const SLACK_DEFAULT_BOT_SCOPES = [
   "groups:write.topic",
   "im:history",
   "im:read",
+  "im:write",
   "lists:read",
   "lists:write",
   "mpim:history",
@@ -50,9 +52,9 @@ export const SLACK_DEFAULT_BOT_SCOPES = [
 const defaultScopeSet = new Set<string>(SLACK_DEFAULT_BOT_SCOPES);
 
 /**
- * The four remaining bot scopes are each rated above Low risk, so a workspace
- * admin approves them manually. Grouping them by the capability they unlock
- * keeps the opt-in UI honest about what an agent gains.
+ * The remaining bot scopes are each rated above Low risk, so a workspace admin
+ * approves them manually. Grouping them by the capability they unlock keeps the
+ * opt-in UI honest about what an agent gains.
  */
 export const SLACK_OPT_IN_BOT_SCOPE_GROUPS = {
   channel_management: {
@@ -60,12 +62,6 @@ export const SLACK_OPT_IN_BOT_SCOPE_GROUPS = {
     description:
       "Create channels and invite people. Enabling this sends this agent's Slack install to admin review.",
     scopes: ["channels:manage", "groups:write"],
-  },
-  proactive_dms: {
-    label: "Proactive DMs",
-    description:
-      "Send direct messages to people in your Slack workspace, including the person this agent is working for. Enabling this sends this agent's Slack install to admin review.",
-    scopes: ["im:write"],
   },
   file_upload: {
     label: "File upload",
@@ -88,6 +84,20 @@ export function isSlackOptInScopeGroup(
   return Object.hasOwn(SLACK_OPT_IN_BOT_SCOPE_GROUPS, value);
 }
 
+/** Dedupes and filters an arbitrary list down to valid opt-in groups. */
+export function normalizeSlackOptInGroups(
+  groups: readonly unknown[] | undefined | null,
+): SlackOptInScopeGroup[] {
+  if (!groups || !Array.isArray(groups)) return [];
+  const result: SlackOptInScopeGroup[] = [];
+  for (const group of groups) {
+    if (typeof group === "string" && isSlackOptInScopeGroup(group) && !result.includes(group)) {
+      result.push(group);
+    }
+  }
+  return result;
+}
+
 /** Strict request/response contract for the per-agent opt-in choice. */
 const slackOptInScopeGroupSchema = z.enum([
   "channel_management",
@@ -98,7 +108,7 @@ export const slackOptInScopeGroupsSchema = z
   .array(slackOptInScopeGroupSchema)
   // Bounded before dedupe so a pathological list cannot be unbounded.
   .max(50)
-  .transform((groups) => [...new Set(groups)])
+  .transform((groups) => normalizeSlackOptInGroups(groups))
   .refine(
     (groups) => groups.length <= SLACK_OPT_IN_SCOPE_GROUPS.length,
     { message: "Unknown Slack permission group" },
@@ -106,10 +116,11 @@ export const slackOptInScopeGroupsSchema = z
 
 /** The scopes contributed by the given opt-in groups. */
 export function slackOptInScopes(
-  groups: readonly SlackOptInScopeGroup[] | undefined | null,
+  groups: readonly (SlackOptInScopeGroup | string)[] | undefined | null,
 ): string[] {
   const scopes = new Set<string>();
   for (const group of groups ?? []) {
+    if (!isSlackOptInScopeGroup(group)) continue;
     for (const scope of SLACK_OPT_IN_BOT_SCOPE_GROUPS[group].scopes) {
       scopes.add(scope);
     }
@@ -256,9 +267,9 @@ function sameGroupSet(
 
 /** The groups the operator asked for. Opt-in groups are off unless chosen. */
 export function slackRequestedOptInGroups(
-  setup: { slackOptInScopeGroups?: readonly SlackOptInScopeGroup[] } | null | undefined,
+  setup: { slackOptInScopeGroups?: readonly unknown[] } | null | undefined,
 ): SlackOptInScopeGroup[] {
-  return [...(setup?.slackOptInScopeGroups ?? [])];
+  return normalizeSlackOptInGroups(setup?.slackOptInScopeGroups);
 }
 
 /**
@@ -279,11 +290,11 @@ export function slackOptInGroupsForSetup(
   options?: { legacyInstall?: boolean },
 ): SlackOptInScopeGroup[] {
   const installed = setup?.slackInstalledOptInScopeGroups;
-  if (installed !== undefined) return [...installed];
+  if (installed !== undefined) return normalizeSlackOptInGroups(installed);
   if (
     options?.legacyInstall === true &&
     setup?.slackOptInScopeGroups === undefined
   )
-    return [...SLACK_OPT_IN_SCOPE_GROUPS];
+    return normalizeSlackOptInGroups(SLACK_OPT_IN_SCOPE_GROUPS);
   return [];
 }

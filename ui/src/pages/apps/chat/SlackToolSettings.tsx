@@ -11,9 +11,11 @@ import { Input } from "@/components/ui/input";
 export function SlackCapabilitiesView({
   capabilities,
   error,
+  onReconnect,
 }: {
   capabilities?: SlackToolCapabilities;
   error?: string;
+  onReconnect?: () => void;
 }) {
   return (
     <section className="space-y-3">
@@ -32,6 +34,22 @@ export function SlackCapabilitiesView({
       )}
       {capabilities && (
         <>
+          {capabilities.dmReconnectRequired && (
+            <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
+              <p className="text-sm font-medium">
+                Reconnect Slack to grant DM permission
+              </p>
+              <p className="text-sm">
+                This agent&apos;s Slack app was installed before direct messages became
+                standard, so slack_open_dm will fail until you reconnect.
+              </p>
+              {onReconnect && (
+                <Button size="sm" variant="outline" onClick={onReconnect}>
+                  Reconnect Slack
+                </Button>
+              )}
+            </div>
+          )}
           {capabilities.missingGroups && capabilities.missingGroups.length > 0 && (
             <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
               <p className="text-sm font-medium">
@@ -227,9 +245,11 @@ export function SlackSearchView({
 export function SlackToolsSettings({
   companyId,
   endpointId,
+  onReconnect,
 }: {
   companyId: string;
   endpointId: string;
+  onReconnect?: () => void;
 }) {
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
@@ -241,6 +261,7 @@ export function SlackToolsSettings({
       <SlackCapabilitiesView
         capabilities={query.data}
         error={query.error?.message}
+        onReconnect={onReconnect}
       />
 
     </div>
