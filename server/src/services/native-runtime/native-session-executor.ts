@@ -66,7 +66,9 @@ import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativeFailedBeforeProviderTurn, NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE, NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
-import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
+import {
+  inspectSandboxSessionRunner, retireSandboxRunnerPortHolders, sandboxSessionRunnerExited, type SandboxSessionRunnerInspection,
+} from "./sandbox-runner-port-holders.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -719,6 +721,8 @@ type WarmNativeSession = {
   /** The sandbox that holds this owner's Runner, when it runs in one. */
   providerLeaseId?: string;
   sandboxLeaseDb?: Db;
+  sandboxRunner?: { runner: CommandManagedRuntimeRunner; remoteCwd: string };
+  closeFailureEvidenceLogged?: boolean;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;
   observabilityCompatibilityKey?: string;
@@ -830,6 +834,11 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
     if (entry.instructionCopy?.runId !== options?.preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
   finally { await stopping; }
+}
+
+function warmSandboxRunner(target?: AdapterExecutionTarget | null): WarmNativeSession["sandboxRunner"] {
+  return target?.kind === "remote" && target.transport === "sandbox" && target.runner && !target.runnerTask
+    ? { runner: target.runner, remoteCwd: target.remoteCwd } : undefined;
 }
 
 function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string | null {
@@ -1159,12 +1168,88 @@ async function warmRunnerPortTakenBySuccessor(db: Db, entry: WarmNativeSession):
 async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb): Promise<boolean> {
   const diagnostic = readRemoteRunnerRecoveryError(error);
   if (diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running") return true;
+  const runnerIdMissing = diagnostic?.stage === "process_verification" && diagnostic.reason === "process_runner_id_missing";
+  const logEvidence = Boolean(entry.sandboxRunner) && !entry.closeFailureEvidenceLogged
+    && (diagnostic !== null || error instanceof NativeSessionCloseUnrecoverableError);
+  const inspection = entry.sandboxRunner && (runnerIdMissing || logEvidence)
+    ? await inspectSandboxSessionRunner({ runner: entry.sandboxRunner.runner,
+      stateDirectory: remoteRunnerStateDirectory(entry.sandboxRunner.remoteCwd, entry.normalizedSessionId) }) : null;
+  if (logEvidence) {
+    entry.closeFailureEvidenceLogged = true;
+    logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+      providerLeaseId: entry.providerLeaseId ?? null, ...warmCloseFailureEvidence(entry, error, inspection) },
+    "warm native session close failed; sandbox Runner evidence");
+  }
+  if (runnerIdMissing && suspendedRunnerHasExited(entry, inspection)) return true;
   try {
-    return db ? await warmSandboxTerminated(db, entry) || await warmRunnerPortTakenBySuccessor(db, entry) : false;
+    if (db && (await warmSandboxTerminated(db, entry) || await warmRunnerPortTakenBySuccessor(db, entry))) return true;
   } catch (proofError) {
     logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
     return false;
   }
+  return db ? stopRetainedRunnerOfFinishedOwner(entry, error, db) : false;
+}
+
+function warmCloseFailureEvidence(entry: WarmNativeSession, error: unknown, inspection: SandboxSessionRunnerInspection | null) {
+  const diagnostic = readRemoteRunnerRecoveryError(error);
+  const settlement = error instanceof NativeSessionCloseUnrecoverableError ? error.settlement : undefined;
+  const suspension = settlement?.suspensionState && typeof settlement.suspensionState === "object"
+    ? settlement.suspensionState as Record<string, unknown> : null;
+  return {
+    closeStage: diagnostic?.stage ?? null,
+    closeReason: diagnostic?.reason ?? (error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null),
+    closeRunnerLifecycle: diagnostic?.runnerLifecycle ?? suspension?.runnerLifecycle ?? null,
+    runnerSuspended: settlement?.runnerSuspended ?? null,
+    runnerRetained: settlement?.runnerRetained ?? null,
+    suspendCommandStatus: suspension?.commandStatus ?? null,
+    proofWindowEnd: settlement?.proofWindowEnd ?? null,
+    sandboxRunner: inspection ? {
+      lifecycle: inspection.state?.lifecycle ?? null,
+      settled: inspection.state?.settled ?? null,
+      identityMatches: inspection.state !== null && inspection.state.runId === entry.runId
+        && inspection.state.normalizedSessionId === entry.normalizedSessionId && inspection.markerRunnerIdMatchesState,
+      markerPid: inspection.markerPid,
+      procfs: inspection.procfs,
+      unreadableProcesses: inspection.unreadableProcesses,
+      processes: inspection.processes.slice(0, 20),
+    } : "unavailable",
+  };
+}
+
+function suspendedRunnerHasExited(entry: WarmNativeSession, inspection: SandboxSessionRunnerInspection | null): boolean {
+  return inspection !== null && inspection.procfs && inspection.unreadableProcesses === 0 && inspection.state?.lifecycle === "suspended" && inspection.state.settled
+    && inspection.state.runId === entry.runId && inspection.state.normalizedSessionId === entry.normalizedSessionId
+    && inspection.markerRunnerIdMatchesState && !inspection.processes.some(process => process.carriesRunnerId);
+}
+
+export const warmRetainedRunnerStopWait = { waitMs: 10_000, pollMs: 500 };
+
+async function stopRetainedRunnerOfFinishedOwner(entry: WarmNativeSession, error: unknown, db: Db): Promise<boolean> {
+  if (!entry.sandboxRunner || !(error instanceof NativeSessionCloseUnrecoverableError)
+    || error.settlement?.runnerRetained !== true || error.settlement.runnerSuspended === true) return false;
+  const { runner, remoteCwd } = entry.sandboxRunner;
+  const runtimeRoot = posix.join(remoteCwd, ".paperclip-runtime", "paperclip-runner");
+  const sessionDirectory = createHash("sha256").update(entry.normalizedSessionId).digest("hex");
+  try {
+    await retireSandboxRunnerPortHolders({ db, companyId: entry.companyId, agentId: entry.agentId, runId: entry.runId,
+      runner, runtimeRoot, ownSessionRoot: "", providerLeaseId: entry.providerLeaseId ?? null,
+      only: { sessionDirectory, runId: entry.runId }, retireInProcess: async () => false, ...warmRetainedRunnerStopWait });
+  } catch (stopError) {
+    logger.warn({ runId: entry.runId, providerLeaseId: entry.providerLeaseId ?? null, stopFailure: describeWarmCloseFailure(stopError) },
+      "could not stop the retained Runner of a finished warm session");
+    return false;
+  }
+  if (!await sandboxSessionRunnerExited({ runner, runtimeRoot, sessionDirectory })) return false;
+  logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+    providerLeaseId: entry.providerLeaseId ?? null },
+  "stopped the retained Runner of a finished warm session whose suspend was refused; released it without a checkpoint");
+  return true;
+}
+
+function armWarmIdleCloseRetry(sessionId: string, entry: WarmNativeSession): void {
+  if (warmNativeSessions.get(sessionId) !== entry || entry.released || (entry.idleCloseRetries ?? 0) >= WARM_IDLE_CLOSE_MAX_RETRIES) return;
+  entry.idleCloseRetries = (entry.idleCloseRetries ?? 0) + 1;
+  armWarmNativeSessionIdleTimer(sessionId, entry, WARM_IDLE_CLOSE_RETRY_MS);
 }
 
 /** Detach released owners and checkpoint unreleased owners before a controller
@@ -1196,6 +1281,7 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   const failures: WarmNativeSessionCloseFailure[] = [];
+  const retryIdleCloseAfterSweep: [string, WarmNativeSession][] = [];
   let stopped = false;
   const closeEntry = async (sessionId: string, entry: WarmNativeSession) => {
     if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(sessionId)
@@ -1242,6 +1328,7 @@ async function closeIdleWarmNativeSessions(input: {
         return;
       }
       failed += 1;
+      if (!detach && entry.idleCloseRetries !== undefined) retryIdleCloseAfterSweep.push([sessionId, entry]);
       const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
       failures.push({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
         providerLeaseId: entry.providerLeaseId ?? null,
@@ -1276,6 +1363,7 @@ async function closeIdleWarmNativeSessions(input: {
   const concurrency = input.canRetire ? 1 : WARM_NATIVE_SESSION_CLOSE_CONCURRENCY;
   await Promise.all(Array.from({ length: Math.min(concurrency, pendingAgents.length) }, closeAgentQueues));
   if (failures.length > 0) logger.warn({ reason: input.reason, failures }, "idle warm native sessions did not close");
+  for (const [sessionId, entry] of retryIdleCloseAfterSweep) armWarmIdleCloseRetry(sessionId, entry);
   return { closed, busy, failed, failures };
 }
 
@@ -8904,9 +8992,7 @@ function armWarmNativeSessionIdleTimer(
             forgetWarmNativeSession(sessionId, current);
             return;
           }
-          if ((current.idleCloseRetries ?? 0) >= WARM_IDLE_CLOSE_MAX_RETRIES) return;
-          current.idleCloseRetries = (current.idleCloseRetries ?? 0) + 1;
-          armWarmNativeSessionIdleTimer(sessionId, current, WARM_IDLE_CLOSE_RETRY_MS);
+          armWarmIdleCloseRetry(sessionId, current);
         });
       })
       .finally(() => {
@@ -12757,6 +12843,8 @@ async function executePaperclipNativeSessionAttempt(
                   existing.ingressOwner = ingress ? { ...input.execution.binding, ingress,
                     controllerBootId: controller.bootId, controllerGeneration } : undefined;
                   existing.session = session;
+                  existing.sandboxRunner = warmSandboxRunner(input.runnerExecutionTarget);
+                  existing.closeFailureEvidenceLogged = false;
                   existing.runId = input.execution.binding.runId;
                   existing.issueId = input.execution.binding.issueId;
                 } else
@@ -12774,6 +12862,7 @@ async function executePaperclipNativeSessionAttempt(
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     providerLeaseId: sandboxProviderLeaseId(input.runnerExecutionTarget) ?? undefined,
                     sandboxLeaseDb: input.db,
+                    sandboxRunner: warmSandboxRunner(input.runnerExecutionTarget),
                     runId: input.execution.binding.runId,
                     issueId: input.execution.binding.issueId,
                     instructionWorkingCopy: input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy,

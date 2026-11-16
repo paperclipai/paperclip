@@ -8,7 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
-import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
+import { retireSandboxRunnerPortHolders, sandboxSessionRunnerExited } from "./sandbox-runner-port-holders.js";
 
 const HOLDER_SCRIPT = 'require("node:net").createServer().listen(Number(process.argv[1]), "127.0.0.1", () => process.stdout.write("ready\\n"));';
 
@@ -119,6 +119,28 @@ describeEmbeddedPostgres("a sandbox Runner port held by another session's Runner
     expect(((failure as Error).cause as Error).message).toBe(reason);
     expect(holder.exitCode).toBeNull();
     expect(await bind(port)).toBe("EADDRINUSE");
+  });
+
+  it("stops only the named session's finished Runner and then proves it exited", async () => {
+    const owner = await environment.seedRun("PORT-HOLDER-ONLY-OWNER");
+    const other = await environment.seedRun("PORT-HOLDER-ONLY-OTHER", owner.db);
+    await owner.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, owner.runId));
+    await owner.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other.runId));
+    const base = join(environment.current.runtimeRoot, "sandbox-only");
+    const runtimeRoot = join(base, ".paperclip-runtime", "paperclip-runner");
+    const own = await startHolder({ runtimeRoot, session: "e".repeat(64), runId: owner.runId, port: await freePort() });
+    const neighbour = await startHolder({ runtimeRoot, session: "f".repeat(64), runId: other.runId, port: await freePort() });
+    const exitedNow = () => sandboxSessionRunnerExited({ runner: confinedRunner(base) as never, runtimeRoot, sessionDirectory: "e".repeat(64) });
+    expect(await exitedNow()).toBe(false);
+    await expect(retireSandboxRunnerPortHolders({ db: owner.db, companyId: environment.current.companyId,
+      agentId: environment.current.agentId, runId: owner.runId, runner: confinedRunner(base) as never, runtimeRoot,
+      ownSessionRoot: "", providerLeaseId: "sandbox-1", only: { sessionDirectory: "e".repeat(64), runId: owner.runId },
+      retireInProcess: async () => false, waitMs: 3_000, pollMs: 100 })).resolves.toEqual([owner.runId]);
+    expect(await exited(own)).toBe(true);
+    expect(await exitedNow()).toBe(true);
+    expect(neighbour.exitCode).toBeNull();
+    expect(await sandboxSessionRunnerExited({ runner: confinedRunner(base) as never, runtimeRoot, sessionDirectory: "f".repeat(64) })).toBe(false);
+    expect(await sandboxSessionRunnerExited({ runner: confinedRunner(base) as never, runtimeRoot, sessionDirectory: "0".repeat(64) })).toBe(false);
   });
 
   it("ignores this run's own session, moved-aside roots and holders that already exited", async () => {

@@ -3,7 +3,7 @@ export const REMOTE_RUNNER_RECOVERY_ERROR_CODE = "runner_remote_process_identity
 const stages = ["runner_state", "identity_marker", "process_verification"] as const;
 const reasons = [
   "marker_missing", "marker_unsafe", "marker_read_failed", "marker_invalid",
-  "fingerprint_missing", "process_not_running", "process_identity_changed",
+  "fingerprint_missing", "process_not_running", "process_identity_changed", "process_runner_id_missing",
   "fingerprint_unavailable", "process_generation_changed", "probe_timeout",
   "probe_transport_failed", "probe_failed",
   "state_read_failed", "state_invalid",
@@ -219,7 +219,7 @@ catch (error) {
 if (expectedGeneration) verifyGeneration();
 if (!args.includes("--runner-id") || !args.includes(runnerId)) {
   requireLiveProcess();
-  process.exit(44);
+  process.exit(48);
 }
 ' "$pid" "$expected_runner_id"` + ' "${5:-}"',
 ].join("; ");
@@ -238,6 +238,7 @@ export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic[
     if (exitCode === 45) return "process_not_running";
     if (exitCode === 46) return "fingerprint_unavailable";
     if (exitCode === 47) return "process_generation_changed";
+    if (exitCode === 48) return "process_runner_id_missing";
   }
   return "probe_failed";
 }
