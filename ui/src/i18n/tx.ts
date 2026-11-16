@@ -1,7 +1,7 @@
 import { cloneElement, isValidElement, useCallback, type ReactNode } from "react";
 
 import { useTranslation } from "./index";
-import { readChosenLocale, readStoredLocale } from "./preference";
+import { isSelectableLocale, readChosenLocale, readStoredLocale } from "./preference";
 import { ruLabels } from "./ru-labels";
 
 /** `ru`, `ru-RU`, and any other region of Russian. Not a prefix of an unrelated code. */
@@ -12,8 +12,8 @@ export function isRussianLocale(language: string | null | undefined): boolean {
 
 /**
  * Locale the label map should follow. The switcher writes `paperclip.locale`
- * before i18next finishes `changeLanguage`. A fallback `resolvedLanguage` of
- * `en` must not keep Russian labels in English after that write.
+ * before i18next finishes `changeLanguage`. A stale `en` resolution must not
+ * hide a non-English choice that is already in `SELECTABLE_LOCALES`.
  */
 export function effectiveUiLanguage(
   resolved: string | undefined,
@@ -21,7 +21,11 @@ export function effectiveUiLanguage(
 ): string | undefined {
   const chosen = readChosenLocale();
   if (chosen) return chosen;
-  if (isRussianLocale(resolved) || stored === "ru") return "ru";
+  if (isSelectableLocale(stored) && stored !== "en") return stored;
+  if (isRussianLocale(resolved)) return "ru";
+  if (isSelectableLocale(resolved)) return resolved;
+  const base = resolved?.toLowerCase().split("-")[0];
+  if (isSelectableLocale(base)) return base;
   return resolved;
 }
 

@@ -6,7 +6,8 @@ import {
   applyDocumentLang,
   isSelectableLocale,
   noteUiLanguageChoice,
-  readChosenLocale,
+  SELECTABLE_LOCALES,
+  selectedSelectableLocale,
   writeStoredLocale,
   type SelectableLocale,
 } from "@/i18n/preference";
@@ -19,9 +20,15 @@ interface LanguageSwitcherProps {
   onAfterChange?: () => void;
 }
 
+function localeOptionLabel(translate: (key: string) => string, locale: SelectableLocale): string {
+  const key = `app.locale.${locale}`;
+  const label = translate(key);
+  return label === key ? locale : label;
+}
+
 export function LanguageSwitcher({ className, variant = "icon", onAfterChange }: LanguageSwitcherProps) {
   const { i18n, t } = useTranslation();
-  const value: SelectableLocale = readChosenLocale() ?? (i18n.resolvedLanguage === "ru" ? "ru" : "en");
+  const value = selectedSelectableLocale(i18n.resolvedLanguage ?? i18n.language);
 
   function onChange(next: string) {
     if (!isSelectableLocale(next) || next === value) return;
@@ -43,8 +50,9 @@ export function LanguageSwitcher({ className, variant = "icon", onAfterChange }:
         className,
       )}
     >
-      <option value="en">{t("app.locale.en")}</option>
-      <option value="ru">{t("app.locale.ru")}</option>
+      {SELECTABLE_LOCALES.map((locale) => (
+        <option key={locale} value={locale}>{localeOptionLabel(t, locale)}</option>
+      ))}
     </select>
   );
 
