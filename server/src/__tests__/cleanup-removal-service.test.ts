@@ -194,7 +194,29 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       routineId: activeRoutineId,
       revisionNumber: 1,
       title: "Daily brief",
-      snapshot: { version: 1, routine: { assigneeAgentId: agentId, status: "active" }, triggers: [] },
+      snapshot: {
+        version: 1,
+        routine: {
+          id: activeRoutineId,
+          companyId,
+          projectId: null,
+          goalId: null,
+          parentIssueId: null,
+          title: "Daily brief",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          activityGatePolicy: "always",
+          activityGateScope: "company",
+          variables: [],
+          env: null,
+          responsibleUserId: null,
+        },
+        triggers: [],
+      },
     });
     await db.update(routines).set({ latestRevisionId: firstRevisionId, latestRevisionNumber: 1 }).where(eq(routines.id, activeRoutineId));
 
