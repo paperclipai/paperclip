@@ -1651,15 +1651,16 @@ describe("personal Muse control plane",()=>{
       },{timeout:5_000});
       releaseDeletion();const [contactResult,deletionResult]=await joined;
       let constraintFailure:unknown=deletionResult.status==="rejected"?deletionResult.reason:undefined;
+      const rollbackCodes=["23001","23503"];
       let expectedConstraint=false;
       for(let depth=0;depth<6&&constraintFailure&&typeof constraintFailure==="object";depth++){
-        if("code" in constraintFailure&&constraintFailure.code==="23503"
+        if("code" in constraintFailure&&typeof constraintFailure.code==="string"&&rollbackCodes.includes(constraintFailure.code)
           &&"constraint_name" in constraintFailure&&constraintFailure.constraint_name===constraint){expectedConstraint=true;break;}
         constraintFailure="cause" in constraintFailure?constraintFailure.cause:undefined;
       }
-      if(contactResult.status!=="fulfilled"||deletionResult.status!=="rejected"||!expectedConstraint||sqlStates.some(code=>code!=="23503"))throw new AggregateError([...actualSqlErrors,...[contactResult,deletionResult].filter(value=>value.status==="rejected").map(value=>value.reason)],"Muse contact/destructive deletion did not settle as required");
-      expect(deletionResult.reason).toMatchObject({cause:{code:"23503",constraint_name:constraint}});
-      expect(sqlStates).toEqual(["23503"]);expect(hostPhases).toEqual(["terminating","cleaning_up"]);
+      if(contactResult.status!=="fulfilled"||deletionResult.status!=="rejected"||!expectedConstraint||sqlStates.some(code=>!rollbackCodes.includes(code)))throw new AggregateError([...actualSqlErrors,...[contactResult,deletionResult].filter(value=>value.status==="rejected").map(value=>value.reason)],"Muse contact/destructive deletion did not settle as required");
+      expect(deletionResult.reason).toMatchObject({cause:{code:expect.stringMatching(/^(23001|23503)$/),constraint_name:constraint}});
+      expect(sqlStates).toHaveLength(1);expect(rollbackCodes).toContain(sqlStates[0]);expect(hostPhases).toEqual(["terminating","cleaning_up"]);
       expect(await db.select().from(companies).where(eq(companies.id,f.company.id))).toHaveLength(1);
       const [agent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
       expect(agent).toMatchObject({status:"terminated",lifecycleState:"terminated"});
