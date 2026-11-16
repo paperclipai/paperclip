@@ -39,7 +39,9 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
         const memory = cache.get(key);
         const entry = memory && memory.expiresAt > now() ? memory : stored?.get(target.canonicalUrl) ?? memory;
         if (entry) { remember(key, entry); results[target.canonicalUrl] = remaining(entry); }
-        else remember(key, { result: UNAVAILABLE, expiresAt: 0 });
+        // A batch miss is not a provider result. A later lookup must still
+        // check durable storage, which another replica may have populated.
+        else cache.delete(key);
       }
       return { results };
     },

@@ -19,6 +19,24 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     await context.db.insert(companies).values({ id: companyId, name: "Link cache", issuePrefix: companyId });
     return { companyId, userId: "alice" };
   }
+  it.each(["missing", "failed"])("reads another replica's saved status after a %s batch read", async (initialRead) => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    const read = vi.fn(store.read);
+    if (initialRead === "failed") read.mockRejectedValueOnce(new Error("temporary database outage"));
+    const write = vi.fn(store.write);
+    const resolve = vi.fn(async () => { throw new Error("provider unavailable"); });
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store: { read, write } });
+    expect(await first.cached(scope, [url])).toEqual({ results: {} });
+
+    const other = createLinkPreviewService([{ key: "github", resolve: async () => ({ preview, maxAgeMs: 60_000 }) }], { store });
+    await other.get(scope, url);
+    expect((await first.get(scope, url)).preview).toEqual(preview);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect((await store.read(scope, [target])).get(url)?.result.preview).toEqual(preview);
+  });
   it("survives service recreation, reuses canonical URLs across tasks, and isolates viewers/companies", async () => {
     const scope = await fixture();
     const store = createLinkPreviewStore(context.db);
@@ -93,7 +111,7 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     await store.write(scope, target, { result: { preview, maxAgeMs: 60_000 }, expiresAt: 65_000 }, 5_000);
     await store.write(scope, target, { result: { preview: { ...preview, state: "open" }, maxAgeMs: 60_000 }, expiresAt: 61_000 }, 1_000);
     expect((await store.read(scope, [target])).get(url)?.result.preview?.state).toBe("merged");
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0488_material_masked_marvel.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0489_real_sage.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) if (statement.trim()) await context.db.execute(sql.raw(statement));
     expect((await store.read(scope, [target])).get(url)?.result.preview?.state).toBe("merged");
   });

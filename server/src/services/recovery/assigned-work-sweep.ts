@@ -511,7 +511,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       order by lr.created_at desc limit 1), false)`;
   }
 
-  async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null },
+  async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null;
+    changed?: SQL },
     cursor: string | null, limit: number) {
     const at = now();
     const liveRun = sql`exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
@@ -531,6 +532,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       scope.issueIds ? inArray(issues.id, scope.issueIds) : undefined,
       cursor ? sql`${issues.id} > ${cursor}` : undefined,
       scope.createdAfter ? gte(issues.createdAt, scope.createdAfter) : undefined,
+      scope.changed,
       inArray(issues.status, [...OPEN_STATUSES]),
       sql`${issues.assigneeAgentId} is not null`,
       isNull(issues.assigneeUserId),

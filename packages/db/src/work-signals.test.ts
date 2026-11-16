@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 import { workSignalDebug } from "./work-signal-debug.js";
-import { DATABASE_WORK_CHANNEL, DATABASE_WORK_NOTIFICATION_MAX_BYTES, DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, receiveDatabaseWorkNotification, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { DATABASE_WORK_CHANNEL, DATABASE_WORK_NOTIFICATION_MAX_BYTES, DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, receiveDatabaseWorkNotification, reconcileDatabaseWork, reconcileDatabaseWorkNotifications, setDatabaseWorkReconnectHint, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -29,6 +29,18 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(signal).not.toHaveBeenCalled();
       expect(event).not.toHaveBeenCalled();
     } finally { signal.mockRestore(); event.mockRestore(); }
+  });
+
+  it("sends a topic's declared reconnect hint, and an unscoped reload to other topics, when notifications reconnect", () => {
+    const received: Array<[string, string[] | undefined]> = [];
+    const stopHinted = subscribeDatabaseWork(db, "reconnect-hinted", (event, hints) => received.push(["hinted", hints && [...hints]]));
+    const stopPlain = subscribeDatabaseWork(db, "reconnect-plain", (event, hints) => received.push(["plain", hints && [...hints]]));
+    try {
+      setDatabaseWorkReconnectHint(db, "reconnect-hinted", "{\"reload\":true}");
+      reconcileDatabaseWorkNotifications(db);
+      expect(received).toEqual(expect.arrayContaining([["hinted", ["{\"reload\":true}"]], ["plain", undefined]]));
+      expect(received).toHaveLength(2);
+    } finally { stopHinted(); stopPlain(); }
   });
 
   it("defers nested savepoint notifications until the outer commit and preserves return values", async () => {
@@ -470,6 +482,22 @@ describe("database work scope identity", () => {
       expect(other.wakes).toEqual([["hinted", ["company-1", "company-2"]], ["unhinted", null], ["mixed", null]]);
       expect(result.payloads.map(legacyReceive)).toEqual(["hinted", "unhinted", "mixed"]);
     } finally { await other.close(); }
+  });
+
+  it("scopes an unhinted signal alongside a hinted one to the hinted set, locally and in another process", async () => {
+    const other = receiving(["alongside"]);
+    const local: Array<string[] | null> = [];
+    const stop = subscribeDatabaseWork(db, "alongside", (event, hints) => { if (event === "settled") local.push(hints ? [...hints] : null); });
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "alongside");
+        await signalDatabaseWork(tx, "alongside", "company-1");
+      }));
+      expect(local).toEqual([["company-1"]]);
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1"]]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["alongside", ["company-1"]]]);
+    } finally { stop(); await other.close(); }
   });
 
   it("splits many hints into payloads an older receiver still reads, within the per-topic byte cap", async () => {

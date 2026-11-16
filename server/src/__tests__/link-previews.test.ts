@@ -10,6 +10,13 @@ const provider = (resolve = vi.fn(async () => unavailable)): LinkPreviewProvider
 afterEach(() => vi.useRealTimers());
 
 describe("demand-driven link preview cache", () => {
+  it("omits absent records on repeated batch reads", async () => {
+    const service = createLinkPreviewService([provider()], {
+      store: { read: async () => new Map(), write: async () => {} },
+    });
+    expect(await service.cached(scope, [url])).toEqual({ results: {} });
+    expect(await service.cached(scope, [url])).toEqual({ results: {} });
+  });
   it("does no work until requested and coalesces equivalent URLs", async () => {
     const resolve = vi.fn(async () => unavailable);
     const service = createLinkPreviewService([provider(resolve)]);
