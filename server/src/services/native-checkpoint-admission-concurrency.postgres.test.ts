@@ -143,6 +143,7 @@ describe("native checkpoint Retry beside a status commit", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.input.issueId));
     const applicationName = "checkpoint-status-" + randomUUID();
     const committingDb = createDb(databaseURL, { maxConnections: 1, applicationName });
+    const blockingDb = createDb(databaseURL, { maxConnections: 1 });
     const previousCommitDebug = committingDb.$client.options.debug;
     let committerIssuedCoordinatorLock = false, committerIssuedIssueLock = false, blockerObserved = false;
     committingDb.$client.options.debug = (connection, query, parameters, types) => {
@@ -152,8 +153,11 @@ describe("native checkpoint Retry beside a status commit", () => {
       if (text.includes('from "issues"') && text.includes("for update")) committerIssuedIssueLock = true;
     };
     const admissionErrors: unknown[] = [];
-    let release!: () => void, queued!: () => void, second!: () => void;
+    let release!: () => void, releaseCoordinator!: () => void, coordinatorLocked!: () => void, queued!: () => void, second!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
+    const holdCoordinator = new Promise<void>(resolve => { releaseCoordinator = resolve; });
+    const coordinatorReady = new Promise<void>(resolve => { coordinatorLocked = resolve; });
+    let blocking: Promise<unknown> | undefined;
     const queueAtIssue = new Promise<void>(resolve => { queued = resolve; });
     const secondAttempt = new Promise<void>(resolve => { second = resolve; });
     let queuePID: number | undefined, admissionCalls = 0, secondAt = 0;
@@ -164,10 +168,28 @@ describe("native checkpoint Retry beside a status commit", () => {
         if (admissionCalls === 1) {
           const [identity] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
           queuePID = identity.pid; queued(); await held;
-        } else if (admissionCalls === 2) { secondAt = Date.now(); second(); }
+        } else if (admissionCalls === 6) { secondAt = Date.now(); second(); }
+        // The real stale committer must first roll back. This separate owner
+        // then holds ONLY the coordinator row, never the task row, so the
+        // public Retry can exhaust its normal five rolled-back attempts.
+        if (admissionCalls > 1 && admissionCalls <= 5) await coordinatorReady;
       }
       // Retain the actual owner error before Queue/deferred handlers can consume it.
-      return actualPending(tx, input).catch(error => { admissionErrors.push(error); throw error; });
+      return actualPending(tx, input).catch(error => {
+        admissionErrors.push(error);
+        if (admissionErrors.length === 1 && postgresErrorCode(error) === "55P03") {
+          blocking = blockingDb.transaction(async tx => {
+            const [owner] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+              .where(and(eq(nativeRunFinalizations.companyId, f.input.companyId),
+                eq(nativeRunFinalizations.issueId, f.input.issueId), eq(nativeRunFinalizations.runId, f.run.id))).for("update");
+            if (!owner) throw new Error("Original coordinator lock fixture changed");
+            coordinatorLocked(); await holdCoordinator;
+          });
+          void blocking.catch(() => {});
+        }
+        if (admissionErrors.length === 5) releaseCoordinator();
+        throw error;
+      });
     });
     const failures: unknown[] = [], sqlStates: string[] = [];
     const allErrors = (error: unknown): unknown[] => {
@@ -232,7 +254,9 @@ describe("native checkpoint Retry beside a status commit", () => {
       expect(failures).toHaveLength(1);
       expect(allErrors(failures[0]).some(error => error instanceof Error && error.name === "NativeCheckpointAdmissionBusyError")).toBe(true);
       expect(sqlStates).not.toContain("40P01");
-      expect(admissionErrors).toHaveLength(1);
+      expect(admissionErrors).toHaveLength(5);
+      expect(admissionErrors.every(error => postgresErrorCode(error) === "55P03"
+        && allErrors(error).some(value => value instanceof Error && value.name === "NativeCheckpointAdmissionBusyError"))).toBe(true);
       expect(postgresErrorCode(admissionErrors[0])).toBe("55P03");
       expect(allErrors(admissionErrors[0]).some(error => error instanceof Error && error.name === "NativeCheckpointAdmissionBusyError")).toBe(true);
       actorOutcomesReported = true;
@@ -267,12 +291,12 @@ describe("native checkpoint Retry beside a status commit", () => {
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
     } catch (error) { primary = error; throw error; }
     finally {
-      release();
-      const joins = await Promise.allSettled([...(ready ? [ready] : []), ...(committing ? [committing] : [])]);
+      release(); releaseCoordinator();
+      const joins = await Promise.allSettled([...(ready ? [ready] : []), ...(committing ? [committing] : []), ...(blocking ? [blocking] : [])]);
       const cleanup = joins.filter(value => value.status === "rejected").map(value => value.reason);
       if (!actorOutcomesReported) cleanup.push(...new Set([...admissionErrors, ...failures, ...(commitError ? [commitError] : [])]));
       for (const stop of [() => firstOwner.coordinator.stop(), () => restarted?.coordinator.stop(),
-        () => committingDb.$client.end({ timeout: 1 })]) {
+        () => committingDb.$client.end({ timeout: 1 }), () => blockingDb.$client.end({ timeout: 1 })]) {
         try { await stop(); } catch (error) { cleanup.push(error); }
       }
       admission.mockRestore();
