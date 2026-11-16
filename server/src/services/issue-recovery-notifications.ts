@@ -24,6 +24,11 @@ export async function notifyIssueRecovery(transaction: object, scope?: IssueReco
   for (const queue of TASK_QUEUES) await notifyDeliveryWork(transaction, queue, issueHint);
 }
 
+export async function notifyCompanyRecovery(transaction: object, companyId: string) {
+  const companyHint = JSON.stringify({ companyId });
+  for (const queue of COMPANY_QUEUES) await notifyDeliveryWork(transaction, queue, companyHint);
+}
+
 export function issueRecoveryBackstopHint(companyId: string) {
   return JSON.stringify({ companyId, backstop: true });
 }
