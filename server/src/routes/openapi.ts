@@ -11666,6 +11666,7 @@ registerCurrentRoute({
   path: "/api/issues/{id}/monitor/check-now",
   tags: ["issues"],
   summary: "Run an issue monitor check now; humans may check blocked tasks. A monitor scheduled in the future is rejected with 409 unless the request body sets consumeFutureSchedule: true",
+  body: jsonBody(z.object({ consumeFutureSchedule: z.boolean().optional() }).strict().optional()),
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

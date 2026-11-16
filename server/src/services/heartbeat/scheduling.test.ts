@@ -256,6 +256,29 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
   });
 
+  it("refuses to consume a schedule moved into the future between read and claim", async () => {
+    const f = await fixture();
+    const futureAt = new Date(now.getTime() + 60_000);
+    let moved = false;
+    const racingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (callback: Parameters<typeof db.transaction>[0]) => {
+          if (!moved) {
+            moved = true;
+            await db.update(issues).set({ monitorNextCheckAt: futureAt }).where(eq(issues.id, f.issue.id));
+          }
+          return db.transaction(callback);
+        };
+      },
+    });
+    const racingScheduler = createHeartbeatScheduling(racingDb, f.deps);
+    await expect(racingScheduler.triggerIssueMonitor(f.issue.id, { now, actorType: "user", actorId: "board-user" }))
+      .rejects.toThrow("already in progress");
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: futureAt, monitorAttemptCount: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["agent", "system"] as const)("does not let a %s check a blocked task", async (actorType) => {
     const f = await fixture();
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issue.id));
