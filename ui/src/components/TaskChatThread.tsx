@@ -2910,7 +2910,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      // The composer normally supplies this id. The fallback must still work on plain HTTP.
       args[4] ??= createUuid();
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
