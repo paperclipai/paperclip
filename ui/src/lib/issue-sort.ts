@@ -47,12 +47,14 @@ export function sortIssues(issues: readonly Issue[], sort: IssueSort, context: (
       case "worktree": return issue.currentExecutionWorkspace?.branchName;
     }
   };
-  return [...issues].sort((a, b) => {
-    const left = value(a), right = value(b);
+  // Read each task's value once; context lookups can scan agent lists.
+  const keyed = issues.map(issue => ({ issue, key: value(issue) }));
+  return keyed.sort((a, b) => {
+    const left = a.key, right = b.key;
     const missing = (value: string | number | null | undefined) => value == null || value === "" || (typeof value === "number" && !Number.isFinite(value));
     const leftMissing = missing(left), rightMissing = missing(right);
     if (leftMissing || rightMissing) return Number(leftMissing) - Number(rightMissing);
     const result = typeof left === "number" && typeof right === "number" ? left - right : collator.compare(String(left), String(right));
     return sort.sortDir === "asc" ? result : -result;
-  });
+  }).map(entry => entry.issue);
 }
