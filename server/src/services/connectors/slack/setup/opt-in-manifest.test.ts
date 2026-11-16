@@ -159,6 +159,15 @@ describe("Slack opt-in manifest machinery", () => {
       [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
       expect(row!.errorCode).toBeNull();
       expect(row!.status).toBe("configured");
+
+      // Repeat apply with identical [] remains null
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: { ...f.endpoint.setup, slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBeNull();
+      expect(row!.status).toBe("configured");
     });
 
     it("keeps errorCode pending on withdrawal when legacy install lacks default scopes snapshot", async () => {
@@ -202,6 +211,14 @@ describe("Slack opt-in manifest machinery", () => {
       expect(botScopes).toContain("im:write");
       expect(botScopes).not.toContain("files:write");
 
+      // Repeat apply with same [] keeps pending
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: legacySetup,
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+
       // 3. ensureSlackManifestScopesCurrent leaves it pending
       await ensureSlackManifestScopesCurrent(db!, {
         endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
@@ -242,7 +259,23 @@ describe("Slack opt-in manifest machinery", () => {
         endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
         setup: partialSnapshotSetup,
       });
-      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      let [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+
+      // Repeat apply with same [] keeps pending
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: partialSnapshotSetup,
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+
+      // ensureSlackManifestScopesCurrent also leaves it pending
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: partialSnapshotSetup,
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
       expect(row!.errorCode).toBe("slack_permissions_update_pending");
     });
 

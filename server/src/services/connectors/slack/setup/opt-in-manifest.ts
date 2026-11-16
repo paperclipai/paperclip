@@ -129,9 +129,10 @@ export async function applySlackOptInManifestChange(
         input.setup.slackInstalledDefaultScopes!.includes(scope),
       );
     const mustRepush =
-      (scopesChanged && !withdrawingUnpushedChange) ||
-      (row.status !== "configured" &&
-        (row.manifestHash !== manifestHash || row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING));
+      !withdrawingUnpushedChange &&
+      (scopesChanged ||
+        row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING ||
+        (row.status !== "configured" && row.manifestHash !== manifestHash));
     if (row.manifestHash === manifestHash && row.errorCode !== SLACK_PERMISSIONS_UPDATE_PENDING) return;
     await executor
       .update(chatSlackRegistrations)
@@ -190,7 +191,7 @@ export async function applySlackOptInManifestChange(
  * when all of its scopes were granted, so a partial grant leaves its tools
  * gated.
  *
- * Only this one key is written, atomically, so a concurrent write to any other
+ * Only these two keys are written, atomically, so a concurrent write to any other
  * part of `setup` (not least `runtimeGeneration`) is never lost.
  */
 export async function recordInstalledSlackOptIns(
