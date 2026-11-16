@@ -270,6 +270,40 @@ next_canary_version() {
   next_prerelease_version canary "$stable_version" "$@"
 }
 
+canary_source_position() {
+  local repo_root="$1"
+  if [ "$(git -C "$repo_root" rev-parse --is-shallow-repository)" = "true" ]; then
+    return 1
+  fi
+  git -C "$repo_root" rev-list --count HEAD
+}
+
+next_canary_version_from_source() {
+  local repo_root="$1"
+  local allow_registry_fallback="$2"
+  local stable_version="$3"
+  shift 3
+  local registry_version
+  local registry_number
+  local position
+
+  registry_version="$(next_prerelease_version canary "$stable_version" "$@")" || return 1
+  registry_number="${registry_version##*.}"
+  if ! position="$(canary_source_position "$repo_root")"; then
+    if [ "$allow_registry_fallback" = true ]; then
+      release_warn "shallow checkout: canary number falls back to the next registry number ${registry_number}."
+      printf '%s\n' "$registry_version"
+      return 0
+    fi
+    release_fail "canary numbering needs the full master history; this checkout is shallow."
+  fi
+  if [ "$position" -gt "$registry_number" ]; then
+    printf '%s-canary.%s\n' "$stable_version" "$position"
+  else
+    printf '%s\n' "$registry_version"
+  fi
+}
+
 release_notes_file() {
   printf '%s/releases/v%s.md\n' "$REPO_ROOT" "$1"
 }

@@ -406,3 +406,43 @@ test("every publish job budgets for build time and four delayed packages", () =>
     assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build and polling`);
   }
 });
+
+function canaryNumberFixture({ commits, publishedVersions, shallow = false }) {
+  const dir = mkdtempSync(join(tmpdir(), "paperclip-canary-number-"));
+  const source = join(dir, "source");
+  mkdirSync(source);
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" } });
+  git(source, "init", "-q", "-b", "master");
+  for (let index = 0; index < commits; index += 1) git(source, "commit", "-q", "--allow-empty", "-m", `c${index}`);
+  let repo = source;
+  if (shallow) {
+    repo = join(dir, "shallow");
+    git(dir, "clone", "-q", "--depth", "1", `file://${source}`, repo);
+  }
+  const versionsFile = join(dir, "versions.json");
+  writeFileSync(versionsFile, JSON.stringify({ "@paperclipai/shared": publishedVersions, paperclipai: publishedVersions }));
+  return { repo, versionsFile };
+}
+
+function nextCanary(fixture, allowFallback = false) {
+  const script = `source "${repoRoot}/scripts/release-lib.sh"; next_canary_version_from_source "$1" "$2" 2026.1116.0 @paperclipai/shared paperclipai`;
+  return execFileSync("bash", ["-c", script, "next-canary", fixture.repo, String(allowFallback)], {
+    encoding: "utf8", env: { ...process.env, RELEASE_PACKAGE_VERSIONS_FILE: fixture.versionsFile }, stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+test("a canary is numbered by its master position, so overlapping canaries never pick the same number", () => {
+  const fixture = canaryNumberFixture({ commits: 25, publishedVersions: ["2026.1116.0-canary.6", "2026.1116.0-canary.7"] });
+  assert.equal(nextCanary(fixture), "2026.1116.0-canary.25");
+});
+
+test("a rerun of an already numbered canary moves past the published number", () => {
+  const fixture = canaryNumberFixture({ commits: 25, publishedVersions: ["2026.1116.0-canary.25"] });
+  assert.equal(nextCanary(fixture), "2026.1116.0-canary.26");
+});
+
+test("a publishing canary refuses a shallow checkout, and a dry run falls back to the registry number", () => {
+  const fixture = canaryNumberFixture({ commits: 5, publishedVersions: ["2026.1116.0-canary.7"], shallow: true });
+  assert.throws(() => nextCanary(fixture, false), /needs the full master history/);
+  assert.equal(nextCanary(fixture, true), "2026.1116.0-canary.8");
+});
