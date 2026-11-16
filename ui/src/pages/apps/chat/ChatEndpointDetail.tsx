@@ -738,7 +738,7 @@ function Settings({
           onReconnect={() => navigate(`/apps/chat/connect?provider=slack&purpose=chat&resume=${endpointId}&reconnect=1`)}
         />
       </SlackSetupAdvanced>}
-      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Slack tools"><SlackToolsSettings companyId={endpoint.companyId} endpointId={endpointId} onReconnect={() => navigate(`/apps/chat/connect?provider=slack&purpose=chat&resume=${endpointId}&reconnect=1`)} /></SlackSetupAdvanced>}
+      {endpoint.provider === "slack" && <SlackSetupAdvanced label="Slack tools"><SlackToolsSettings companyId={endpoint.companyId} endpointId={endpointId} setupMethod={endpoint.setup?.slackSetupMethod} onReconnect={() => navigate(`/apps/chat/connect?provider=slack&purpose=chat&resume=${endpointId}&reconnect=1`)} /></SlackSetupAdvanced>}
     </section>
   );
 }

@@ -38,18 +38,52 @@ describe("Slack permission group guidance", () => {
 });
 
 describe("Slack DM reconnect notice (TECH-8783)", () => {
-  it("renders reconnect notice when dmReconnectRequired is true", () => {
-    const capabilities: SlackToolCapabilities = {
-      grantedScopes: ["chat:write"],
-      missingScopes: ["im:write"],
-      dmReconnectRequired: true,
-      tools: [],
-    };
-    const element = document.createElement("div");
-    element.innerHTML = renderToStaticMarkup(<SlackCapabilitiesView capabilities={capabilities} />);
-    expect(element.textContent).toContain("Reconnect Slack to grant DM permission");
-    expect(element.textContent).toContain("slack_open_dm will fail until you reconnect");
-  });
+  it.each(["managed", "automatic"] as const)(
+    "renders reconnect notice and filters im:write from missing scopes for provisioned setup (%s)",
+    (setupMethod) => {
+      const capabilities: SlackToolCapabilities = {
+        grantedScopes: ["chat:write"],
+        missingScopes: ["im:write"],
+        dmReconnectRequired: true,
+        tools: [],
+      };
+      const html = renderToStaticMarkup(
+        <SlackCapabilitiesView
+          capabilities={capabilities}
+          setupMethod={setupMethod}
+          onReconnect={() => {}}
+        />,
+      );
+      expect(html).toContain("Reconnect Slack to grant DM permission");
+      expect(html).toContain("slack_open_dm will fail until you reconnect");
+      expect(html).toContain('type="button"');
+      // im:write is filtered out of missingScopes, so manual missing-scopes instructions are not shown
+      expect(html).not.toContain("Add permissions to unlock more tools");
+    },
+  );
+
+  it.each(["manual", "existing", undefined] as const)(
+    "suppresses reconnect notice and retains im:write in missing scopes for unprovisioned setup (%s)",
+    (setupMethod) => {
+      const capabilities: SlackToolCapabilities = {
+        grantedScopes: ["chat:write"],
+        missingScopes: ["im:write"],
+        dmReconnectRequired: true,
+        tools: [],
+      };
+      const html = renderToStaticMarkup(
+        <SlackCapabilitiesView
+          capabilities={capabilities}
+          setupMethod={setupMethod}
+          onReconnect={() => {}}
+        />,
+      );
+      expect(html).not.toContain("Reconnect Slack to grant DM permission");
+      // Manual instructions remain with im:write displayed
+      expect(html).toContain("Add permissions to unlock more tools");
+      expect(html).toContain("im:write");
+    },
+  );
 
   it("hides reconnect notice when dmReconnectRequired is false or undefined", () => {
     const capabilities: SlackToolCapabilities = {
@@ -58,8 +92,9 @@ describe("Slack DM reconnect notice (TECH-8783)", () => {
       dmReconnectRequired: false,
       tools: [],
     };
-    const element = document.createElement("div");
-    element.innerHTML = renderToStaticMarkup(<SlackCapabilitiesView capabilities={capabilities} />);
-    expect(element.textContent).not.toContain("Reconnect Slack to grant DM permission");
+    const html = renderToStaticMarkup(
+      <SlackCapabilitiesView capabilities={capabilities} setupMethod="managed" />,
+    );
+    expect(html).not.toContain("Reconnect Slack to grant DM permission");
   });
 });

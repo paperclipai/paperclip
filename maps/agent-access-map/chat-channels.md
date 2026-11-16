@@ -162,7 +162,8 @@ refresh and an existing bot token do not grant it. Channel management and file
 upload remain optional groups. Outbound DM rollout requires deployment of
 TECH-8806 (PR #410), which adds per-agent inbound task authorization; until
 TECH-8806 is deployed, inbound message routing does not evaluate per-agent
-assignment grants. The private-source publication boundary remains in force.
+assignment grants. Sharing is governed by bot membership/access and Allowed
+Channels write permissions; private reads are recorded for audit only.
 Sources: [Slack scopes](../../packages/shared/src/slack-scopes.ts),
 [manifest refresh](../../server/src/services/connectors/slack/setup/opt-in-manifest.ts),
 and [Slack capability resolution](../../server/src/services/connectors/slack-capabilities.ts).

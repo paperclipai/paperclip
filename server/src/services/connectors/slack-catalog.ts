@@ -219,7 +219,6 @@ export async function syncSlackBotTools(
       existing?.status === "removed" &&
       existing.versionHash === LEGACY_OPEN_DM_PRE_RELEASE_HASH &&
       activated &&
-      connection.enabled === true &&
       existingEntries.some((e) => e.name !== `slack_bot:${tool.name}` && e.status !== "removed");
     if (
       existing?.versionHash === hash &&

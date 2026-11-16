@@ -154,6 +154,7 @@ describe("Slack app manifest", () => {
     expect(slackRegistrationErrorMessage("slack_configuration_refresh_invalid")).toContain("refresh token");
     expect(slackRegistrationErrorMessage("slack_configuration_token_invalid")).toContain("use a saved refresh token");
     expect(slackRegistrationErrorMessage("slack_dm_scope_missing")).toContain("Reconnect this agent's Slack app so Slack grants permission to open direct messages (im:write).");
+    expect(slackRegistrationErrorMessage("slack_install_scopes_missing")).toContain("Ask the Slack workspace administrator to approve the direct-message (im:write) permission");
   });
 });
 

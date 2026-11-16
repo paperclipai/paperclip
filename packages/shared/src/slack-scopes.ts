@@ -16,6 +16,9 @@ import { z } from "zod";
  *
  * Channel reading and replying stay here (`*:history`, `chat:write`), so an
  * agent added to a channel can still read its full history and answer.
+ *
+ * Treat this list as a security boundary: a scope only moves here when it is
+ * safe to grant every agent.
  */
 export const SLACK_DEFAULT_BOT_SCOPES = [
   "app_mentions:read",
@@ -98,7 +101,10 @@ export function normalizeSlackOptInGroups(
   return result;
 }
 
-/** Strict request/response contract for the per-agent opt-in choice. */
+/**
+ * Request/response contract for the per-agent opt-in choice.
+ * `proactive_dms` stays in the enum deliberately for backward compatibility and is normalized away.
+ */
 const slackOptInScopeGroupSchema = z.enum([
   "channel_management",
   "proactive_dms",

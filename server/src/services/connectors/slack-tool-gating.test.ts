@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { toolCatalogEntries, toolConnections, type Db } from "@paperclipai/db";
 import { SLACK_TOOLS } from "@paperclipai/shared";
@@ -546,6 +547,15 @@ describe("Slack catalog sync status transitions (TECH-8783)", () => {
     setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
   } as any;
 
+  const openDmTool = SLACK_TOOLS.find((t) => t.name === "slack_open_dm")!;
+  const currentHash = createHash("sha256").update(JSON.stringify({
+    name: openDmTool.name,
+    description: openDmTool.description,
+    inputSchema: openDmTool.inputSchema,
+    risk: openDmTool.risk,
+    scopes: openDmTool.scopes,
+  })).digest("hex");
+
   it("revives old system-gated slack_open_dm row with legacy hash when active siblings exist", async () => {
     const { mockTx, writes } = setupMockTx([
       { name: "slack_bot:slack_open_dm", status: "removed", versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: null, reviewedAt: null },
@@ -558,17 +568,14 @@ describe("Slack catalog sync status transitions (TECH-8783)", () => {
   });
 
   it("preserves removed status when slack_open_dm has current hash (operator removed post-release)", async () => {
-    const currentHash = "d27e1ef5fc870b93aacbfd512dd5fdd23b9a04253d098555b39be7d2b7515c9b";
     const { mockTx, writes } = setupMockTx([
       { name: "slack_bot:slack_open_dm", status: "removed", versionHash: currentHash, reviewedByUserId: "u1", reviewedAt: new Date() },
       { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
     ]);
     await syncSlackBotTools(mockTx, endpoint, "u1", true);
     const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
-    // With current hash and removed status, if written, set.status must remain "removed"
-    if (write) {
-      expect(write.set.status).toBe("removed");
-    }
+    // With current hash and removed status, the row is unchanged and no update is written
+    expect(write).toBeUndefined();
   });
 
   it("preserves operator disabled or quarantined status on slack_open_dm", async () => {
@@ -607,20 +614,18 @@ describe("Slack catalog sync status transitions (TECH-8783)", () => {
     expect(write?.set.status).toBe("removed");
   });
 
-  it("does not revive slack_open_dm when connection is disabled", async () => {
+  it("revives slack_open_dm even when connectionEnabled is false in toolConnections (read paths filter connection enabled)", async () => {
     const { mockTx, writes } = setupMockTx([
       { name: "slack_bot:slack_open_dm", status: "removed", versionHash: LEGACY_OPEN_DM_PRE_RELEASE_HASH, reviewedByUserId: null, reviewedAt: null },
       { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },
     ], false);
-    await syncSlackBotTools(mockTx, endpoint, "u1", false);
+    await syncSlackBotTools(mockTx, endpoint, "u1", true);
     const write = writes.find((w) => w.values.name === "slack_bot:slack_open_dm");
-    if (write) {
-      expect(write.set.status).toBe("removed");
-    }
+    expect(write).toBeDefined();
+    expect(write?.set.status).toBe("active");
   });
 
   it("is idempotent on re-sync after revival", async () => {
-    const currentHash = "d27e1ef5fc870b93aacbfd512dd5fdd23b9a04253d098555b39be7d2b7515c9b";
     const { mockTx, writes } = setupMockTx([
       { name: "slack_bot:slack_open_dm", status: "active", versionHash: currentHash, reviewedByUserId: null, reviewedAt: null },
       { name: "slack_bot:slack_post_message", status: "active", versionHash: "some-hash" },

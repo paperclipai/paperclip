@@ -24,7 +24,8 @@ can read public channels where the bot belongs; guests, private channels and Sla
 Connect conversations require verified requester membership. Membership checks
 paginate and fail closed. Outbound DMs to eligible workspace members are standard
 for all agents when the installation has Slack's `im:write` grant; there is no
-separate Proactive DMs checkbox. Once TECH-8806 is deployed alongside this capability,
+separate Proactive DMs checkbox. The bot's DMs with any active workspace member are
+readable by agents and that read is not gated on im:write. Once PR #410 is deployed alongside this capability,
 inbound DM replies require the sender to be authorized to direct the endpoint's assigned
 agent, rather than merely receiving a message.
 
@@ -94,9 +95,9 @@ tool whose scope is not in the live grant is rejected before the Slack call inst
 of failing at Slack with `missing_scope`. If an existing installation lacks
 `im:write`, refresh its manifest and reconnect/reinstall so Slack grants it;
 existing bot tokens do not gain a newly requested scope automatically. Other
-optional groups remain off until enabled and granted. The private-source
-publication boundary remains in force for explicit writes and automatic
-publications.
+optional groups remain off until enabled and granted. Sharing is governed by bot
+membership/access and Allowed Channels write permissions; private reads are
+recorded for audit only.
 
 ## Delivery and retry behavior
 
@@ -220,7 +221,7 @@ manifest refresh and reconnect/reinstall; saving the new default does not update
 an existing bot token. The target must
 be a full member of the bot's own workspace: bots, deactivated users, guests and
 people from other workspaces are refused. With the same permission the agent can also
-read and post in those DMs. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Reply-reading behavior is unchanged from PR308: a received DM is not enough to trigger work; with TECH-8806 deployed, the sender must be authorized to direct the assigned agent. Sharing private channel material is governed by bot membership/access and Allowed Channels write permissions rather than per-channel destination boundaries; private reads are recorded for audit. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
+read and post in those DMs. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Reply-reading behavior is unchanged from #308: a received DM is not enough to trigger work; with PR #410 deployed, the sender must be authorized to direct the assigned agent. Sharing private channel material is governed by bot membership/access and Allowed Channels write permissions rather than per-channel destination boundaries; private reads are recorded for audit. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
 not a Slack-specific timer. Routine results are sent explicitly through the tool;
 ordinary task finals are not automatically broadcast to Slack.
 

@@ -68,7 +68,9 @@ group as:
 The same applies to the default `im:write` scope. A legacy or existing
 installation that does not have it keeps its current grant; existing bot tokens
 do not acquire it automatically. Refresh the manifest and reconnect/reinstall
-the app before outbound DM tools become available.
+the app before outbound DM tools become available. Outbound direct message
+rollout has a strict deployment prerequisite on PR #410 for per-agent inbound task
+authorization.
 
 ### After a change
 

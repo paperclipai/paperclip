@@ -14,6 +14,7 @@ import {
   type SlackOptInScopeGroup,
 } from "@paperclipai/shared";
 import { conflict } from "../../../../errors.js";
+import { logger } from "../../../../middleware/logger.js";
 import { sameSlackOptInGroups } from "../../slack-opt-ins.js";
 import { object } from "./provider-client.js";
 
@@ -115,8 +116,15 @@ export async function applySlackOptInManifestChange(
     // pushed again before authorizing. Keep the marker across repeated edits.
     // A still-configured registration has not pushed the pending change, so
     // withdrawing it can simply clear the permission-change marker.
-    const mustRepush = row.status !== "configured" &&
-      (row.manifestHash !== manifestHash || row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING);
+    const storedScopes = [...slackManifestBotScopes(row.manifest)].sort();
+    const rebuiltScopes = [...slackManifestBotScopes(manifest)].sort();
+    const scopesChanged = JSON.stringify(storedScopes) !== JSON.stringify(rebuiltScopes);
+    const withdrawingUnpushedChange =
+      row.status === "configured" && row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING;
+    const mustRepush =
+      (scopesChanged && !withdrawingUnpushedChange) ||
+      (row.status !== "configured" &&
+        (row.manifestHash !== manifestHash || row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING));
     if (row.manifestHash === manifestHash && row.errorCode !== SLACK_PERMISSIONS_UPDATE_PENDING) return;
     await executor
       .update(chatSlackRegistrations)
@@ -226,15 +234,16 @@ export async function ensureSlackManifestScopesCurrent(
   if (!row?.appId || row.status === "removed") return;
   const eventUrl = object(object(row.manifest.settings).event_subscriptions)
     .request_url;
-  if (typeof eventUrl !== "string" || !eventUrl) return;
+  if (typeof eventUrl !== "string" || !eventUrl)
+    throw conflict(
+      "The saved Slack app manifest is unavailable. Resume Slack setup to update its permissions.",
+    );
 
   const currentBotScopes = slackManifestBotScopes(row.manifest);
-  const isUntouchedLegacy =
-    input.setup.slackOptInScopeGroups === undefined &&
-    input.setup.slackInstalledOptInScopeGroups === undefined;
-  const normalizedGroups = isUntouchedLegacy
-    ? slackOptInGroupsFromScopes(currentBotScopes)
-    : normalizeSlackOptInGroups(input.setup.slackOptInScopeGroups);
+  const normalizedGroups =
+    input.setup.slackOptInScopeGroups === undefined
+      ? slackOptInGroupsFromScopes(currentBotScopes)
+      : normalizeSlackOptInGroups(input.setup.slackOptInScopeGroups);
   const targetBotScopes = slackBotScopes(normalizedGroups);
   if (
     JSON.stringify([...currentBotScopes].sort()) ===
@@ -244,7 +253,13 @@ export async function ensureSlackManifestScopesCurrent(
   }
 
   const parsedApp = slackAppConfigurationSchema.safeParse(input.app);
-  if (!parsedApp.success) return;
+  if (!parsedApp.success) {
+    logger.warn(
+      { endpointId: input.endpointId, companyId: input.companyId, error: parsedApp.error },
+      "Invalid Slack app configuration for manifest scope update",
+    );
+    return;
+  }
   const app = parsedApp.data;
   const manifest = buildSlackAppManifest({
     app,

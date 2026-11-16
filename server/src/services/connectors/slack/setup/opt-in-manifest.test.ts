@@ -445,6 +445,124 @@ describe("Slack opt-in manifest machinery", () => {
       expect(botScopes).toContain("files:write");
     });
 
+    it("marks pending when pre-PR configured install has a no-op opt-in edit that adds im:write", async () => {
+      const f = await fixture();
+      // Pre-PR configured install without im:write and with null errorCode
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        status: "configured",
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      // No-op opt-in edit (requested matches installed)
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: { ...f.endpoint.setup, slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+    });
+
+    it("throws conflict when eventUrl is missing in ensureSlackManifestScopesCurrent", async () => {
+      const f = await fixture();
+      const brokenManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      delete (brokenManifest.settings as any).event_subscriptions;
+      await db!.update(chatSlackRegistrations).set({
+        manifest: brokenManifest,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await expect(ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup: f.endpoint.setup,
+      })).rejects.toThrow("The saved Slack app manifest is unavailable. Resume Slack setup to update its permissions.");
+    });
+
+    it("logs a warning and returns when app configuration fails schema parsing in ensureSlackManifestScopesCurrent", async () => {
+      const f = await fixture();
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      // Invalid app config
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: { invalid: true },
+        setup: f.endpoint.setup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      // Did not update errorCode or manifest because parsedApp failed
+      expect(row!.errorCode).toBeNull();
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).not.toContain("im:write");
+    });
+
+    it("preserves scopes from manifest when slackOptInScopeGroups is undefined even if installed groups is defined", async () => {
+      const f = await fixture();
+      // Setup has undefined slackOptInScopeGroups but defined slackInstalledOptInScopeGroups
+      const setup = {
+        ...f.endpoint.setup,
+        slackOptInScopeGroups: undefined,
+        slackInstalledOptInScopeGroups: [],
+      };
+      const manifestWithFile = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (manifestWithFile as any).oauth_config.scopes.bot = ["chat:write", "files:write"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: manifestWithFile,
+        manifestHash: slackInstallManifestHash(manifestWithFile),
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        agentName: "Maya",
+        app: f.endpoint.setup.slackApp,
+        setup,
+      });
+
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+      // Preserved files:write from manifest because slackOptInScopeGroups was undefined!
+      expect(botScopes).toContain("files:write");
+    });
+
     it("removes optional groups when explicitly requested as empty [] even if previous manifest had them", async () => {
       const f = await fixture();
       const explicitEmptySetup = {

@@ -36,8 +36,8 @@ const preInstallRequestLabel = "Requested — applied at install";
  * scopes rated above Low risk, so enabling either group may require Slack
  * workspace admin approval.
  *
- * This component owns the reconnect notice: callers must not render a second
- * one next to it.
+ * This component owns the permission-change reconnect notice: callers must not render a second
+ * one for permission changes next to it.
  */
 export function SlackScopeOptIns({
   value,
@@ -155,8 +155,8 @@ export function SlackScopeOptIns({
         })}
       </div>
       <p className="text-sm text-muted-foreground">
-        Each extra group is not Low risk, so your Slack administrators must
-        approve this agent&apos;s install again. Until then the agent keeps its
+        Each extra group is not Low risk, so your Slack administrators may need
+        to approve this agent&apos;s install. Until then the agent keeps its
         current permissions.
       </p>
       {(pendingChange || manifestErrorCode === "slack_permissions_update_pending") && (
