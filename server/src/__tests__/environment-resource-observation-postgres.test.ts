@@ -8,7 +8,7 @@ import { agents, companies, environmentLeases, environments, heartbeatRuns, secr
   applyPendingMigrations, createDb, dedicatedDbConnectionStats, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../lib/dedicated-test-database-url.js";
 import { environmentService } from "../services/environments.js";
-import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../services/environment-runtime.js";
 import { observeStoppedExecutionResource, readEnvironmentResourceObservationFailure } from "../services/environment-resource-observation.js";
 import { historicalProviderCredentials } from "../services/historical-provider-credentials.js";
 import { secretService } from "../services/secrets.js";
@@ -78,6 +78,7 @@ suite("optional resource observation with an owned PostgreSQL scope", () => {
     const original = new Error("original command failed");
     const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
       acquireRunLease: async () => { throw new Error("unexpected acquire"); }, releaseRunLease: async () => null,
+      resolveCapabilities: async () => classifyEnvironmentCapabilities({ supportedCapabilities: new Set() }),
       execute: async () => { throw original; }, inspectLeaseResource: inspect,
     }] });
     const main = db.transaction(async tx => {
