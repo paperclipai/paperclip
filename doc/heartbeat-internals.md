@@ -56,6 +56,50 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Queued run dispatch order
+
+When an agent is at its concurrency limit, each freed slot starts the next
+queued run chosen by `server/src/services/heartbeat/queued-run-dispatch-order.ts`.
+The "place in line" a waiting task shows uses the same facts and order
+(`queued-run-line.ts`).
+
+Runs fall into four tiers, started in this order:
+
+1. **Person.** A run a person asked for (an assignment, comment, chat message
+   or Retry by a board user, itself or through its source chain), and any other
+   non-recovery run on a task tree a person created. A task belongs to such a
+   tree when it, or any task above it, has `createdByUserId`. This covers an
+   agent's subtasks of a person's task and the parent's resume once they
+   complete (`issue_children_completed`), so a half-finished task is not left
+   behind newer tasks.
+2. **Work.** Other agent work, such as a tree an agent or routine started.
+3. **Recovery** and 4. **old recovery backlog.** System recovery wakes, even on
+   a person's tree.
+
+Within a tier, runs are ordered by readiness (in progress first), then task
+priority, then age, oldest first. A newer run on a person's tree never passes
+another person's equally ranked task that has waited longer.
+
+Fairness bounds:
+
+- **Oldest-run share.** Every `OLDEST_DISPATCH_SHARE` (4th) start goes to the
+  longest-waiting ready run that has waited past `QUEUED_RUN_AGING_MS`
+  (60 minutes), preferring runs people wait on. So even while a deep tree keeps
+  adding in-progress or higher-priority work, another person's new task starts
+  within 60 minutes plus 4 x (aged person-tier runs queued before it + 1)
+  starts.
+- **Recovery share.** Recovery takes every `RECOVERY_DISPATCH_SHARE` (4th)
+  start from lower-tier work. It is held only while a run a person asked for is
+  ready, not for the rest of a person's tree, so a deep tree cannot hold
+  recovery indefinitely.
+- **Scope.** Queues are per agent, and agents belong to one company, so tree
+  priority never moves one agent's or company's runs ahead of another's.
+
+Tree membership is read in one recursive query per dispatch pass, walking each
+queued task's parent chain by the `(company_id, id)` unique index and stopping
+at the first person-created task (at most 32 levels). It runs only when the
+agent has more than one queued run.
+
 ## Run history authorization reads
 
 Run history reuses the authorization service's batch read API for distinct task
