@@ -48,6 +48,8 @@ import * as activityLogModule from "../services/activity-log.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { museRunnerBroker } from "../services/muse-runner-broker.js";
 import { museReceiver } from "../services/muse-receiver.js";
+import { deleteCompany } from "../services/company-deletion.js";
+import * as museProjectionModule from "../modules/external-agents/muse-hosted-projection.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -1489,6 +1491,166 @@ describe("personal Muse control plane",()=>{
     expect(getCloudRuntimeIdentity()?.canonicalOrigin).toBe(oauthOrigin);
     return async()=>{await db.delete(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"));resetCloudRuntimeIdentityForTests();};
   }
+  it("persists a hosted unverified contact concurrently with Verify without reversing binding and mirror locks",async()=>{
+    const f=await fixture(false);
+    // Controlled existing detection; no challenge or verified reply is seeded.
+    await db.update(bindings).set({receiverContactAt:new Date()}).where(eq(bindings.id,f.binding.id));
+    const sqlStates:string[]=[],actualSqlErrors:unknown[]=[];
+    const recordSqlState=(error:unknown)=>{
+      let current=error;
+      for(let depth=0;depth<6&&current&&typeof current==="object";depth++){
+        if("code" in current&&typeof current.code==="string"){sqlStates.push(current.code);actualSqlErrors.push(error);return;}
+        current="cause" in current?current.cause:undefined;
+      }
+    };
+    const owner=new Proxy(db,{get(target,key,receiver){
+      if(key!=="transaction")return Reflect.get(target,key,receiver);
+      return async(...args:Parameters<typeof db.transaction>)=>{
+        try{return await Reflect.apply(target.transaction,target,args);}
+        catch(error){recordSqlState(error);throw error;}
+      };
+    }});
+    const receiver=museReceiver(owner);
+    // Admit the real public contact before managed flush starts; signal's own
+    // binding transaction has committed, leaving one normal retained RAM bucket.
+    expect(getCloudRuntimeIdentity()).toBeNull();
+    expect(await receiver.signal(f.binding.id)).toEqual({version:1,signal:null});
+    const reset=await applyActualManagedContactIdentity();
+    await db.insert(mcpClientMirrorState).values({id:"public",revision:0}).onConflictDoNothing();
+    let releaseFlush!:()=>void,verifyFinished!:()=>void;
+    const continueFlush=new Promise<void>(resolve=>{releaseFlush=resolve;});
+    const afterVerify=new Promise<void>(resolve=>{verifyFinished=resolve;});
+    let flushPid:number|undefined,waitKind:string|undefined,parked=false;
+    const realPrepare=museProjectionModule.prepareMuseReceiverAuthorityMutation;
+    const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverAuthorityMutation").mockImplementation(async(tx,scope)=>{
+      await realPrepare(tx,scope);
+      if(!parked&&scope?.companyId===f.company.id){
+        const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);
+        flushPid=row.pid;parked=true;await continueFlush;
+      }
+    });
+    const automaticBroker=museRunnerBroker(owner),realAutomaticVerify=automaticBroker.verify;
+    // Only order the separate post-commit automatic call after the competing
+    // operator call. Both delegate to real Verify; current revision is not mocked.
+    const automatic=vi.spyOn(automaticBroker,"verify").mockImplementation(async(...args)=>{
+      await afterVerify;return realAutomaticVerify(...args);
+    });
+    let flush:Promise<void>|undefined,verify:ReturnType<typeof f.broker.verify>|undefined;
+    let joined:Promise<PromiseSettledResult<unknown>[]>|undefined,primary:unknown;
+    onTestFailed(()=>console.error("MUSE_CONTACT_VERIFY_LOCK_FRONTIER "+JSON.stringify({sqlStates,waitKind,parked})));
+    try{
+      flush=receiver.flush();
+      // Attach rejection handling immediately while observing the real lock edge.
+      void flush.catch(()=>{});
+      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      const [binding]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+      verify=f.broker.verify(f.company.id,f.agent.id,{bindingId:binding.id,generation:binding.generation,expectedRevision:binding.revision},f.operatorId)
+        .catch(error=>{recordSqlState(error);throw error;}).finally(verifyFinished);
+      joined=Promise.allSettled([flush,verify]);
+      await vi.waitFor(async()=>{
+        const [waiter]=await db.execute<{kind:string}>(sql`select waiting.wait_event as kind from pg_stat_activity waiting
+          where waiting.datname=current_database() and waiting.pid<>pg_backend_pid()
+            and ${flushPid!}=any(pg_blocking_pids(waiting.pid))`);
+        expect(waiter).toBeDefined();waitKind=waiter.kind;
+      },{timeout:5_000});
+      releaseFlush();
+      const outcomes=await joined;
+      const rejected=outcomes.filter(value=>value.status==="rejected");
+      if(actualSqlErrors.length||rejected.length)throw new AggregateError([...actualSqlErrors,...rejected.map(value=>value.reason)],"Muse contact/Verify concurrency failed");
+      expect(outcomes.map(value=>value.status),JSON.stringify({sqlStates,waitKind})).toEqual(["fulfilled","fulfilled"]);
+      expect(sqlStates).toEqual([]);
+      const [saved]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+      expect(saved).toMatchObject({id:f.binding.id,generation:f.binding.generation,verifiedReplyAt:null});
+      expect(saved.receiverContactAt).not.toBeNull();expect(saved.challengeHash).not.toBeNull();
+      const contacts=await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
+      expect(contacts).toHaveLength(1);expect(contacts[0]).toMatchObject({contacts:1,incomplete:false,bindingGeneration:f.binding.generation});
+      expect(contacts[0].timestamps).toHaveLength(1);
+      const challenges=await db.select().from(mailbox).where(and(eq(mailbox.bindingId,f.binding.id),eq(mailbox.kind,"readiness_challenge")));
+      expect(challenges).toHaveLength(1);
+    }catch(error){primary=error;throw error;}
+    finally{
+      releaseFlush();verifyFinished();
+      await Promise.allSettled([...(flush?[flush]:[]),...(verify?[verify]:[])]);
+      prepare.mockRestore();automatic.mockRestore();
+      const cleanup=await Promise.allSettled([receiver.stop()]);
+      try{await reset();}catch(error){cleanup.push({status:"rejected",reason:error});}
+      const failed=cleanup.filter(value=>value.status==="rejected");
+      if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse lock regression cleanup failed");
+    }
+  },30_000);
+  it("joins normal company deletion after a hosted contact holds its mirror transaction without a child-lock cycle",async()=>{
+    const f=await fixture(false);
+    await db.update(bindings).set({receiverContactAt:new Date()}).where(eq(bindings.id,f.binding.id));
+    const actualSqlErrors:unknown[]=[],sqlStates:string[]=[];
+    const observe=(error:unknown)=>{
+      let current=error;
+      for(let depth=0;depth<6&&current&&typeof current==="object";depth++){
+        if("code" in current&&typeof current.code==="string"){sqlStates.push(current.code);actualSqlErrors.push(error);return;}
+        current="cause" in current?current.cause:undefined;
+      }
+    };
+    const owner=new Proxy(db,{get(target,key,receiver){
+      if(key!=="transaction")return Reflect.get(target,key,receiver);
+      return async(...args:Parameters<typeof db.transaction>)=>{
+        try{return await Reflect.apply(target.transaction,target,args);}catch(error){observe(error);throw error;}
+      };
+    }});
+    const receiver=museReceiver(owner);
+    expect(getCloudRuntimeIdentity()).toBeNull();
+    expect(await receiver.signal(f.binding.id)).toEqual({version:1,signal:null});
+    const reset=await applyActualManagedContactIdentity();
+    await db.insert(mcpClientMirrorState).values({id:"public",revision:0}).onConflictDoNothing();
+    let releaseFlush!:()=>void,deletionFinished!:()=>void;
+    const continueFlush=new Promise<void>(resolve=>{releaseFlush=resolve;});
+    const afterDeletion=new Promise<void>(resolve=>{deletionFinished=resolve;});
+    let parked=false,flushPid:number|undefined,waitKind:string|undefined;
+    const realPrepare=museProjectionModule.prepareMuseReceiverAuthorityMutation;
+    const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverAuthorityMutation").mockImplementation(async(tx,scope)=>{
+      await realPrepare(tx,scope);
+      if(!parked&&scope?.companyId===f.company.id){
+        const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);
+        flushPid=row.pid;parked=true;await continueFlush;
+      }
+    });
+    const automaticBroker=museRunnerBroker(owner),realAutomaticVerify=automaticBroker.verify;
+    const automatic=vi.spyOn(automaticBroker,"verify").mockImplementation(async(...args)=>{
+      await afterDeletion;return realAutomaticVerify(...args);
+    });
+    let flush:Promise<void>|undefined,deletion:ReturnType<typeof deleteCompany>|undefined,primary:unknown;
+    onTestFailed(()=>console.error("MUSE_CONTACT_DELETE_LOCK_FRONTIER "+JSON.stringify({sqlStates,waitKind,parked})));
+    try{
+      flush=receiver.flush();void flush.catch(()=>{});
+      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      deletion=deleteCompany(db,f.company.id).catch(error=>{observe(error);throw error;}).finally(deletionFinished);
+      const joined=Promise.allSettled([flush,deletion]);
+      await vi.waitFor(async()=>{
+        const [waiter]=await db.execute<{kind:string}>(sql`select waiting.wait_event as kind from pg_stat_activity waiting
+          where waiting.datname=current_database() and waiting.pid<>pg_backend_pid()
+            and ${flushPid!}=any(pg_blocking_pids(waiting.pid))`);
+        expect(waiter).toBeDefined();waitKind=waiter.kind;
+      },{timeout:5_000});
+      releaseFlush();const outcomes=await joined;
+      const rejected=outcomes.filter(value=>value.status==="rejected");
+      if(actualSqlErrors.length||rejected.length)throw new AggregateError([...actualSqlErrors,...rejected.map(value=>value.reason)],"Muse contact/company deletion concurrency failed");
+      expect(outcomes).toEqual([expect.objectContaining({status:"fulfilled"}),expect.objectContaining({status:"fulfilled",value:expect.objectContaining({id:f.company.id})})]);
+      expect(sqlStates).toEqual([]);
+      expect(await db.select().from(companies).where(eq(companies.id,f.company.id))).toEqual([]);
+      expect(await db.select().from(agents).where(eq(agents.id,f.agent.id))).toEqual([]);
+      expect(await db.select().from(bindings).where(eq(bindings.id,f.binding.id))).toEqual([]);
+      // Successful contact committed before deletion's normal cascade. Absence
+      // after deletion is retirement, never claimed as retained contact evidence.
+      expect(await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id))).toEqual([]);
+    }catch(error){primary=error;throw error;}
+    finally{
+      releaseFlush();deletionFinished();
+      await Promise.allSettled([...(flush?[flush]:[]),...(deletion?[deletion]:[])]);
+      prepare.mockRestore();automatic.mockRestore();
+      const cleanup=await Promise.allSettled([receiver.stop()]);
+      try{await reset();}catch(error){cleanup.push({status:"rejected",reason:error});}
+      const failed=cleanup.filter(value=>value.status==="rejected");
+      if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse deletion lock regression cleanup failed");
+    }
+  },30_000);
   it("managed late HTTP success after empty handoff already has durable contact before stop or reconstruction",async()=>{
     const f=await actualReadyContact(),reset=await applyActualManagedContactIdentity(),receiver=museReceiver(f.receiverOwner);
     const read=()=>db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
