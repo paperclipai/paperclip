@@ -12,6 +12,20 @@ const observers = new WeakMap<ChatCatalogContext, Person>();
 /** Unauthenticated (non-session credential) and forbidden are both denials of the human-only profile route. */
 const AGENT_DENIED: readonly number[] = [401, 403];
 const PROFILE_EDITOR_PATH = "/company/settings/instance/profile";
+/**
+ * A reloaded page fills its form after the first frame. Wait until the field reaches the expected value
+ * (or the deadline passes) and return what the person finally sees, so the grade reads the settled value
+ * instead of a one-shot read taken before hydration.
+ */
+export async function settledFieldValue(field: { inputValue(): Promise<string> }, expected: string, timeoutMs = 15_000, intervalMs = 250) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await field.inputValue();
+    if (value === expected || Date.now() >= deadline) return value;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+
 export function isProfileEditorLink(href: string, origin: string, prefix: string): boolean {
   try {
     const url = new URL(href, origin);
@@ -50,7 +64,7 @@ export const profileIdentityCases: readonly ChatCatalogCase[] = [identityDefinit
   } catch (error) { await observer.dispose(); observers.delete(ctx); throw error; }
 }, gradeProfile, {
   authentication: "human-session",
-  oracleVersion: "paperclip.chat-catalog.identity-profile.v3",
+  oracleVersion: "paperclip.chat-catalog.identity-profile.v4",
   sourceFiles: ["chat-catalog-domains/identity-profile.ts", "chat-catalog-domains/internal-comment-reference.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/navigation-preferences.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
@@ -70,7 +84,7 @@ export const profileIdentityCases: readonly ChatCatalogCase[] = [identityDefinit
     await ctx.input.page.getByRole("button", { name: "Save profile", exact: true }).click();
     await expect.poll(async () => (await ctx.input.api.get<Session>("/api/auth/get-session")).user.name).toBe("Alex Chen");
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-    state.profileAfterReload = await ctx.input.page.getByLabel("Display name", { exact: true }).inputValue();
+    state.profileAfterReload = await settledFieldValue(ctx.input.page.getByLabel("Display name", { exact: true }), "Alex Chen");
     const account = ctx.input.page.getByRole("button", { name: "Open account menu", exact: true });
     await expect(account).toBeVisible();
     state.accountFooterVisible = await account.getByText("Alex Chen", { exact: true }).count() === 1;
