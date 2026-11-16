@@ -5824,17 +5824,24 @@ export function agentRoutes(
     const retainedBinding = aiRuntimeConnectionBindingSchema.safeParse(
       requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection,
     ).data;
+    const harnessChanged = requestedHarness
+      !== aiRoutingHarness(existing.adapterType, existing.adapterConfig.provider, existing.adapterConfig.acpxAgent);
     // A fixed binding carries identity only, so isAiConnectionCompatible() cannot
     // judge its provider: it accepts any fixed API-key binding on a managed
-    // harness. The saved connection metadata holds the real provider, and the
-    // capability table is the same rule aiConnectionService.select() enforces,
+    // harness. The saved connection metadata holds the real provider and any
+    // routing, and it is the same record aiConnectionService.select() validates,
     // so an OpenAI key switched onto the Kimi harness is cleared here instead of
-    // failing the save as incompatible.
+    // failing the save, while a routed OpenRouter account that supports the new
+    // harness is kept.
+    const savedBindingMetadata = harnessChanged && retainedBinding && retainedBinding.mode !== "router"
+      && "connectionId" in retainedBinding
+      ? await aiConnectionService(db).connectionMetadata(existing.companyId, retainedBinding.connectionId)
+      : undefined;
     const bindingProviderFitsHarness = (candidate: AiConnectionBinding) =>
-      isAiConnectionCompatible({ provider: candidate.provider, method: candidate.method },
+      isAiConnectionCompatible(savedBindingMetadata ?? { provider: candidate.provider, method: candidate.method },
         requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent);
     if (!adapterUsesManagedAiConnection(requestedHarness)
-      || (requestedHarness !== aiRoutingHarness(existing.adapterType, existing.adapterConfig.provider, existing.adapterConfig.acpxAgent)
+      || (harnessChanged
         && retainedBinding && retainedBinding.mode !== "router"
         && (!isAiConnectionCompatible(retainedBinding, requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent)
           || !bindingProviderFitsHarness(retainedBinding)))) {
