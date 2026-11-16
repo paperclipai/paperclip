@@ -1116,6 +1116,7 @@ describe("residual recovery production matrix", () => {
     const [lease] = await writeEnvironmentCleanup(db, tx => tx.insert(environmentLeases).values({
       companyId: f.companyId, status: "active", provider: "local", updatedAt: new Date(),
     }).returning(), { companyId: f.companyId });
+    const originalLeaseDeadline = lease.updatedAt.getTime() + 5 * 60_000;
     await coordinator.stop();
     coordinator = createDeliveryWorkCoordinator({ owner: db,
       canRun: () => !standby && !isIdleTaskDrainActive(), canReconcile: () => !standby,
@@ -1147,7 +1148,10 @@ describe("residual recovery production matrix", () => {
       expect((await getLease(lease.id)).status).toBe("active");
       // The original future lease obligation survived drain; resume neither
       // drops it nor performs cleanup before its real five-minute deadline.
-      await advance(5 * 60_000);
+      expect(originalLeaseDeadline - Date.now()).toBeGreaterThan(1);
+      await advance(originalLeaseDeadline - Date.now() - 1);
+      expect((await getLease(lease.id)).status).toBe("active");
+      await advance(2);
       await vi.waitFor(async () => expect((await getLease(lease.id)).status).toBe("pending_cleanup"));
       await quiet();
     } finally { stopTaskDrain(); }
