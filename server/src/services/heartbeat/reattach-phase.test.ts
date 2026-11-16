@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, closeLivenessDb, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import { logger } from "../../middleware/logger.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -24,6 +25,7 @@ import {
 } from "./run-admission.js";
 import {
   claimableReattachRun,
+  type DatabaseSessionWait,
   handOverMoment,
   listLiveRunsOwnedByPreviousControllers,
   noteReattachRunsClaimed,
@@ -265,6 +267,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
     db = createDb(external ?? database!.connectionString, { maxConnections: 4 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
+    if (db) await closeLivenessDb(db, 1);
     await db?.$client.end();
     await database?.cleanup();
   });
@@ -611,6 +614,47 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       await sleep(100);
       expect(isReattachPhaseActive()).toBe(false);
       expect(ended).toEqual([expect.objectContaining({ reason: "nothing_to_reattach", gatedStarts: false })]);
+    });
+
+    it("names the database sessions that hold an authenticated run's row when the phase ends at the cap without reaching it", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPS");
+      const stalled = await run("running", liveLease());
+      const warn = vi.spyOn(logger, "warn");
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let locked!: (pid: number) => void;
+      const holderPid = new Promise<number>(resolve => { locked = resolve; });
+      const holder = db.transaction(async tx => {
+        const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stalled)).for("update");
+        locked(Number(backend.pid));
+        await held;
+      });
+      const holderBackend = await holderPid;
+      const waiter = db.transaction(async tx => {
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stalled)).for("no key update");
+      });
+      try {
+        const ended: ReattachPhaseSummary[] = [];
+        await startReattachPhase(db, { capMs: 300, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
+        joinReattachPhase([{ runId: stalled, reason: "lease_expired", claimableAt: Date.now() }]);
+        markReattachAuthenticated(stalled);
+        await vi.waitFor(() => expect(ended.some(summary => summary.reason === "cap_reached")).toBe(true), { timeout: 2_000, interval: 10 });
+        const stallMessage = "reattach phase ended with authenticated runs that were never reached; database sessions waiting or holding locks";
+        await vi.waitFor(() => expect(warn.mock.calls.some(call => call[1] === stallMessage)).toBe(true), { timeout: 5_000, interval: 20 });
+        const [fields] = warn.mock.calls.find(call => call[1] === stallMessage)! as unknown as [{ runIds: string[]; waits: DatabaseSessionWait[] }];
+        expect(fields.runIds).toEqual([stalled]);
+        expect(fields.waits).toEqual(expect.arrayContaining([
+          expect.objectContaining({ pid: holderBackend }),
+          expect.objectContaining({ waitEventType: "Lock", blockedBy: [holderBackend] }),
+        ]));
+      } finally {
+        release();
+        await holder;
+        await waiter;
+        warn.mockRestore();
+      }
     });
   });
 });
