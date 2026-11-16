@@ -604,7 +604,7 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
       eq(issues.id, comment.issueId), eq(issues.companyId, comment.companyId),
     )).for("update");
     if (!isConversation(issue) || comment.conversationSessionGeneration != null) return;
-    await notifyIssueRecovery(tx, { companyId: issue.companyId });
+    await notifyIssueRecovery(tx, { companyId: issue.companyId, everyTask: true });
     const released = await tx.update(issueTreeHolds).set({
       status: "released", releasedAt: new Date(), updatedAt: new Date(),
       releasedByActorType: "user", releasedByUserId: comment.authorUserId,

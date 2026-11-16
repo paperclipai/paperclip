@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import {
   cleanupGitHubOperationLaunchers,
@@ -15,6 +15,8 @@ type Binding = { companyId: string; agentId: string; issueId: string; runId: str
 type LauncherInput = Parameters<typeof prepareGitHubOperationLaunchers>[0];
 export type NativeGitHubAccess = Awaited<ReturnType<typeof createNativeGitHubAccess>>;
 
+const launcherOwners = new Map<string, symbol>();
+
 /** A process-lifetime transport, with authority only while its controller owns a run.
  * No run token or GitHub credential is stored in the provider's environment/files.
  * The resolver still checks the active run and current identity/grants per operation.
@@ -26,10 +28,17 @@ export async function createNativeGitHubAccess(input: {
   env: NodeJS.ProcessEnv;
   resolveCredentials: (binding: Binding) => Promise<unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  launcherKey?: string;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
   const duplexRequested = adapterExecutionTargetEnablesSandboxDuplexBridge(input.target);
   const token = randomBytes(32).toString("hex");
   const location = { runId: `native-session-${randomUUID()}`, target: input.target };
+  const launcherLocation = input.launcherKey === undefined ? location : {
+    runId: `native-github-${createHash("sha256").update(input.launcherKey).digest("hex").slice(0, 32)}`,
+    target: input.target,
+  };
+  const launcherDirectory = githubOperationLauncherDirectory(launcherLocation);
+  const launcherOwner = Symbol("GitHub launcher owner");
   let active: Binding | null = null;
   let stopped = false;
   let ready = true;
@@ -82,14 +91,17 @@ export async function createNativeGitHubAccess(input: {
   });
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
-  const stop = () => stopping ??= (async () => {
+  const stop = (options: { preserveLaunchers?: boolean } = {}) => stopping ??= (async () => {
     stopped = true;
     active = null;
     server.closeAllConnections();
+    const removeLaunchers = !options.preserveLaunchers && launcherOwners.get(launcherDirectory) === launcherOwner;
+    if (removeLaunchers) launcherOwners.delete(launcherDirectory);
     const results = await Promise.allSettled([
       stopBridge(),
       new Promise<void>(resolve => server.close(() => resolve())),
-      cleanupGitHubOperationLaunchers(location),
+      ...(launcherLocation !== location ? [cleanupGitHubOperationLaunchers(location)] : []),
+      ...(removeLaunchers ? [cleanupGitHubOperationLaunchers(launcherLocation)] : []),
     ]);
     if (results.some(result => result.status === "rejected")) {
       await input.onLog?.("stderr", "[paperclip] GitHub session cleanup incomplete.\n").catch(() => undefined);
@@ -161,15 +173,17 @@ export async function createNativeGitHubAccess(input: {
       await new Promise<void>(resolve => server.close(() => resolve()));
       await input.onLog?.("stderr", "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n").catch(() => undefined);
     }
+    const broker = {
+      url: ready ? bridge?.env.PAPERCLIP_API_URL ?? url : "",
+      token: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
+    };
+    launcherOwners.set(launcherDirectory, launcherOwner);
     const env = await prepareGitHubOperationLaunchers({
-      ...location, cwd: input.cwd,
+      ...launcherLocation, cwd: input.cwd, ...(input.target?.kind === "remote" ? { broker } : {}),
       env: {
-        ...githubBrokerEnvironment({ PATH: input.env.PATH }, {
-          url: ready ? bridge?.env.PAPERCLIP_API_URL ?? url : "",
-          token: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
-        }),
+        ...githubBrokerEnvironment({ PATH: input.env.PATH }, broker),
         // Never retain an old run's bridge authentication override.
-        PAPERCLIP_GITHUB_BRIDGE_TOKEN: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
+        PAPERCLIP_GITHUB_BRIDGE_TOKEN: broker.token,
       },
     });
     return {

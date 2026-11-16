@@ -117,7 +117,7 @@ function RecentTasksList({
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
   const restartRetryStorageKey = restartWakeRetryStorageKey(companyId, userId);
-  useRecentTaskOpenWarmup({ companyId, userId, tasks: entries });
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: entries, navigationKey: pathname });
 
   if (entries.length === 0) return null;
 
