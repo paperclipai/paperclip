@@ -138,6 +138,14 @@ const pluginEnvironmentConfigSchema = z.object({
   driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
 
+/** Top-level config keys each driver schema accepts. Tests classify every key for session freshness. */
+export const ENVIRONMENT_CONFIG_SCHEMA_KEYS = {
+  ssh: Object.keys(sshEnvironmentConfigPersistenceSchema.shape),
+  fakeSandbox: Object.keys(fakeSandboxEnvironmentConfigSchema.shape),
+  pluginSandbox: Object.keys(pluginSandboxEnvironmentConfigSchema.shape),
+  plugin: Object.keys(pluginEnvironmentConfigSchema.shape),
+} as const;
+
 export type ParsedEnvironmentConfig =
   | { driver: "local"; config: LocalEnvironmentConfig }
   | { driver: "ssh"; config: SshEnvironmentConfig }
