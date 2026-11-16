@@ -97,6 +97,9 @@ const cloudDatabaseUrl=resolveExternalTestDatabaseUrl("PAPERCLIP_DOT_HOSTED_CLOU
 const callbackPublicOrigin="https://receiver.hosted-dot.example.test";
 const origin="https://principal-hop.paperclip.app",cloudOrigin="https://cloud.principal-hop.example.test",stackId="principal-hop-stack",slug="principal-hop";
 const resource=origin+"/mcp/runner",redirect="https://chatgpt.com/connector_platform/oauth/callback";
+const ownedProviderOrigin="https://principal-hop-provider.example.test";
+const ownedTenantWebDomain={provider:"railway",resourceType:"service_domain:web",externalId:"principal-hop-domain",name:"tenant",
+  metadata:{stackId,accountGroupId:"principal-hop-account",upstreamOrigin:ownedProviderOrigin}};
 const closedUnavailable=(response:{status:number;body:unknown;text?:string;headers:Record<string,unknown>}):{wireContract:"code-only-retry-after"|"fixed-broker-description";retryAfterMs:0|30000}|undefined=>{
   if(response.status!==503)return;
   let value:unknown=response.body;
@@ -485,15 +488,52 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const publicJwks=JSON.stringify({keys:[{...control.publicKey.export({format:"jwk"}),kid,alg:"EdDSA",use:"sig"}]});
     signer=runtime.createRuntimeIdentitySignerFromEnv({CLOUD_HARNESS_RUNTIME_IDENTITY_SIGNING_JWK:JSON.stringify({...control.privateKey.export({format:"jwk"}),kid,alg:"EdDSA",use:"sig"}),CLOUD_HARNESS_RUNTIME_IDENTITY_JWKS:publicJwks},{required:true});
         const connectCloud=(runMigrations:boolean):Promise<Registry>=>postgresRegistry.PostgresCloudHarnessRegistry.connect({connectionString:cloudDatabaseUrl!,maxConnections:4,runMigrations,migrationsPath:path.join(checkout,"migrations"),migrationLockTimeoutMs:5000});
-    registry=await connectCloud(true);observeRegistryOwner(registry);const provider=new fake.FakeCloudStackProvider();connectorStore=registry.connectorStore();
+    registry=await connectCloud(true);observeRegistryOwner(registry);
+    // Same provider-result boundary as Cloud's RoutedWebOriginProvider; real Fake operations still own all effects.
+    type FakeProvider=InstanceType<typeof fake.FakeCloudStackProvider>;
+    type ProviderResult={stack:{id:string;accountGroupId:string;lifecycleState:string;sleepState:string;providerRefs:unknown[]};resources:unknown[]};
+    const webRefKey=z.object({provider:z.literal("railway"),resourceType:z.literal("service_domain:web")}).passthrough();
+    const ownedWebResources=(resources:unknown[])=>{
+      const web=resources.filter(value=>webRefKey.safeParse(value).success);
+      expect(web.length).toBeLessThanOrEqual(1);
+      if(web.length){expect(web[0]).toEqual(ownedTenantWebDomain);return resources;}
+      return [...resources,structuredClone(ownedTenantWebDomain)];
+    };
+    const routedResult=<T extends ProviderResult>(result:T,operation:string):T=>{
+      expect(result.stack.id).toBe(stackId);expect(result.stack.accountGroupId).toBe("principal-hop-account");
+      const resources=ownedWebResources(result.resources);
+      const routed={...result,resources,stack:{...result.stack,providerRefs:resources}};
+      expect(deployHealth.resolveTenantAppOrigin(resources)).toBe(ownedProviderOrigin);
+      expect(routed.stack.providerRefs).toEqual(routed.resources);
+      process.stdout.write(JSON.stringify({kind:"owned_provider_web_domain_result",operation,
+        stackMatches:true,accountMatches:true,ownedWebRefs:1,resources:routed.resources.length,
+        refsSynchronized:true,originMatches:true,lifecycleState:result.stack.lifecycleState,sleepState:result.stack.sleepState})+"\n");
+      return routed;
+    };
+    class OwnedWebOriginProvider extends fake.FakeCloudStackProvider {
+      async createStack(request:Parameters<FakeProvider["createStack"]>[0]){return routedResult(await super.createStack(request),"create");}
+      async migrateStack(request:Parameters<FakeProvider["migrateStack"]>[0]){return routedResult(await super.migrateStack(request),"migrate");}
+      async updateStack(request:Parameters<FakeProvider["updateStack"]>[0]){return routedResult(await super.updateStack(request),"update");}
+      async sleepStack(...args:Parameters<FakeProvider["sleepStack"]>){return routedResult(await super.sleepStack(...args),"sleep");}
+      async wakeStack(...args:Parameters<FakeProvider["wakeStack"]>){return routedResult(await super.wakeStack(...args),"wake");}
+      async inspectStack(currentStackId:string){
+        const inspection=await super.inspectStack(currentStackId);expect(inspection.stackId).toBe(stackId);
+        const resources=ownedWebResources(inspection.resources);
+        expect(deployHealth.resolveTenantAppOrigin(resources)).toBe(ownedProviderOrigin);
+        process.stdout.write(JSON.stringify({kind:"owned_provider_web_domain_inspection",stackMatches:true,ownedWebRefs:1,
+          resources:resources.length,originMatches:true,lifecycleState:inspection.lifecycleState,sleepState:inspection.sleepState})+"\n");
+        return {...inspection,resources};
+      }
+    }
+    const provider=new OwnedWebOriginProvider();connectorStore=registry.connectorStore();
     await registry.createFleetReleaseArtifact({id:"principal-hop-release",appVersion:"principal-hop"});await registry.importFeatureCatalog({releaseArtifactId:"principal-hop-release",catalogVersion:"principal-hop",features:{"cloud.feature-masking":{tier:"managed"}}});
     await new provisioner.CloudStackProvisioner({registry,provider}).provisionDevelopmentStack({idempotencyKey:stackId,accountGroup:{id:"principal-hop-account",slug,displayName:"Principal hop"},owner:{id:userId,email:userId+"@example.test"},stack:{stackId,accountGroupId:"principal-hop-account",stackSlug:slug,displayName:"Principal hop",kind:"demo",primaryHost:new URL(origin).hostname,region:"us-east-1"},versionPlan:{appVersion:"principal-hop",schemaVersion:"fixture",rolloutTrack:"stable"},sleepPolicy:{desiredState:"awake"},primaryCompany:{paperclipCompanyId:otherCompanyId,displayName:"Primary not consent",defaultBudgetCents:0}});
     const normallyProvisioned=await registry.getStack(stackId);if(!normallyProvisioned)throw new Error("Missing normally provisioned provider routing");
-    const providerOrigin=deployHealth.resolveTenantAppOrigin(normallyProvisioned.providerRefs);if(providerOrigin)ownedTenantOrigins.add(new URL(providerOrigin).origin);
+    expect(normallyProvisioned).toMatchObject({lifecycleState:"active",sleepState:"awake",providerRefs:expect.arrayContaining([ownedTenantWebDomain])});
+    const providerOrigin=deployHealth.resolveTenantAppOrigin(normallyProvisioned.providerRefs);expect(providerOrigin).toBe(ownedProviderOrigin);if(providerOrigin)ownedTenantOrigins.add(new URL(providerOrigin).origin);
     const globalOwner=await registry.getGlobalUser(userId);if(!globalOwner)throw new Error("Missing normally provisioned current owner");
     const session=customerSession.issueCustomerSessionToken({globalUser:globalOwner,scopes:["portfolio:read","lifecycle:write"],signingKey:"principal-hop-customer-session-".repeat(3),ttlSeconds:600,sessionVersion:customerSession.customerSessionVersionFromMetadata(globalOwner.metadata)});
     if(typeof session.accessToken!=="string")throw new Error("Missing normal customer session");customerCookie=customerSession.customerSessionCookieDefaultName+"="+session.accessToken;
-    await registry.updateStackWakeState(stackId,{providerRefs:[{provider:"railway",resourceType:"service_domain:web",externalId:"principal-hop-domain",name:"tenant",metadata:{upstreamOrigin:"https://principal-hop-provider.example.test"}}],lifecycleState:"active",sleepState:"awake"});
     await connectorStore.putCloudStackInstance({id:instanceId,kind:"cloud_stack",companyStackId:stackId,environment:"test",signPublicKey:sign.publicKey.export({format:"jwk"}).x!,sealPublicKey:seal.publicKey.export({format:"jwk"}).x!,origins:[origin],activeOrigin:origin,label:"Principal hop actual enrolled namespace",status:"active",createdAt:new Date(),updatedAt:new Date()});
     vi.stubGlobal("fetch",mapped);
     const makeCloudOwner=async()=>{
@@ -1131,7 +1171,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     // This is controlled local provider/HTTP availability, not deployed suspension.
     // The unchanged Cloud controller also enforces real admission and wake alarms
     // before its hold revalidation and normal provider stop can return success.
-    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"sleeping",sleepState:"sleeping",sleepReason:"idle"});
+    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"sleeping",sleepState:"sleeping",sleepReason:"idle",providerRefs:expect.arrayContaining([ownedTenantWebDomain])});
     const idleAdmission=await registry.readIdleMcpWakeAdmission(stackId);expect(idleAdmission).toBeTruthy();
     const admissionDigest=createHash("sha256").update(JSON.stringify(idleAdmission)).digest("hex");
     const beforeRead=databaseObservation.queries;expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");expect(databaseObservation.queries).toBeGreaterThan(beforeRead);
@@ -1150,7 +1190,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     // Provider readiness has legitimately settled awake, but the original
     // credential request was refused by the real entry HTTP readiness owner.
     // Retry the same wrapped credential; do not mint or publish new authority.
-    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"active",sleepState:"awake"});
+    expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"active",sleepState:"awake",providerRefs:expect.arrayContaining([ownedTenantWebDomain])});
     await setChildHealth("ready");
     const readyRetry=await tool(raw,"paperclip_dot_tasks",{});expect(readyRetry.status).toBe(200);expect(readyRetry.body.result.isError).toBe(false);
     const [postWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
