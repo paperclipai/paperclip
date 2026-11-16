@@ -1221,11 +1221,11 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
   });
 
-  it("clears dirty state when a runtime toggle is restored", async () => {
+  it.each(['[data-config-section="run-policy"] [role="switch"]', '[aria-label="Automatic model by difficulty"]'])("clears dirty state when a runtime toggle is restored (%s)", async selector => {
     const dirty = vi.fn();
     const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
     roots.push(result.root);
-    const toggle = result.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    const toggle = result.container.querySelector<HTMLButtonElement>(selector)!;
     expect(toggle).toBeTruthy();
     await act(async () => toggle.click());
     await flushReact();
