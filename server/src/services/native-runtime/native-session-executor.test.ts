@@ -494,7 +494,6 @@ import {
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
-  canRestartExternalRunnerCheckpoint,
   nativeRecoveryCommandUnanswered,
   nativeUnansweredRunnerReplacementDisposition,
   nativeAdmittedProviderAttemptLimit,
@@ -1243,40 +1242,6 @@ describe("remote controller restart adoption", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   }, 30_000);
-  it("the external checkpoint owner accepts only its current settled replay tuple", () => {
-    const { expected, saved } = admittedExternal();
-    expect(canRestartExternalRunnerCheckpoint(saved, expected)).toBe(true);
-    expect(canRestartExternalRunnerCheckpoint(null, expected)).toBe(false);
-    for (const field of ["runId", "sessionId", "turnId", "schema"])
-      expect(canRestartExternalRunnerCheckpoint({ ...saved, [field]: "foreign" }, expected)).toBe(false);
-    for (const field of Object.keys(saved.descriptor))
-      expect(canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, [field]: "foreign" } }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint(saved, { ...expected, expiresAtUnixMs: 1 })).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...saved, tools: { pending: { effect: {} } } }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...saved, operations: { effect: { outcome: { status: "unknown" } } } }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...saved, completionInput: {} }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, kind: "muse" } }, expected)).toBe(false);
-  });
-  it("recovers the actual settled accept acknowledgement without treating pending work as settled", () => {
-    const { expected, saved } = admittedExternal();
-    const requestId = "75920c98-56cb-45d3-a299-3e5c6503307d";
-    const operation = { requestId, bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration,
-      runId: expected.runId, normalizedSessionId: expected.sessionId, turnId: expected.turnId,
-      assignmentRevision: 1, action: "accept", input: {}, digest: externalOperationDigest("accept", {}) };
-    const accepted = { ...saved, assignmentRevision: 1,
-      operations: { [requestId]: { operation, outcome: { status: "accepted" } } } };
-    expect(canRestartExternalRunnerCheckpoint(accepted, expected)).toBe(true);
-    for (const field of ["requestId", "bindingId", "bindingGeneration", "runId", "normalizedSessionId", "turnId", "assignmentRevision", "action", "digest"])
-      expect(canRestartExternalRunnerCheckpoint({ ...accepted,
-        operations: { [requestId]: { operation: { ...operation, [field]: "foreign" }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...accepted,
-      operations: { [requestId]: { operation: { ...operation, input: { unexpected: true },
-        digest: externalOperationDigest("accept", { unexpected: true }) }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
-    for (const status of ["pending", "unknown"])
-      expect(canRestartExternalRunnerCheckpoint({ ...accepted,
-        operations: { [requestId]: { operation, outcome: { status } } } }, expected)).toBe(false);
-    expect(canRestartExternalRunnerCheckpoint({ ...accepted, tools: { pending: { effect: {} } } }, expected)).toBe(false);
-  });
   const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
   it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
     const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(exitedBeforeOpen) as never, identity,

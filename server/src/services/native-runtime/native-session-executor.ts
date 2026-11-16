@@ -220,7 +220,7 @@ import {
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
   parseNativeExecutionInput,
-  externalOperationDigest,
+  externalRunnerCheckpointRecovery,
   parsePaperclipQuestionSet,
   resolveSourceCodexHome,
   readRunnerdArtifactBinding,
@@ -16442,38 +16442,6 @@ export async function createRunnerdBackend(input: {
   }
 }
 
-export function canRestartExternalRunnerCheckpoint(saved: Record<string, unknown> | null, expected: {
-  provider: "openai_dot" | "grok_bot"; companyId: string; agentId: string;
-  bindingId: string; bindingGeneration: number; expiresAtUnixMs: number;
-  runId: string; sessionId: string; turnId: string;
-}): boolean {
-  const descriptor = record(saved?.descriptor);
-  const tools = record(saved?.tools);
-  const operations = record(saved?.operations);
-  return ["openai_dot", "grok_bot"].includes(expected.provider) && expected.expiresAtUnixMs > Date.now() &&
-    saved?.schema === "paperclip.runner.dot-provider-state.v1" &&
-    saved.runId === expected.runId && saved.sessionId === expected.sessionId && saved.turnId === expected.turnId &&
-    saved.lifecycle === "running" && saved.completion === null && saved.completionInput === null &&
-    descriptor.kind === expected.provider && descriptor.companyId === expected.companyId &&
-    descriptor.agentId === expected.agentId && descriptor.bindingId === expected.bindingId &&
-    descriptor.bindingGeneration === expected.bindingGeneration && descriptor.expiresAtUnixMs === expected.expiresAtUnixMs &&
-    tools.pending != null && typeof tools.pending === "object" && !Array.isArray(tools.pending) &&
-    Object.keys(record(tools.pending)).length === 0 && saved.operations != null &&
-    typeof saved.operations === "object" && !Array.isArray(saved.operations) &&
-    Object.entries(operations).every(([requestId, receipt]) => {
-      const status = record(record(receipt).outcome).status;
-      if (status === "completed" || status === "rejected") return true;
-      const operation = record(record(receipt).operation);
-      return status === "accepted" && operation.action === "accept" && operation.requestId === requestId &&
-        operation.runId === expected.runId && operation.normalizedSessionId === expected.sessionId &&
-        operation.turnId === expected.turnId && operation.bindingId === expected.bindingId &&
-        operation.bindingGeneration === expected.bindingGeneration &&
-        Number.isSafeInteger(saved.assignmentRevision) && Number(saved.assignmentRevision) > 0 &&
-        operation.assignmentRevision === saved.assignmentRevision && operation.input != null &&
-        typeof operation.input === "object" && !Array.isArray(operation.input) && Object.keys(operation.input).length === 0 &&
-        operation.digest === externalOperationDigest("accept", record(operation.input));
-    });
-}
 
 function createRemoteExternalRunnerCheckpointOwner({ execution, runner, root, identity, runnerStateDirectory }: {
   execution: NativeExecutionInput;
@@ -16482,9 +16450,9 @@ function createRemoteExternalRunnerCheckpointOwner({ execution, runner, root, id
   identity: { runId: string; normalizedSessionId: string; turnId?: unknown };
   runnerStateDirectory: string;
 }) {
-  const muse = execution.provider.kind === "muse";
-  const checkpointFile = muse ? "muse-provider-state.json" : "dot-provider-state.json";
-  const checkpointSchema = muse ? "paperclip.runner.muse-provider-state.v1" : "paperclip.runner.dot-provider-state.v1";
+  const recovery = externalRunnerCheckpointRecovery({ provider: execution.provider,
+    companyId: execution.binding.companyId, agentId: execution.binding.agentId }, identity);
+  const checkpointFile = recovery.checkpointFile;
   const readProviderState = async (deadline?: number) => {
     const timeoutMs = deadline === undefined ? 10000 : Math.min(10000, deadline - Date.now());
     if (timeoutMs <= 0) throw new Error("dot_provider_checkpoint_unavailable");
@@ -16494,8 +16462,7 @@ function createRemoteExternalRunnerCheckpointOwner({ execution, runner, root, id
     if (result.exitCode === 3 && !result.timedOut) return null;
     if (result.exitCode !== 0 || result.timedOut) throw new Error("dot_provider_checkpoint_unavailable");
     const state = record(JSON.parse(Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8")));
-    if (state.schema !== checkpointSchema || state.runId !== identity.runId
-      || state.sessionId !== identity.normalizedSessionId || state.turnId !== identity.turnId) throw new Error("dot_runner_checkpoint_authority_mismatch");
+    recovery.assertAuthority(state);
     // Retain inspectable recovery evidence on the controller without changing
     // which execution target is authoritative for replay.
     mkdirSync(join(root, "runner"), { recursive: true, mode: 0o700 });
@@ -16505,15 +16472,8 @@ function createRemoteExternalRunnerCheckpointOwner({ execution, runner, root, id
     renameSync(temporary, saved);
     return state;
   };
-  const provider = execution.provider;
-  const expected = (provider.kind === "openai_dot" || provider.kind === "grok_bot") && typeof identity.turnId === "string" ? {
-    provider: provider.kind, companyId: execution.binding.companyId, agentId: execution.binding.agentId,
-    bindingId: provider.binding.bindingId, bindingGeneration: provider.binding.bindingGeneration,
-    expiresAtUnixMs: provider.binding.expiresAtUnixMs,
-    runId: identity.runId, sessionId: identity.normalizedSessionId, turnId: identity.turnId,
-  } : null;
-  return { readProviderState, recoveryEligibility: (deadline: number) => expected ? async () =>
-    canRestartExternalRunnerCheckpoint(await readProviderState(deadline), expected) : undefined };
+  return { readProviderState, recoveryEligibility: (deadline: number) =>
+    recovery.recoveryEligibility(() => readProviderState(deadline)) };
 }
 
 /** Dot uses the same managed process launcher and authenticated PRP transports.

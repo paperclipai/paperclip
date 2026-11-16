@@ -1,3 +1,4 @@
+import { externalRunnerCheckpointRecovery } from "../external/runnerd-external-driver.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { createNativeSessionBackend } from "../../backends/native-backend-factor
 import * as controlPlane from "../../control-plane/durable-prp-control-plane.js";
 import { defaultCapabilityRunnerdBinary } from "../../live/runnerd-codex-transport.js";
 import { externalOperationDigest, type ExternalProviderOperation } from "../../contracts/external-provider.js";
-import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInputV6 } from "../../contracts/native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInputV6, type NativeExecutionInputV8 } from "../../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION,
   nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest } from "../../contracts/runtime-context.js";
 
@@ -510,3 +511,89 @@ it.each(["confirmed", "unconfirmed", "absent", "rejected", "partial"] as const)(
     }
   }, 45000,
 );
+
+describe("external checkpoint recovery eligibility", () => {
+  it("preserves the same canonical Grok checkpoint recovery policy", async () => {
+    const input = execution("/synthetic/checkpoint-policy", "grok_bot");
+    const { expected, saved } = admittedExternal();
+    input.binding.companyId = expected.companyId; input.binding.agentId = expected.agentId;
+    input.provider.binding = { ...input.provider.binding, expiresAtUnixMs: expected.expiresAtUnixMs, companyId: expected.companyId,
+      agentId: expected.agentId, bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration };
+    const policy = externalRunnerCheckpointRecovery({ provider: input.provider, companyId: input.binding.companyId, agentId: input.binding.agentId }, { runId: expected.runId,
+      normalizedSessionId: expected.sessionId, turnId: expected.turnId });
+    await expect(policy.recoveryEligibility(async () => ({ ...saved, descriptor: { ...saved.descriptor, kind: "grok_bot" } }))!()).resolves.toBe(true);
+    await expect(policy.recoveryEligibility(async () => saved)!()).resolves.toBe(false);
+  });
+  const admittedExternal = () => {
+    const expected = { provider: "openai_dot" as const, companyId: "company", agentId: "agent", bindingId: "binding",
+      bindingGeneration: 1, expiresAtUnixMs: Date.now() + 60000, runId: "run", sessionId: "session", turnId: "turn" };
+    const saved = { schema: "paperclip.runner.dot-provider-state.v1", runId: "run", sessionId: "session", turnId: "turn",
+      lifecycle: "running", completion: null, completionInput: null,
+      descriptor: { kind: expected.provider, companyId: expected.companyId, agentId: expected.agentId,
+        bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration, expiresAtUnixMs: expected.expiresAtUnixMs },
+      tools: { pending: {} }, operations: { stable: { outcome: { status: "completed" } } } };
+    return { expected, saved };
+  };
+  const canRestartExternalRunnerCheckpoint = (saved: Record<string, unknown> | null, expected: ReturnType<typeof admittedExternal>["expected"]) => {
+    const input = execution("/synthetic/checkpoint-policy", expected.provider);
+    input.binding.companyId = expected.companyId; input.binding.agentId = expected.agentId;
+    input.provider.binding = { ...input.provider.binding, companyId: expected.companyId, agentId: expected.agentId,
+      bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration, expiresAtUnixMs: expected.expiresAtUnixMs };
+    return externalRunnerCheckpointRecovery({ provider: input.provider, companyId: input.binding.companyId, agentId: input.binding.agentId }, { runId: expected.runId, normalizedSessionId: expected.sessionId,
+      turnId: expected.turnId }).recoveryEligibility(async () => saved)!();
+  };
+  it("the external checkpoint owner accepts only its current settled replay tuple", async () => {
+    const { expected, saved } = admittedExternal();
+    expect(await canRestartExternalRunnerCheckpoint(saved, expected)).toBe(true);
+    expect(await canRestartExternalRunnerCheckpoint(null, expected)).toBe(false);
+    for (const field of ["runId", "sessionId", "turnId", "schema"])
+      expect(await canRestartExternalRunnerCheckpoint({ ...saved, [field]: "foreign" }, expected)).toBe(false);
+    for (const field of Object.keys(saved.descriptor))
+      expect(await canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, [field]: "foreign" } }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint(saved, { ...expected, expiresAtUnixMs: 1 })).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...saved, tools: { pending: { effect: {} } } }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...saved, operations: { effect: { outcome: { status: "unknown" } } } }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...saved, completionInput: {} }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...saved, descriptor: { ...saved.descriptor, kind: "muse" } }, expected)).toBe(false);
+  });
+  it("recovers the actual settled accept acknowledgement without treating pending work as settled", async () => {
+    const { expected, saved } = admittedExternal();
+    const requestId = "75920c98-56cb-45d3-a299-3e5c6503307d";
+    const operation = { requestId, bindingId: expected.bindingId, bindingGeneration: expected.bindingGeneration,
+      runId: expected.runId, normalizedSessionId: expected.sessionId, turnId: expected.turnId,
+      assignmentRevision: 1, action: "accept", input: {}, digest: externalOperationDigest("accept", {}) };
+    const accepted = { ...saved, assignmentRevision: 1,
+      operations: { [requestId]: { operation, outcome: { status: "accepted" } } } };
+    expect(await canRestartExternalRunnerCheckpoint(accepted, expected)).toBe(true);
+    for (const field of ["requestId", "bindingId", "bindingGeneration", "runId", "normalizedSessionId", "turnId", "assignmentRevision", "action", "digest"])
+      expect(await canRestartExternalRunnerCheckpoint({ ...accepted,
+        operations: { [requestId]: { operation: { ...operation, [field]: "foreign" }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...accepted,
+      operations: { [requestId]: { operation: { ...operation, input: { unexpected: true },
+        digest: externalOperationDigest("accept", { unexpected: true }) }, outcome: { status: "accepted" } } } }, expected)).toBe(false);
+    for (const status of ["pending", "unknown"])
+      expect(await canRestartExternalRunnerCheckpoint({ ...accepted,
+        operations: { [requestId]: { operation, outcome: { status } } } }, expected)).toBe(false);
+    expect(await canRestartExternalRunnerCheckpoint({ ...accepted, tools: { pending: { effect: {} } } }, expected)).toBe(false);
+  });
+  it("keeps absent checkpoints and read errors closed at the external recovery boundary", async () => {
+    const input = execution("/synthetic/checkpoint-policy");
+    const identity = { runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn" };
+    const policy = externalRunnerCheckpointRecovery({ provider: input.provider, companyId: input.binding.companyId, agentId: input.binding.agentId }, identity);
+    await expect(policy.recoveryEligibility(async () => null)!()).resolves.toBe(false);
+    const error = new Error("owned checkpoint read failed");
+    await expect(policy.recoveryEligibility(async () => { throw error; })!()).rejects.toBe(error);
+    expect(() => policy.assertAuthority({})).toThrow("dot_runner_checkpoint_authority_mismatch");
+  });
+  it("does not grant Muse or an unknown turn the Dot restart policy", () => {
+    const input = execution("/synthetic/checkpoint-policy");
+    const identity = { runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId };
+    expect(externalRunnerCheckpointRecovery({ provider: input.provider, companyId: input.binding.companyId, agentId: input.binding.agentId }, identity).recoveryEligibility(async () => null)).toBeUndefined();
+    const muse: NativeExecutionInputV8 = { ...input, schema: "paperclip.native-execution-input.v8",
+      provider: { kind: "muse", model: null, binding: input.provider.binding, bridgeRevision: "muse-v1" },
+      session: { ...input.session, driverKind: "muse_external" } };
+    const policy = externalRunnerCheckpointRecovery({ provider: muse.provider, companyId: muse.binding.companyId, agentId: muse.binding.agentId }, { ...identity, turnId: "turn" });
+    expect(policy.checkpointFile).toBe("muse-provider-state.json");
+    expect(policy.recoveryEligibility(async () => null)).toBeUndefined();
+  });
+});
