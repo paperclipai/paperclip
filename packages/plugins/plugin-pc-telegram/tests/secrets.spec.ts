@@ -5,7 +5,6 @@ import manifest from "../src/manifest.js";
 import {
   deleteAccountSession,
   getAccountSession,
-  newSessionSecretId,
   putAccountSession,
   resolveTelegramAppCredentials,
 } from "../src/secrets.js";
@@ -35,19 +34,18 @@ describe("secret handling", () => {
     expect(credentials).toEqual({ apiId: 12345, apiHash: MOCK_API_HASH });
   });
 
-  it("persists a session secret in plugin state", async () => {
+  it("persists a session in the secret store and not in plugin state", async () => {
     const harness = createTestHarness({ manifest });
-    const secretId = newSessionSecretId();
-    await putAccountSession(harness.ctx, "company-1", secretId, MOCK_SESSION);
-    expect(await getAccountSession(harness.ctx, "company-1", secretId)).toBe(MOCK_SESSION);
+    const stored = await putAccountSession(harness.ctx, "company-1", MOCK_SESSION);
+    expect(await getAccountSession(harness.ctx, "company-1", stored.secretId, stored.configPath)).toBe(MOCK_SESSION);
     expect(harness.getState({
       scopeKind: "company",
       scopeId: "company-1",
       namespace: "session-secrets",
-      stateKey: secretId,
-    })).toEqual({ session: MOCK_SESSION });
-    await deleteAccountSession(harness.ctx, "company-1", secretId);
-    expect(await getAccountSession(harness.ctx, "company-1", secretId)).toBeNull();
+      stateKey: stored.secretId,
+    })).toBeUndefined();
+    await deleteAccountSession(harness.ctx, "company-1", stored.secretId);
+    expect(await getAccountSession(harness.ctx, "company-1", stored.secretId, stored.configPath)).toBeNull();
   });
 
   it("does not treat redacted logs as containing session material", () => {

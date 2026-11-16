@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   definePlugin,
   runWorker,
@@ -7,13 +6,6 @@ import {
   type ToolResult,
 } from "@paperclipai/plugin-sdk";
 import {
-  ACTION_CANCEL_LOGIN,
-  ACTION_DISCONNECT,
-  ACTION_SET_PAUSED,
-  ACTION_START_LOGIN,
-  ACTION_SUBMIT_PASSWORD,
-  ACTION_UPDATE_CONNECTION,
-  DATA_LOGIN_STATUS,
   DATA_OVERVIEW,
   DIALOG_ORIGIN_KIND,
   LOGIN_STREAM_CHANNEL,
@@ -24,16 +16,15 @@ import {
   findConnection,
   listConnections,
   listKnownCompanyIds,
-  patchConnection,
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { chatListLabel, dialogOriginId, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
-import { createDialogCache, preferCachedPhoto, type CacheScope } from "./dialog-cache.js";
-import { historyCacheKey, historyHitIsFresh, patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
+import { dialogOriginId, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
+import { createDialogCache, preferCachedPhoto } from "./dialog-cache.js";
+import { patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
 import { publicForward } from "./forward.js";
-import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
+import type { ChatBubble } from "./thread.js";
 import {
   decideDialogFollowup,
   outboundTextHash,
@@ -42,63 +33,35 @@ import {
   TELEGRAM_OUTBOUND_NAMESPACE,
   TELEGRAM_OUTBOUND_STATE_KEY,
 } from "./relay.js";
-import { idleLoginStatus, reduceLogin } from "./login.js";
+import { reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
-import { reactionEmoji, telegramMessageIds } from "./message-menu.js";
-import { authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "./send.js";
+import { authorizeSendText } from "./send.js";
 import {
   deleteAccountSession,
   getAccountSession,
-  newSessionSecretId,
   putAccountSession,
   resolveTelegramAppCredentials,
 } from "./secrets.js";
-import { publicChannelTitle, publicPhoto, publicPresence, publicSharedChats, unreadCount } from "./peer-card.js";
+import { publicPhoto } from "./peer-card.js";
 import { createGramJsClientFactory, telegramSessionDeviceModel } from "./telegram-gramjs.js";
-import type { PeerSummary } from "./peer-card.js";
 import type {
   InboxPeerUpdate,
   LiveTelegramAccount,
   LoginStatus,
-  QrLoginHandle,
   ResolveAppCredentials,
-  SignedInSession,
   TelegramClientFactory,
 } from "./types.js";
+import {
+  isInvocationScopeError,
+  readString,
+  registerTelegramBoard,
+  requireCompanyId,
+  type DialogCard,
+  type PendingLogin,
+  type SettledLogin,
+} from "./worker-board.js";
 
-export type TelegramPluginDeps = {
-  createClient?: TelegramClientFactory;
-  resolveAppCredentials?: ResolveAppCredentials;
-};
-
-type PendingLogin = {
-  companyId: string;
-  loginId: string;
-  handle: QrLoginHandle;
-  status: LoginStatus;
-  signedIn: SignedInSession | null;
-  sessionSecretId: string | null;
-  persisted: boolean;
-  persistTask: Promise<void> | null;
-};
-
-const INVOCATION_SCOPE_DENIED = -32005;
 const INBOX_STREAM = "telegram-inbox";
-
-type DialogCard = {
-  name: string;
-  preview: string;
-  unread: number;
-  photo: string | null;
-  presence: ReturnType<typeof publicPresence>;
-  activityAt: string;
-};
-
-function isInvocationScopeError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  if ((error as { code?: unknown }).code === INVOCATION_SCOPE_DENIED) return true;
-  return error instanceof Error && error.message.includes("Missing or unknown invocation scope");
-}
 
 function wrapLogger(ctx: PluginContext): PluginContext["logger"] {
   return {
@@ -117,20 +80,17 @@ function wrapLogger(ctx: PluginContext): PluginContext["logger"] {
   };
 }
 
-function readString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function requireCompanyId(value: unknown, fallback?: string | null): string {
-  const companyId = readString(value) || readString(fallback);
-  if (!companyId) throw new Error("companyId is required.");
-  return companyId;
-}
+export type TelegramPluginDeps = {
+  createClient?: TelegramClientFactory;
+  resolveAppCredentials?: ResolveAppCredentials;
+};
 
 export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const createClient = deps.createClient ?? createGramJsClientFactory();
   const liveByAccount = new Map<string, LiveTelegramAccount>();
   const pendingLogins = new Map<string, PendingLogin>();
+  const loginResults = new Map<string, SettledLogin>();
+  let shuttingDown = false;
   const peerLabels = new Map<string, string>();
   const dialogCards = new Map<string, { cards: Map<string, DialogCard> }>();
   const dialogPhotos = new Map<string, string>();
@@ -138,9 +98,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const dialogCache = createDialogCache();
   const historyRefresh = new Set<string>();
   const cardRefresh = new Map<string, Promise<void>>();
-  let refreshDialogCards: (companyId: string, accountId: string) => void = () => undefined;
-  let scheduleDialogPersist: (companyId: string, accountId: string) => void = () => undefined;
-  let scheduleHistoryPersist: (accountId: string, peerId: string) => void = () => undefined;
+  const slots = {
+    refreshDialogCards(_companyId: string, _accountId: string) {},
+    scheduleDialogPersist(_companyId: string, _accountId: string) {},
+    scheduleHistoryPersist(_accountId: string, _peerId: string) {},
+  };
   const cardJobs = new Map<string, Promise<Map<string, DialogCard>>>();
   const historyCache = new Map<string, { at: number; messages: ChatBubble[] }>();
   const historyJobs = new Map<string, Promise<ChatBubble[]>>();
@@ -166,7 +128,13 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   function emitLogin(companyId: string, status: LoginStatus) {
     const ctx = pluginContext;
     if (!ctx) return;
-    ctx.streams.emit(LOGIN_STREAM_CHANNEL, { companyId, status });
+    const channel = `${LOGIN_STREAM_CHANNEL}:${companyId}`;
+    ctx.streams.open(channel, companyId);
+    ctx.streams.emit(channel, { companyId, status });
+  }
+
+  function loginStillCurrent(pending: PendingLogin): boolean {
+    return !shuttingDown && !pending.cancelled && pendingLogins.get(pending.loginId) === pending;
   }
 
   function companyInbox(companyId: string) {
@@ -307,7 +275,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         at: key.endsWith(":latest") ? entry.at : Date.now(),
         messages: patchHistoryMessages(entry.messages, [bubble]),
       });
-      if (key.endsWith(":latest")) scheduleHistoryPersist(accountId, peerId);
+      if (key.endsWith(":latest")) slots.scheduleHistoryPersist(accountId, peerId);
     }
     const queued = (pendingLatest.get(pendingHistoryKey(accountId, peerId)) ?? []).some((message) => message.id === bubble.id);
     if (!hasLatest && inserted) stashPendingBubble(accountId, peerId, bubble);
@@ -325,14 +293,14 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     }
     if (update.inserted && !already && update.bubble.direction === "in") card.unread += 1;
     if (update.inserted && !already && update.bubble.direction === "out") card.unread = 0;
-    scheduleDialogPersist(update.companyId, update.accountId);
+    slots.scheduleDialogPersist(update.companyId, update.accountId);
     return card;
   }
 
   function applyInboxUpdate(update: InboxPeerUpdate, knownRef = "") {
     if (update.type === "gap") {
       dropHistoryMemory(update.accountId);
-      refreshDialogCards(update.companyId, update.accountId);
+      slots.refreshDialogCards(update.companyId, update.accountId);
       emitInbox(update.companyId, { companyId: update.companyId, kind: "gap" });
       return;
     }
@@ -458,19 +426,33 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     const ctx = pluginContext;
     if (!signedIn || !ctx) return;
     const task = (async () => {
-      if (!pending.sessionSecretId) pending.sessionSecretId = newSessionSecretId();
-      await putAccountSession(ctx, pending.companyId, pending.sessionSecretId, signedIn.session);
+      if (!loginStillCurrent(pending)) return;
+      const stored = pending.sessionSecretId && pending.sessionConfigPath
+        ? { secretId: pending.sessionSecretId, configPath: pending.sessionConfigPath }
+        : await putAccountSession(ctx, pending.companyId, signedIn.session);
+      if (!loginStillCurrent(pending)) {
+        await deleteAccountSession(ctx, pending.companyId, stored.secretId);
+        return;
+      }
+      pending.sessionSecretId = stored.secretId;
+      pending.sessionConfigPath = stored.configPath;
       await upsertConnection(ctx, {
         companyId: pending.companyId,
         account: signedIn.account,
-        sessionSecretId: pending.sessionSecretId,
+        sessionSecretId: stored.secretId,
+        sessionConfigPath: stored.configPath,
       });
+      if (!loginStillCurrent(pending)) {
+        await deleteAccountSession(ctx, pending.companyId, stored.secretId);
+        return;
+      }
       pending.persisted = true;
       pending.status = reduceLogin(pending.status, {
         type: "connected",
         loginId: pending.loginId,
         account: signedIn.account,
       });
+      loginResults.set(pending.loginId, { companyId: pending.companyId, status: pending.status });
       try {
         emitLogin(pending.companyId, pending.status);
       } catch {
@@ -487,6 +469,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           onInbound: handleInbound,
           onInboxUpdate: (update) => applyInboxUpdate(update),
         });
+        if (!loginStillCurrent(pending)) {
+          await live.disconnect().catch(() => undefined);
+          await deleteAccountSession(ctx, pending.companyId, stored.secretId);
+          return;
+        }
         await attachLiveSession(pending.companyId, live);
       } catch (error) {
         wrapLogger(ctx).error("Telegram account saved but the live connection failed", {
@@ -498,6 +485,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         companyId: pending.companyId,
         telegramUserId: signedIn.account.telegramUserId,
       });
+      if (pendingLogins.get(pending.loginId) === pending) pendingLogins.delete(pending.loginId);
     })();
     const tracked = task.finally(() => {
       if (pending.persistTask === tracked) pending.persistTask = null;
@@ -538,7 +526,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     for (const connection of connections) {
       if (liveByAccount.has(connection.telegramUserId)) continue;
       if (!connection.sessionSecretId) continue;
-      const session = await getAccountSession(ctx, companyId, connection.sessionSecretId);
+      const session = await getAccountSession(
+        ctx,
+        companyId,
+        connection.sessionSecretId,
+        connection.sessionConfigPath || `plugin-secret.${connection.sessionSecretId}`,
+      );
       if (!session) continue;
       try {
         const credentials = await resolveCredentials(companyId);
@@ -723,761 +716,40 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         };
       });
 
-      async function hydrateDialogCards(companyId: string, accountId: string): Promise<Map<string, DialogCard> | null> {
-        const rows = await dialogCache.readDialogs(companyId, accountId);
-        if (!rows || rows.length === 0) return null;
-        const cards = new Map<string, DialogCard>();
-        for (const row of rows) {
-          const key = dialogPhotoKey(companyId, accountId, row.id);
-          const avatar = await dialogCache.readAvatar(companyId, accountId, row.id);
-          if (avatar?.dataUrl) {
-            dialogPhotos.set(key, avatar.dataUrl);
-            if (avatar.photoId) dialogPhotoIds.set(key, avatar.photoId);
-          } else if (row.photoId) {
-            dialogPhotoIds.set(key, row.photoId);
-          }
-          cards.set(row.id, {
-            name: row.name,
-            preview: row.preview,
-            unread: row.unread,
-            photo: dialogPhotos.get(key) ?? null,
-            presence: row.presence,
-            activityAt: row.activityAt,
-          });
-        }
-        return cards;
-      }
-
-      async function persistDialogCards(companyId: string, accountId: string, cards: Map<string, DialogCard>): Promise<void> {
-        const rows = [...cards.entries()].map(([id, card]) => ({
-          id,
-          name: card.name,
-          preview: card.preview,
-          unread: card.unread,
-          photoId: dialogPhotoIds.get(dialogPhotoKey(companyId, accountId, id)) ?? "",
-          presence: card.presence,
-          activityAt: card.activityAt,
-        }));
-        await dialogCache.writeDialogs(companyId, accountId, rows);
-      }
-
-      async function applySummaries(companyId: string, accountId: string, rows: PeerSummary[]): Promise<Map<string, DialogCard>> {
-        const key = `${companyId}:${accountId}`;
-        const previous = cardBucket(companyId, accountId) ?? new Map<string, DialogCard>();
-        if (rows.length === 0 && previous.size > 0) return previous;
-        const cards = new Map<string, DialogCard>();
-        for (const row of rows) {
-          if (!row?.id || !row.name) continue;
-          const prior = previous.get(row.id);
-          const photoId = typeof row.photoId === "string" ? row.photoId : "";
-          const beforePhoto = dialogPhotos.get(dialogPhotoKey(companyId, accountId, row.id)) ?? null;
-          const photo = keepDialogPhoto(companyId, accountId, row.id, publicPhoto(row.photo), true, photoId);
-          const next: DialogCard = {
-            name: row.name,
-            preview: typeof row.preview === "string" ? row.preview.slice(0, 80) : prior?.preview ?? "",
-            unread: unreadCount(row.unread),
-            photo,
-            presence: publicPresence(row.presence),
-            activityAt: typeof row.activityAt === "string" && row.activityAt ? row.activityAt : prior?.activityAt ?? "",
-          };
-          cards.set(row.id, next);
-          if (!prior) continue;
-          const photoChanged = Boolean(photo) && photo !== beforePhoto;
-          const textChanged = next.preview !== prior.preview || next.unread !== prior.unread || next.activityAt !== prior.activityAt;
-          if (!photoChanged && !textChanged) continue;
-          const issueRef = await issueRefFor(companyId, accountId, row.id);
-          emitInbox(companyId, {
-            companyId,
-            kind: "dialog",
-            issueRef,
-            peerId: row.id,
-            preview: next.preview,
-            unread: next.unread,
-            activityAt: next.activityAt,
-            ...(photoChanged ? { photo } : {}),
-          });
-        }
-        if (cards.size === 0) return previous;
-        dialogCards.set(key, { cards });
-        await persistDialogCards(companyId, accountId, cards).catch(() => undefined);
-        return cards;
-      }
-
-      function refreshDialogCardsJob(companyId: string, accountId: string): Promise<void> {
-        const key = `${companyId}:${accountId}`;
-        const pending = cardRefresh.get(key);
-        if (pending) return pending;
-        const job = (async () => {
-          const live = liveByAccount.get(accountId);
-          if (!live || live.companyId !== companyId) return;
-          try {
-            await applySummaries(companyId, accountId, await live.peerSummaries());
-          } catch {
-            log.warn("Telegram dialog cards are unavailable");
-          }
-        })().finally(() => {
-          if (cardRefresh.get(key) === job) cardRefresh.delete(key);
-        });
-        cardRefresh.set(key, job);
-        return job;
-      }
-
-      async function cardsForAccount(companyId: string, accountId: string): Promise<Map<string, DialogCard>> {
-        const key = `${companyId}:${accountId}`;
-        const stored = cardBucket(companyId, accountId);
-        if (stored) return stored;
-        const pending = cardJobs.get(key);
-        if (pending) return pending;
-        const job = (async () => {
-          try {
-            const hydrated = await hydrateDialogCards(companyId, accountId);
-            if (hydrated && hydrated.size > 0) {
-              dialogCards.set(key, { cards: hydrated });
-              return { cards: hydrated, fromDisk: true };
-            }
-          } catch {
-            log.warn("Telegram dialog cache is unavailable");
-          }
-          const live = liveByAccount.get(accountId);
-          if (!live || live.companyId !== companyId) {
-            return { cards: cardBucket(companyId, accountId) ?? new Map<string, DialogCard>(), fromDisk: false };
-          }
-          try {
-            const cards = await applySummaries(companyId, accountId, await live.peerSummaries());
-            return { cards, fromDisk: false };
-          } catch {
-            log.warn("Telegram dialog cards are unavailable");
-            return { cards: cardBucket(companyId, accountId) ?? new Map<string, DialogCard>(), fromDisk: false };
-          }
-        })();
-        const mapped = job.then((result) => result.cards);
-        cardJobs.set(key, mapped);
-        void job.finally(() => {
-          if (cardJobs.get(key) === mapped) cardJobs.delete(key);
-        });
-        const result = await job;
-        if (result.fromDisk) void refreshDialogCardsJob(companyId, accountId);
-        return result.cards;
-      }
-
-      function historyStamp(messages: ChatBubble[]): string {
-        return messages.map((message) => message.id).join(",");
-      }
-
-      function refreshHistory(companyId: string, accountId: string, peerId: string) {
-        const token = `${accountId}:${peerId}`;
-        if (historyRefresh.has(token)) return;
-        historyRefresh.add(token);
-        void (async () => {
-          try {
-            const live = liveByAccount.get(accountId);
-            if (!live || live.companyId !== companyId) return;
-            const fetched = await live.readHistory(peerId, 40);
-            const key = historyCacheKey(accountId, peerId, "");
-            const previous = historyCache.get(key)?.messages ?? [];
-            const queued = takePendingBubbles(accountId, peerId);
-            const merged = patchHistoryMessages(patchHistoryMessages(previous, fetched), queued);
-            historyCache.set(key, { at: Date.now(), messages: merged });
-            await dialogCache.writeHistory(companyId, accountId, peerId, merged);
-            if (historyStamp(previous) !== historyStamp(merged)) {
-              const issueRef = await issueRefFor(companyId, accountId, peerId);
-              emitInbox(companyId, { companyId, kind: "refresh-thread", issueRef, peerId });
-            }
-          } catch {
-            log.warn("Telegram history is unavailable");
-          } finally {
-            historyRefresh.delete(token);
-          }
-        })();
-      }
-
-      async function loadHistory(companyId: string, accountId: string, peerId: string, beforeId: string): Promise<ChatBubble[]> {
-        const live = liveByAccount.get(accountId);
-        const key = historyCacheKey(accountId, peerId, beforeId);
-        const hit = historyCache.get(key);
-        if (hit && historyHitIsFresh(beforeId, hit.at, Date.now())) return hit.messages;
-        if (!beforeId) {
-          try {
-            const disk = await dialogCache.readHistory(companyId, accountId, peerId);
-            if (disk && disk.length > 0 && !historyCache.has(key)) {
-              const messages: ChatBubble[] = disk.map((message) => ({
-                id: message.id,
-                direction: message.direction,
-                text: message.text,
-                at: message.at,
-                forward: message.forward,
-              }));
-              historyCache.set(key, { at: Date.now(), messages });
-              refreshHistory(companyId, accountId, peerId);
-              return messages;
-            }
-          } catch {
-            log.warn("Telegram dialog cache is unavailable");
-          }
-        }
-        if (!live || live.companyId !== companyId) return historyCache.get(key)?.messages ?? [];
-        const pending = historyJobs.get(key);
-        if (pending) return pending;
-        const task = live.readHistory(peerId, 40, beforeId || undefined).then((messages) => {
-          const current = historyCache.get(key);
-          const fetched = current && !beforeId ? patchHistoryMessages(current.messages, messages) : messages;
-          const queued = beforeId ? [] : takePendingBubbles(accountId, peerId);
-          const merged = queued.length > 0 ? patchHistoryMessages(fetched, queued) : fetched;
-          historyCache.set(key, { at: Date.now(), messages: merged });
-          if (!beforeId) void dialogCache.writeHistory(companyId, accountId, peerId, merged).catch(() => undefined);
-          return merged;
-        }).finally(() => {
-          if (historyJobs.get(key) === task) historyJobs.delete(key);
-        });
-        historyJobs.set(key, task);
-        return task;
-      }
-
-      refreshDialogCards = (companyId, accountId) => {
-        void refreshDialogCardsJob(companyId, accountId);
-      };
-      const dialogTimers = new Map<string, ReturnType<typeof setTimeout>>();
-      scheduleDialogPersist = (companyId, accountId) => {
-        const token = `${companyId}:${accountId}`;
-        const existing = dialogTimers.get(token);
-        if (existing) clearTimeout(existing);
-        dialogTimers.set(token, setTimeout(() => {
-          dialogTimers.delete(token);
-          const cards = cardBucket(companyId, accountId);
-          if (!cards || cards.size === 0) return;
-          void persistDialogCards(companyId, accountId, cards).catch(() => undefined);
-        }, 400));
-      };
-      const historyTimers = new Map<string, ReturnType<typeof setTimeout>>();
-      scheduleHistoryPersist = (accountId, peerId) => {
-        const companyId = liveByAccount.get(accountId)?.companyId ?? "";
-        if (!companyId) return;
-        const token = `${companyId}:${accountId}:${peerId}`;
-        const existing = historyTimers.get(token);
-        if (existing) clearTimeout(existing);
-        historyTimers.set(token, setTimeout(() => {
-          historyTimers.delete(token);
-          const messages = historyCache.get(historyCacheKey(accountId, peerId, ""))?.messages;
-          if (!messages || messages.length === 0) return;
-          void dialogCache.writeHistory(companyId, accountId, peerId, messages).catch(() => undefined);
-        }, 500));
-      };
-
-      async function resolveDialogLabel(companyId: string, issue: { title?: string | null; originId?: string | null }): Promise<string> {
-        const titled = chatListLabel(issue.title ?? "");
-        if (titled !== "Telegram") return titled;
-        const parsed = parseDialogOriginId(issue.originId);
-        if (!parsed) return titled;
-        const key = `${companyId}:${parsed.accountId}:${parsed.peerId}`;
-        const remembered = peerLabels.get(key);
-        if (remembered) return remembered;
-        let found = (await cardsForAccount(companyId, parsed.accountId)).get(parsed.peerId)?.name ?? "";
-        if (!found) {
-          const live = liveByAccount.get(parsed.accountId);
-          if (live && live.companyId === companyId) {
-            try {
-              found = (await live.peerName(parsed.peerId)) ?? "";
-            } catch {
-              found = "";
-            }
-          }
-        }
-        if (!found) return titled;
-        peerLabels.set(key, found);
-        return found;
-      }
-
-      ctx.data.register("chats", async (params) => {
-        const companyId = readString(params.companyId);
-        if (!companyId) return { chats: [] };
-        const issues = await ctx.issues.list({
-          companyId,
-          originKind: DIALOG_ORIGIN_KIND,
-          limit: 50,
-        });
-        const chats = await Promise.all(issues.map(async (issue) => {
-          const updatedAt = issue.updatedAt instanceof Date
-            ? issue.updatedAt.toISOString()
-            : typeof issue.updatedAt === "string"
-              ? issue.updatedAt
-              : "";
-          const parsed = parseDialogOriginId(issue.originId);
-          const card = parsed ? (await cardsForAccount(companyId, parsed.accountId)).get(parsed.peerId) : undefined;
-          if (parsed) rememberIssueRef(companyId, parsed.accountId, parsed.peerId, issue.identifier || issue.id);
-          const activityAt = card?.activityAt || updatedAt;
-          return {
-            issueId: issue.id,
-            identifier: issue.identifier ?? null,
-            label: card?.name || await resolveDialogLabel(companyId, issue),
-            status: issue.status,
-            updatedAt: activityAt,
-            preview: card?.preview || null,
-            unread: card?.unread || 0,
-            photo: parsed
-              ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
-              : null,
-            presence: card?.presence ?? null,
-          };
-        }));
-        chats.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-        const page = chats.slice(0, 30);
-        let warming = 0;
-        for (const row of page) {
-          if (warming >= 3) break;
-          const issue = issues.find((item) => item.id === row.issueId);
-          const parsed = issue ? parseDialogOriginId(issue.originId) : null;
-          if (!parsed) continue;
-          const account = liveByAccount.get(parsed.accountId);
-          if (!account || account.companyId !== companyId) continue;
-          if (historyCache.has(historyCacheKey(parsed.accountId, parsed.peerId, ""))) continue;
-          warming += 1;
-          void loadHistory(companyId, parsed.accountId, parsed.peerId, "").catch(() => undefined);
-        }
-        return { chats: page };
-      });
-
-      async function findDialogIssue(companyId: string, issueRef: string) {
-        const issues = await ctx.issues.list({
-          companyId,
-          originKind: DIALOG_ORIGIN_KIND,
-          limit: 50,
-        });
-        const match = issues.find((issue) => issue.identifier === issueRef || issue.id === issueRef);
-        if (match) return match;
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueRef)) return null;
-        const issue = await ctx.issues.get(issueRef, companyId);
-        if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND) return null;
-        return issue;
-      }
-
-      function threadTime(value: unknown): string {
-        if (value instanceof Date) return value.toISOString();
-        return typeof value === "string" ? value : "";
-      }
-
-      function pushStored(bubbles: ChatBubble[], id: string, body: string, at: string) {
-        const parsed = bubbleFromStoredBody(body);
-        if (!parsed.text && !parsed.forward) return;
-        bubbles.push({ id, direction: "in", text: parsed.text, at, forward: parsed.forward });
-      }
-
-      async function storedThread(issue: { id: string; description?: string | null; createdAt?: unknown }, companyId: string): Promise<ChatBubble[]> {
-        const bubbles: ChatBubble[] = [];
-        pushStored(bubbles, "description", issue.description ?? "", threadTime(issue.createdAt));
-        const comments = await ctx.issues.listComments(issue.id, companyId);
-        for (const comment of comments) {
-          if (comment.deletedAt || comment.authorAgentId || comment.authorUserId) continue;
-          pushStored(bubbles, comment.id, comment.body ?? "", threadTime(comment.createdAt));
-        }
-        return bubbles;
-      }
-
-      ctx.data.register("inbox-wait", async (params) => {
-        const companyId = readString(params.companyId);
-        if (!companyId) return { seq: 0, reset: false, events: [] };
-        const sinceRaw = Number(params.since);
-        const since = Number.isFinite(sinceRaw) && sinceRaw > 0 ? Math.floor(sinceRaw) : 0;
-        return companyInbox(companyId).wait(since, 12_000);
-      });
-
-      ctx.data.register("chat-thread", async (params) => {
-        const companyId = readString(params.companyId);
-        const issueRef = readString(params.issueRef);
-        if (readString(params.beforeId) === "0") return { found: true, live: true, hasMore: false, messages: [] };
-        if (!companyId || !issueRef) return { found: false, live: false, messages: [] };
-        const issue = await findDialogIssue(companyId, issueRef);
-        if (!issue) return { found: false, live: false, messages: [] };
-        const parsed = parseDialogOriginId(issue.originId);
-        const beforeId = /^\d{1,16}$/.test(readString(params.beforeId)) ? readString(params.beforeId) : "";
-        const card = parsed ? cardBucket(companyId, parsed.accountId)?.get(parsed.peerId) : undefined;
-        const remembered = parsed ? peerLabels.get(`${companyId}:${parsed.accountId}:${parsed.peerId}`) ?? "" : "";
-        const header = {
-          found: true,
-          label: card?.name || remembered || chatListLabel(issue.title ?? ""),
-          issueId: issue.id,
-          identifier: issue.identifier ?? null,
-          peerId: parsed?.peerId ?? null,
-        };
-        if (!header.label || header.label === "Telegram") {
-          void resolveDialogLabel(companyId, issue).catch(() => undefined);
-        }
-        const face = {
-          photo: parsed
-            ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
-            : null,
-          presence: card?.presence ?? null,
-        };
-        const account = parsed ? liveByAccount.get(parsed.accountId) : undefined;
-        if (account && parsed && account.companyId === companyId) {
-          try {
-            const messages = await loadHistory(companyId, parsed.accountId, parsed.peerId, beforeId);
-            return { ...header, ...face, live: true, hasMore: messages.length >= 40, messages };
-          } catch {
-            log.warn("Telegram history is unavailable");
-          }
-        }
-        if (beforeId) return { ...header, ...face, live: false, hasMore: false, messages: [] };
-        return { ...header, ...face, live: false, hasMore: false, messages: await storedThread(issue, companyId) };
-      });
-
-      ctx.data.register("chat-profile", async (params) => {
-        const companyId = readString(params.companyId);
-        const issueRef = readString(params.issueRef);
-        const empty = {
-          found: false,
-          name: "",
-          username: null,
-          phone: null,
-          about: null,
-          photo: null,
-          presence: null,
-          channel: null,
-          sharedChats: 0,
-        };
-        if (!companyId || !issueRef) return empty;
-        const issue = await findDialogIssue(companyId, issueRef);
-        if (!issue) return empty;
-        const name = await resolveDialogLabel(companyId, issue);
-        const parsed = parseDialogOriginId(issue.originId);
-        const live = parsed ? liveByAccount.get(parsed.accountId) : undefined;
-        const base = { ...empty, found: true, name };
-        if (!live || !parsed || live.companyId !== companyId) return base;
-        try {
-          const profile = await live.peerProfile(parsed.peerId);
-          return {
-            found: true,
-            name: profile.name || name,
-            username: profile.username,
-            phone: profile.phone,
-            about: profile.about,
-            photo: publicPhoto(profile.photo, 400_000),
-            presence: publicPresence(profile.presence),
-            channel: publicChannelTitle(profile.channel),
-            sharedChats: publicSharedChats(profile.sharedChats),
-          };
-        } catch {
-          log.warn("Telegram profile is unavailable");
-          return base;
-        }
-      });
-
-      function accountIdsForCompany(companyId: string): string[] {
-        const ids = new Set<string>();
-        for (const [accountId, live] of liveByAccount) {
-          if (live.companyId === companyId) ids.add(accountId);
-        }
-        const prefix = `${companyId}:`;
-        for (const key of dialogCards.keys()) {
-          if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
-        }
-        return [...ids];
-      }
-
-      function forgetCompanyCache(companyId: string, scope: CacheScope) {
-        const prefix = `${companyId}:`;
-        const accounts = accountIdsForCompany(companyId);
-        if (scope === "all" || scope === "dialogs") {
-          for (const key of [...dialogCards.keys()]) if (key.startsWith(prefix)) dialogCards.delete(key);
-          for (const key of [...cardJobs.keys()]) if (key.startsWith(prefix)) cardJobs.delete(key);
-          for (const key of [...peerLabels.keys()]) if (key.startsWith(prefix)) peerLabels.delete(key);
-          for (const accountId of accounts) dropHistoryMemory(accountId);
-        }
-        if (scope === "all" || scope === "avatars") {
-          for (const key of [...dialogPhotos.keys()]) if (key.startsWith(prefix)) dialogPhotos.delete(key);
-          for (const key of [...dialogPhotoIds.keys()]) if (key.startsWith(prefix)) dialogPhotoIds.delete(key);
-          for (const [key, bucket] of dialogCards) {
-            if (!key.startsWith(prefix)) continue;
-            for (const card of bucket.cards.values()) card.photo = null;
-          }
-        }
-      }
-
-      ctx.data.register("cache-status", async (params) => {
-        const companyId = readString(params.companyId);
-        const empty = { enabled: true, bytes: 0, dialogs: 0, avatars: 0, maxBytes: 64 * 1024 * 1024, updatedAt: null };
-        if (!companyId) return empty;
-        try {
-          return await dialogCache.status(companyId);
-        } catch {
-          log.warn("Telegram dialog cache is unavailable");
-          return empty;
-        }
-      });
-
-      ctx.actions.register("cache-save", async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const patch: { enabled?: boolean; maxBytes?: number } = {};
-        if (typeof params.enabled === "boolean") patch.enabled = params.enabled;
-        if (typeof params.maxBytes === "number") patch.maxBytes = params.maxBytes;
-        return dialogCache.saveSettings(companyId, patch);
-      });
-
-      ctx.actions.register("cache-clear", async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const scope = params.scope === "avatars" || params.scope === "dialogs" || params.scope === "all" ? params.scope : "";
-        if (!scope) throw new Error("Unknown cache scope.");
-        const accounts = accountIdsForCompany(companyId);
-        await dialogCache.clear(companyId, scope);
-        forgetCompanyCache(companyId, scope);
-        if (scope === "avatars") {
-          for (const accountId of accounts) refreshDialogCards(companyId, accountId);
-        }
-        emitInbox(companyId, { companyId, kind: "gap" });
-        return dialogCache.status(companyId);
-      });
-
-      ctx.actions.register("send-chat-reply", async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const issueRef = readString(params.issueRef);
-        const text = readString(params.text);
-        const refused = refuseOperatorReport(text);
-        if (refused) throw new Error(refused);
-        const issue = await findDialogIssue(companyId, issueRef);
-        if (!issue) throw new Error("This issue is not a Telegram dialog.");
-        const connections = await listConnections(ctx, companyId, liveAccountIds());
-        const authorized = authorizeOperatorReply(connections, {
-          companyId,
-          issueOriginId: issue.originId,
-          text,
-        });
-        if (!authorized.ok) throw new Error(authorized.error);
-        const live = liveByAccount.get(authorized.accountId);
-        if (!live || live.companyId !== companyId) {
-          throw new Error("That Telegram account is not live in the plugin worker.");
-        }
-        const replyTo = /^\d{1,16}$/.test(readString(params.replyTo)) ? readString(params.replyTo) : "";
-        await live.sendText(authorized.peerId, text.trim(), replyTo || undefined);
-        await rememberOutbound(ctx, issue.id, text);
-        return { sent: true };
-      });
-
-      ctx.actions.register("chat-message-menu", async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const issueRef = readString(params.issueRef);
-        const op = readString(params.op);
-        if (op !== "react" && op !== "pin" && op !== "unpin" && op !== "delete" && op !== "forward") {
-          throw new Error("Unknown message action.");
-        }
-        const issue = await findDialogIssue(companyId, issueRef);
-        if (!issue) throw new Error("This issue is not a Telegram dialog.");
-        const connections = await listConnections(ctx, companyId, liveAccountIds());
-        const authorized = authorizeOperatorDialog(connections, {
-          companyId,
-          issueOriginId: issue.originId,
-        });
-        if (!authorized.ok) throw new Error(authorized.error);
-        const live = liveByAccount.get(authorized.accountId);
-        if (!live || live.companyId !== companyId) {
-          throw new Error("That Telegram account is not live in the plugin worker.");
-        }
-        const ids = telegramMessageIds(params.messageIds);
-        if (ids.length === 0) throw new Error("Message id is required.");
-        if (op === "react") {
-          const raw = readString(params.emoji);
-          const emoji = (raw ? reactionEmoji(raw) : "") ?? "";
-          if (raw && !emoji) throw new Error("Reaction is unavailable.");
-          await live.messageAction(authorized.peerId, { op: "react", messageId: ids[0]!, emoji });
-        } else if (op === "pin" || op === "unpin") {
-          await live.messageAction(authorized.peerId, { op: "pin", messageId: ids[0]!, unpin: op === "unpin" });
-        } else if (op === "delete") {
-          await live.messageAction(authorized.peerId, {
-            op: "delete",
-            messageIds: ids,
-            revoke: params.revoke === true,
-          });
-          const prefix = `${authorized.accountId}:${authorized.peerId}:`;
-          for (const [key, entry] of historyCache) {
-            if (!key.startsWith(prefix)) continue;
-            historyCache.set(key, { at: entry.at, messages: removeHistoryMessages(entry.messages, ids) });
-          }
-          stripPending(authorized.accountId, authorized.peerId, ids);
-        } else {
-          const target = await findDialogIssue(companyId, readString(params.targetIssueRef));
-          if (!target) throw new Error("This issue is not a Telegram dialog.");
-          const targetAuth = authorizeOperatorDialog(connections, {
-            companyId,
-            issueOriginId: target.originId,
-          });
-          if (!targetAuth.ok) throw new Error(targetAuth.error);
-          if (targetAuth.accountId !== authorized.accountId) {
-            throw new Error("That Telegram account is not connected.");
-          }
-          await live.messageAction(authorized.peerId, {
-            op: "forward",
-            messageIds: ids,
-            targetPeerId: targetAuth.peerId,
-          });
-        }
-        return { ok: true };
-      });
-
-      ctx.data.register(DATA_LOGIN_STATUS, async (params) => {
-        const companyId = requireCompanyId(params.companyId);
-        await flushSignedInAccounts(companyId);
-        const loginId = readString(params.loginId);
-        if (loginId) {
-          const pending = pendingLogins.get(loginId);
-          if (pending && pending.companyId === companyId) return pending.status;
-        }
-        const pending = [...pendingLogins.values()].find((entry) => entry.companyId === companyId);
-        return pending?.status ?? idleLoginStatus();
-      });
-
-      ctx.actions.register(ACTION_START_LOGIN, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const credentials = await resolveCredentials(companyId);
-        const stale = [...pendingLogins.entries()].filter(([, entry]) => entry.companyId === companyId);
-        for (const [id, entry] of stale) {
-          pendingLogins.delete(id);
-          await entry.handle.abort().catch(() => undefined);
-        }
-        const loginId = randomUUID();
-        const pending: PendingLogin = {
-          companyId,
-          loginId,
-          signedIn: null,
-          sessionSecretId: null,
-          persisted: false,
-          persistTask: null,
-          handle: {
-            async submitPassword() {
-              throw new Error("Telegram login is still starting.");
-            },
-            async waitUntilSignedIn() {
-              throw new Error("Telegram login is still starting.");
-            },
-            async abort() {},
-          },
-          status: reduceLogin(idleLoginStatus(), { type: "start", loginId }),
-        };
-        pendingLogins.set(loginId, pending);
-        emitLogin(companyId, pending.status);
-        const handle = await createClient.startQrLogin({
-          credentials,
-          deviceModel: await deviceModelForCompany(companyId),
-          onQr: (qr) => {
-            const current = pendingLogins.get(loginId);
-            if (!current) return;
-            current.status = reduceLogin(current.status, { type: "qr", loginId, qr });
-            emitLogin(companyId, current.status);
-          },
-          onPasswordRequired: (hint, message) => {
-            const current = pendingLogins.get(loginId);
-            if (!current) return;
-            current.status = reduceLogin(current.status, {
-              type: "password_required",
-              loginId,
-              hint,
-              message: message ?? null,
-            });
-            emitLogin(companyId, current.status);
-          },
-        });
-        pending.handle = handle;
-        void handle.waitUntilSignedIn()
-          .then(async (signedIn) => {
-            const current = pendingLogins.get(loginId);
-            if (!current) return;
-            if (!signedIn.session) throw new Error("Telegram session was empty after login.");
-            current.signedIn = signedIn;
-            try {
-              await persistSignedIn(current);
-            } catch (error) {
-              if (isInvocationScopeError(error)) {
-                log.warn("Telegram sign-in is waiting for a live board request before it can be stored", {
-                  companyId,
-                });
-                return;
-              }
-              throw error;
-            }
-          })
-          .catch((error: unknown) => {
-            const current = pendingLogins.get(loginId);
-            if (!current) return;
-            const message = error instanceof Error ? error.message : "Telegram login failed.";
-            log.error("Telegram login failed", { companyId, message });
-            void current.handle.abort().catch(() => undefined);
-            current.status = reduceLogin(current.status, {
-              type: "error",
-              loginId,
-              message,
-            });
-            emitLogin(companyId, current.status);
-          });
-        return { loginId, status: pending.status };
-      });
-
-      ctx.actions.register(ACTION_SUBMIT_PASSWORD, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const loginId = readString(params.loginId);
-        const password = typeof params.password === "string" ? params.password : "";
-        const pending = pendingLogins.get(loginId);
-        if (!pending || pending.companyId !== companyId) {
-          throw new Error("No Telegram login is waiting for a password.");
-        }
-        if (!password) throw new Error("Cloud password is required.");
-        await pending.handle.submitPassword(password);
-        return { loginId, status: pending.status };
-      });
-
-      ctx.actions.register(ACTION_CANCEL_LOGIN, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const loginId = readString(params.loginId);
-        const pending = pendingLogins.get(loginId);
-        if (!pending || pending.companyId !== companyId) return { status: idleLoginStatus() };
-        await pending.handle.abort().catch(() => undefined);
-        pendingLogins.delete(loginId);
-        const status = reduceLogin(pending.status, { type: "cancel", loginId });
-        emitLogin(companyId, status);
-        return { status };
-      });
-
-      ctx.actions.register(ACTION_UPDATE_CONNECTION, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const telegramUserId = readString(params.telegramUserId);
-        const assignedAgentId = params.assignedAgentId === null
-          ? null
-          : readString(params.assignedAgentId) || undefined;
-        const connection = await patchConnection(ctx, companyId, telegramUserId, {
-          assignedAgentId: assignedAgentId === undefined ? undefined : assignedAgentId,
-        }, liveAccountIds());
-        return publicConnection(connection);
-      });
-
-      ctx.actions.register(ACTION_SET_PAUSED, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const telegramUserId = readString(params.telegramUserId);
-        const paused = Boolean(params.paused);
-        const connection = await patchConnection(ctx, companyId, telegramUserId, { paused }, liveAccountIds());
-        return publicConnection(connection);
-      });
-
-      ctx.actions.register(ACTION_DISCONNECT, async (params, actionCtx) => {
-        const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-        const telegramUserId = readString(params.telegramUserId);
-        const connection = await findConnection(ctx, companyId, telegramUserId, liveAccountIds());
-        if (!connection) return { disconnected: false };
-        const live = liveByAccount.get(telegramUserId);
-        if (live && live.companyId === companyId) {
-          await live.disconnect().catch(() => undefined);
-          liveByAccount.delete(telegramUserId);
-        }
-        if (connection.sessionSecretId) {
-          await deleteAccountSession(ctx, companyId, connection.sessionSecretId);
-        }
-        await upsertConnection(ctx, {
-          companyId,
-          account: {
-            telegramUserId: connection.telegramUserId,
-            username: connection.username,
-            displayName: connection.displayName,
-          },
-          sessionSecretId: "",
-          assignedAgentId: connection.assignedAgentId,
-          paused: true,
-        });
-        return { disconnected: true };
+      const board = registerTelegramBoard(ctx, log, {
+        liveByAccount,
+        pendingLogins,
+        loginResults,
+        peerLabels,
+        dialogCards,
+        dialogPhotos,
+        dialogPhotoIds,
+        dialogCache,
+        historyRefresh,
+        cardRefresh,
+        slots,
+        cardJobs,
+        historyCache,
+        historyJobs,
+        resolveCredentials,
+        createClient,
+        liveAccountIds,
+        emitLogin,
+        loginStillCurrent,
+        companyInbox,
+        emitInbox,
+        cardBucket,
+        dialogPhotoKey,
+        keepDialogPhoto,
+        dropHistoryMemory,
+        takePendingBubbles,
+        stripPending,
+        rememberIssueRef,
+        issueRefFor,
+        persistSignedIn,
+        flushSignedInAccounts,
+        deviceModelForCompany,
+        rememberOutbound,
       });
 
       ctx.tools.register(
@@ -1493,7 +765,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
               peerId: { type: "string" },
               issueId: { type: "string" },
             },
-            required: ["text"],
+            required: ["text", "issueId"],
           },
         },
         async (params, runCtx): Promise<ToolResult> => {
@@ -1503,21 +775,18 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             peerId?: string;
             issueId?: string;
           };
+          if (!payload.issueId) return { error: "A Telegram task is required." };
           const connections = await listConnections(ctx, runCtx.companyId, liveAccountIds());
-          let issueOriginId: string | null = null;
-          if (payload.issueId) {
-            const issue = await ctx.issues.get(payload.issueId, runCtx.companyId);
-            if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND) {
-              return { error: "This issue is not a Telegram dialog." };
-            }
-            issueOriginId = issue.originId ?? null;
+          const issue = await ctx.issues.get(payload.issueId, runCtx.companyId);
+          if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND || !issue.originId) {
+            return { error: "This issue is not a Telegram dialog." };
           }
           const authorized = authorizeSendText(connections, {
             companyId: runCtx.companyId,
             agentId: runCtx.agentId,
             accountId: payload.accountId,
             peerId: payload.peerId,
-            issueOriginId,
+            issueOriginId: issue.originId,
             text: payload.text ?? "",
           });
           if (!authorized.ok) return { error: authorized.error };
@@ -1549,21 +818,22 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
 
       bindDialogFollowup(ctx, log);
       log.info("Telegram plugin setup");
-      try {
-        await reconnectAll(ctx);
-        await syncDialogFollowups(ctx, log);
-        for (const live of liveByAccount.values()) {
-          void cardsForAccount(live.companyId, live.account.telegramUserId).catch(() => undefined);
-        }
-      } catch (error) {
-        try {
-          log.error("Telegram session reconnect failed", {
-            message: error instanceof Error ? error.message : "unknown error",
-          });
-        } catch {
-          // A host call can be rejected while the settings page is still polling.
-        }
-      }
+      void reconnectAll(ctx)
+        .then(async () => {
+          await syncDialogFollowups(ctx, log);
+          for (const live of liveByAccount.values()) {
+            void board.cardsForAccount(live.companyId, live.account.telegramUserId).catch(() => undefined);
+          }
+        })
+        .catch((error: unknown) => {
+          try {
+            log.error("Telegram session reconnect failed", {
+              message: error instanceof Error ? error.message : "unknown error",
+            });
+          } catch {
+            // A host call can be rejected while the settings page is still polling.
+          }
+        });
     },
 
     async onHealth(): Promise<PluginHealthDiagnostics> {
@@ -1588,7 +858,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     },
 
     async onShutdown() {
+      shuttingDown = true;
       for (const pending of pendingLogins.values()) {
+        pending.cancelled = true;
         await pending.handle.abort().catch(() => undefined);
       }
       pendingLogins.clear();

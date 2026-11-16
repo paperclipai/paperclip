@@ -9,7 +9,6 @@ export const TOOL_SEND_TEXT = "telegram_send_text";
 
 export const SESSION_SECRET_NAMESPACE = "session-secrets";
 export const FILE_NAMESPACE = "inbound-files";
-export const COMPANY_INDEX_STATE_KEY = "connected-company-ids";
 
 export const LOGIN_STREAM_CHANNEL = "telegram-login";
 
@@ -26,3 +25,10 @@ export const DATA_LOGIN_STATUS = "login-status";
 export const COMPANY_SETTINGS_SLOT_ID = "telegram-connect-page";
 export const COMPANY_SETTINGS_EXPORT = "TelegramConnectPage";
 export const COMPANY_SETTINGS_ROUTE = "telegram";
+
+export const INBOX_PAGE_SLOT_ID = "telegram-inbox-page";
+export const INBOX_PAGE_EXPORT = "TelegramInboxPage";
+export const INBOX_PAGE_ROUTE = "telegram-inbox";
+
+export const INBOX_NAV_SLOT_ID = "telegram-chats-nav";
+export const INBOX_NAV_EXPORT = "TelegramChatsNav";

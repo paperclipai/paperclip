@@ -28,3 +28,35 @@ export function removeHistoryMessages(messages: ChatBubble[], ids: string[]): Ch
   const drop = new Set(ids);
   return messages.filter((message) => !drop.has(message.id));
 }
+
+export function reconcileFetchedHistory(
+  previous: ChatBubble[],
+  fetched: ChatBubble[],
+  queued: ChatBubble[] = [],
+): ChatBubble[] {
+  if (fetched.length === 0) return patchHistoryMessages([], queued);
+  const numeric = fetched
+    .map((message) => Number(message.id))
+    .filter((id) => Number.isFinite(id));
+  const min = Math.min(...numeric);
+  const max = Math.max(...numeric);
+  const fetchedIds = new Set(fetched.map((message) => message.id));
+  const kept = previous.filter((message) => {
+    if (fetchedIds.has(message.id)) return true;
+    const id = Number(message.id);
+    if (!Number.isFinite(id) || numeric.length === 0) return true;
+    return id < min || id > max;
+  });
+  return patchHistoryMessages(patchHistoryMessages(kept, fetched), queued);
+}
+
+export function historyContentChanged(previous: ChatBubble[], next: ChatBubble[]): boolean {
+  if (previous.length !== next.length) return true;
+  for (let index = 0; index < previous.length; index += 1) {
+    const left = previous[index];
+    const right = next[index];
+    if (!left || !right) return true;
+    if (left.id !== right.id || left.text !== right.text || left.direction !== right.direction) return true;
+  }
+  return false;
+}

@@ -13,8 +13,6 @@ export default defineConfig({
       "@paperclipai/plugin-sdk/ui": path.join(sdkSrc, "ui/index.ts"),
       "@paperclipai/plugin-sdk": path.join(sdkSrc, "index.ts"),
       "@paperclipai/shared": path.join(sharedSrc, "index.ts"),
-      react: path.resolve(pluginRoot, "../../../node_modules/.pnpm/react@19.2.8/node_modules/react"),
-      "react-dom": path.resolve(pluginRoot, "../../../node_modules/.pnpm/react-dom@19.2.8_react@19.2.8/node_modules/react-dom"),
     },
   },
   test: {

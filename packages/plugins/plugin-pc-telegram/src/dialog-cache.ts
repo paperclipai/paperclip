@@ -86,6 +86,11 @@ function clipText(value: unknown, max: number): string {
   return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function messageText(value: unknown, max: number): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").slice(0, max);
+}
+
 function numericId(value: unknown): string {
   return typeof value === "string" && NUMERIC_ID.test(value) ? value : "";
 }
@@ -153,7 +158,7 @@ export function sanitizeHistoryMessage(value: unknown): CachedHistoryMessage | n
   return {
     id,
     direction,
-    text: clipText(record.text, 4000),
+    text: messageText(record.text, 4000),
     at: activityAt(record.at),
     forward: sanitizeForward(record.forward),
   };
@@ -446,11 +451,10 @@ export function createDialogCache(options: CacheOptions = {}) {
         const clean = sanitizeHistoryMessage(row);
         if (clean) messages.push(clean);
       }
-      if (messages.length === 0) return;
       await enqueue(companyId, async () => {
         const file = join(dir, "history", `${id}.json`);
         await writeJson(file, { v: CACHE_VERSION, messages: messages.slice(-40) });
-        await enforceCap(companyId, file);
+        if (messages.length > 0) await enforceCap(companyId, file);
       });
     },
 

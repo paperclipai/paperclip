@@ -47,6 +47,10 @@ describe("thread loading", () => {
     expect(sameThreadTop([{ id: "2" }, { id: "9" }], [{ id: "8" }, { id: "9" }])).toBe(true);
     expect(sameThreadTop([{ id: "9" }], [{ id: "10" }])).toBe(false);
     expect(sameThreadTop([], [{ id: "10" }])).toBe(false);
+    expect(sameThreadTop(
+      [{ id: "9", text: "old" }],
+      [{ id: "9", text: "edited" }],
+    )).toBe(false);
   });
 
   it("windows a long feed around the visible message and shifts it when older pages prepend", () => {

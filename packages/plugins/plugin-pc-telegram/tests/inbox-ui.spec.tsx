@@ -9,6 +9,12 @@ const navigate = vi.fn();
 
 vi.mock("@paperclipai/plugin-sdk/ui", async () => {
   const React = await import("react");
+  function atHour(dayOffset: number, hours: number, minutes: number) {
+    const date = new Date();
+    date.setDate(date.getDate() + dayOffset);
+    date.setHours(hours, minutes, 0, 0);
+    return date.toISOString();
+  }
   function usePluginData(key: string, params?: Record<string, unknown>) {
     const paramsKey = JSON.stringify(params ?? null);
     const [ready, setReady] = React.useState(false);
@@ -26,8 +32,8 @@ vi.mock("@paperclipai/plugin-sdk/ui", async () => {
       if (key === "chats") {
         return {
           chats: [
-            { issueId: "issue-anna", identifier: "AND-1", label: "Анна", status: "todo", updatedAt: new Date(2026, 10, 15, 9, 5).toISOString(), preview: "счёт", unread: 2 },
-            { issueId: "issue-boris", identifier: "AND-2", label: "Борис", status: "todo", updatedAt: new Date(2026, 10, 14, 9, 5).toISOString(), preview: "доставка", unread: 0 },
+            { issueId: "issue-anna", identifier: "AND-1", label: "Анна", status: "todo", updatedAt: atHour(0, 9, 5), preview: "счёт", unread: 2 },
+            { issueId: "issue-boris", identifier: "AND-2", label: "Борис", status: "todo", updatedAt: atHour(-1, 9, 5), preview: "доставка", unread: 0 },
           ],
         };
       }
@@ -41,8 +47,8 @@ vi.mock("@paperclipai/plugin-sdk/ui", async () => {
           issueId: "issue-anna",
           identifier: "AND-1",
           messages: [
-            { id: "m1", direction: "in", text: "Добрый день", at: new Date(2026, 10, 15, 9, 0).toISOString() },
-            { id: "m2", direction: "out", text: "Hi", at: new Date(2026, 10, 15, 9, 4).toISOString() },
+            { id: "m1", direction: "in", text: "Добрый день", at: atHour(0, 9, 0) },
+            { id: "m2", direction: "out", text: "Hi", at: atHour(0, 9, 4) },
           ],
         };
       }

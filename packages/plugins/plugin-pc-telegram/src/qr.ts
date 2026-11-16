@@ -10,11 +10,11 @@ export function qrImageDataUrl(text: string): LoginQrPayload {
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       if (data[y]?.[x]) {
-        rects += `<rect x="${(x + pad) * cell}" y="${(y + pad) * cell}" width="${cell}" height="${cell}"/>`;
+        rects += `<rect x="${(x + pad) * cell}" y="${(y + pad) * cell}" width="${cell}" height="${cell}" fill="#000"/>`;
       }
     }
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dim}" height="${dim}" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges">${rects}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dim}" height="${dim}" viewBox="0 0 ${dim} ${dim}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/>${rects}</svg>`;
   return { imageDataUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}` };
 }
 

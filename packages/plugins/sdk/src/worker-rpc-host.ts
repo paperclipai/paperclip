@@ -674,6 +674,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             configPath: options.configPath,
           });
         },
+        async store(input) {
+          return callHost("secrets.store", {
+            companyId: input.companyId,
+            value: input.value,
+          });
+        },
+        async discard(input) {
+          await callHost("secrets.discard", {
+            companyId: input.companyId,
+            secretId: input.secretId,
+          });
+        },
       },
 
       activity: {
@@ -1096,6 +1108,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             companyId,
             maxBytes: options?.maxBytes ?? null,
           });
+        },
+
+        async createAttachment(input) {
+          return callHost("issues.createAttachment", input);
         },
 
         documents: {

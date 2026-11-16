@@ -20,16 +20,18 @@ export function authorizeSendText(
 ): SendAuthorization {
   const text = request.text.trim();
   if (!text) return { ok: false, error: "Message text is required." };
+  if (!request.issueOriginId) return { ok: false, error: "A Telegram task is required." };
 
   const fromIssue = parseDialogOriginId(request.issueOriginId);
-  const accountId = request.accountId ?? fromIssue?.accountId;
-  const peerId = request.peerId ?? fromIssue?.peerId;
-  if (!accountId || !peerId) {
-    return { ok: false, error: "A Telegram account and chat are required." };
-  }
-  if (fromIssue && (fromIssue.accountId !== accountId || fromIssue.peerId !== peerId)) {
+  if (!fromIssue) return { ok: false, error: "This issue is not a Telegram dialog." };
+  if (
+    (request.accountId && request.accountId !== fromIssue.accountId)
+    || (request.peerId && request.peerId !== fromIssue.peerId)
+  ) {
     return { ok: false, error: "This issue is bound to a different Telegram chat." };
   }
+  const accountId = fromIssue.accountId;
+  const peerId = fromIssue.peerId;
 
   const connection = connections.find((entry) => (
     entry.companyId === request.companyId && entry.telegramUserId === accountId

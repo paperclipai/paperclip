@@ -245,9 +245,26 @@ export function issueRefFromPath(prefix: string, pathname: string): string {
   }
 }
 
-export function sameThreadTop(current: Array<{ id: string }>, incoming: Array<{ id: string }>): boolean {
+export function sameThreadTop(
+  current: Array<{ id: string; text?: string }>,
+  incoming: Array<{ id: string; text?: string }>,
+): boolean {
   if (current.length === 0 || incoming.length === 0) return false;
-  return current[current.length - 1]?.id === incoming[incoming.length - 1]?.id;
+  const lastCurrent = current[current.length - 1];
+  const lastIncoming = incoming[incoming.length - 1];
+  if (!lastCurrent || !lastIncoming || lastCurrent.id !== lastIncoming.id) return false;
+  if (
+    lastCurrent.text !== undefined
+    && lastIncoming.text !== undefined
+    && lastCurrent.text !== lastIncoming.text
+  ) return false;
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    const previous = byId.get(message.id);
+    if (!previous || message.text === undefined || previous.text === undefined) continue;
+    if (previous.text !== message.text) return false;
+  }
+  return true;
 }
 
 export type FeedRange = { start: number; end: number };

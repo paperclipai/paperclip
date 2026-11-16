@@ -30,14 +30,24 @@ describe("send authorization", () => {
     const result = authorizeSendText([{ ...connection, assignedAgentId: null }], {
       companyId: COMPANY_ID,
       agentId: AGENT_ID,
-      accountId: "1001",
-      peerId: "2002",
+      issueOriginId: "1001:2002",
       text: "Hi",
     });
     expect(result).toEqual({
       ok: false,
       error: "No answering agent is assigned on this Telegram connection.",
     });
+  });
+
+  it("rejects a send that does not name a Telegram task", () => {
+    const result = authorizeSendText([connection], {
+      companyId: COMPANY_ID,
+      agentId: AGENT_ID,
+      accountId: "1001",
+      peerId: "2002",
+      text: "Hi",
+    });
+    expect(result).toEqual({ ok: false, error: "A Telegram task is required." });
   });
 
   it("rejects an unauthorized agent and a foreign company", () => {

@@ -104,7 +104,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   let signedIn!: (value: SignedInSession) => void;
   let rejected!: (error: unknown) => void;
   let qrCallback: ((qr: LoginQrPayload) => void) | null = null;
-  let passwordCallback: ((hint: string | null) => void) | null = null;
+  let passwordCallback: ((hint: string | null, message: string | null) => void) | null = null;
 
   const signedInPromise = new Promise<SignedInSession>((resolve, reject) => {
     signedIn = resolve;
@@ -116,6 +116,23 @@ export function createMockTelegram(account: PublicTelegramAccount = {
     companyId: COMPANY_ID,
     async sendText(peerId, text) {
       sent.push({ accountId: account.telegramUserId, peerId, text });
+    },
+    async messageAction() {},
+    async readHistory() { return []; },
+    async peerNames() { return []; },
+    async peerName() { return null; },
+    async peerSummaries() { return []; },
+    async peerProfile() {
+      return {
+        name: account.displayName,
+        username: account.username,
+        phone: null,
+        about: null,
+        photo: null,
+        presence: null,
+        channel: null,
+        sharedChats: 0,
+      };
     },
     async disconnect() {},
   };
@@ -168,7 +185,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
       signedIn({ session, account: nextAccount });
     },
     requirePassword(hint = "hint") {
-      passwordCallback?.(hint);
+      passwordCallback?.(hint, null);
     },
     emitQr(qr = { imageDataUrl: "data:image/svg+xml;utf8,qr" }) {
       qrCallback?.(qr);

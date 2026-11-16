@@ -548,13 +548,30 @@ export function createGramJsClientFactory(): TelegramClientFactory {
       };
       bindInboxUpdates(client, gram, notifyInbox);
 
-      const photos = new Map<string, { small?: ProfilePhotoMemory; big?: ProfilePhotoMemory }>();
+      const photos = new Map<string, { small?: ProfilePhotoMemory; big?: ProfilePhotoMemory; photoId?: string }>();
       const UsersApi = gram.client.Api?.users;
       const listPhotoBytes = 160_000;
 
+      function photoChanged(slot: { photoId?: string }, entity: unknown): boolean {
+        const photoId = profilePhotoId(entity);
+        return Boolean(photoId) && Boolean(slot.photoId) && slot.photoId !== photoId;
+      }
+
+      function notePhotoId(slot: { photoId?: string }, entity: unknown): void {
+        const photoId = profilePhotoId(entity);
+        if (photoId) slot.photoId = photoId;
+      }
+
       function seededListPhoto(entity: unknown, peerId: string): string | null {
         const slot = photos.get(peerId) ?? {};
-        if (slot.small?.value) return slot.small.value;
+        const changed = photoChanged(slot, entity);
+        if (changed) {
+          slot.small = undefined;
+          slot.big = undefined;
+        }
+        notePhotoId(slot, entity);
+        photos.set(peerId, slot);
+        if (!changed && slot.small?.value) return slot.small.value;
         const inline = inlineProfilePhoto(entity);
         if (!inline) return null;
         const noted = rememberProfilePhoto(slot.small, { downloaded: null, fallback: inline, knownEmpty: false });
@@ -565,10 +582,17 @@ export function createGramJsClientFactory(): TelegramClientFactory {
 
       async function cachedPhoto(entity: unknown, peerId: string, big: boolean): Promise<string | null> {
         const slot = photos.get(peerId) ?? {};
+        const changed = photoChanged(slot, entity);
+        if (changed) {
+          const previous = slot.small?.value ?? slot.big?.value ?? null;
+          slot.small = previous ? { value: previous, ready: false } : undefined;
+          slot.big = undefined;
+        }
+        notePhotoId(slot, entity);
         photos.set(peerId, slot);
         const key = big ? "big" : "small";
         const current = slot[key];
-        if (current?.ready) return current.value;
+        if (current?.ready && !changed) return current.value;
         const download = client.downloadProfilePhoto;
         const canDownload = Boolean(download) && hasProfilePhoto(entity);
         let downloaded: string | null = null;
@@ -707,7 +731,9 @@ export function createGramJsClientFactory(): TelegramClientFactory {
             const name = fromEntity || (!/^\d{5,}$/.test(fromTitle) ? fromTitle : "");
             if (!id || !name) continue;
             const photo = seededListPhoto(record.entity, id);
-            if (hasProfilePhoto(record.entity) && !photos.get(id)?.small?.ready) {
+            const known = photos.get(id);
+            const stalePhoto = Boolean(known?.photoId) && known?.photoId !== profilePhotoId(record.entity);
+            if (hasProfilePhoto(record.entity) && (!known?.small?.ready || stalePhoto)) {
               photoQueue.push({ id, entity: record.entity });
             }
             const entity = record.entity && typeof record.entity === "object"
