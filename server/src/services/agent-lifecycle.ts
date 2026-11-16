@@ -5,7 +5,7 @@ import { readmitAgentContinuations } from "./recovery/continuation-delivery-atte
 import { currentControllerProcessStamp } from "./controller-process-identity.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAgentStatusDispatch } from "./run-dispatch-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
@@ -64,7 +64,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       if (before !== after) {
         await prepareMuseReceiverAuthorityMutation(tx,{companyId,agentId});
         await notifyStrandedAgentStatus(tx, { companyId, agentId });
-        await notifyRunDispatch(tx, { companyId });
+        await notifyAgentStatusDispatch(tx, { companyId, agentId });
         await notifyDeferredExecutionEligibility(tx, { companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       }
