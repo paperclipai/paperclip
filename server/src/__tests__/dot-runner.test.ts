@@ -526,14 +526,21 @@ describe("durable Dot Runner integration", () => {
       expect(runs.every(run => run.status === "queued" && run.startedAt === null && run.responsibleUserId === f!.userId)).toBe(true);
       const [current] = await owned.select().from(issues).where(eq(issues.id, issue.id));
       expect(current).toMatchObject({ companyId: f.company.id, assigneeAgentId: f.agent.id, responsibleUserId: f.userId });
-      // Queue admission is lazy: only dispatch claims the issue execution pointer.
-      expect(current!.executionRunId).toBeNull();
-      expect(result.runId).toBeTruthy();
-      expect(receipts[0]!.runId).toBe(result.runId);
-      const receiptRun = runs.find(run => run.id === result.runId);
-      expect(receiptRun).toMatchObject({ companyId: f.company.id, agentId: f.agent.id,
-        status: "queued", startedAt: null, responsibleUserId: f.userId,
-        contextSnapshot: expect.objectContaining({ issueId: issue.id }) });
+      // The first admission queues lazily. The second adopts that existing
+      // queued run as the issue owner, then keeps Dot's non-coalescing request
+      // as a separate durable deferred receipt; it must not invent another run.
+      const boardResult = await board;
+      expect(boardResult).toMatchObject({ id: expect.any(String) });
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: (boardResult as { id: string }).id,
+        companyId: f.company.id, agentId: f.agent.id, status: "queued", startedAt: null,
+        responsibleUserId: f.userId, contextSnapshot: expect.objectContaining({ issueId: issue.id }) });
+      expect(current!.executionRunId).toBe(runs[0]!.id);
+      expect(receipts[0]).toMatchObject({ companyId: f.company.id, agentId: f.agent.id,
+        source: "assignment", triggerDetail: "system", status: "deferred_issue_execution", runId: null,
+        requestedByActorType: "agent", requestedByActorId: f.agent.id, idempotencyKey: key,
+        payload: expect.objectContaining({ issueId: issue.id, dotRequestId: requestId }) });
+      expect(result).toEqual({ status: "requested", runId: null, message: expect.any(String) });
       expect(await f.broker.requestWork(f.principal, issue.id, requestId)).toEqual(result);
       expect(await owned.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(1);
       expect((await owned.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).map(run => run.id).sort())
