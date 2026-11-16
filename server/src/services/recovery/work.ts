@@ -56,7 +56,12 @@ export function registerIssueRecoveryWork(
    * hourly schedule instead of starting over with a full pass at boot. */
   function fullPasses(queue: DeliveryQueue) {
     const completedAt = new Map<string, number>(), changedAt = new Map<string, number>();
-    const scans = new Map<string, { filter: SQL | null; startedAt: number; reloadCutoff?: number }>();
+    type Scan = { filter: SQL | null; startedAt: number; reloadCutoff?: number; unchecked: Set<string> };
+    const scans = new Map<string, Scan>();
+    // A full pass is saved only once every task it loaded has been checked, so
+    // a server replaced mid-pass leaves no saved pass and its replacement runs
+    // the full pass again instead of skipping the tasks it never reached.
+    const unsaved: Array<{ unchecked: Set<string>; save: () => Promise<void> }> = [];
     // Saved passes from before scheduling was suppressed are ignored: entries
     // were dropped while suppressed, so the next pass must look at every task.
     let distrustBefore = 0;
@@ -88,7 +93,7 @@ export function registerIssueRecoveryWork(
       /** The row filter for this load: changed rows, or null to load every task. */
       async filter(scope: IssueRecoveryScope | undefined, key: string, firstPage: boolean): Promise<SQL | null> {
         if (firstPage || !scans.has(key)) {
-          const scan: { filter: SQL | null; startedAt: number; reloadCutoff?: number } = { startedAt: Date.now(), filter: null };
+          const scan: Scan = { startedAt: Date.now(), filter: null, unchecked: new Set() };
           scans.set(key, scan);
           if (scope?.reload) {
             // Per company: every task when no saved full pass is recent, else
@@ -110,19 +115,43 @@ export function registerIssueRecoveryWork(
         const scan = scans.get(key);
         scans.delete(key);
         const startedAt = scan?.startedAt ?? Date.now();
+        const saveOnceChecked = async (companies: SQL) => {
+          const pending = { unchecked: scan?.unchecked ?? new Set<string>(), save: () => save(startedAt, companies) };
+          if (pending.unchecked.size === 0) { await pending.save(); return; }
+          // A task that leaves the queue unchecked (deleted, or no longer
+          // eligible) holds its pass unsaved; drop the oldest rather than grow.
+          unsaved.push(pending);
+          if (unsaved.length > 16) unsaved.shift();
+        };
         if (scope?.reload) {
           changedAt.set("*", Math.max(changedAt.get("*") ?? 0, startedAt));
           // The companies this reload loaded in full now have a recent full pass.
-          await save(startedAt, sql`not ${recentFull(sql`c.id`, scan?.reloadCutoff ?? startedAt)}`);
+          await saveOnceChecked(sql`not ${recentFull(sql`c.id`, scan?.reloadCutoff ?? startedAt)}`);
         } else if (scan?.filter && scope) changedAt.set(scope.companyId, Math.max(changedAt.get(scope.companyId) ?? 0, startedAt));
         else if (!scope?.issueId && !scope?.agentId && (!isGraph(scope) || scope?.wholeCompany)) {
           const companyKey = scope?.companyId ?? "*";
           completedAt.set(companyKey, Math.max(completedAt.get(companyKey) ?? 0, startedAt));
-          await save(startedAt, scope ? sql`c.id = ${scope.companyId}::uuid` : sql`true`);
+          await saveOnceChecked(scope ? sql`c.id = ${scope.companyId}::uuid` : sql`true`);
+        }
+      },
+      /** Rows a load returned; each must be checked before its pass is saved. */
+      seen(key: string, ids: readonly string[]) {
+        const scan = scans.get(key);
+        if (scan) for (const id of ids) scan.unchecked.add(id);
+      },
+      /** A task was checked; save each full pass that has no unchecked task left. */
+      async checked(id: string) {
+        for (const scan of scans.values()) scan.unchecked.delete(id);
+        for (let index = unsaved.length - 1; index >= 0; index--) {
+          const pending = unsaved[index]!;
+          pending.unchecked.delete(id);
+          if (pending.unchecked.size > 0) continue;
+          unsaved.splice(index, 1);
+          await pending.save();
         }
       },
       suppressed() {
-        completedAt.clear(); changedAt.clear(); scans.clear();
+        completedAt.clear(); changedAt.clear(); scans.clear(); unsaved.length = 0;
         distrustBefore = Date.now();
       },
     };
@@ -196,6 +225,7 @@ export function registerIssueRecoveryWork(
         )).orderBy(asc(issues.id)).limit(PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        passes.seen(key, rows.map(row => row.id));
         await passes.loaded(scope, key, complete);
         const keepUnseen = changed ? { keepUnseen: true as const } : {};
         const origin = loadOrigin(scope);
@@ -208,6 +238,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id, pass,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
+        await passes.checked(entry.id);
         return next === null ? null : { ...entry, dueAt: next, ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
@@ -243,6 +274,7 @@ export function registerIssueRecoveryWork(
           issueIds: scope.issueIds, ...(changed ? { changed } : {}) } : changed ? { changed } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        passes.seen(key, rows.map(row => row.id));
         await passes.loaded(scope, key, complete);
         const origin = loadOrigin(scope);
         return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, updatedAt: row.updatedAt.getTime(), dueAt: Date.now(),
@@ -256,6 +288,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null, unchanged = false;
         await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: (at, detail) => { next = next === null ? at : Math.min(next, at); unchanged ||= detail?.unchanged === true; } });
+        await passes.checked(entry.id);
         const { unchanged: _previous, fromBackstop: _source, ...rest } = entry;
         return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}),
           ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };

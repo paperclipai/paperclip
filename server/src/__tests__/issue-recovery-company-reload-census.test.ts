@@ -207,6 +207,28 @@ describeIssueRecovery("company hints and notification reloads (census)", () => {
     expect(late).toEqual([]);
   }, TEST_TIMEOUT_MS);
 
+  it("checks every task a replaced server loaded but never reached in its first full pass", async () => {
+    const f = await bounded(seed(), () => "the fixture to be seeded");
+    const events = record();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    // The first passes load every task (no saved full pass yet, two pages) but
+    // check one batch of 25 each, so the load completes long before the checks.
+    await bounded(state.start({}), () => "the first server's recovery workers to start");
+    await bounded(vi.advanceTimersByTimeAsync(1_500), () => "the second page of the first full pass to load");
+    await bounded(Promise.allSettled([...state.passes]), () => "the first server's passes to settle");
+    const reached = new Set(events.filter(event => event.topic === "stranded-assignments" && event.name === "check")
+      .map(event => String(event.fields.issueId)));
+    const unreached = [...f.bigTasks, ...f.secondTasks].filter(id => !reached.has(id));
+    expect(unreached.length, "the first pass should stop before checking every task").toBeGreaterThan(0);
+    const replacedAt = Date.now();
+    await bounded(state.restart({}), () => "the replacement server's recovery workers to start");
+    reconcileDatabaseWorkNotifications(state.db);
+    await advance(2 * MINUTE);
+    const checkedAfter = new Set(events.filter(event => event.topic === "stranded-assignments" && event.name === "check"
+      && event.at >= replacedAt).map(event => String(event.fields.issueId)));
+    expect(unreached.filter(id => !checkedAfter.has(id))).toEqual([]);
+  }, TEST_TIMEOUT_MS);
+
   it("keeps the full pass on schedule across server replacements", async () => {
     const f = await boot({ fullBackstopMs: FULL_PASS_MS });
     // A change no changed-rows clause sees: only a full pass can find it.

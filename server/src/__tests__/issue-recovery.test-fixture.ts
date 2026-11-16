@@ -73,7 +73,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
   }
   /** A replaced server process: the old workers stop and new ones start with
    * no memory of earlier passes, sharing only the database. */
-  async function restart(options?: { backstopMs?: number }) {
+  async function restart(options?: { backstopMs?: number; fullBackstopMs?: number }) {
     await worker?.stop(); await dispatch?.stop(); await cancellation?.stop(); await coordinator?.stop();
     await start(options);
   }
