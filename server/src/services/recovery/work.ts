@@ -56,7 +56,8 @@ export function registerIssueRecoveryWork(
    * hourly schedule instead of starting over with a full pass at boot. */
   function fullPasses(queue: DeliveryQueue) {
     const completedAt = new Map<string, number>(), changedAt = new Map<string, number>();
-    type Scan = { filter: SQL | null; startedAt: number; reloadCutoff?: number; unchecked: Set<string> };
+    type Scan = { filter: SQL | null; startedAt: number; reloadCutoff?: number; unchecked: Set<string>;
+      seen: Set<string>; savedDeferrals?: string[] };
     const scans = new Map<string, Scan>();
     // A full pass is saved only once every task it loaded has been checked, so
     // a server replaced mid-pass leaves no saved pass and its replacement runs
@@ -96,7 +97,7 @@ export function registerIssueRecoveryWork(
       /** The row filter for this load: changed rows, or null to load every task. */
       async filter(scope: IssueRecoveryScope | undefined, key: string, firstPage: boolean): Promise<SQL | null> {
         if (firstPage || !scans.has(key)) {
-          const scan: Scan = { startedAt: Date.now(), filter: null, unchecked: new Set() };
+          const scan: Scan = { startedAt: Date.now(), filter: null, unchecked: new Set(), seen: new Set() };
           scans.set(key, scan);
           if (scope?.reload) {
             // Per company: every task when no saved full pass is recent, else
@@ -114,6 +115,7 @@ export function registerIssueRecoveryWork(
               from issue_recovery_deferrals where queue = ${queue}`).then(rows => [...rows], () => null);
             if (saved) for (const row of saved) deferred.add(row.issue_id);
             else scan.filter = null;
+            scan.savedDeferrals = saved?.map(row => row.issue_id);
           } else if (scope && (scope.backstop || isPlainCompany(scope))) {
             await readSaved(scope.companyId);
             if (!fullDue(scope.companyId)) scan.filter = changedTaskCondition(new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS));
@@ -136,6 +138,14 @@ export function registerIssueRecoveryWork(
         };
         if (scope?.reload) {
           changedAt.set("*", Math.max(changedAt.get("*") ?? 0, startedAt));
+          // The reload loads every eligible task with a saved deferral; the
+          // rest closed or left this queue, and no check will clear them.
+          const stale = (scan?.savedDeferrals ?? []).filter(id => !scan!.seen.has(id));
+          if (stale.length > 0) {
+            for (const id of stale) deferred.delete(id);
+            await db.execute(sql`delete from issue_recovery_deferrals where queue = ${queue}
+              and issue_id in (select value::uuid from jsonb_array_elements_text(${JSON.stringify(stale)}::jsonb))`).catch(() => undefined);
+          }
           // The companies this reload loaded in full now have a recent full pass.
           await saveOnceChecked(sql`not ${recentFull(sql`c.id`, scan?.reloadCutoff ?? startedAt)}`);
         } else if (scan?.filter && scope) changedAt.set(scope.companyId, Math.max(changedAt.get(scope.companyId) ?? 0, startedAt));
@@ -148,7 +158,7 @@ export function registerIssueRecoveryWork(
       /** Rows a load returned; each must be checked before its pass is saved. */
       seen(key: string, ids: readonly string[]) {
         const scan = scans.get(key);
-        if (scan) for (const id of ids) scan.unchecked.add(id);
+        if (scan) for (const id of ids) { scan.unchecked.add(id); scan.seen.add(id); }
       },
       /** Saves whether a checked task deferred itself. False when a pending
        * deferral could not be saved: the check then does not count toward a

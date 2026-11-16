@@ -1,6 +1,7 @@
 import { setImmediate as immediate } from "node:timers/promises";
-import { expect, it, vi } from "vitest";
-import { agents, issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { afterEach, expect, it, vi } from "vitest";
+import { agents, issueRecoveryDeferrals, issues } from "@paperclipai/db";
 import { reconcileDatabaseWorkNotifications } from "@paperclipai/db/work-signals";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
@@ -28,6 +29,13 @@ function bounded<T>(work: Promise<T>, waitingFor: () => string): Promise<T> {
 describeIssueRecovery("saved task recovery passes and deferrals", () => {
   const state = issueRecoveryFixture();
   const passes = new Set<Promise<unknown>>();
+  // Every server a test starts stops after it, even when an assertion failed,
+  // so no worker stays subscribed while the next test reuses the database.
+  const running = new Set<ReturnType<typeof createDeliveryWorkCoordinator>>();
+  afterEach(async () => {
+    for (const coordinator of [...running]) await bounded(coordinator.stop(), () => "a test server to stop");
+    running.clear(); passes.clear();
+  });
 
   async function seed(count: number) {
     const f = await state.fixture();
@@ -46,6 +54,7 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
   async function server(behavior: { deferUntil: Map<string, number>; suppressed: () => boolean; checks: Array<{ id: string; at: number }> }) {
     const coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, canReconcile: () => true,
       onError: error => { throw error; } });
+    running.add(coordinator);
     const register = coordinator.register.bind(coordinator);
     coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
       const work = task.run(signal); passes.add(work);
@@ -63,7 +72,7 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
       schedulingSuppressed: async () => behavior.suppressed(),
     }, () => true);
     await bounded(work.ready, () => "the recovery queues to start");
-    return { stop: () => coordinator.stop() };
+    return { stop: async () => { running.delete(coordinator); await coordinator.stop(); } };
   }
 
   async function advance(ms: number) {
@@ -95,6 +104,24 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
     const atDeadline = behavior.checks.filter(check => check.id === target && check.at >= deadline);
     expect(atDeadline[0], "the replacement did not check the deferred task at its deadline").toBeDefined();
     expect(atDeadline[0]!.at - deadline).toBeLessThanOrEqual(MINUTE);
+  }, TEST_TIMEOUT_MS);
+
+  it("removes a saved deferral once its task has left the queue", async () => {
+    const f = await bounded(seed(10), () => "the fixture to be seeded");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const target = f.tasks[3]!;
+    const behavior = { deferUntil: new Map([[target, Date.now() + HOUR]]), suppressed: () => false, checks: [] as Array<{ id: string; at: number }> };
+    const first = await server(behavior);
+    await advance(MINUTE);
+    const saved = () => state.db.select({ id: issueRecoveryDeferrals.issueId }).from(issueRecoveryDeferrals)
+      .where(and(eq(issueRecoveryDeferrals.queue, "stranded-assignments"), eq(issueRecoveryDeferrals.issueId, target)));
+    expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(1);
+    // The task closes while its deferral is pending; no queue loads it again.
+    await bounded(state.db.update(issues).set({ status: "done" }).where(eq(issues.id, target)).then(() => undefined), () => "the task to close");
+    await bounded(first.stop(), () => "the first server to stop");
+    await server(behavior);
+    await advance(MINUTE);
+    expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(0);
   }, TEST_TIMEOUT_MS);
 
   it("checks every task again after scheduling suppression, even with a recent saved full pass", async () => {
