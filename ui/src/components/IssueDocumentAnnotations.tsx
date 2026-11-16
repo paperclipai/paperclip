@@ -223,6 +223,7 @@ export function IssueDocumentAnnotations({
     () => allThreads.map((thread) => ({
       id: thread.id,
       selectedText: thread.selectedText,
+      selector: thread.anchorSelector,
       status: thread.status,
       anchorState: thread.anchorState,
     })),
@@ -312,6 +313,7 @@ export function IssueDocumentAnnotations({
             hideResolved
             captureSelectionRequestId={captureSelectionRequestId}
             pendingHighlightText={composerAnchor?.selectedText ?? null}
+            pendingHighlightSelector={composerAnchor?.selector ?? null}
           />
         ) : null}
         {showPopover && popoverAnchorRect ? (
