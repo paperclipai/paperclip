@@ -12,6 +12,7 @@ export interface RemoteTextFileSyncFile {
   action: string;
   lockDir: string;
   executable?: boolean;
+  private?: boolean;
 }
 
 export interface RemoteTextFileSyncInput extends RemoteTextFileSyncFile {
@@ -79,7 +80,7 @@ function program(input: RemoteTextFileSyncFile) {
       "  current_sha=\"$(hash_file \"$remote_path\" 2>/dev/null)\" || current_sha=\"\"",
       "fi",
       "if [ -n \"$current_sha\" ] && [ \"$current_sha\" = \"$expected_sha\" ]; then",
-      ...(input.executable ? ['  chmod 700 "$remote_path"'] : []),
+      ...(input.executable ? ['  chmod 700 "$remote_path"'] : input.private ? ['  chmod 600 "$remote_path"'] : []),
       "  printf '{\"uploaded\":false}\\n'",
       "  exit 0",
       "fi",
@@ -94,7 +95,7 @@ function program(input: RemoteTextFileSyncFile) {
       "else",
       `  echo ${shellQuote(`${input.label} sha verify skipped: no sha256sum/shasum on remote.`)} >&2`,
       "fi",
-      ...(input.executable ? ['chmod 700 "$remote_partial"'] : []),
+      ...(input.executable ? ['chmod 700 "$remote_partial"'] : input.private ? ['chmod 600 "$remote_partial"'] : []),
       "mv \"$remote_partial\" \"$remote_path\"",
       "printf '{\"uploaded\":true}\\n'",
     ].join("\n");
