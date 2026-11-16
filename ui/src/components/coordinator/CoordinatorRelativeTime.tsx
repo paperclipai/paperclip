@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { readStoredLocale } from "@/i18n/preference";
+import { useUiLanguage } from "@/i18n/tx";
+import { readChosenLocale, readStoredLocale } from "@/i18n/preference";
 
 const listeners = new Set<() => void>();
 let now = Date.now();
@@ -18,14 +19,15 @@ function subscribe(listener: () => void) {
 export function useCoordinatorRelativeClock() {
   return useSyncExternalStore(subscribe, () => now, () => now);
 }
-function coordinatorClockIsRussian(): boolean {
-  return readStoredLocale().toLowerCase().split("-")[0] === "ru";
+function coordinatorClockIsRussian(language?: string | null): boolean {
+  const code = language === undefined ? (readChosenLocale() ?? readStoredLocale()) : language;
+  return (code ?? "").toLowerCase().split("-")[0] === "ru";
 }
-export function coordinatorRelativeLabel(value: string | Date, clock: number) {
+export function coordinatorRelativeLabel(value: string | Date, clock: number, language?: string | null) {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) return null;
   const elapsed = Math.max(0, clock - timestamp);
-  const russian = coordinatorClockIsRussian();
+  const russian = coordinatorClockIsRussian(language);
   if (elapsed < 60_000) return russian ? "Только что" : "Just now";
   if (elapsed < 3_600_000) {
     const n = Math.floor(elapsed / 60_000);
@@ -43,7 +45,8 @@ export function coordinatorRelativeLabel(value: string | Date, clock: number) {
 }
 export function CoordinatorRelativeTime({ value, className }: { value: string | Date; className?: string }) {
   const clock = useCoordinatorRelativeClock();
-  const label = coordinatorRelativeLabel(value, clock);
+  const language = useUiLanguage();
+  const label = coordinatorRelativeLabel(value, clock, language);
   if (!label) return null;
   const date = new Date(value);
   const exact = date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" });

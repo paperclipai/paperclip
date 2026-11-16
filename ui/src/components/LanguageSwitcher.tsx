@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import {
   applyDocumentLang,
   isSelectableLocale,
+  noteUiLanguageChoice,
+  readChosenLocale,
   writeStoredLocale,
   type SelectableLocale,
 } from "@/i18n/preference";
@@ -19,10 +21,11 @@ interface LanguageSwitcherProps {
 
 export function LanguageSwitcher({ className, variant = "icon", onAfterChange }: LanguageSwitcherProps) {
   const { i18n, t } = useTranslation();
-  const value: SelectableLocale = i18n.resolvedLanguage === "ru" ? "ru" : "en";
+  const value: SelectableLocale = readChosenLocale() ?? (i18n.resolvedLanguage === "ru" ? "ru" : "en");
 
   function onChange(next: string) {
     if (!isSelectableLocale(next) || next === value) return;
+    noteUiLanguageChoice(next);
     writeStoredLocale(next);
     applyDocumentLang(next);
     void i18n.changeLanguage(next);

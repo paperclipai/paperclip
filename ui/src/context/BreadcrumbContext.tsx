@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 
 export interface Breadcrumb {
   label: string;
+  literal?: boolean;
   href?: string;
   /** Optional handler for preserving local work before navigating. */
   onClick?: MouseEventHandler<HTMLAnchorElement>;
@@ -57,6 +58,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   for (let index = 0; index < left.length; index += 1) {
     if (
       left[index]?.label !== right[index]?.label
+      || left[index]?.literal !== right[index]?.literal
       || left[index]?.onClick !== right[index]?.onClick
       || left[index]?.href !== right[index]?.href
       || left[index]?.identifier !== right[index]?.identifier

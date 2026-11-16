@@ -30,8 +30,8 @@ function AgentPluginDetail() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Agents", href: "/agents" },
-      { label: agent?.name ?? agentId, href: `/agents/${encodeURIComponent(agentId)}/overview` },
-      { label: slot?.displayName ?? "Plugin view" },
+      { label: agent?.name ?? agentId, href: `/agents/${encodeURIComponent(agentId)}/overview`, literal: true },
+      { label: slot?.displayName ?? "Plugin view", literal: Boolean(slot?.displayName) },
     ]);
   }, [setBreadcrumbs, agent?.name, agentId, slot?.displayName]);
   if (error) return <p role="alert">Agent unavailable</p>;

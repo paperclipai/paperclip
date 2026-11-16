@@ -1,4 +1,4 @@
-import { readStoredLocale } from "../i18n/preference";
+import { readChosenLocale, readStoredLocale } from "../i18n/preference";
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -13,7 +13,7 @@ type ElapsedUnit = "m" | "h" | "d" | "w" | "mo";
  * `language` omitted follows paperclip.locale. ru and ru-RU both count.
  */
 function clockIsRussian(language?: string | null): boolean {
-  const code = language === undefined ? readStoredLocale() : language;
+  const code = language === undefined ? (readChosenLocale() ?? readStoredLocale()) : language;
   return (code ?? "").toLowerCase().split("-")[0] === "ru";
 }
 

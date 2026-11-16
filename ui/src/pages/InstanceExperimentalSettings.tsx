@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, FlaskConical, Lock, Play, RefreshCcw } from "lucide-react";
+import { AlertTriangle, FlaskConical, Lock, Play } from "lucide-react";
 import type {
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
@@ -10,7 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { experimentalSettingKey } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { useQueryView } from "@/components/QueryView";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useTx } from "@/i18n/tx";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
@@ -18,7 +18,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
 import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
@@ -199,32 +198,15 @@ export function InstanceExperimentalSettings() {
   }
 
   if (experimentalView.kind === "error") {
-    const described = describeError(experimentalQuery.error, { action: "load experimental settings" });
-    const showRetry = experimentalView.errorKind !== "auth"
-      && experimentalView.errorKind !== "forbidden"
-      && experimentalView.errorKind !== "not_found";
     return (
       <div className="max-w-6xl space-y-6">
         <ClassicWorkspaceSetting key="personal-workspace" />
-        <div role="alert" data-query-view="error" className="mx-auto flex max-w-md flex-col items-center gap-3 py-16 text-center">
-          <AlertTriangle aria-hidden="true" className="size-6 text-muted-foreground" />
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-foreground">{tx(described.title)}</p>
-            <p className="text-sm text-muted-foreground">{tx(described.body)}</p>
-          </div>
-          {showRetry ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={experimentalView.retry}
-              disabled={experimentalView.isFetching}
-            >
-              <RefreshCcw aria-hidden="true" className={experimentalView.isFetching ? "animate-spin" : undefined} />
-              {experimentalView.isFetching ? tx("Retrying…") : tx("Retry")}
-            </Button>
-          ) : null}
-        </div>
+        <QueryErrorState
+          error={experimentalQuery.error}
+          action="load experimental settings"
+          onRetry={experimentalView.retry}
+          retrying={experimentalView.isFetching}
+        />
       </div>
     );
   }

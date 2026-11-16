@@ -106,7 +106,7 @@ export function GatewayDetail() {
     setBreadcrumbs([
       { label: "Connectors", href: "/apps" },
       { label: "Gateways", href: "/apps/gateways" },
-      { label: gateway.name },
+      { label: gateway.name, literal: true },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, gateway]);

@@ -8,6 +8,20 @@ export function isSelectableLocale(value: string | null | undefined): value is S
   return value === "en" || value === "ru";
 }
 
+let chosenLocale: SelectableLocale | null = null;
+
+export function noteUiLanguageChoice(locale: SelectableLocale) {
+  chosenLocale = locale;
+}
+
+export function readChosenLocale(): SelectableLocale | null {
+  return chosenLocale;
+}
+
+export function clearUiLanguageChoice() {
+  chosenLocale = null;
+}
+
 export function readStoredLocale(): SelectableLocale {
   try {
     if (typeof localStorage === "undefined") return "en";

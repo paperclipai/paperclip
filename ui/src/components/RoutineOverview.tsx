@@ -151,6 +151,7 @@ export function RoutineOverview() {
     routine.title,
     routineDetailHref(routine.id),
     "issues",
+    true,
   );
   const automationState = routine.status === "archived"
     ? "archived"

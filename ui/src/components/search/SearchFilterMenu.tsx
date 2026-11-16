@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { useTx } from "@/i18n/tx";
+import { translateLabel, useTx, useUiLanguage } from "@/i18n/tx";
 
 export interface FilterMenuOption {
   value: string;
@@ -14,6 +14,7 @@ export interface FilterMenuOption {
   icon?: ReactNode;
   swatch?: string;
   searchText?: string;
+  literal?: boolean;
 }
 
 export interface FilterMenuPreset {
@@ -48,6 +49,18 @@ interface SingleProps extends BaseProps {
 
 export type SearchFilterMenuProps = MultiProps | SingleProps;
 
+export function visibleFilterOptions(
+  options: FilterMenuOption[],
+  normalized: string,
+  language: string | undefined,
+): FilterMenuOption[] {
+  if (!normalized) return options;
+  return options.filter((option) => {
+    const shown = option.literal ? option.label : translateLabel(language, option.label);
+    return `${option.label} ${shown} ${option.searchText ?? ""}`.toLowerCase().includes(normalized);
+  });
+}
+
 function summarizeTrigger(label: string, selected: string[], options: FilterMenuOption[]): string {
   if (selected.length === 0) return label;
   if (selected.length === 1) {
@@ -70,16 +83,15 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
     align = "start",
   } = props;
   const tx = useTx();
+  const language = useUiLanguage();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   const normalized = query.trim().toLowerCase();
-  const visibleOptions = useMemo(() => {
-    if (!normalized) return options;
-    return options.filter((option) =>
-      `${option.label} ${tx(option.label)} ${option.searchText ?? ""}`.toLowerCase().includes(normalized),
-    );
-  }, [normalized, options, tx]);
+  const visibleOptions = useMemo(
+    () => visibleFilterOptions(options, normalized, language),
+    [language, normalized, options],
+  );
 
   const active = selected.length > 0;
 
@@ -204,7 +216,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
                       aria-hidden
                     />
                   ) : null}
-                  <span className="min-w-0 flex-1 truncate text-sm">{tx(option.label)}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm">{option.literal ? option.label : tx(option.label)}</span>
                   {typeof option.count === "number" ? (
                     <span className="ml-1 text-xs tabular-nums text-muted-foreground">{option.count}</span>
                   ) : null}

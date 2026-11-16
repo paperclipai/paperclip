@@ -119,8 +119,8 @@ const ruActivityVerbs: Record<string, string> = {
 
 export function translateActivityVerb(language: string | undefined, verb: string): string {
   if (!isRussianLocale(language)) return verb;
-  const direct = ruActivityVerbs[verb];
-  if (direct) return direct;
+  const direct = Object.prototype.hasOwnProperty.call(ruActivityVerbs, verb) ? ruActivityVerbs[verb] : undefined;
+  if (typeof direct === "string") return direct;
   const status = verb.match(/^changed status from (.+) to (.+) on$/);
   if (status) return `сменил статус с «${translateLabel(language, status[1])}» на «${translateLabel(language, status[2])}» у`;
   const statusTo = verb.match(/^changed status to (.+) on$/);
@@ -129,5 +129,15 @@ export function translateActivityVerb(language: string | undefined, verb: string
   if (priority) return `сменил приоритет с «${translateLabel(language, priority[1])}» на «${translateLabel(language, priority[2])}» у`;
   const priorityTo = verb.match(/^changed priority to (.+) on$/);
   if (priorityTo) return `сменил приоритет на «${translateLabel(language, priorityTo[1])}» у`;
+  const appAction = verb.match(/^(used|tested|was allowed to use|was blocked from using|asked to use|started a test of) (.+) on$/);
+  if (appAction) {
+    const action = appAction[1] === "used" ? "использовал"
+      : appAction[1] === "tested" ? "проверил"
+      : appAction[1] === "was allowed to use" ? "получил разрешение использовать"
+      : appAction[1] === "was blocked from using" ? "не смог использовать"
+      : appAction[1] === "asked to use" ? "запросил использование"
+      : "начал проверку";
+    return `${action} ${appAction[2]} у`;
+  }
   return translateLabel(language, verb);
 }

@@ -157,6 +157,7 @@ export function RoutineTriggerWizard({
       {
         label: routineTitle,
         href: `/routines/${routineId}/triggers`,
+        literal: true,
         onClick: (event) => {
           if (
             event.button !== 0 ||

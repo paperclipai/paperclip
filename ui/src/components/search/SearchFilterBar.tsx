@@ -106,6 +106,7 @@ export function buildSearchFilterOptions({
     assignee.push({
       value: `agent:${agent.id}`,
       label: agent.name,
+      literal: true,
       count: count(counts?.assigneeAgentId, agent.id),
       searchText: agent.name,
     });
@@ -114,6 +115,7 @@ export function buildSearchFilterOptions({
   const project: FilterMenuOption[] = projects.map((item) => ({
     value: item.id,
     label: item.name,
+    literal: true,
     count: count(counts?.projectId, item.id),
     searchText: item.name,
   }));
@@ -121,6 +123,7 @@ export function buildSearchFilterOptions({
   const label: FilterMenuOption[] = labels.map((item) => ({
     value: item.id,
     label: item.name,
+    literal: true,
     swatch: item.color,
     count: count(counts?.labelId, item.id),
     searchText: item.name,

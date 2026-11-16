@@ -600,14 +600,15 @@ export function AgentDetail() {
   });
 
   useEffect(() => {
-    const crumbs: { label: string; href?: string }[] = [
+    const crumbs: { label: string; href?: string; literal?: boolean }[] = [
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
+    const agentNameIsSaved = Boolean(agent?.name || routeAgentRef);
     if (activeView === "dashboard" && !urlRunId) {
-      crumbs.push({ label: agentName });
+      crumbs.push({ label: agentName, literal: agentNameIsSaved });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard`, literal: agentNameIsSaved });
       if (urlRunId) {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
