@@ -103,6 +103,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceUserRoles,
   issueComments,
   issueAttachments,
   issueWorkProducts,
@@ -10980,6 +10981,84 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(issues)
       .where(eq(issues.companyId, fixture.companyId));
     expect(controlIssues).toHaveLength(1);
+
+    await service.shutdown();
+  });
+
+  it.each([
+    ["protected", { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } }],
+    ["private-visibility", { authorizationPolicy: { agentVisibility: { mode: "private" } } }],
+  ] as const)("unauthorized instance admin without an assignment grant cannot direct the agent (%s)", async (label, permissions) => {
+    const fixture = await seedCompany();
+    const outboundFetch = vi.fn(fakeSlackFetch());
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, {
+      allowUnlinkedPeople: false,
+      fetch: outboundFetch as any,
+    });
+    await service.update(endpoint.id, { allowDirectMessages: true }, "owner-user");
+    await db.update(agents).set({ permissions }).where(eq(agents.id, fixture.assignedAgentId));
+
+    // An instance administrator linked over Slack, holding no company
+    // assignment grant. The chat gate must evaluate company grants without
+    // the instance-admin bypass, matching task creation (TECH-8806).
+    const adminUserId = `instance-admin-${label}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: adminUserId, name: "Instance Admin", email: `${adminUserId}@example.test`,
+      emailVerified: true, createdAt: now, updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId, principalType: "user", principalId: adminUserId,
+      status: "active", membershipRole: "member",
+    });
+    await db.insert(instanceUserRoles).values({ userId: adminUserId, role: "instance_admin" });
+    const [principalAdmin] = await db.insert(chatExternalPrincipals).values({
+      companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "U_ADMIN",
+    }).returning();
+    await db.insert(chatIdentityLinks).values({
+      companyId: fixture.companyId, endpointId: endpoint.id, principalId: principalAdmin.id,
+      paperclipUserId: adminUserId, status: "linked", confirmedAt: now,
+    });
+    const send = (id: string) =>
+      deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: makeThread({ channelId: "D-U_ADMIN", id: "slack:D-U_ADMIN:", isDM: true }).thread,
+        message: makeMessage({ id, text: "Please do work", userId: "U_ADMIN" }),
+        trigger: "direct_message",
+      });
+
+    await send("8806.20");
+
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.providerEventId, "slack:D-U_ADMIN::8806.20"),
+        ),
+      );
+    expect(delivery).toMatchObject({
+      state: "filtered",
+      redactedError: "Sender is not authorized to direct this agent",
+    });
+    // no task, comment, run, or outbound Slack message
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(chatMessageLinks).where(eq(chatMessageLinks.endpointId, endpoint.id))).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(0);
+    expect(outboundFetch.mock.calls.filter(([url]) => String(url).endsWith("/chat.postMessage"))).toHaveLength(0);
+
+    // Control: an explicit company grant restores task creation for the same admin.
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId, principalType: "user", principalId: adminUserId,
+      permissionKey: "tasks:assign", scope: null,
+    });
+    await send("8806.21");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
 
     await service.shutdown();
   });
