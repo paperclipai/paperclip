@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { forkNormalDotApp } from "./helpers/owned-linux/physical-app-owner.js";
 import { attachDotChild, type ChildSnapshot } from "./helpers/owned-linux/child-client.js";
 import { usefulAfterPhysicalRestart } from "./helpers/owned-linux/useful-after-physical-restart.js";
