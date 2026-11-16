@@ -162,8 +162,6 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
   return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
 }
 
-// Runs on every start, not only when a template is built, so a template cached
-// before this setting existed still yields a quiet database.
 async function quietTestDatabase(adminUrl: string, databaseName: string): Promise<void> {
   const sql = postgres(adminUrl, { max: 1, onnotice() {} });
   try { await sql.unsafe(QUIET_TEST_DATABASE_SQL(databaseName)); }
