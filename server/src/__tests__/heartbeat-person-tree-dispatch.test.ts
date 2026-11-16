@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { automaticRunBrake } from "../services/recovery/automatic-run-brake.js";
+import { logger } from "../middleware/logger.js";
 
 const gate = vi.hoisted(() => ({ open: false, releases: [] as Array<() => void> }));
 
@@ -87,7 +88,7 @@ suite("dispatch of work on a task tree a person created, through the heartbeat q
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy!.id));
       await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
     };
-    return { companyId, task, queue, freeSlot };
+    return { companyId, agentId, task, queue, freeSlot };
   }
 
   const statusOf = async (ids: string[]) => new Map((await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status,
@@ -106,8 +107,9 @@ suite("dispatch of work on a task tree a person created, through the heartbeat q
   it("starts an agent's subtask of a person's task before a newer assignment by a person when a slot frees", async () => {
     const f = await seed();
     const root = await f.task({ title: "Person's task", byPerson: true, status: "blocked" });
-    const subtask = await f.task({ title: "Agent's subtask", parentId: root, byPerson: false });
-    const subtaskRun = await f.queue(subtask, "issue_assigned", 40);
+    const subtask = await f.task({ title: "Agent's subtask", parentId: root, byPerson: false, status: "blocked" });
+    const grandchild = await f.task({ title: "Agent's sub-subtask", parentId: subtask, byPerson: false });
+    const subtaskRun = await f.queue(grandchild, "issue_assigned", 40);
     const newAssignment = await f.queue(await f.task({ title: "New task", byPerson: true }), "issue_assigned", 5, true);
     await expectStartsFirst(f, subtaskRun, newAssignment);
   }, 120_000);
@@ -127,5 +129,30 @@ suite("dispatch of work on a task tree a person created, through the heartbeat q
     const subtaskRun = await f.queue(await f.task({ title: "Agent's subtask", parentId: root, byPerson: false }), "issue_assigned", 40);
     const newAssignment = await f.queue(await f.task({ title: "New task", byPerson: true }), "issue_assigned", 5, true);
     await expectStartsFirst(f, newAssignment, subtaskRun);
+  }, 120_000);
+
+  it("backs off a refused run on a person's tree like agent work, and offers it again once the backoff passes", async () => {
+    const f = await seed();
+    await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, f.companyId));
+    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, f.companyId));
+    const root = await f.task({ title: "Person's task", byPerson: true, status: "blocked" });
+    const refused = await f.queue(await f.task({ title: "Agent's subtask", parentId: root, byPerson: false }), "issue_assigned", 180);
+    await f.queue(await f.task({ title: "Another subtask", parentId: root, byPerson: false }), "issue_assigned", 170);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "running")));
+    const warn = vi.spyOn(logger, "warn");
+    const offers = () => warn.mock.calls.filter(([fields, message]) => typeof message === "string"
+      && message.startsWith("long-queued heartbeat run was offered a free slot")
+      && (fields as { runId?: string }).runId === refused).length;
+    await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    expect(offers()).toBe(1);
+    await new Promise(resolve => setTimeout(resolve, 3_000));
+    await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    expect(offers()).toBe(1);
+    await vi.waitFor(async () => {
+      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+      expect(offers()).toBe(2);
+    }, { timeout: 20_000, interval: 1_000 });
+    expect((await statusOf([refused])).get(refused)?.status).toBe("queued");
   }, 120_000);
 });
