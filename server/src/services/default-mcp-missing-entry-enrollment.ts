@@ -14,7 +14,8 @@
  * conflicts) and builds each entry with `snapshotDefaultMcpForNewAgent` (the same initial pending snapshot form), writes
  * ONLY the missing entry keys by path under a row lock (existing entries are never rewritten), then schedules the same
  * setup run the legacy enrollment schedules, restricted to the entries that were just added. A missing responsible owner
- * is `owner_required` in both a dry and a real run. Idempotent: an agent that has every entry is `nothing_missing`.
+ * is `owner_required` in both a dry and a real run, unless the operator supplies `responsibleUserId`, which fills only that gap
+ * (never replacing an audit-log owner), is reported per agent as `responsibleSource`, and is audited per enrolled agent. Idempotent: an agent that has every entry is `nothing_missing`.
  *
  * The report carries counts, agent ids and entry keys only. Gated like the rest of the spec: the framework flag and the
  * frozen company rollout scope.
@@ -35,7 +36,7 @@ import {
 } from "./default-mcp-spec.js";
 import { scheduleDefaultMcpSetup, snapshotDefaultMcpForNewAgent } from "./default-mcp-setup.js";
 import { AGENT_MEMORY_ENTRY_KEY, agentMemoryBackfillEnabled, agentMemoryProfileFor } from "./default-mcp-agent-memory.js";
-import { assessLegacyOrdinaryAccess, resolveLegacyResponsibleUser } from "./default-mcp-legacy-enrollment.js";
+import { assessLegacyOrdinaryAccess, resolveLegacyResponsibleUser, verifyResponsibleUserCandidate } from "./default-mcp-legacy-enrollment.js";
 
 export const MISSING_ENTRY_BATCH_LIMIT = 25;
 /** A real run must carry this exact string; it is a typo guard, not a secret. */
@@ -76,9 +77,12 @@ export type MissingEntrySkipReason =
   | "legacy_access_conflict"
   | "lost_race";
 
+/** Where the responsible user came from: the agent's own audit log, or the explicit operator override. */
+export type MissingEntryResponsibleSource = "audit_log" | "operator_override";
+
 export type MissingEntryOutcome =
-  | { agentId: string; companyId: string; result: "would_add"; keys: string[] }
-  | { agentId: string; companyId: string; result: "added"; keys: string[] }
+  | { agentId: string; companyId: string; result: "would_add"; keys: string[]; responsibleSource: MissingEntryResponsibleSource }
+  | { agentId: string; companyId: string; result: "added"; keys: string[]; responsibleSource: MissingEntryResponsibleSource }
   | { agentId: string; companyId: string; result: "failed"; reason: "enrollment_error" }
   | { agentId: string; companyId: string; result: "skipped"; reason: MissingEntrySkipReason };
 
@@ -99,6 +103,13 @@ export class MissingEntryConfirmationError extends Error {
   }
 }
 
+/** The supplied user is not an active, verified-email user member of the company. */
+export class MissingEntryInvalidResponsibleUserError extends Error {
+  constructor() {
+    super("responsibleUserId must be an active member of the company with a verified email");
+  }
+}
+
 export interface MissingEntryOptions {
   companyId: string;
   limit?: number;
@@ -107,6 +118,14 @@ export interface MissingEntryOptions {
   dryRun?: boolean;
   /** Required (exactly `MISSING_ENTRY_CONFIRMATION`) when `dryRun` is false. */
   confirm?: string;
+  /**
+   * Operator override (board manager only; the route enforces that). Applied ONLY to an agent whose audit log resolves
+   * no responsible user; an agent that already resolves one keeps it. Validated like the audit-log candidate before
+   * anything is scanned. A real run writes one activity entry per agent enrolled through it, attributed to `actedByUserId`.
+   */
+  responsibleUserId?: string;
+  /** The calling user, recorded as the actor of the override audit entry. Required with `responsibleUserId`. */
+  actedByUserId?: string;
   /** Restrict the run to these spec keys (for example only `agent-memory`). Default: every eligible key. */
   keys?: readonly string[];
   env?: NodeJS.ProcessEnv;
@@ -148,6 +167,9 @@ function missingSpecFor(
 export async function addMissingDefaultMcpEntries(db: Db, options: MissingEntryOptions): Promise<MissingEntryReport> {
   const dryRun = options.dryRun !== false;
   if (!dryRun && options.confirm !== MISSING_ENTRY_CONFIRMATION) throw new MissingEntryConfirmationError();
+  if (options.responsibleUserId !== undefined && !options.actedByUserId) throw new Error("actedByUserId is required with responsibleUserId");
+  const override = options.responsibleUserId !== undefined ? await verifyResponsibleUserCandidate(db, options.companyId, options.responsibleUserId) : null;
+  if (options.responsibleUserId !== undefined && !override) throw new MissingEntryInvalidResponsibleUserError();
   const env = options.env ?? process.env;
   const empty = (blocked: MissingEntryReport["blocked"]): MissingEntryReport => ({
     dryRun,
@@ -163,13 +185,19 @@ export async function addMissingDefaultMcpEntries(db: Db, options: MissingEntryO
     runningCompanies.add(options.companyId);
   }
   try {
-    return await scan(db, options, dryRun, env);
+    return await scan(db, options, dryRun, env, override);
   } finally {
     if (!dryRun) runningCompanies.delete(options.companyId);
   }
 }
 
-async function scan(db: Db, options: MissingEntryOptions, dryRun: boolean, env: NodeJS.ProcessEnv): Promise<MissingEntryReport> {
+async function scan(
+  db: Db,
+  options: MissingEntryOptions,
+  dryRun: boolean,
+  env: NodeJS.ProcessEnv,
+  override: { userId: string } | null,
+): Promise<MissingEntryReport> {
   const limit = Math.max(1, Math.min(options.limit ?? MISSING_ENTRY_BATCH_LIMIT, MISSING_ENTRY_BATCH_LIMIT));
   const scope = readDefaultMcpTemplateScope();
   const rows = await db
@@ -203,12 +231,15 @@ async function scan(db: Db, options: MissingEntryOptions, dryRun: boolean, env: 
     if (missing.length === 0) { skip(row, "nothing_missing"); continue; }
     try {
       // Resolved before the dry-run short-circuit so a census and a real run agree.
-      const owner = await resolveLegacyResponsibleUser(db, row.companyId, row.id);
+      const audited = await resolveLegacyResponsibleUser(db, row.companyId, row.id);
+      // The override fills a gap only: an agent that already resolves an owner never takes it.
+      const owner = audited ?? override;
       if (!owner) { skip(row, "owner_required"); continue; }
+      const responsibleSource: MissingEntryResponsibleSource = audited ? "audit_log" : "operator_override";
       if ((await assessLegacyOrdinaryAccess(db, row.companyId, row.id)).conflict) { skip(row, "legacy_access_conflict"); continue; }
       const keys = missing.map((entry) => entry.key);
       if (dryRun) {
-        outcomes.push({ agentId: row.id, companyId: row.companyId, result: "would_add", keys });
+        outcomes.push({ agentId: row.id, companyId: row.companyId, result: "would_add", keys, responsibleSource });
         continue;
       }
       const written = await addEntries(db, row, missing, owner.userId, options.now?.() ?? new Date(), env, options.keys);
@@ -227,7 +258,19 @@ async function scan(db: Db, options: MissingEntryOptions, dryRun: boolean, env: 
         // Non-secret facts only.
         details: { keys: written.map((entry) => entry.key), ownerUserId: owner.userId },
       });
-      outcomes.push({ agentId: row.id, companyId: row.companyId, result: "added", keys: written.map((entry) => entry.key) });
+      if (responsibleSource === "operator_override") {
+        await logActivity(db, {
+          companyId: row.companyId,
+          actorType: "user",
+          actorId: options.actedByUserId!,
+          action: "agent.default_mcp.responsible_user_override",
+          entityType: "agent",
+          entityId: row.id,
+          // The chosen user id and entry keys only.
+          details: { responsibleUserId: owner.userId, keys: written.map((entry) => entry.key) },
+        });
+      }
+      outcomes.push({ agentId: row.id, companyId: row.companyId, result: "added", keys: written.map((entry) => entry.key), responsibleSource });
     } catch (err) {
       logger.warn({ agentId: row.id, errorClass: err instanceof Error ? err.constructor.name : typeof err }, "missing default MCP entry enrollment failed");
       outcomes.push({ agentId: row.id, companyId: row.companyId, result: "failed", reason: "enrollment_error" });

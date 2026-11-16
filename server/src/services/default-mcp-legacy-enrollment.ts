@@ -120,6 +120,18 @@ export async function resolveLegacyResponsibleUser(
     (await earliestUserActorFor(db, companyId, agentId, AGENT_CREATION_ACTIONS)) ??
     (await earliestUserActorFor(db, companyId, agentId, AGENT_APPROVAL_ACTIONS));
   if (!candidateId) return null;
+  return verifyResponsibleUserCandidate(db, companyId, candidateId);
+}
+
+/**
+ * The membership gate shared by the audit-log resolver and the operator override: the user must be an ACTIVE `user`
+ * member of the company with a verified email. Null when any part fails.
+ */
+export async function verifyResponsibleUserCandidate(
+  db: Pick<Db, "select">,
+  companyId: string,
+  candidateId: string,
+): Promise<LegacyResponsibleUser | null> {
   const [membership] = await db
     .select({ email: authUsers.email })
     .from(companyMemberships)

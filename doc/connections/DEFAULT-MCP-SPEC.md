@@ -653,9 +653,17 @@ Arcana backfill) therefore never received a `comms-board` entry. `server/src/ser
 closes that gap, operator-triggered:
 
 `POST /companies/:companyId/default-mcp/missing-entry-enrollment` (connection manager, board only). Body: `dryRun` (default
-`true`), `confirm`, `limit` (1-25), `afterId`. A real run needs `dryRun: false` and `"confirm": "add-missing-default-mcp-entries"`.
-Response: `{ dryRun, blocked, scanned, outcomes: [{ agentId, companyId, result, keys | reason }], counts, nextCursor }`, ids and entry
-keys only.
+`true`), `confirm`, `limit` (1-25), `afterId`, `responsibleUserId` (optional). A real run needs `dryRun: false` and `"confirm": "add-missing-default-mcp-entries"`.
+Response: `{ dryRun, blocked, scanned, outcomes: [{ agentId, companyId, result, keys, responsibleSource | reason }], counts, nextCursor }`,
+ids and entry keys only. `responsibleSource` (`audit_log` | `operator_override`) is on `would_add` and `added` outcomes.
+
+Operator override for the responsible user: agents created by other agents have no user in the audit log, so they are
+`owner_required` forever. `responsibleUserId` (a user id string, as in `auth_users.id`) is applied ONLY to agents whose audit log
+resolves no owner and never replaces one that does. The user must pass the same check as an audit-log candidate (active `user`
+membership in the company, verified email), else the whole request is a 400 and nothing is scanned. It works in dry runs (the
+agent shows `would_add` with `responsibleSource: "operator_override"` instead of `owner_required`) and real runs; each agent
+enrolled through it gets one `agent.default_mcp.responsible_user_override` activity entry (actor: the calling user; details:
+`responsibleUserId` and the added keys). No audit rows are fabricated for the agent itself.
 
 Which entries: every spec entry with a `setupHook` that the agent lacks, except `arcana-brain` (own backfill; never added, cleared
 or rewritten here). Ordinary OAuth entries are never added. For each such agent (state present and valid, not terminated, company

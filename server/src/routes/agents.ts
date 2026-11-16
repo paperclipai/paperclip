@@ -166,7 +166,7 @@ import {
   reissueCommsBoardIdentity,
 } from "../services/comms-identity-reissue.js";
 import { COMMS_RESCOPE_BATCH_LIMIT, CommsRescopeConfirmationError, CommsRescopeInProgressError, rescopeCommsCredentials } from "../services/comms-credential-rescope.js";
-import { MISSING_ENTRY_BATCH_LIMIT, MissingEntryConfirmationError, addMissingDefaultMcpEntries, missingEntryEnrollableKeys } from "../services/default-mcp-missing-entry-enrollment.js";
+import { MISSING_ENTRY_BATCH_LIMIT, MissingEntryConfirmationError, MissingEntryInvalidResponsibleUserError, addMissingDefaultMcpEntries, missingEntryEnrollableKeys } from "../services/default-mcp-missing-entry-enrollment.js";
 import { createDefaultKbIngestRoutineForNewAgent } from "../services/default-kb-ingest-routine.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -4482,7 +4482,7 @@ export function agentRoutes(
       (await access.hasPermission(companyId, "user", actor.actorId, "tools:manage_connections"));
     if (!manager) throw forbidden("Only a connection manager can add missing default MCP entries");
 
-    const body = (req.body ?? {}) as { dryRun?: unknown; confirm?: unknown; limit?: unknown; afterId?: unknown; keys?: unknown };
+    const body = (req.body ?? {}) as { dryRun?: unknown; confirm?: unknown; limit?: unknown; afterId?: unknown; keys?: unknown; responsibleUserId?: unknown };
     if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") throw badRequest("dryRun must be a boolean");
     if (body.confirm !== undefined && typeof body.confirm !== "string") throw badRequest("confirm must be a string");
     if (
@@ -4500,6 +4500,10 @@ export function agentRoutes(
     if (body.afterId !== undefined && (typeof body.afterId !== "string" || !UUID_PATTERN.test(body.afterId))) {
       throw badRequest("afterId must be a UUID");
     }
+    // User ids are opaque auth-provider strings (not UUIDs); membership is verified by the service.
+    if (body.responsibleUserId !== undefined && (typeof body.responsibleUserId !== "string" || body.responsibleUserId.length < 1 || body.responsibleUserId.length > 255)) {
+      throw badRequest("responsibleUserId must be a user id string");
+    }
 
     try {
       const report = await addMissingDefaultMcpEntries(db, {
@@ -4509,10 +4513,12 @@ export function agentRoutes(
         limit: typeof body.limit === "number" ? body.limit : undefined,
         afterId: typeof body.afterId === "string" ? body.afterId : undefined,
         keys: Array.isArray(body.keys) ? (body.keys as string[]) : undefined,
+        ...(typeof body.responsibleUserId === "string" ? { responsibleUserId: body.responsibleUserId, actedByUserId: actor.actorId } : {}),
       });
       res.json(report);
     } catch (err) {
       if (err instanceof MissingEntryConfirmationError) throw badRequest("A real run requires dryRun=false and the confirmation string");
+      if (err instanceof MissingEntryInvalidResponsibleUserError) throw badRequest(err.message);
       throw err;
     }
   });
