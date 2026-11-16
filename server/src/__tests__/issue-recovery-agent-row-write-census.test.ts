@@ -100,10 +100,10 @@ describeIssueRecovery("agent row writes during a long run (census)", () => {
   }
 
   async function boot(options: { fullBackstopMs?: number } = {}) {
-    const f = await seed();
+    const f = await bounded(seed(), () => "the fixture to be seeded");
     const events = record();
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    await state.start(options);
+    await bounded(state.start(options), () => "the recovery workers to start");
     const startRun = async (agentId: string, issueId: string) => {
       const [run] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, status: "running", runtimeMode: "native",
         startedAt: new Date(), contextSnapshot: { issueId }, nativeIssueId: issueId })
@@ -112,8 +112,8 @@ describeIssueRecovery("agent row writes during a long run (census)", () => {
       await state.db.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, agentId));
       return run!.id;
     };
-    const bigRun = await startRun(f.bigId, f.bigLiveTask);
-    await startRun(f.secondId, f.secondLiveTask);
+    const bigRun = await bounded(startRun(f.bigId, f.bigLiveTask), () => "the big agent's live run to be recorded");
+    await bounded(startRun(f.secondId, f.secondLiveTask), () => "the second agent's live run to be recorded");
     const tick = () => state.db.transaction(async tx => {
       await tx.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, bigRun));
       await notifyIssueGraphRecovery(tx, { companyId: f.companyId, runId: bigRun });
@@ -128,7 +128,7 @@ describeIssueRecovery("agent row writes during a long run (census)", () => {
 
   async function expectCheckedWithin(f: Awaited<ReturnType<typeof boot>>, issueId: string, changedAt: number, boundMs: number) {
     await advance(boundMs, f.tick);
-    const [checked] = checksOf(f.events, issueId);
+    const [checked] = checksOf(f.events, issueId).filter(event => event.at >= changedAt);
     expect(checked, `task ${issueId} was not checked within ${boundMs / MINUTE} simulated minutes`).toBeDefined();
     expect(checked!.at - changedAt).toBeLessThanOrEqual(boundMs);
   }
@@ -166,30 +166,33 @@ describeIssueRecovery("agent row writes during a long run (census)", () => {
 
   it("still checks a running agent's task within the backstop bound when it becomes stranded after a configuration write", async () => {
     const f = await boot();
-    await agentService(state.db).update(f.bigId, { runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false }, revision: 2 } });
+    await bounded(agentService(state.db).update(f.bigId, { runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false }, revision: 2 } }),
+      () => "the big agent configuration write to commit");
     await advance(MINUTE, f.tick);
     f.events.length = 0;
     const target = f.bigTasks[17]!;
     const changedAt = Date.now();
-    await state.db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, target));
+    await bounded(state.db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, target)).then(() => undefined),
+      () => "the task write without a hint to commit");
     await expectCheckedWithin(f, target, changedAt, ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE);
   }, TEST_TIMEOUT_MS);
 
   it("still checks an idle agent's tasks within the backstop bound after its configuration is written", async () => {
     const f = await boot();
     const changedAt = Date.now();
-    await agentService(state.db).update(f.spareId, { adapterConfig: { command: process.execPath, args: ["-e", "3"], cwd: process.cwd() } });
+    await bounded(agentService(state.db).update(f.spareId, { adapterConfig: { command: process.execPath, args: ["-e", "3"], cwd: process.cwd() } }),
+      () => "the idle agent configuration write to commit");
     await expectCheckedWithin(f, f.spareTasks[2]!, changedAt, ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE);
   }, TEST_TIMEOUT_MS);
 
   it("still checks a held agent's waiting task promptly when its hold is released", async () => {
     const f = await boot();
     const changedAt = Date.now();
-    await state.db.transaction(async tx => {
+    await bounded(state.db.transaction(async tx => {
       await createAgentLifecycleEffects().beforeStatusChange(tx as never, f.companyId, f.heldId, "paused", "idle");
       await tx.update(agents).set({ status: "idle", lifecycleHolds: [], pauseReason: null, pausedAt: null, updatedAt: new Date() })
         .where(eq(agents.id, f.heldId));
-    });
+    }), () => "the hold release to commit");
     await expectCheckedWithin(f, f.waitingTask, changedAt, MINUTE);
   }, TEST_TIMEOUT_MS);
 
@@ -206,7 +209,8 @@ describeIssueRecovery("agent row writes during a long run (census)", () => {
 
   it("still re-checks every settled task in the next full pass after configuration writes", async () => {
     const f = await boot({ fullBackstopMs: FULL_PASS_MS });
-    await agentService(state.db).update(f.bigId, { runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false }, revision: 3 } });
+    await bounded(agentService(state.db).update(f.bigId, { runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false }, revision: 3 } }),
+      () => "the big agent configuration write to commit");
     await advance(FULL_PASS_MS, f.tick);
     const checked = new Set(f.events.filter(event => event.topic === "stranded-assignments" && event.name === "check")
       .map(event => String(event.fields.issueId)));
