@@ -37,7 +37,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
      * the scopes of its own key (and unkeyed scopes), not against every scope.
      */
     scopeKey?: { entry(entry: Entry): string; scope(scope: Scope): string | undefined };
-    load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
+    load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean; keepUnseen?: boolean }>;
     // Owners may retain pending queue priority while refreshing eligibility.
     mergeEntry?(pending: Entry, loaded: Entry): Entry;
     priority?(entry: Entry): number;
@@ -165,7 +165,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
             const scan = scans.get(hint) ?? { version: versions.get(hint) ?? 0, seen: new Set<string>() };
             scans.set(hint, scan);
             const loaded = await options.load(scope, signal);
-            const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
+            const result: { rows: Entry[] | null; complete: boolean; keepUnseen?: boolean } = Array.isArray(loaded)
+              ? { rows: loaded, complete: true } : loaded;
             const progressScopes = [...scans].map(([other, progress]) => ({ progress, scope: decode(other) }));
             for (const entry of result.rows ?? []) {
               const pending = entries.get(entry.id);
@@ -174,7 +175,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
               for (const { progress, scope: other } of progressScopes) if (options.matches(entry, other)) progress.seen.add(entry.id);
             }
             if (!result.complete) { dirty.add(hint); continue; }
-            if (result.rows !== null) for (const entry of entriesIn(scope)) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
+            if (result.rows !== null && !result.keepUnseen) for (const entry of entriesIn(scope)) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
               entries.delete(entry.id); failures.delete(entry.id);
             }
             scans.delete(hint);

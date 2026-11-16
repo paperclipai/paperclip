@@ -10,16 +10,23 @@ export interface CleanupReport {
   agentsTerminated: number;
   agentsDeleted: number;
   agentsKeptForCostHistory: number;
+  agentsStillTerminating: string[];
   secretDeleted: boolean;
   projectArchived: boolean;
   companyArchived: boolean;
   activeSandboxLeases: number | null;
+  activeSandboxLeaseIds: string[];
+  sandboxLeasesReleasedDuringWait: number;
   durationMs: number;
   errors: string[];
 }
 
 export const LIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 const PARALLELISM = 8;
+const TERMINATED = new Set(["terminated", "rejected"]);
+const TERMINATION_READS_PER_POLL = 200;
+const TERMINATION_POLL_MS_PER_AGENT = 30;
+const TERMINATION_POLL_MAX_MS = 30_000;
 
 export interface CleanupInput {
   api: PaperclipClient;
@@ -53,8 +60,9 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
   const started = clock.now();
   const pollMs = input.pollMs ?? 3_000;
   const report: CleanupReport = {
-    agentsPaused: 0, runsCancelled: 0, tasksArchived: 0, agentsTerminated: 0, agentsDeleted: 0, agentsKeptForCostHistory: 0,
-    secretDeleted: false, projectArchived: false, companyArchived: false, activeSandboxLeases: null, durationMs: 0, errors: [],
+    agentsPaused: 0, runsCancelled: 0, tasksArchived: 0, agentsTerminated: 0, agentsDeleted: 0, agentsKeptForCostHistory: 0, agentsStillTerminating: [],
+    secretDeleted: false, projectArchived: false, companyArchived: false, activeSandboxLeases: null, activeSandboxLeaseIds: [],
+    sandboxLeasesReleasedDuringWait: 0, durationMs: 0, errors: [],
   };
   const attempt = async (what: string, action: () => Promise<unknown>): Promise<boolean> => {
     try {
@@ -79,8 +87,22 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
     return report;
   }
   const prefix = agentPrefix(label);
+  const readAgent = async (id: string): Promise<Json | null> => {
+    try {
+      return await api.get<Json>(`/api/agents/${id}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      report.errors.push(`read agent ${id}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
+      return { id, status: "unknown", lifecycleState: "unknown" };
+    }
+  };
   const listed = await read<Json[]>("list agents", `/api/companies/${companyId}/agents`, []);
   const agents = listed.filter(agent => String(agent.name ?? "").startsWith(prefix));
+  const unlisted = state.agentIds.filter(id => !agents.some(agent => String(agent.id) === id));
+  await mapLimit(unlisted, PARALLELISM, async id => {
+    const agent = await readAgent(id);
+    if (agent && String(agent.name ?? prefix).startsWith(prefix)) agents.push(agent);
+  });
   const agentIds = new Set(agents.map(agent => String(agent.id)));
   input.log?.(`Cleanup ${label}: ${agents.length} agents, ${state.taskIds.length} recorded tasks`);
 
@@ -121,16 +143,27 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
     if (await attempt(`terminate agent ${agent.id}`, () => api.post(`/api/agents/${agent.id}/terminate`))) report.agentsTerminated += 1;
   });
   const pending = new Set(agentIds);
-  for (const until = clock.now() + (input.terminateWaitMs ?? 300_000); pending.size && clock.now() < until;) {
-    const current = await read<Json[]>("list agents", `/api/companies/${companyId}/agents`, []);
-    for (const agent of current) {
-      if (!pending.has(String(agent.id))) continue;
-      if (agent.status === "terminated" && (agent.lifecycleState == null || agent.lifecycleState === "terminated")) pending.delete(String(agent.id));
-    }
-    for (const id of [...pending]) if (!current.some(agent => String(agent.id) === id)) pending.delete(id);
-    if (pending.size) await clock.sleep(pollMs);
+  const waitMs = input.terminateWaitMs ?? 300_000;
+  const readPending = async (ids: string[]) => mapLimit(ids, PARALLELISM, async id => {
+    const agent = await readAgent(id);
+    if (!agent || TERMINATED.has(String(agent.lifecycleState))) pending.delete(id);
+  });
+  let cursor = 0;
+  for (const until = clock.now() + waitMs; pending.size && clock.now() < until;) {
+    const ids = [...pending];
+    const start = cursor % ids.length;
+    const batch = [...ids.slice(start), ...ids.slice(0, start)].slice(0, TERMINATION_READS_PER_POLL);
+    cursor = start + batch.length;
+    await readPending(batch);
+    if (!pending.size) break;
+    await clock.sleep(Math.min(TERMINATION_POLL_MAX_MS, Math.max(pollMs, pending.size * TERMINATION_POLL_MS_PER_AGENT)));
   }
-  if (pending.size) report.errors.push(`${pending.size} agents were not terminated in time; run --cleanup-only ${label} again`);
+  if (pending.size) await readPending([...pending]);
+  report.agentsStillTerminating = [...pending];
+  if (pending.size) {
+    report.errors.push(`${pending.size} agents had not completed termination after ${Math.round(waitMs / 60_000)} min, so they were not deleted: `
+      + `${[...pending].join(", ")}; run --cleanup-only ${label} again later`);
+  }
   await mapLimit([...agentIds].filter(id => !pending.has(id)), PARALLELISM, async agentId => {
     try {
       await api.delete(`/api/agents/${agentId}`);
@@ -154,7 +187,10 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
   }
 
   if (state.environmentId && taskIds.size) {
-    for (const until = clock.now() + (input.leaseWaitMs ?? 300_000); ;) {
+    const leaseWaitMs = input.leaseWaitMs ?? 300_000;
+    const seen = new Set<string>();
+    let active: Json[] = [];
+    for (const until = clock.now() + leaseWaitMs; ;) {
       let leases: Json[] | null = null;
       try {
         leases = await api.get<Json[]>(`/api/environments/${state.environmentId}/leases?status=active`);
@@ -162,11 +198,18 @@ export async function cleanupRun(input: CleanupInput): Promise<CleanupReport> {
         leases = null;
       }
       if (leases === null) break;
-      report.activeSandboxLeases = leases.filter(lease => taskIds.has(String(lease.issueId))).length;
-      if (report.activeSandboxLeases === 0 || clock.now() >= until) break;
+      active = leases.filter(lease => taskIds.has(String(lease.issueId)) || agentIds.has(String(lease.metadata?.agentId ?? "")));
+      for (const lease of active) seen.add(String(lease.id));
+      report.activeSandboxLeases = active.length;
+      if (active.length === 0 || clock.now() >= until) break;
       await clock.sleep(pollMs);
     }
-    if (report.activeSandboxLeases) report.errors.push(`${report.activeSandboxLeases} sandbox leases of this run are still active`);
+    report.activeSandboxLeaseIds = active.map(lease => String(lease.id));
+    report.sandboxLeasesReleasedDuringWait = [...seen].filter(id => !report.activeSandboxLeaseIds.includes(id)).length;
+    if (active.length) {
+      const detail = active.map(lease => `${lease.id} (run ${lease.heartbeatRunId ?? "unknown"}, acquired ${lease.acquiredAt ?? "unknown"})`).join(", ");
+      report.errors.push(`${active.length} sandbox leases of this run were still active after ${Math.round(leaseWaitMs / 60_000)} min: ${detail}`.slice(0, 600));
+    }
   }
 
   if (state.companyCreated) {

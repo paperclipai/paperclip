@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { OpenCodeServerDriver } from "./opencode-server-driver.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 
-it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "tool-work-text", "tool-work-empty", "stale-tool-work"] as const)("handles an empty OpenCode response: %s", async mode => {
+it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "idle-stall", "tool-idle-stall", "empty-again", "request-fails", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "closing-markup", "control-token-reply", "control-token-trailing", "tool-work-text", "tool-work-empty", "stale-tool-work"] as const)("handles an empty OpenCode response: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "opencode-empty-response-"));
   const command = join(root, "fake-opencode.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), command);
@@ -16,6 +16,13 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
   // ordinary text part, and no completion call.
   const recordedReasoning = "Task created and already executing (status in_progress, run dafb...). Good. Reply with link. Use finish. Keep concise.\n\nCompletion contract revision 1, criterion \"objective\". I should call paperclip_finish with done. Include evidence refs maybe task link. Let's do.";
   const recordedMarkup = "\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"paperclip_paperclip_finish\">\n<｜DSML｜ parameter name=\"reportedWorkDisposition\" string=\"true\">done</｜DSML｜ parameter>\n<｜DSML｜ parameter name=\"summary\" string=\"true\">Created `website-fixture.txt` in the task workspace.</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+  // Recorded from chat-eval cohort 16: closing DSML tags streamed alone as
+  // text (task-coordination.block-on-design), and a reply of a
+  // begin-of-sentence token plus an imitation tool-output fragment
+  // (cases.case-history).
+  const recordedClosingMarkup = "\r\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\r\n</｜DSML｜ invoke>\n</｜DSML｜ calls>\r\n</invoke>\r\n</｜DSML｜ parameter>\n";
+  const recordedControlTokenReply = "<｜begin▁of▁sentence｜><?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<output>\nSearch output truncated. Let me search more specifically for \"case document\" and \"case events\".\n</output>";
+  const leakedText = mode === "closing-markup" ? recordedClosingMarkup : mode === "control-token-reply" ? recordedControlTokenReply : recordedMarkup;
   let toolTimer: ReturnType<typeof setTimeout> | undefined;
   let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
   let streamOpened!: () => void;
@@ -95,19 +102,19 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;
           }
-          if (mode === "tool-call-markup" && number === 1) {
+          if (["tool-call-markup", "closing-markup", "control-token-reply"].includes(mode) && number === 1) {
             const leaked = { id: "part-1-text", messageID, sessionID, type: "text", text: "", time: { start: 1 } };
             emit({ type: "message.part.updated", properties: { sessionID, part: leaked } });
-            for (const delta of [recordedMarkup.slice(0, 4), recordedMarkup.slice(4, 9), recordedMarkup.slice(9)])
+            for (const delta of [leakedText.slice(0, 4), leakedText.slice(4, 9), leakedText.slice(9)])
               emit({ type: "message.part.delta", properties: { sessionID, messageID, partID: leaked.id, field: "text", delta } });
-            emit({ type: "message.part.updated", properties: { sessionID, part: { ...leaked, text: recordedMarkup, time: { start: 1, end: 2 } } } });
+            emit({ type: "message.part.updated", properties: { sessionID, part: { ...leaked, text: leakedText, time: { start: 1, end: 2 } } } });
             emit({ type: "session.idle", properties: { sessionID } });
             emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
             return;
           }
-          const answer = mode === "normal" || mode === "stale-tool-work" && number === 1 || mode === "foreign-idle" || mode === "queued-tool" || number === 3 && mode === "tool-work-text" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
+          const answer = mode === "normal" || mode === "control-token-trailing" || mode === "stale-tool-work" && number === 1 || mode === "foreign-idle" || mode === "queued-tool" || number === 3 && mode === "tool-work-text" || number === 2 && ["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "closing-markup", "control-token-reply"].includes(mode);
           emit({ type: "message.part.updated", properties: { sessionID, part: { id: `part-${number}`, messageID,
-            type: answer ? "text" : "reasoning", text: answer ? (mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer.") : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
+            type: answer ? "text" : "reasoning", text: answer ? (mode === "reasoning-echo-correction-matches" ? recordedReasoning : mode === "control-token-trailing" ? "Here is the actual final answer.<｜end▁of▁sentence｜>" : "Here is the actual final answer.") : "Synthetic reasoning must not become the answer.", time: { start: 1, end: 2 } } } });
           emit({ type: "session.idle", properties: { sessionID } });
           emit({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
         });
@@ -145,14 +152,15 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     }
     await vi.advanceTimersByTimeAsync(mode.endsWith("idle-stall") ? 20_001 : mode === "slow-native-tool" ? 1_999 : 5_001);
     const events = await completed;
-    const succeeds = ["stale-tool-work", "tool-work-text", "reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup"].includes(mode);
+    const succeeds = ["stale-tool-work", "tool-work-text", "reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow-native-tool", "normal", "foreign-idle", "queued-tool", "reasoning-echo", "reasoning-echo-text-first", "reasoning-echo-reasoning-after", "reasoning-echo-correction-matches", "tool-call-markup", "closing-markup", "control-token-reply", "control-token-trailing"].includes(mode);
     expect(events.at(-1)?.eventType).toBe(succeeds ? "turn.completed" : "turn.failed");
     expect(events.filter(event => event.eventType === "turn.started")).toHaveLength(1);
     expect(events.every(event => !event.turnId || event.turnId === turnId)).toBe(true);
     const final = events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final");
     expect(final.map(event => event.payload.text)).toEqual(succeeds ? [mode === "reasoning-echo-correction-matches" ? recordedReasoning : "Here is the actual final answer."] : []);
     // Only a turn that already did tool work gets the second, plain-text request.
-    expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool", "stale-tool-work"].includes(mode) ? 1 : mode.startsWith("tool-work") ? 3 : 2);
+    // A trailing end-of-sentence token after a real answer is not a degenerate reply.
+    expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool", "stale-tool-work", "control-token-trailing"].includes(mode) ? 1 : mode.startsWith("tool-work") ? 3 : 2);
     if (prompts.length === 3) {
       expect(prompts[2]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
       // Text first, so a chat reply survives a dropped call; then the
@@ -173,12 +181,21 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       expect(assistantText.join("")).not.toContain(recordedReasoning.slice(0, 20));
       expect(events.some(event => event.eventType === "harness.diagnostic" && event.payload.code === "opencode_reasoning_echo_discarded")).toBe(true);
     }
-    if (mode === "tool-call-markup") {
+    if (mode === "tool-call-markup" || mode === "closing-markup") {
       const assistantText = events.filter(event => event.payload.kind === "agentMessage").map(event => String(event.payload.text ?? ""));
       expect(assistantText.join("")).not.toContain("DSML");
       expect(assistantText.join("")).not.toContain("<｜");
       expect(events.some(event => event.eventType === "harness.diagnostic" && event.payload.code === "opencode_tool_call_markup_discarded")).toBe(true);
       expect(JSON.stringify(prompts[1]!.parts)).toContain("wrote a tool call as plain text");
+    }
+    if (mode === "control-token-reply") {
+      // Neither progress nor the reply shows the degenerate text; the
+      // correction asks for the answer the person is still owed.
+      const assistantText = events.filter(event => event.payload.kind === "agentMessage").map(event => String(event.payload.text ?? ""));
+      expect(assistantText.join("")).not.toContain("begin▁of▁sentence");
+      expect(assistantText.join("")).not.toContain("Search output truncated");
+      expect(events.some(event => event.eventType === "harness.diagnostic" && event.payload.code === "opencode_control_token_reply_discarded")).toBe(true);
+      expect(JSON.stringify(prompts[1]!.parts)).toContain("raw model control tokens");
     }
     if (mode === "stale-tool-work") {
       const nextEvents = collect();

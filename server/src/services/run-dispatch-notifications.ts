@@ -1,4 +1,4 @@
-import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
+import { notifyCompanyRecovery, notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export type RunDispatchScope = { companyId: string; issueId?: string | null; runId?: string | null };
@@ -11,6 +11,15 @@ export async function notifyQueuedRunDispatch(transaction: object, scope?: RunDi
 export async function notifyRunDispatch(transaction: object, scope?: RunDispatchScope) {
   if (scope?.issueId || scope?.runId) await notifyIssueGraphRecovery(transaction, scope);
   else await notifyIssueRecovery(transaction, scope ? { companyId: scope.companyId } : undefined);
+  await notifyDispatchQueues(transaction, scope);
+}
+
+export async function notifyAgentConfigurationDispatch(transaction: object, scope: { companyId: string }) {
+  await notifyCompanyRecovery(transaction, scope.companyId);
+  await notifyDispatchQueues(transaction, scope);
+}
+
+async function notifyDispatchQueues(transaction: object, scope?: RunDispatchScope) {
   const hint = scope ? JSON.stringify({ companyId: scope.companyId }) : "*";
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.nativeProcessSessions, hint);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement, hint);
