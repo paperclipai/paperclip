@@ -1,5 +1,5 @@
 import { getCloudRuntimeIdentity } from "./cloud-runtime-identity.js";
-import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { notifyMuseContactVerification, withExternalAdmissionGuard } from "../modules/external-agents/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { museAgentBindings as bindings, museMailboxItems as mailbox, museRunnerAssignments as assignments, museReceiverContactBuckets as buckets, externalAgentHolds as holds, type Db } from "@paperclipai/db";
@@ -11,7 +11,7 @@ const instances=new WeakMap<Db,ReturnType<typeof createReceiver>>();
 export function museReceiver(db:Db) {let receiver=instances.get(db);if(!receiver){receiver=createReceiver(db);instances.set(db,receiver);}return receiver;}
 function createReceiver(db:Db) {
   const replicaId=randomUUID();
-  const pending=new Map<string,{companyId:string;bindingId:string;bindingGeneration:number;bucketAt:Date;firstAt:Date;lastAt:Date;contacts:number;gapsAtMostSevenSeconds:number;maxGapMs:number;timestamps:string[];incomplete:boolean}>();
+  const pending=new Map<string,{companyId:string;agentId:string;bindingId:string;bindingGeneration:number;bucketAt:Date;firstAt:Date;lastAt:Date;contacts:number;gapsAtMostSevenSeconds:number;maxGapMs:number;timestamps:string[];incomplete:boolean}>();
   const previous=new Map<string,number>();
   let flushPromise:Promise<void>|undefined;
   const admittedSignals=new Set<Promise<{version:1;signal:{reference:string}|null}>>();
@@ -25,11 +25,16 @@ function createReceiver(db:Db) {
       for(const [key,bucket]of batch) {
         try {
           const current=await db.transaction(async tx=>{
-            const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt)));
+            // The existing MCP publication/deletion lock precedes all child locks.
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+            return withExternalAdmissionGuard(tx,bucket.companyId,bucket.agentId,async()=>{
+            const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.companyId,bucket.companyId),eq(bindings.agentId,bucket.agentId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt))).for("update");
             if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash)await notifyMuseContactVerification(tx,{companyId:current.companyId,bindingId:current.id,generation:current.generation},"contact-persist");
-            await tx.insert(buckets).values({...bucket,replicaId}).onConflictDoUpdate({target:[buckets.bindingId,buckets.bindingGeneration,buckets.replicaId,buckets.bucketAt],set:{lastAt:bucket.lastAt,contacts:sql`${buckets.contacts}+${bucket.contacts}`,gapsAtMostSevenSeconds:sql`${buckets.gapsAtMostSevenSeconds}+${bucket.gapsAtMostSevenSeconds}`,maxGapMs:sql`greatest(${buckets.maxGapMs},${bucket.maxGapMs})`,timestamps:sql`${buckets.timestamps} || ${JSON.stringify(bucket.timestamps)}::jsonb`,incomplete:sql`${buckets.incomplete} or ${bucket.incomplete}`}});
+            const {agentId: _agentId,...contact}=bucket;
+            await tx.insert(buckets).values({...contact,replicaId}).onConflictDoUpdate({target:[buckets.bindingId,buckets.bindingGeneration,buckets.replicaId,buckets.bucketAt],set:{lastAt:bucket.lastAt,contacts:sql`${buckets.contacts}+${bucket.contacts}`,gapsAtMostSevenSeconds:sql`${buckets.gapsAtMostSevenSeconds}+${bucket.gapsAtMostSevenSeconds}`,maxGapMs:sql`greatest(${buckets.maxGapMs},${bucket.maxGapMs})`,timestamps:sql`${buckets.timestamps} || ${JSON.stringify(bucket.timestamps)}::jsonb`,incomplete:sql`${buckets.incomplete} or ${bucket.incomplete}`}});
             await tx.update(bindings).set({receiverContactAt:sql`greatest(${bindings.receiverContactAt},${bucket.lastAt.toISOString()}::timestamptz)`}).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration)));
             return current;
+            });
           });
           if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash) {
             const {museRunnerBroker}=await import("./muse-runner-broker.js");
@@ -51,7 +56,7 @@ function createReceiver(db:Db) {
     previous.set(b.id, now);
     let bucket = pending.get(key);
     if (!bucket) {
-      bucket = { companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation,
+      bucket = { companyId: b.companyId, agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation,
         bucketAt: new Date(Math.floor(now / PERSISTENCE_LAG_MS) * PERSISTENCE_LAG_MS),
         firstAt: new Date(now), lastAt: new Date(now), contacts: 0,
         gapsAtMostSevenSeconds: 0, maxGapMs: 0, timestamps: [], incomplete: false };
