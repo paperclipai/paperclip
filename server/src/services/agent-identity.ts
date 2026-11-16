@@ -88,6 +88,6 @@ export function supportsManagedAgentIdentity(
   }
   return new Set([
     "process", "claude_local", "codex_local", "cursor_cloud",
-    "gemini_local", "grok_local", "hermes_local", "kimi_local", "opencode_local", "pi_local", "cursor",
+    "distill_local", "gemini_local", "grok_local", "hermes_local", "kimi_local", "opencode_local", "pi_local", "cursor",
   ]).has(adapterType);
 }

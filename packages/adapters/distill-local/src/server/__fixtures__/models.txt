@@ -1,0 +1,9 @@
+Default model: claude/claude-fable-5-2
+
+Available models:
+  - auto
+  - grok-4.6
+  - chatgpt/gpt-6.1-sol
+  * claude/claude-fable-5-2 (default)
+  - claude/claude-sonnet-5-5
+  - claude/claude-opus-5-5

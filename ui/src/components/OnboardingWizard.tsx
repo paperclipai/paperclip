@@ -1213,6 +1213,7 @@ function OnboardingWizardInner({
     isLocalAdapterCaps ||
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
+    adapterType === "distill_local" ||
     adapterType === "gemini_local" ||
     adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
@@ -1710,6 +1711,7 @@ function OnboardingWizardInner({
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    distill_local: "distill",
     gemini_local: "gemini",
     kimi_local: "kimi",
     pi_local: "pi",
