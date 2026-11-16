@@ -153,6 +153,13 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     return (await issueService(db).getDependencyReadiness(issue.id)).isDependencyReady;
   }
 
+  async function keepLinkedAiRepairPending(issue: typeof issues.$inferSelect, sourceRunId: string | null | undefined) {
+    if (!["in_progress", "blocked"].includes(issue.status) || issue.assigneeUserId) return;
+    const latest = await latestRunWaitingOnAiRepair(db, issue, sourceRunId, isAiAuthenticationRepairable);
+    if (!latest) return;
+    await connectionIntentService(db).requestForRunAuthFailure(latest.id).catch(() => null);
+  }
+
   async function wakeLinkedAiRepairTasks(interaction: typeof issueThreadInteractions.$inferSelect, connectionRestored: boolean) {
     const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
     if (payload?.purpose !== "ai" || !payload.linkedIssues?.length || !interaction.addresseeUserId) return;
@@ -167,7 +174,11 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
           purpose: "ai", sourceRunId: linked.sourceRunId });
         const repaired = [resolvedConnectionId, payload.repairConnectionId].filter(Boolean);
-        if (!usable || (repaired.length && !repaired.includes(usable.id))) continue;
+        if (!usable) {
+          await keepLinkedAiRepairPending(issue, linked.sourceRunId);
+          continue;
+        }
+        if (repaired.length && !repaired.includes(usable.id)) continue;
       }
       let current = issue;
       if (connectionRestored && current.status === "blocked") {
