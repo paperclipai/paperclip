@@ -17,6 +17,8 @@ type Entry = { id: string; companyId: string; dueAt: number; fromDeadline?: true
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number, detail?: { unchanged: boolean }) => void;
   pass?: RecoveryPassReads };
 const PAGE_SIZE = 100;
+/** How long past its deadline a saved deferral of a task that left its queue is kept. */
+const STALE_DEFERRAL_MS = 10 * 60_000;
 
 export const resolvedDependencyCandidate = sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
       and r.related_issue_id = ${issues.id} and r.type = 'blocks' offset 0)
@@ -141,17 +143,21 @@ export function registerIssueRecoveryWork(
         };
         if (scope?.reload) {
           changedAt.set("*", Math.max(changedAt.get("*") ?? 0, startedAt));
-          // A saved deferral of a task this reload did not load and that is now
-          // closed will never be cleared by a check. The delete re-checks that
-          // the task is closed and the row is the one read, in one statement.
+          // The reload loads every task with a saved deferral that this queue
+          // can still check. A row it did not load belongs to a task that left
+          // the queue, for whatever reason, and no check will clear it. It is
+          // deleted once its task is closed or its deadline is well past; the
+          // delete also requires the deadline it read, so a row another server
+          // wrote since stays.
           const stale = [...scan?.savedDeferrals ?? []].filter(([id]) => !scan!.seen.has(id))
             .map(([id, dueAt]) => ({ id, due: new Date(dueAt).toISOString() }));
           if (stale.length > 0) {
             for (const { id } of stale) deferred.delete(id);
             await db.execute(sql`delete from issue_recovery_deferrals d using jsonb_to_recordset(${JSON.stringify(stale)}::jsonb)
-                as s(id uuid, due timestamptz), issues i
+                as s(id uuid, due timestamptz)
               where d.queue = ${queue} and d.issue_id = s.id and d.due_at = s.due
-                and i.id = d.issue_id and i.status in ('done', 'cancelled')`).catch(() => undefined);
+                and (d.due_at < ${at(Date.now() - STALE_DEFERRAL_MS)} or exists (select 1 from issues i
+                  where i.id = d.issue_id and i.status in ('done', 'cancelled')))`).catch(() => undefined);
           }
           // The companies this reload loaded in full now have a recent full pass.
           await saveOnceChecked(sql`not ${recentFull(sql`c.id`, scan?.reloadCutoff ?? startedAt)}`);

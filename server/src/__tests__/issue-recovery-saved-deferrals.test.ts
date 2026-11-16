@@ -160,6 +160,26 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
     expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(0);
   }, TEST_TIMEOUT_MS);
 
+  it("removes a saved deferral once its open task has left the queue and its deadline is past", async () => {
+    const f = await bounded(seed(10), () => "the fixture to be seeded");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const target = f.tasks[5]!;
+    const behavior = { deferUntil: new Map([[target, Date.now() + 2 * MINUTE]]), suppressed: () => false, checks: [] as Array<{ id: string; at: number }> };
+    const first = await server(behavior);
+    await advance(MINUTE);
+    const saved = () => state.db.select({ id: issueRecoveryDeferrals.issueId }).from(issueRecoveryDeferrals)
+      .where(and(eq(issueRecoveryDeferrals.queue, "stranded-assignments"), eq(issueRecoveryDeferrals.issueId, target)));
+    expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(1);
+    // The task stays open but leaves the queue (a user takes it over) while its deferral is pending.
+    await bounded(state.db.update(issues).set({ status: "in_progress", assigneeUserId: "recovery-user" }).where(eq(issues.id, target))
+      .then(() => undefined), () => "the task to leave the queue");
+    await bounded(first.stop(), () => "the first server to stop");
+    await advance(15 * MINUTE);
+    await server(behavior);
+    await advance(MINUTE);
+    expect(await bounded(saved(), () => "the deferral to be read")).toHaveLength(0);
+  }, TEST_TIMEOUT_MS);
+
   it("checks every task again after scheduling suppression, even with a recent saved full pass", async () => {
     const f = await bounded(seed(30), () => "the fixture to be seeded");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
