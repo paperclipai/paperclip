@@ -12,6 +12,7 @@ export function registerDeadlineWork(
     canRun: () => boolean;
     retryMs: number;
     onSettled?: (hints?: ReadonlySet<string>) => void;
+    onStop?: () => void;
     continuationMs?: number;
     // Optional batching latency for notifications; already-known deadlines still preempt it.
     notificationCoalesceMs?: number;
@@ -28,7 +29,7 @@ export function registerDeadlineWork(
   const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
-    onStop: () => { stopped = true; revision++; },
+    onStop: () => { stopped = true; revision++; task.onStop?.(); },
     onSettled: hints => { revision++; requested++; task.onSettled?.(hints); },
     run: async signal => {
       revision++; running = true;

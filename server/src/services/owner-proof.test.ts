@@ -45,6 +45,32 @@ describe("proveOwnerGone: local owners", () => {
     expect(await proveOwnerGone(stamp(), probe())).toEqual({ verdict: "gone", reason: "pid_dead" });
   });
 
+  it.each([null, "foreign-space", "unknown"])("does not probe a recorded-space-required owner in %s space", async processSpace => {
+    const pidExists = vi.fn(() => false), readStartedAt = vi.fn(async () => null);
+    const result = await proveOwnerGone(stamp({ processSpace, processSpaceUnrecorded: processSpace === null,
+      requireRecordedProcessSpace: true }), probe({ pidExists, readStartedAt }));
+    expect(result).toEqual({ verdict: "unprovable", reason: processSpace === null ? "process_space_unrecorded"
+      : processSpace === "unknown" ? "unknown_process_space" : "different_process_space" });
+    expect(pidExists).not.toHaveBeenCalled(); expect(readStartedAt).not.toHaveBeenCalled();
+  });
+
+  it.each(["stopped", "fenced"] as const)("retains independent controller-instance %s evidence for an unrecorded Native space", async state => {
+    const pidExists = vi.fn(() => false), readStartedAt = vi.fn(async () => null);
+    const controllerInstance = vi.fn(async () => state);
+    expect(await proveOwnerGone(stamp({ processSpace: null, processSpaceUnrecorded: true,
+      requireRecordedProcessSpace: true }), probe({ pidExists, readStartedAt, controllerInstance })))
+      .toEqual({ verdict: "gone", reason: state === "stopped" ? "controller_stopped" : "controller_fenced" });
+    expect(controllerInstance).toHaveBeenCalledOnce();
+    expect(pidExists).not.toHaveBeenCalled(); expect(readStartedAt).not.toHaveBeenCalled();
+  });
+
+  it("accepts audited operator stop evidence without probing a recorded-space-required owner", async () => {
+    const pidExists = vi.fn(() => false), readStartedAt = vi.fn(async () => null);
+    expect(await proveOwnerGone(stamp({ processSpace: "operator_attested", requireRecordedProcessSpace: true }),
+      probe({ pidExists, readStartedAt }))).toEqual({ verdict: "gone", reason: "operator_attested" });
+    expect(pidExists).not.toHaveBeenCalled(); expect(readStartedAt).not.toHaveBeenCalled();
+  });
+
   it("judges a row saved before its PID space locally for one release, on single-host servers only", async () => {
     const legacy = stamp({ host: null, processSpace: null, processSpaceUnrecorded: true });
     expect(await proveOwnerGone(legacy, probe())).toEqual({ verdict: "gone", reason: "pid_dead", legacyHostFallback: true });

@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
@@ -33,10 +34,12 @@ import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js
 import { OWNER_GONE_ATTESTATION_KEY, attestOwnerGoneByRecordVersion, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
-  settleNativeAcceptedResultLease,
+  settleNativeAcceptedResultLease, classifyNativeAcceptedResultLeaseOwners,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
-import { settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { preparationOnlyWriterCondition, settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { retirableRemoteSnapshotLedgerCondition, settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -45,8 +48,9 @@ import { legacyShutdownSettlementOwner, settleLegacyShutdownSettlementFence } fr
 import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runtime/native-owner-stamps.js";
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
-import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
+import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -58,7 +62,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controlle
 import {
   ENVIRONMENT_CLEANUP_RETRY_MS,
   pendingCleanupDeadlineSql,
-  recoveredOrphanFirstAttemptSql,
+  recoveredCleanupFirstAttemptSql,
 } from "../environment-cleanup-state.js";
 import { settleEnvironmentLoginProbeLease } from "../environment-login-probe-lease-settlement.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
@@ -271,6 +275,37 @@ function nrfKind(id: string, title: string, obligation: Obligation, where: SQL |
   };
 }
 
+/**
+ * A native run whose controller died after another server's startup pass
+ * (a crash mid-overlap, not a graceful drain) has no server re-checking it:
+ * restart recovery only schedules re-checks for runs it saw. When the
+ * reconciler proves such a run's owner gone, this server runs the same restart
+ * recovery for that run now; its bounded wait and re-check schedule then end
+ * or resume the run without waiting for another server to boot.
+ */
+let nativeRestartRecheck: ((runIds: string[]) => Promise<unknown>) | null = null;
+export function registerNativeRestartRecheck(recheck: (runIds: string[]) => Promise<unknown>) {
+  nativeRestartRecheck = recheck;
+  return () => { if (nativeRestartRecheck === recheck) nativeRestartRecheck = null; };
+}
+/** The reconciler re-checks every 30 s; restart recovery schedules its own
+ * follow-ups, so one hand-off per run per minute is enough. */
+const NATIVE_RESTART_RECHECK_SPACING_MS = 60_000;
+const lastNativeRestartRecheck = new Map<string, number>();
+const recheckNativeRunOwnership: SettleRecord = async (_db, record, context) => {
+  if (!nativeRestartRecheck || !record.runId) return { settled: false, reason: "restart_recheck_unavailable" };
+  const last = lastNativeRestartRecheck.get(record.runId);
+  if (last !== undefined && context.now.getTime() - last < NATIVE_RESTART_RECHECK_SPACING_MS)
+    return { settled: false, reason: "restart_recovery_recheck_recent" };
+  if (lastNativeRestartRecheck.size > 10_000) lastNativeRestartRecheck.clear();
+  lastNativeRestartRecheck.set(record.runId, context.now.getTime());
+  await nativeRestartRecheck([record.runId]);
+  return { settled: false, reason: "restart_recovery_rechecked" };
+};
+function withNativeRestartRecheck(kind: OwnableKind): OwnableKind {
+  return { ...kind, settle: recheckNativeRunOwnership };
+}
+
 const notFinalizerOrCleanup = and(notLike(nativeRunFinalizations.leaseOwner, "native-finalizer:%"),
   notLike(nativeRunFinalizations.leaseOwner, "native-cleanup:%"));
 
@@ -480,7 +515,7 @@ function pendingCleanupKind(): OwnableKind {
   // by the settle; a row from before that is due since its last write).
   // Built per listing: the deadline reader bounds saved deadlines relative to
   // the current time, so it must not be frozen at module load.
-  const dueMs = () => sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
+  const dueMs = () => sql<string>`case when ${recoveredCleanupFirstAttemptSql()}
       then coalesce(case when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRecoveredAtMs') = 'number'
         then (${environmentLeases.metadata}->>'pendingCleanupRecoveredAtMs')::numeric end,
         extract(epoch from ${environmentLeases.updatedAt}) * 1000)
@@ -519,6 +554,21 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 
 // ----------------------------------------------------------------------------
 // workspace_operations
+
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
 
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
@@ -656,25 +706,33 @@ const agentLifecycleLeaseKind: OwnableKind = {
   },
 };
 
+const acceptedNativeResultLease = nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
+  and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+    isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
+    sql`${nativeRunFinalizations.leaseExpiresAt} > now()`));
+
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
-  nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
+  withNativeRestartRecheck(nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
     and(eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
-      isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup, isNull(nativeRunFinalizations.recoveryState))),
-  nrfKind("native_restart_recovery_claim", "Restart-recovery claim", "ownership",
-    inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"])),
-  nrfKind("native_awaiting_evidence", "\"Awaiting evidence\" wait", "ownership",
-    eq(nativeRunFinalizations.recoveryState, "awaiting_evidence"), undefined, [1, 2, 7]),
+      isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup, isNull(nativeRunFinalizations.recoveryState)))),
+  withNativeRestartRecheck(nrfKind("native_restart_recovery_claim", "Restart-recovery claim", "ownership",
+    inArray(nativeRunFinalizations.recoveryState, ["awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"]))),
+  withNativeRestartRecheck(nrfKind("native_awaiting_evidence", "\"Awaiting evidence\" wait", "ownership",
+    eq(nativeRunFinalizations.recoveryState, "awaiting_evidence"), undefined, [1, 2, 7])),
   {
     // Shared path since Phase 2: a hard kill after `run.result` is accepted
     // leaves the result leased to the dead controller; settle expires that
     // exact lease so finalization runs now (RC-41).
     // Outstanding leases only: an expired lease no longer holds the result,
     // so it is not in progress for this kind (finalization reclaims it).
-    ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
-      and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
-        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`)),
+    ...acceptedNativeResultLease,
+    listInProgress: async (db, limit, offset) => {
+      const listed = await acceptedNativeResultLease.listInProgress!(db, limit, offset);
+      return { ...listed, records: await classifyNativeAcceptedResultLeaseOwners(db, listed.records) };
+    },
+    listForRuns: async (db, runIds) => classifyNativeAcceptedResultLeaseOwners(db,
+      await acceptedNativeResultLease.listForRuns!(db, runIds)),
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
@@ -866,9 +924,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     and(eq(workspaceOperations.phase, "remote_workspace_provision"), or(eq(workspaceOperations.status, "running"),
       sql`(${workspaceOperations.metadata}->>'uncertain')::boolean is true`)),
     row => runOwner(row.heartbeatRunId)),
-  operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
+  { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)),
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
@@ -906,11 +964,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
-        .where(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
+        .where(and(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`,
+          preparationOnlyWriterCondition())).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => {
         const writerRunId = str(json(json(row.metadata).remoteWorkspace).writerRunId);
@@ -921,11 +980,11 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [2],
+    storage: "database", settle: settleAbandonedRemoteSnapshotLedger, invariantChecks: [2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
-        .from(executionWorkspaceSnapshots).where(inArray(executionWorkspaceSnapshots.status, ["pending", "uploaded"])).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
+        .from(executionWorkspaceSnapshots).where(retirableRemoteSnapshotLedgerCondition()).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.sourceRunId, issueId: null,
@@ -1038,7 +1097,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   }, versionLock(heartbeatRuns)),
   {
     // A preparation a shutdown interrupted, held before its no-provider-work
-    // proof could exist. Its owner is the recorded controller process: the
+    // proof could exist, or one the orphan reaper ended as process_lost. Its
+    // owner is the recorded controller process: the
     // shared prover must prove it gone (a missing stamp, or one from another
     // host or PID space, is unprovable and stays held). The settle re-checks
     // the durable proof and replays the preparation exactly once.
@@ -1046,10 +1106,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
       heldInterruptedPreparationWhere(), row => {
-        const stamp = legacyControllerOwnerStamp(row);
+        // A preparation the orphan reaper ended has a revoked lease: its owner
+        // is still the recorded controller process.
+        const stamp = finishedLegacyControllerOwnerStamp(row);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
+  },
+  {
+    // No-replay holds of a run that completed its turn and was then refused by
+    // the in-process cleanup gate. Its owner is the controller that closed the
+    // session (the coordinator's stamp); once that process is proven gone, so
+    // is its gate, and the holds settle without replaying anything.
+    ...nrfKind("native_completed_turn_cleanup_hold", "Completed-turn cleanup hold", "ownership",
+      completedTurnCleanupHoldWhere()),
+    settle: settleCompletedTurnCleanupHolds,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

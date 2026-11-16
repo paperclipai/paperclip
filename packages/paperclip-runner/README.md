@@ -193,11 +193,23 @@ and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+On stdin EOF, SIGTERM, SIGINT, or an internal shutdown request, the sidecar emits
+`sidecar_shutdown_requested` once through `runtime.diagnostic` and stderr before
+cleanup removes pending calls. The JSON message gives the shutdown reason,
+pending tool/input/permission counts, completion-normalization count, and at most
+16 oldest tool calls with elapsed milliseconds and SHA-256 call IDs. Hash a
+`runtime.tool_called` call ID to correlate it with this snapshot. Arguments,
+results, operation names, and raw call IDs are excluded. This diagnostic records
+the local trigger; stdin EOF alone does not identify why the controller stopped.
+A broken output pipe can prevent event delivery; consult retained stderr too.
+It does not change retries, cancellation, or tool authorization. No saved session
+shape changes; sessions from the previous release retain their existing behavior.
+
 If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
 its authenticated tool bridge.
 Isolated provider admission accepts this route without a separate native MCP endpoint.
-Direct runtime-host callers must supply the native gateway binding unless they select
-PRP tool delivery and supply the semantic tool bridge.
+When the runtime context names an assigned MCP binding, direct runtime-host callers
+must select PRP tool delivery and supply the semantic tool bridge.
 PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
 The selected permission and read-only policies still apply.
 
@@ -1050,8 +1062,8 @@ qualification before this mode can be enabled for them.
 
 ## Assigned local MCP servers
 
-An execution host can assign local stdio MCP servers alongside the existing
-`PAPERCLIP_NATIVE_MCP_NAME` / `URL` / `TOKEN` HTTP gateway. This is general transport
+An execution host can assign local stdio MCP servers. Assigned gateway tools reach
+the provider through the controller's PRP relay, not as a server here. This is general transport
 support for local MCP implementations that satisfy the executable-verification
 and private Unix socket requirements below. Runner uses each server's own tool
 schemas and responses. Set
@@ -1068,7 +1080,7 @@ with the ownership and path requirements below.
 Set `PAPERCLIP_NATIVE_MCP_PROXY` to the assigned Runner executable. These are
 execution-host inputs, excluded from configurable task environment and provider
 shell inheritance. Names use letters, digits, underscores or hyphens and cannot
-replace the internal task server or gateway. Commands are verified against their
+replace the internal task server. Commands are verified against their
 assigned digest before execution. The backend receives only its assigned environment.
 
 Runner supplies these session-local bindings to native Codex and through the

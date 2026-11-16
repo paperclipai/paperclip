@@ -18,10 +18,10 @@ export function storybookAgentAvatarAssets() {
       })();
       server.middlewares.use((req, res, next) => {
         const pathname = new URL(req.url ?? "/", "http://storybook.local").pathname;
-        const match = /^\/agent-avatar-images\/cap-v1\/([^/]+)\/([^/]+)-(\d+)-([12])(-paperclip-dark-v1)?\.png$/.exec(pathname);
+        const match = /^\/agent-avatar-images\/cap-v1\/([^/]+)\/([^/]+)-(\d+)-([12])(-paperclip-dark-v1)?(-portrait-v1)?\.png$/.exec(pathname);
         if (!match) return next();
         void (async () => {
-          const [, palette, pose, sizeText, scaleText, darkBackground] = match;
+          const [, palette, pose, sizeText, scaleText, darkBackground, portraitView] = match;
           const { pool, AGENT_PALETTE_IDS, AGENT_AVATAR_SIZES, CHARACTER_STATES, appearanceForPalette } = await renderer();
           const size = Number(sizeText);
           const scale = Number(scaleText);
@@ -33,7 +33,7 @@ export function storybookAgentAvatarAssets() {
           }
           if (!images.has(pathname)) {
             const appearance = appearanceForPalette(muted ? AGENT_PALETTE_IDS[0] : palette);
-            images.set(pathname, pool.render({ appearance, size, scale, pose, muted, background: darkBackground ? "paperclip-dark" : "transparent" }).catch((error) => {
+            images.set(pathname, pool.render({ appearance, size, scale, pose, muted, background: darkBackground ? "paperclip-dark" : "transparent", view: portraitView ? "portrait" : "front" }).catch((error) => {
               images.delete(pathname);
               throw error;
             }));
@@ -60,6 +60,9 @@ export function storybookAgentAvatarAssets() {
         (muted ? [AGENT_PALETTE_IDS[0]] : AGENT_PALETTE_IDS).flatMap(palette =>
           CHARACTER_STATES.flatMap(pose => AGENT_AVATAR_SIZES.flatMap(size =>
             [1, 2].map(scale => ({ appearance: appearanceForPalette(palette), size, scale, pose, muted }))))));
+      // Org cards use high-resolution, angled portraits at two logical sizes.
+      requests.push(...[false, true].flatMap(muted => (muted ? [AGENT_PALETTE_IDS[0]] : AGENT_PALETTE_IDS).flatMap(palette =>
+        [128, 256].flatMap(size => [1, 2].map(scale => ({ appearance: appearanceForPalette(palette), size, scale, pose: "rest", muted, view: "portrait" }))))));
       // Slack exports use this one opaque preset; ordinary UI avatars stay clear.
       requests.push(...AGENT_PALETTE_IDS.map(palette => ({ appearance: appearanceForPalette(palette), size: 512, scale: 1, pose: "rest", muted: false, background: "paperclip-dark" })));
       const pool = createAgentAvatarPool(2);
@@ -70,8 +73,8 @@ export function storybookAgentAvatarAssets() {
           while (next < requests.length) {
             const request = requests[next++];
             const source = await pool.render(request);
-            const { appearance, size, scale, pose, muted, background } = request;
-            const fileName = agentAvatarUrl(appearance, size, scale, pose, muted, background).slice(2);
+            const { appearance, size, scale, pose, muted, background, view } = request;
+            const fileName = agentAvatarUrl(appearance, size, scale, pose, muted, background, view).slice(2);
             this.emitFile({ type: "asset", fileName, source });
             images.push({ path: fileName, sha256: createHash("sha256").update(source).digest("hex"), pixels: size * scale });
           }

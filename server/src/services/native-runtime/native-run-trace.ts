@@ -210,6 +210,7 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
   "anchor",
   "bytesTransferred",
+  "check",
   "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
@@ -228,6 +229,11 @@ const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "strategy",
   "target",
 ]);
+
+export function nativeRunFailureCheck(error: unknown): string | undefined {
+  const check = (error as { failureCheck?: unknown } | null)?.failureCheck;
+  return typeof check === "string" && /^[A-Za-z0-9_.:,@/-]{1,120}$/.test(check) ? check : undefined;
+}
 
 function finiteMs(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -531,6 +537,8 @@ export function createNativeRunTrace(input: {
       endedAtMs?: number;
       outcome?: NativeRunSpanOutcome;
       attributes?: Record<string, string | number | boolean>;
+      /** Write the run-log row after the caller continues; `finish` settles it. */
+      deferRunLog?: boolean;
     } = {},
   ): Promise<void> => {
     const state = scopeState(scope);
@@ -550,14 +558,18 @@ export function createNativeRunTrace(input: {
     });
     if (outcome === "failed") { try { state.span.setStatus({ code: 2 }); } catch {} }
     try { state.span.end(endedAtMs); } catch {}
-    if (state.persistRunLog) await emitCompletedSpanEvent({
-      name: state.name,
-      parentName: state.parentName,
-      startedAtMs: state.startedAtMs,
-      endedAtMs,
-      outcome,
-      attributes: state.attributes,
-    });
+    if (state.persistRunLog) {
+      const completed: NativeRunHistoricalSpan = {
+        name: state.name,
+        parentName: state.parentName,
+        startedAtMs: state.startedAtMs,
+        endedAtMs,
+        outcome,
+        attributes: state.attributes,
+      };
+      if (options.deferRunLog) deferRunLogRow(completed);
+      else await emitCompletedSpanEvent(completed);
+    }
     checkSpanBudget(state.name, state.startedAtMs, endedAtMs);
   };
 
@@ -596,7 +608,7 @@ export function createNativeRunTrace(input: {
     );
   };
 
-  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean } = {}): Promise<void> => {
+  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean; deferRunLog?: boolean } = {}): Promise<void> => {
     const scope = start(span.name, {
       parentName: span.parentName,
       startedAtMs: span.startedAtMs,
@@ -606,6 +618,7 @@ export function createNativeRunTrace(input: {
     await end(scope, {
       endedAtMs: span.endedAtMs,
       outcome: span.outcome,
+      deferRunLog: options.deferRunLog,
     });
   };
 
@@ -623,6 +636,8 @@ export function createNativeRunTrace(input: {
       return await run(scope, fn);
     } catch (error) {
       outcome = "failed";
+      const check = nativeRunFailureCheck(error);
+      if (check) annotate(scope, { check });
       throw error;
     } finally {
       await end(scope, { outcome });
@@ -646,6 +661,16 @@ export function createNativeRunTrace(input: {
         pendingDiagnostics.delete(pending);
       });
     pendingDiagnostics.add(pending);
+  };
+
+  // Deferred run-log rows are written one at a time, in the order their spans
+  // ended, so the sink sees the same sequence as the awaited path.
+  let runLogRows: Promise<void> = Promise.resolve();
+  const deferRunLogRow = (span: NativeRunHistoricalSpan): void => {
+    if (ended) return;
+    const written = runLogRows.then(() => emitCompletedSpanEvent(span));
+    runLogRows = written;
+    defer(() => written);
   };
 
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
@@ -770,9 +795,9 @@ export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace
   } catch { /* Diagnostics cannot replace the work's result. */ }
 }
 
-/** One local runner startup sub-step measured by the runner transport. */
+/** One runner startup sub-step measured by the runner transport. */
 export interface NativeRunnerStartupStep {
-  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  name: "runner.control_plane.open" | "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
   mode: "bootstrap" | "resume";
   startedAtMs: number;
   endedAtMs: number;
@@ -785,14 +810,22 @@ export interface NativeRunnerStartupStep {
  * Telemetry. Detached: the run-log write never delays `turn.start`; the
  * trace settles it at finish.
  */
-export function recordNativeRunnerStartupStep(trace: NativeRunTrace | undefined, step: NativeRunnerStartupStep): void {
+export function recordNativeRunnerStartupStep(
+  trace: NativeRunTrace | undefined,
+  step: NativeRunnerStartupStep,
+  target: "local" | "remote" = "local",
+): void {
+  const name = target === "local" ? step.name
+    : step.name === "runner.runtime.stage" ? "runner.launch.prepare"
+      : step.name === "runner.control_plane.open" ? step.name : null;
+  if (!name) return;
   trace?.defer(() => trace.record({
-    name: step.name,
+    name,
     parentName: "runner.session.startup",
     startedAtMs: step.startedAtMs,
     endedAtMs: step.endedAtMs,
     outcome: step.outcome,
-    attributes: { mode: step.mode, target: "local" },
+    attributes: { mode: step.mode, target },
   }));
 }
 

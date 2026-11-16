@@ -21,7 +21,7 @@ async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevis
   const recipes = [...skill.matchAll(/^ {0,3}```json\n([\s\S]*?)^ {0,3}```/gm)].map(match => JSON.parse(match[1]!) as Record<string, unknown>);
   const matches = recipes.filter(recipe => recipe.interactionKind === kind);
   expect(matches, `one executable native ${kind} recipe must ship with the first-task skill`).toHaveLength(1);
-  return JSON.parse(JSON.stringify(matches[0]).replaceAll("<child-title>", "Approved child")
+  return JSON.parse(JSON.stringify(matches[0]).replaceAll("<task-title>", "Approved work")
     .replaceAll("<plan-revision-id>", planRevisionId)) as Record<string, unknown>;
 }
 

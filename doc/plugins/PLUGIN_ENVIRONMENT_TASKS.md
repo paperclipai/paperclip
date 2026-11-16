@@ -69,6 +69,36 @@ authorized project IDs, and optional launch limits. It can also contain a saved
 task ID for session reuse and a typed Codex or Claude credential. Core does not
 supply an executable command or a guest path.
 
+## Configured environment
+
+An agent can have environment variables from its execution environment, its
+own configuration, its project, and its routine. Core resolves secret
+references for each run. It sends the result only to a provider whose
+`description` result has `configuredEnvironmentVersion: 1`. An older provider
+gets no new fields, and the run continues without the variables. Core writes a
+run log line that names the variables it did not set.
+
+- `submit` has `configuredEnvironment`. Set the variables in the Runner's
+  process environment. Add their names to `PAPERCLIP_CONFIGURED_ENV_KEYS`. The
+  Runner then gives them to every provider process.
+- If a variable has the same name as a variable that the provider sets for its
+  own launch, use the provider's value. Do not fail the task.
+- The values are transient secret input. Do not save them in task state, lease
+  metadata, journals, or logs.
+- A retained Runner keeps the environment that it started with. Core includes
+  the values in its process reuse key. When a value changes, Core starts a new
+  task. It does not resume the retained Runner.
+- A session handoff starts a new Runner, so its `resume` has
+  `configuredEnvironment`.
+- A provider that also returns `resumeLaunchInputsVersion: 1` gets
+  `configuredEnvironment` on every `resume`. See "Release and resume".
+
+A driver can declare `protectedEnvironmentKeys` in the manifest. These are the
+variables that the driver always sets on its tasks. Core rejects a protected
+variable in the configuration of an agent or environment that uses the driver.
+In other places, such as a project or routine, Core saves the variable and
+returns a `protected_environment_variable` notice that names the environments.
+
 ## Release and resume
 
 `release` ends Core's active use of an exact, settled Runner session. Core calls
@@ -88,6 +118,28 @@ current claimant run and lease; reject a null `runId`. Verify the source, accoun
 workspace and current authority before installing the ticket or reserving reuse.
 The ticket is bounded transient authentication input, as on submission. Never
 copy its bytes into status, metadata, logs, results or durable replay records.
+
+A provider can return `resumeLaunchInputsVersion: 1` from `describe`. Core then
+adds the launch inputs of `submit` to every `resume`, with the same values and
+rules as on `submit` for the claimant run:
+
+- `credential`, when Core would add `credential` to `submit`. Core resolves it
+  for the claimant run's selected account, so the value can be newer than the
+  credential that started the Runner. When Core has no credential for the task,
+  `resume` has no `credential`.
+- `configuredEnvironment`, when the provider also returns
+  `configuredEnvironmentVersion: 1`.
+
+An older provider gets no new fields. A session handoff keeps its existing
+fields.
+
+- A provider that must start the Runner again to resume the session, for example
+  after it moved the session to a new sandbox or after a reboot, starts the
+  Runner with these inputs, as on `submit`.
+- A provider with a live Runner ignores the fields. The running Runner keeps the
+  credential and environment that it started with.
+- The values are transient secret input, as on `submit`. Do not save them in
+  task state, lease metadata, journals, logs, results or durable replay records.
 
 The `resume` result has a closed `outcome`:
 
@@ -265,6 +317,7 @@ checks. Providers that omit the capability do not support predecessor recovery.
 ## Launch authentication validation
 
 Declare `projectAuthCheckVersion: 1` in `describe` for each native task launch.
+For a new task, Core reads this flag from the same description it uses to set up Runner.
 Core calls `check_project_auth` after preparation and before credential transfer.
 The request names the configuration ID, provider, and authorized project IDs.
 It contains no credential.
@@ -435,3 +488,33 @@ while being read. Return canonical base64, byte size, and a SHA-256 digest in a
 before publishing it. Deliverables additionally verify the caller's expected
 size and digest. Providers without this operation fail closed; Core never falls
 back to reading remote paths on the server. Existing artifact uploads are unchanged.
+
+## Login allocations on an existing computer
+
+A login-capable environment driver can host authorization on a saved agent's
+computer. Core checks the company, environment, agent lifecycle, manifest, and
+live worker hooks before acquisition. Managed AI Connection requests can omit
+the agent ID so Core selects an eligible agent from the company and environment.
+Core uses that ID throughout the login. The chosen agent is a transport target
+and the signed-in account retains its own owner and agent grants.
+
+Core acquires this resource with `purpose: "login"`, the fixed command key, and
+an absolute expiry. The returned lease must attest an expiry no later than that
+deadline. Drivers must declare `creationOperationVersion: 1` and expose the live
+`environmentAcquireLease`, `environmentInspectLease`, and `environmentReleaseLease`
+hooks so Core can acquire, recover, and clean up the allocation.
+Core does not submit a Runner task or mount project volumes.
+The plugin keeps the computer binding in durable lease metadata. PTY close stops
+and detaches the terminal while preserving its result. Lease release/destroy
+removes only the login resources after Core commits the credential or ends the
+attempt. It must preserve the computer and unrelated tasks.
+
+The provider may assign a lease ID different from Core's creation operation ID.
+Inspection by `creationOperation` must return that exact allocation as
+`creationLease`, with its provider ID matching the observation envelope, so a
+lost acquisition reply still reaches the existing cleanup path.
+
+Claude uses the existing setup-token output parser. Codex uses the optional
+`loginPtyReadCredential` hook to read its fixed auth artifact. Both retain the
+existing owner-bound credential completion and durable cleanup. A restart
+interrupts an unfinished login; it does not resume the terminal.

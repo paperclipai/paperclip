@@ -492,6 +492,7 @@ export function resolveHeartbeatRunResponse(input: {
   existingComment?: { id: string; body?: string | null } | null;
   interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
+  nativeConversationFinalResponse?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
    * finalization. Never read this capability from provider/context JSON. */
@@ -536,7 +537,7 @@ export function resolveHeartbeatRunResponse(input: {
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
-  const resolveCompletedUpstreamResponse = () => {
+  const resolveCompletedUpstreamResponse = (allowCompatibility = true) => {
     if (
       explicitProviderFinal &&
       finalAgentText &&
@@ -556,7 +557,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
-    if (adapterFinal) {
+    if (allowCompatibility && adapterFinal) {
       return {
         text: adapterFinal,
         decision: decision("adapter_final_response", {
@@ -567,7 +568,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     if (
-      compatibleTerminalAssistant &&
+      allowCompatibility && compatibleTerminalAssistant &&
       finalAgentText &&
       !isStructuredSemanticResultText(finalAgentText)
     ) {
@@ -613,7 +614,7 @@ export function resolveHeartbeatRunResponse(input: {
       readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
       readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    if (allowCompatibility && legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
         text: legacyText,
         decision: decision("adapter_final_response", {
@@ -678,6 +679,31 @@ export function resolveHeartbeatRunResponse(input: {
   }
 
   const existingText = readCommentText(input.existingComment?.body);
+  if (input.nativeConversationFinalResponse) {
+    if (input.interactionOwnsResponse || (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished)) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_conversation_response"] }),
+    };
+    const final = resolveCompletedUpstreamResponse(false)
+      ?? (input.conversationTurnFinished && compatibleTerminalAssistant && finalAgentText
+        && !isStructuredSemanticResultText(finalAgentText) ? {
+          text: finalAgentText,
+          decision: decision("final_agent_message", { sourceEventId: input.finalAgentMessage?.sourceEventId,
+            commentAction: "create", reasonCodes: ["server_finished_conversation_terminal_message"] }),
+        } : null);
+    if (final) {
+      const reuse = !!input.existingComment && final.text === existingText;
+      return { ...final, decision: { ...final.decision,
+        commentAction: reuse ? "reuse" : "create",
+        commentId: reuse ? input.existingComment!.id : null,
+        reasonCodes: [...final.decision.reasonCodes, "native_conversation_final_precedence"],
+      } };
+    }
+    if (!existingText) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["native_conversation_final_response_unavailable"] }),
+    };
+  }
   if (input.existingComment && existingText) {
     return {
       text: existingText,

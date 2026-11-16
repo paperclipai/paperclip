@@ -54,5 +54,12 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    // Leases that reference one native harness backup root by its scope digest
+    // (backup expiration, retention and session retention checks). Partial:
+    // most leases carry no backup stamp.
+    nativeBackupScopeIdx: index("environment_leases_native_backup_scope_idx")
+      .on(sql`(${table.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256')`)
+      .where(sql`(${table.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256') is not null`)
+      .concurrently(),
   }),
 );

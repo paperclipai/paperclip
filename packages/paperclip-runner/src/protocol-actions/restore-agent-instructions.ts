@@ -25,7 +25,7 @@ export const restoreAgentInstructionsAction = {
   },
   "documentation": {
     "title": "Restore canonical agent instructions",
-    "description": "Append a historical instruction revision as the current content using the current baseRevisionId. Requires the responsible user\u2019s current target edit permission. History remains intact; conflicts require an explicit resolution.",
+    "description": "Append a listed pre-upgrade instruction revision as the current content using the current baseRevisionId. Only revisions returned by get_agent_instruction_history can be restored. Requires the responsible user\u2019s current target edit permission. History remains intact; conflicts require an explicit resolution.",
     "note": null
   },
   "examples": {
@@ -50,7 +50,7 @@ export const restoreAgentInstructionsAction = {
       "operationId": "restore_agent_instructions",
       "version": 1,
       "title": "Restore canonical agent instructions",
-      "description": "Append a historical instruction revision as the current content using the current baseRevisionId. Requires the responsible user\u2019s current target edit permission. History remains intact; conflicts require an explicit resolution.",
+      "description": "Append a listed pre-upgrade instruction revision as the current content using the current baseRevisionId. Only revisions returned by get_agent_instruction_history can be restored. Requires the responsible user\u2019s current target edit permission. History remains intact; conflicts require an explicit resolution.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [

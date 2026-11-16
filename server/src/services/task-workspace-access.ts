@@ -65,17 +65,32 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
 
 export async function assertTaskWorkspaceSourceProjectAccess(
   db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null,
+  options: { taskContainerOnly?: boolean } = {},
 ) {
   if (!projectId) return;
   const decision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decide({
     actor, action: "project:read", resource: { type: "project", companyId, projectId },
   }));
   if (!decision.allowed) {
+    // A person's "My private tasks" project only parks their private tasks. An
+    // issue-level grant exposes the task without its project, so when that
+    // project supplies no workspace files, task access is enough to run it.
+    if (options.taskContainerOnly && decision.reason === "deny_project_private"
+      && await personalProjectHasNoWorkspaceFiles(db, companyId, projectId)) return;
     if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
       throw new ProjectAccessDeniedError(projectId);
     }
     throw forbidden(decision.explanation);
   }
+}
+
+async function personalProjectHasNoWorkspaceFiles(db: Db | DbTransaction, companyId: string, projectId: string) {
+  const [project] = await db.select({ personalOwnerUserId: projects.personalOwnerUserId }).from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)));
+  if (!project?.personalOwnerUserId) return false;
+  const [source] = await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId))).limit(1);
+  return !source;
 }
 
 export async function assertExecutionWorkspaceRecordAccess(
@@ -176,7 +191,10 @@ export async function assertTaskWorkspaceExecutionAccess(
     const selectedProjects = projectIds.length ? await measureRunPhase("workspace.access.projects_read", async () => db.select({ id: projects.id, companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
       .from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))) : [];
     if (selectedProjects.length !== projectIds.length) throw forbidden("Task workspace project is unavailable");
-    for (const projectId of projectIds) await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId);
+    for (const projectId of projectIds) await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId, {
+      // issue:read was authorized above; the containing project gives no files.
+      taskContainerOnly: projectId === task.projectId && projectId !== workspace?.projectId && projectId !== source?.projectId,
+    });
     const sourceProjectId = source?.projectId ?? workspace?.projectId;
     const trust = resolveCoreTrustPreset({ companyId, agent, issue: task,
       project: selectedProjects.find(project => project.id === task.projectId),

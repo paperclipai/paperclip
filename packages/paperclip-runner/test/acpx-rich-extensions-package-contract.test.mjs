@@ -4,12 +4,12 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { acpxInternals, acpxChunkSource } from "./support/acpx-bundle-internals.mjs";
 
 const require = createRequire(import.meta.url);
 const acpxRoot = dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")));
+const { AcpClient } = await acpxInternals(["AcpClient"], acpxRoot);
 const fixture = String.raw`
 const readline = require('node:readline');
 const send = (value) => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\n');
@@ -75,7 +75,8 @@ test("initialize retains mandatory capabilities while merging provider metadata"
     assert.equal(actual.terminal, false);
     assert.deepEqual(actual.elicitation, { form: {} });
     assert.deepEqual(actual._meta["github.com/copilot"], { events: ["session.idle"] });
-    assert.deepEqual(actual._meta.jetbrains.air.capabilities, ["sessionFailure"]);
+    // ACPX adds no metadata of its own; Runner advertises typed AIR failures itself.
+    assert.deepEqual(actual._meta.jetbrains, { removed: true });
   });
 });
 
@@ -138,7 +139,7 @@ test("runtime forwards extension hooks through ephemeral client options", async 
   for (const field of ["clientCapabilities", "extensionMethods", "onExtensionRequest", "onExtensionNotification"]) {
     assert.ok(runtime.includes(`${field}: this.options.${field}`));
   }
-  const implementation = await readFile(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js"), "utf8");
+  const implementation = await acpxChunkSource("serializeSessionRecordForDisk", acpxRoot);
   const serialization = implementation.slice(implementation.indexOf("function serializeSessionRecordForDisk"), implementation.indexOf("function serializeSessionRecordForDisk") + 6000);
   assert.doesNotMatch(serialization, /onExtensionRequest|onExtensionNotification|clientCapabilities|extensionMethods/);
 });

@@ -198,10 +198,21 @@ plugins are selected for all agents, including a sandbox provider that declares
 `requiresAgent: true`.
 
 When an agent moves to such an environment, the host adds the plugin at the next
-`preparing` or `resuming` step. An agent in `ready` cannot move to it until it is
-paused, because the plugin must finish its work before the agent uses that
-environment. An agent in `verifying` returns to `preparing`. An agent that moves away keeps the selection until it is terminated,
+`preparing` or `resuming` step. Moving a `ready` agent to an environment that
+needs a new plugin automatically pauses execution, waits for the host and
+existing plugins to stop, resumes with the new plugin, and verifies the saved
+configuration before admitting work. The change and pause request commit
+together; retries and server restarts retain the pending operation. Manual,
+budget, and company holds still prevent automatic resume. An agent in
+`verifying` returns to `preparing`. An agent that moves away keeps the selection until it is terminated,
 so the plugin keeps its resources until then.
+
+The existing agent configuration permission authorizes this move, including its
+temporary system pause. That permission already controls environment selection
+and resource allocation. Separate permission to issue a manual pause is not
+required for the migration. Configuration and company access checks still run
+before the change; an unauthorized request cannot save the environment or pause
+the agent.
 
 Saving an environment or the instance default that gives such a plugin to `ready`
 or `verifying` agents without that selection returns a conflict. Pause those agents,

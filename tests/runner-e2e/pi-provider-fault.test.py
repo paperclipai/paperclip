@@ -12,6 +12,7 @@ import time
 from types import SimpleNamespace
 import unittest
 import select
+import shlex
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('pi_fault', Path(__file__).with_name('pi-provider-fault.py'))
@@ -241,16 +242,23 @@ class PidfdTests(unittest.TestCase):
             for name in NAMES + [fault.GUARD]:
                 p = distribution / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text('// fixture\n')
             shutil.copyfile(node, distribution / fault.NODE); (distribution / fault.NODE).chmod(0o500)
+            # The synthetic runner root only needs to be a distinct, pinned ELF
+            # that launches the wrapper. Every inspect re-reads and re-hashes it,
+            # so a copied shell keeps calibration from hashing a second Node.
+            shell = os.path.realpath('/bin/sh')
             runner = runtime / 'bin/paperclip-runnerd'
             if runner_link:
                 installed = base / 'preinstalled-runner'
-                shutil.copyfile(node, installed); installed.chmod(0o500)
+                shutil.copyfile(shell, installed); installed.chmod(0o500)
                 runner.symlink_to(installed)
             else:
-                shutil.copyfile(node, runner); runner.chmod(0o500)
+                shutil.copyfile(shell, runner); runner.chmod(0o500)
             ready = workspace / 'child.json'; exited = workspace / 'exit.json'
-            (distribution / fault.ENTRY).write_text('process.title="pi"; require("node:fs").writeFileSync(' + json.dumps(str(ready)) + ',JSON.stringify({pid:process.pid}));setInterval(()=>{},1000);')
-            (distribution / 'pi-entry.cjs').write_text('const p=require("node:child_process").spawn(process.execPath,["--require",' + json.dumps(str(distribution / fault.GUARD)) + ',' + json.dumps(str(distribution / fault.ENTRY)) + '],{stdio:"ignore"});p.on("exit",(code,signal)=>require("node:fs").writeFileSync(' + json.dumps(str(exited)) + ',JSON.stringify({code,signal})));process.on("SIGTERM",()=>{if(p.exitCode!==null||p.signalCode!==null)process.exit(0);p.once("exit",()=>process.exit(0));p.kill("SIGTERM")});setInterval(()=>{},1000);')
+            # Publish by rename so a polling reader never sees a created but
+            # still-empty file.
+            publish = 'const publish=(f,v)=>{const fs=require("node:fs"),t=f+".tmp";fs.writeFileSync(t,JSON.stringify(v));fs.renameSync(t,f)};'
+            (distribution / fault.ENTRY).write_text(publish + 'process.title="pi"; publish(' + json.dumps(str(ready)) + ',{pid:process.pid});setInterval(()=>{},1000);')
+            (distribution / 'pi-entry.cjs').write_text(publish + 'const p=require("node:child_process").spawn(process.execPath,["--require",' + json.dumps(str(distribution / fault.GUARD)) + ',' + json.dumps(str(distribution / fault.ENTRY)) + '],{stdio:"ignore"});p.on("exit",(code,signal)=>publish(' + json.dumps(str(exited)) + ',{code,signal}));process.on("SIGTERM",()=>{if(p.exitCode!==null||p.signalCode!==null)process.exit(0);p.once("exit",()=>process.exit(0));p.kill("SIGTERM")});setInterval(()=>{},1000);')
             entries = []
             for name in sorted(NAMES):
                 p = distribution / name; content = p.read_bytes(); entries.append({'path': name, 'sha256': fault.digest(content), 'size': len(content), 'executable': name == fault.NODE})
@@ -259,16 +267,16 @@ class PidfdTests(unittest.TestCase):
                 for f in files:
                     p = Path(directory) / f; p.chmod(0o500 if p == distribution / fault.NODE else 0o400)
                 Path(directory).chmod(0o500)
-            launch = json.dumps(str(distribution / fault.NODE))
-            setup, stdio, release = '', '"ignore"', ''
+            node_path = shlex.quote(str(distribution / fault.NODE))
+            wrapper = '--require ' + shlex.quote(str(distribution / fault.GUARD)) + ' ' + shlex.quote(str(distribution / 'pi-entry.cjs'))
+            launch = node_path + ' ' + wrapper + ' </dev/null >/dev/null 2>&1'
             if descriptor is not None:
                 # Production nativeBootstrap keeps its executable descriptor
                 # at child FD 3, or FD 7 when lifetime/credential fences exist.
-                setup = 'const fd=require("node:fs").openSync(' + launch + ',"r");'
-                launch = json.dumps(f'/proc/self/fd/{descriptor}')
-                stdio = '[' + ','.join(['"ignore"'] * descriptor + ['fd']) + ']'
-                release = 'require("node:fs").closeSync(fd);'
-            script = base / 'root.cjs'; script.write_text(setup + 'const p=require("node:child_process").spawn(' + launch + ',["--require",' + json.dumps(str(distribution / fault.GUARD)) + ',' + json.dumps(str(distribution / 'pi-entry.cjs')) + '],{stdio:' + stdio + '});' + release + 'process.on("SIGTERM",()=>{if(p.exitCode!==null||p.signalCode!==null)process.exit(0);p.once("exit",()=>process.exit(0));p.kill("SIGTERM")});setInterval(()=>{},1000);')
+                # The redirect opens it for the wrapper child only.
+                launch = f'/proc/self/fd/{descriptor} ' + wrapper + f' </dev/null >/dev/null 2>&1 {descriptor}<' + node_path
+            # On SIGTERM the root cascades to the wrapper and exits once it has.
+            script = base / 'root.sh'; script.write_text('p=\ntrap \'[ -n "$p" ] && kill -TERM "$p" 2>/dev/null; [ -n "$p" ] && wait "$p"; exit 0\' TERM\n' + launch + ' &\np=$!\nwait "$p"\n')
             check_cancelled()
             root_child = subprocess.Popen([str(runtime / 'bin/paperclip-runnerd'), str(script), '--run-id', 'fixture', '--environment-lease-id', 'workspace-id', '--lifecycle-mode', 'per_turn', '--state-dir', str(runtime / 'sessions' / ('a' * 64) / 'runner')], cwd=workspace, env={'PATH': '/usr/bin:/bin'}, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try: owned_fds.append(os.pidfd_open(root_child.pid))

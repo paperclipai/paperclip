@@ -54,6 +54,13 @@ import {
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
+import {
+  compilePolicySelector,
+  indexPoliciesBySelector,
+  listValues,
+  type CompiledPolicySelector,
+  type PolicySelectorIndex,
+} from "./tool-access/policy-selector-index.js";
 
 class RejectedInvocationAdmission extends Error {
   constructor(readonly decision: ToolAccessDecision) {
@@ -61,7 +68,7 @@ class RejectedInvocationAdmission extends Error {
   }
 }
 
-type ToolAccessContext = {
+export type ToolAccessContext = {
   companyId: string;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
@@ -399,12 +406,6 @@ function decision(
   };
 }
 
-function listValues(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-}
-
 function asToolRiskLevel(value: unknown): ToolRiskLevel | null {
   if (
     value === "low"
@@ -420,7 +421,7 @@ function asToolRiskLevel(value: unknown): ToolRiskLevel | null {
   return null;
 }
 
-function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
+export function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
   if (!selector || Object.keys(selector).length === 0) return true;
   const s = selector as Record<string, unknown>;
   // Tool/action names are exact selectors. Glob-looking values are treated as literal names.
@@ -507,7 +508,7 @@ function timeWindowMatches(condition: Record<string, unknown>, now: Date): boole
   return true;
 }
 
-function policyConditions(policy: typeof toolPolicies.$inferSelect): ToolPolicyConditions | null {
+export function policyConditions(policy: typeof toolPolicies.$inferSelect): ToolPolicyConditions | null {
   return isRecord(policy.conditions) && Object.keys(policy.conditions).length > 0
     ? policy.conditions as ToolPolicyConditions
     : null;
@@ -517,7 +518,7 @@ function conditionGroupFail(group: string, reason: string): PolicyConditionEvalu
   return { matched: false, matchedGroups: [], failedGroup: group, reason };
 }
 
-function evaluatePolicyConditions(
+export function evaluatePolicyConditions(
   conditions: ToolPolicyConditions | null | undefined,
   ctx: ToolAccessContext,
   now = new Date(),
@@ -621,6 +622,61 @@ function evaluatePolicyConditions(
   }
 
   return { matched: true, matchedGroups };
+}
+
+type EnabledToolPolicy = {
+  policy: typeof toolPolicies.$inferSelect;
+  selector: CompiledPolicySelector;
+  conditions: ToolPolicyConditions | null;
+  conditionsCheck?: ReturnType<typeof toolPolicyConditionsSchema.safeParse>;
+};
+
+/**
+ * Compiles a company's enabled policies, already in priority and createdAt
+ * order, once per decision batch: selectors are parsed once and policies are
+ * indexed so that each decision checks only the policies that can match it.
+ */
+export function indexEnabledToolPolicies(
+  policies: ReadonlyArray<typeof toolPolicies.$inferSelect>,
+): PolicySelectorIndex<EnabledToolPolicy> {
+  return indexPoliciesBySelector(
+    policies.map((policy) => ({ policy, selector: compilePolicySelector(policy.selectors), conditions: policyConditions(policy) })),
+    (entry) => entry.selector,
+  );
+}
+
+export type EnabledToolPolicyMatch =
+  | { unsupportedConditions: { policy: typeof toolPolicies.$inferSelect; issues: Array<{ path: string; message: string }> } }
+  | { matching: Array<{ policy: typeof toolPolicies.$inferSelect; conditionEvaluation: PolicyConditionEvaluation }> };
+
+/**
+ * The enabled policies that apply to one call, in evaluation order. The first
+ * selected policy with conditions the runtime cannot evaluate wins over every
+ * match, so the caller denies the call.
+ */
+export function matchEnabledToolPolicies(
+  index: PolicySelectorIndex<EnabledToolPolicy>,
+  ctx: ToolAccessContext,
+): EnabledToolPolicyMatch {
+  const selected = index.candidates(ctx).filter((entry) => entry.selector.matches(ctx));
+  for (const entry of selected) {
+    if (!entry.conditions) continue;
+    entry.conditionsCheck ??= toolPolicyConditionsSchema.safeParse(entry.conditions);
+    if (!entry.conditionsCheck.success) {
+      return {
+        unsupportedConditions: {
+          policy: entry.policy,
+          issues: entry.conditionsCheck.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+        },
+      };
+    }
+  }
+  const matching = [];
+  for (const { policy, conditions } of selected) {
+    const conditionEvaluation = evaluatePolicyConditions(conditions, ctx);
+    if (conditionEvaluation.matched) matching.push({ policy, conditionEvaluation });
+  }
+  return { matching };
 }
 
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
@@ -1550,38 +1606,29 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       return !matchingEntries.some((entry) => entry.effect === "exclude")
         && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
     });
-    const policies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () =>
-      db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
-    for (const policy of policies) {
-      const conditions = policyConditions(policy);
-      if (conditions && selectorMatches(policy.selectors, ctx)) {
-        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
-        if (!parsed.success) {
-          return decision(
-            "deny",
-            "deny_policy_block",
-            "Tool access denied because a matching policy uses unsupported runtime conditions.",
-            effectiveProfileIds,
-            [policy.id],
-            {
-              redactionPlan: redaction.redactionPlan,
-              policyExplanation: {
-                policyId: policy.id,
-                policyType: policy.policyType,
-                selectorMatched: true,
-                conditionsError: parsed.error.issues.map((issue) => ({
-                  path: issue.path.join("."),
-                  message: issue.message,
-                })),
-              },
-            },
-          );
-        }
-      }
+    const enabledPolicies = await cachedRead(cache, `enabled-policies:${ctx.companyId}`, async () => indexEnabledToolPolicies(
+      await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt))));
+    const policyMatch = matchEnabledToolPolicies(enabledPolicies, ctx);
+    if ("unsupportedConditions" in policyMatch) {
+      const { policy, issues } = policyMatch.unsupportedConditions;
+      return decision(
+        "deny",
+        "deny_policy_block",
+        "Tool access denied because a matching policy uses unsupported runtime conditions.",
+        effectiveProfileIds,
+        [policy.id],
+        {
+          redactionPlan: redaction.redactionPlan,
+          policyExplanation: {
+            policyId: policy.id,
+            policyType: policy.policyType,
+            selectorMatched: true,
+            conditionsError: issues,
+          },
+        },
+      );
     }
-    const matchingPolicies = policies
-      .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
-      .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+    const matchingPolicies = policyMatch.matching;
     const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {

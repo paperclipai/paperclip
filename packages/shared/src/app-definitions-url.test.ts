@@ -14,6 +14,8 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://workspace.google.com/")?.slug).toBe("google-workspace");
     expect(getAppDefinitionForUrl("https://mcp.neon.tech/mcp")?.slug).toBe("neon");
     expect(getAppDefinitionForUrl("https://app.withgauge.com/mcp")?.slug).toBe("gauge");
+    expect(getAppDefinitionForUrl("https://circleback.ai/api/mcp")?.slug).toBe("circleback");
+    expect(getAppDefinitionForUrl("https://app.circleback.ai/api/mcp")?.slug).toBe("circleback");
     expect(getAppDefinitionForUrl("https://api.dittowords.com/v2/mcp")?.slug).toBe("ditto");
     expect(getAppDefinitionForUrl("https://www.superagent.sh/mcp")?.slug).toBe("superagent");
   });

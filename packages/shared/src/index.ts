@@ -167,30 +167,68 @@ export {
   type ResponsibleUserDenialTone,
 } from "./responsible-user-denial.js";
 export type {
+  AttentionAudience,
+  AttentionAudienceKind,
+  AttentionAudienceReason,
+  AttentionAlreadyClosedDetails,
+  AttentionClaimableSourceKind,
+  AttentionClaimResult,
+  AttentionCloseInput,
+  AttentionCloseMode,
+  AttentionCloseResult,
   AttentionDecisionVerb,
+  AttentionTransferInput,
+  AttentionTransferResult,
   DecisionHistoryItem,
+  DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
+  DecisionHistoryScope,
   DecisionHistoryPage,
+  DecisionHistoryResultOutcome,
+  DecisionHistoryAction,
   AttentionDetailImage,
   AttentionFeed,
   AttentionSummary,
   AttentionTaskIndex,
+  AttentionFeedView,
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
+  AttentionPersonalView,
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
+  AttentionStale,
+  AttentionStaleReason,
+  AttentionHandledDetails,
+  AttentionReceipt,
+  AttentionRequester,
+  AttentionCardKind,
+  AttentionCardType,
+  AttentionRequestKind,
+  AttentionReceiptOutcome,
   AttentionSubject,
   AttentionSubjectKind,
   AttentionTriageAttribution,
+  AttentionViewCounts,
   AttentionWorkspaceRef,
 } from "./types/attention.js";
-export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export {
+  ATTENTION_CLAIMABLE_SOURCE_KINDS,
+  attentionCardKind,
+  attentionCardType,
+  ATTENTION_CLOSE_MODES,
+  ATTENTION_PERSONAL_VIEWS,
+  ATTENTION_RECEIPT_DAYS,
+  ATTENTION_RECEIPT_OUTCOMES,
+  ATTENTION_SOURCE_KINDS,
+  DECISION_HISTORY_OUTCOME_FILTERS,
+  DECISION_HISTORY_SCOPES,
+} from "./types/attention.js";
 export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {
   DecisionQueue,
@@ -368,6 +406,7 @@ export {
   ISSUE_STATUSES,
   ISSUE_DISPLAY_STATUSES,
   ISSUE_SUMMARIES_MAX_IDS,
+  ISSUE_CHAT_BOOTSTRAP_MAX_IDS,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
@@ -943,6 +982,7 @@ export type {
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectEnvironmentOptions,
   ProjectGitAuthorization,
   ProjectCodebase,
   ProjectCodebaseOrigin,
@@ -1152,6 +1192,8 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueRecentComments,
+  IssueChatBootstrap,
+  IssueChatBootstrapItem,
   IssueQueuedCommentEntry,
   IssueQueuedCommentProtocol,
   IssueQueuedCommentQueue,
@@ -1416,6 +1458,9 @@ export type {
   RejectSecretProposalInput,
   ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  MachineSignInPublicKey,
+  MachineSignInStatus,
+  MachineSignInSetupResult,
   ToolAppMetadataPreflightAttempt,
   ToolAppMetadataPreflightResult,
   ToolOAuthClientRegistrationSource,
@@ -1559,6 +1604,8 @@ export type {
   ToolApplication,
   ToolConnection,
   ToolCatalogEntry,
+  ProviderToolIconEntry,
+  ProviderToolIconsResponse,
   ToolRuntimeSlot,
   ToolConnectionHealthCheckResult,
   ToolCatalogRefreshResult,
@@ -1973,6 +2020,7 @@ export {
   type CompanySearchQuery,
   createIssueSchema,
   issueSummariesQuerySchema,
+  issueChatBootstrapQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -2000,6 +2048,7 @@ export {
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
   confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
@@ -2153,6 +2202,7 @@ export {
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
@@ -2160,8 +2210,13 @@ export {
   type ResolveBudgetIncident,
   type ResolveApproval,
   type RequestApprovalRevision,
+  type CancelApproval,
   type ResubmitApproval,
   type AddApprovalComment,
+  attentionCloseSchema,
+  attentionTransferSchema,
+  type AttentionClose,
+  type AttentionTransfer,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -2250,6 +2305,15 @@ export {
   genericMcpOAuthClientSchema,
   type GenericMcpAuthMode,
   type GenericMcpOAuthClient,
+  MACHINE_SIGN_IN_METHODS,
+  machineSignInMethodSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
+  type MachineSignInMethod,
+  type CreateMachineSignIn,
+  type TestMachineSignIn,
+  type RotateMachineSignIn,
   reconnectToolAppSchema,
   createToolApplicationSchema,
   finishToolAppSchema,
@@ -2369,11 +2433,14 @@ export {
   createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
+  browserTracingConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCostEvent,
@@ -2392,6 +2459,7 @@ export {
   type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
+  type BrowserTracingConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
@@ -2619,6 +2687,7 @@ export {
 export {
   adapterSupportsRemoteManagedEnvironments,
   getEnvironmentCapabilities,
+  environmentSupportsLoginPty,
   getAdapterEnvironmentSupport,
   isEnvironmentDriverSupportedForAdapter,
   isSandboxProviderSupportedForAdapter,
@@ -2797,13 +2866,14 @@ export {
 } from "./runtime-exposure/loopback-bind.js";
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
 export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
-export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker, TaskInterruptionPresentation } from "./types/execution-projection.js";
+export type { ExecutionAgentQueue, ExecutionProjection, ExecutionReconciliation, ExecutionBlocker, TaskInterruptionPresentation } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
 export * from "./types/voice-sessions.js";
 export * from "./validators/voice-sessions.js";
 
 export * from "./agent-appearance.js";
+export * from "./attention-audience.js";
 export * from "./ai-connections.js";
 export * from "./ai-connection-router.js";
 export * from "./ai-connection-usage.js";
@@ -2883,7 +2953,7 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
-export { updateWorkspacePreferenceSchema, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
+export { isValidIanaTimeZone, updateWorkspacePreferenceSchema, WORKSPACE_PREFERENCE_TIME_ZONE_MAX_LENGTH, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
 export {
   remoteWorkspaceSourceSchema,
@@ -2900,7 +2970,14 @@ export { readProviderFailure, type ProviderFailure } from "./provider-failure.ge
 export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
 export { readBoardBootstrap } from "./board-bootstrap.js";
 export * from "./provider-rate-limits.js";
+export * from "./agent-interaction-permissions.js";
+export * from "./run-failure-cause.js";
 export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
+export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export * from "./mcp-apps.js";
+export * from "./tool-call-progress.js";
+export * from "./mcp-skills.js";
+export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";

@@ -160,7 +160,6 @@ export async function migrateRunEvidence(
       let writer: Awaited<ReturnType<typeof journal.claim>> | null = null;
       try { writer = options.apply
         ? await journal.claim({
-            expectedOwner: (await journal.head(options.signal))?.head.owner ?? null,
             signal: options.signal,
             assertAuthority: async () => {
               if (scopedArchive)

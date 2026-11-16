@@ -63,6 +63,7 @@ const mockBuiltInAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
+  decideReads: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(),
   ensureMembership: vi.fn(),
@@ -1370,7 +1371,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "agent-admin-user", responsibleUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "agent-admin-user", responsibleUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -1500,7 +1501,7 @@ describe("agent permission routes", () => {
           },
         },
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1537,7 +1538,7 @@ describe("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1576,7 +1577,7 @@ describe("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1618,6 +1619,8 @@ describe("agent permission routes", () => {
       {
         runnerResolved: true,
         aiConnectionInstall: undefined,
+        createdByAgentId: null,
+        interactionTexts: [expect.any(String)],
         createdByUserId: "board-user", responsibleUserId: "board-user",
         claudeLogin: {
           storedSessionId: null,
@@ -1992,7 +1995,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
-      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -2079,7 +2082,7 @@ describe("agent permission routes", () => {
           adapterType: expectedAdapterType,
           defaultEnvironmentId: environmentId,
         }),
-        { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+        { runnerResolved: true, aiConnectionInstall: undefined, createdByAgentId: null, interactionTexts: [expect.any(String)], createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
       if (["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType)) {
         if (adapterCase.adapterType === "codex_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "codex" });
@@ -2303,7 +2306,7 @@ describe("agent permission routes", () => {
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
       canCreateAgents: false,
       canAssignTasks: true,
-    });
+    }, { actorAgentId: null });
     expect(res.body.permissions.canCreateSkills).toBe(false);
   });
 
@@ -2344,7 +2347,7 @@ describe("agent permission routes", () => {
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
       canCreateAgents: false,
       ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "board-user", at: expect.any(String) }),
-    }));
+    }), { actorAgentId: null });
 
     // The toggle is authoritative: turning it off also removes an explicit agents:create grant.
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(companyId, "agent", agentId, "agents:create", false, null);
@@ -2357,7 +2360,7 @@ describe("agent permission routes", () => {
       .send({ canCreateAgents: false, canAssignTasks: true, trustPreset: "standard" }));
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
       trustPreset: "standard", canCreateAgents: false, ceoHiringDeniedBy: expect.objectContaining({ actorId: "board-user" }),
-    }));
+    }), { actorAgentId: null });
 
     // An earlier record is kept rather than restamped.
     const earlier = { actorType: "user", actorId: "first-board-user", at: "2026-11-01T00:00:00.000Z" };
@@ -2366,7 +2369,7 @@ describe("agent permission routes", () => {
     await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
       .send({ canCreateAgents: false, canCreateSkills: false, canAssignTasks: true }));
-    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ ceoHiringDeniedBy: earlier }));
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ ceoHiringDeniedBy: earlier }), { actorAgentId: null });
 
     // Other roles get no record.
     mockAgentService.updatePermissions.mockClear();
@@ -2374,7 +2377,7 @@ describe("agent permission routes", () => {
     await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
       .send({ canCreateAgents: false, canAssignTasks: true }));
-    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true });
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true }, { actorAgentId: null });
   });
 
   it("rejects CEO permission updates outside the caller company scope", async () => {
@@ -2398,6 +2401,29 @@ describe("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
+  it("returns only the inbox mine rows the agent may read", async () => {
+    mockIssueService.list.mockResolvedValue([
+      { id: "issue-open", companyId, identifier: "PAP-1", title: "Readable", status: "todo" },
+      { id: "issue-denied", companyId, identifier: "PAP-2", title: "Not readable", status: "todo" },
+    ]);
+    mockAccessService.decideReads.mockResolvedValue([{ allowed: true }, { allowed: false }]);
+    const app = await createApp({ type: "agent", agentId, companyId, runId: "run-1", source: "agent_key" });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .get("/api/agents/me/inbox/mine")
+      .query({ userId: "board-user" }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((row: { id: string }) => row.id)).toEqual(["issue-open"]);
+    expect(mockAccessService.decideReads).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "agent", agentId }),
+      [
+        expect.objectContaining({ type: "issue", companyId, issueId: "issue-open" }),
+        expect.objectContaining({ type: "issue", companyId, issueId: "issue-denied" }),
+      ],
+    );
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -2407,6 +2433,7 @@ describe("agent permission routes", () => {
         status: "todo",
       },
     ]);
+    mockAccessService.decideReads.mockResolvedValue([{ allowed: true }]);
 
     const app = await createApp({
       type: "agent",
@@ -2430,6 +2457,7 @@ describe("agent permission routes", () => {
       },
     ]);
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      readCondition: expect.anything(),
       touchedByUserId: "board-user",
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",

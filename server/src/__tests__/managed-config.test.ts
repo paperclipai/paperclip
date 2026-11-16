@@ -470,6 +470,16 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
     expect(config?.pluginEnvironments[0]?.description).toBeUndefined();
   });
 
+  it.each(["warm", "per_turn"])("parses the %s plugin Runner lifecycle mode", runnerLifecycleMode => {
+    const config = parseManagedConfigEnv(docWith([remoteHost({ runnerLifecycleMode })]));
+    expect(config?.pluginEnvironments[0]?.runnerLifecycleMode).toBe(runnerLifecycleMode);
+  });
+
+  it("rejects an unsupported plugin Runner lifecycle mode", () => {
+    expect(() => parseManagedConfigEnv(docWith([remoteHost({ runnerLifecycleMode: "inherit" })])))
+      .toThrow(/"environments\[0\].runnerLifecycleMode" must be "warm" or "per_turn"/);
+  });
+
   it("does not compare the manifest id with autoInstall catalog keys (boot checks the catalog)", () => {
     expect(parseManagedConfigEnv(docWith([remoteHost()]))?.pluginEnvironments[0]?.pluginKey).toBe(PLUGIN_KEY);
   });

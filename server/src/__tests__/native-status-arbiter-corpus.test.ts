@@ -2313,6 +2313,19 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       return { promise, release };
     }
 
+    it.each(["legacy", "source agent", "different agent"] as const)("retires only proven fallback reviews attributed to %s", async attribution => {
+      const created = await seedReview();
+      const creator = attribution === "legacy" ? null : attribution === "source agent" ? agentId : outsideAgentId;
+      await db.update(issueThreadInteractions).set({ createdByAgentId: creator })
+        .where(eq(issueThreadInteractions.id, created.interaction.id));
+      await start(); await flush();
+      expect(await card(created.interaction.id)).toMatchObject({
+        createdByAgentId: creator,
+        status: attribution === "different agent" ? "pending" : "cancelled",
+      });
+      await quiet();
+    });
+
     it("leaves genuine pending reviews and completed history quiet", async () => {
       const genuine = await seedReview({ genuine: true });
       const settled = await seedReview();
@@ -3861,11 +3874,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     ]);
   });
 
-  it("binds a tools-refresh continuation to its existing durable wake without a duplicate", async () => {
+  it.each([
+    ["tools-refresh", (runId: string) => `connection-intent:tools:${runId}:fixture-digest`],
+    ["tool-call-loop", (runId: string) => `agent_tool_call_loop:${runId}`],
+  ] as const)("binds a %s continuation to its existing durable wake without a duplicate", async (name, keyFor) => {
     const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
-    const fixture = { ...template, id: "in-feed-tools-refresh", given: { ...template.given, priorIssueStatus: "in_progress" } };
+    const fixture = { ...template, id: `in-feed-${name}`, given: { ...template.given, priorIssueStatus: "in_progress" } };
     const seeded = await seedFixture(fixture);
-    const key = `connection-intent:tools:${seeded.runId}:fixture-digest`;
+    const key = keyFor(seeded.runId);
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "queued", idempotencyKey: key,
       payload: { issueId: seeded.issueId, mutation: "connection_tools_refreshed" } }).returning();
     const decision: NativeStatusDecision = { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_progress", toStatus: "in_progress",

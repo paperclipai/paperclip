@@ -327,6 +327,12 @@ pub trait CommandExecutor {
         Ok(())
     }
 
+    /// The cause of a provider restart after a turn that failed and was
+    /// recovered, once; recorded as a runner diagnostic.
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        None
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
@@ -379,6 +385,10 @@ pub trait CommandExecutor {
     /// from their durable owner; terminal observation precedes deadline expiry.
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
         Ok(())
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        false
     }
 
     /// Removes the prefix returned by `poll_events` after every event in that
@@ -720,7 +730,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                next_connection_attempt = Instant::now() + config.reconnect_delay;
+                next_connection_attempt =
+                    Instant::now() + endpoint.retry_delay(config.reconnect_delay);
                 continue;
             }
             Err(error) => {
@@ -739,7 +750,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 }
                 next_connection_attempt = Instant::now()
                     + reconnect_delay(
-                        config.reconnect_delay,
+                        endpoint.retry_delay(config.reconnect_delay),
                         connect_deadline.saturating_duration_since(Instant::now()),
                         &mut reconnect_attempt,
                     );
@@ -893,6 +904,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             notifications.poll(&config, &mut state, &store);
         }
         let mut sent_source_seq = state.acked_source_seq;
+        let replayed_through_source_seq = state.highest_source_seq();
         let mut ack_persistence = CumulativeAckPersistence::default();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
@@ -1044,11 +1056,13 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     .map(|credential| credential.expires_at_unix_ms),
             );
             next_connection_attempt = Instant::now()
-                + config
-                    .reconnect_delay
+                + endpoint
+                    .retry_delay(config.reconnect_delay)
                     .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
+        let mut control_frame_consumed = false;
+        let mut quiet_through_source_seq = replayed_through_source_seq;
         loop {
             if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
@@ -1147,7 +1161,19 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     }
                 }
             }
-            let control_message = transport.receive_json();
+            let control_message = if control_frame_consumed
+                && state.highest_source_seq() > quiet_through_source_seq
+                && executor.provider_poll_is_live()
+            {
+                transport.receive_queued_json()
+            } else {
+                transport.receive_json()
+            };
+            control_frame_consumed = matches!(control_message, Ok(Some(_)));
+            let source_seq_before_poll = state.highest_source_seq();
+            let polls_provider = matches!(control_message, Ok(None))
+                && state.pending_provider_cleanup.is_none()
+                && state.acked_source_seq >= sent_source_seq;
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,
@@ -1156,6 +1182,9 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 sent_source_seq,
                 &control_message,
             )?;
+            if polls_provider {
+                quiet_through_source_seq = source_seq_before_poll;
+            }
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -1391,8 +1420,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 .map(|credential| credential.expires_at_unix_ms),
         );
         next_connection_attempt = Instant::now()
-            + config
-                .reconnect_delay
+            + endpoint
+                .retry_delay(config.reconnect_delay)
                 .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
 }
@@ -1724,13 +1753,18 @@ fn wait_for_terminal_result_ack(
                             "terminal command result acknowledgement payload is required",
                         )
                     })?;
+                // The controller acknowledges the status it received. An
+                // indeterminate journal entry travels as `failed`, so either
+                // spelling names this exact receipt.
+                let status = payload.get("status").and_then(Value::as_str);
                 if payload.get("commandId").and_then(Value::as_str)
                     != Some(result.command_id.as_str())
                     || payload.get("commandType").and_then(Value::as_str)
                         != Some(result.command_type.as_str())
                     || payload.get("controllerSeq").and_then(Value::as_u64)
                         != Some(result.controller_seq)
-                    || payload.get("status").and_then(Value::as_str) != Some(result.status.as_str())
+                    || (status != Some(result.status.as_str())
+                        && status != Some(wire_command_status(result)))
                 {
                     return Err(DurableRunnerError::invalid(
                         "terminal command result acknowledgement changed its durable identity",
@@ -2175,6 +2209,10 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     poll_executor_events(state, store, config, executor)?;
     if state.acked_source_seq >= state.highest_source_seq() {
         executor.prepare_next_turn()?;
+        if let Some(failure) = executor.take_turn_end_restart_failure() {
+            state.record_diagnostic(format!("turn-end provider restart failed: {failure}"));
+            store.save(state)?;
+        }
     }
     Ok(())
 }
@@ -2519,18 +2557,24 @@ fn send_outbox(
     Ok(())
 }
 
+/// "indeterminate" is an internal crash-recovery journal state. On the wire it
+/// is a failed command with the preserved execution_indeterminate reason so the
+/// controller can settle the command and continue replay.
+fn wire_command_status(result: &StoredCommandResult) -> &str {
+    if result.status == "indeterminate" {
+        "failed"
+    } else {
+        result.status.as_str()
+    }
+}
+
 fn command_result_envelope(
     state: &DurableState,
     result: &StoredCommandResult,
     protocol_version: u64,
 ) -> Value {
     let mut payload = json!(result);
-    // "indeterminate" is an internal crash-recovery journal state. On the
-    // wire it is a failed command with the preserved execution_indeterminate
-    // reason so the controller can settle the command and continue replay.
-    if result.status == "indeterminate" {
-        payload["status"] = json!("failed");
-    }
+    payload["status"] = json!(wire_command_status(result));
     json!({
         "protocol": PROTOCOL,
         "version": protocol_version,
@@ -3043,6 +3087,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 

@@ -131,6 +131,17 @@ describe("agent lifecycle commands", () => {
     ]);
   });
 
+  it("grants and revokes one permission without replacing the grant list", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    await run(["agent", "permission:grant", AGENT_ID, "commentary:view"]);
+    await run(["agent", "permission:revoke", AGENT_ID, "commentary:view"]);
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, JSON.parse(call[1]?.body)])).toEqual([
+      [`http://localhost:3100/api/agents/${AGENT_ID}/permission-grants`, "PATCH", { permissionKey: "commentary:view", enabled: true }],
+      [`http://localhost:3100/api/agents/${AGENT_ID}/permission-grants`, "PATCH", { permissionKey: "commentary:view", enabled: false }],
+    ]);
+  });
+
   it("refuses to delete an instructions file without confirmation", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);

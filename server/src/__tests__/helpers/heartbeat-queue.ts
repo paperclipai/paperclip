@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { vi, type Mock, type Mocked } from "vitest";
 import { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import type { createWakeQueue } from "../../modules/wake-queue/index.js";
@@ -9,7 +9,7 @@ import { createHeartbeatRunPreparation } from "../../services/heartbeat/run-prep
 import type { HeartbeatQueueDependencies } from "../../services/heartbeat/queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
-type MockedCallback = "getAgent" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" | "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects" | "getSchedulingSuppression" | "canStartNewExternalBotWork" | "executeRun" | "applyWakeQueuePostCommitEffects" | "releaseIssueExecutionAndPromote" | "publishRunLifecyclePluginEvent" | "cancelRunInternal" | "cancelActiveForAgentInternal" | "resumeExecutionWaitComments" | "resumeQueuedCommentInterrupt" | "resumeSavedLegacyComments" | "sweepPendingCleanupLeases";
+type MockedCallback = "getAgent" | "setRunStatusFromLive" | "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" | "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects" | "getSchedulingSuppression" | "canStartNewExternalBotWork" | "executeRun" | "applyWakeQueuePostCommitEffects" | "releaseIssueExecutionAndPromote" | "publishRunLifecyclePluginEvent" | "cancelRunInternal" | "cancelActiveForAgentInternal" | "resumeExecutionWaitComments" | "resumeQueuedCommentInterrupt" | "resumeSavedLegacyComments" | "sweepPendingCleanupLeases";
 type QueueTestDependencies = HeartbeatQueueDependencies & { [K in MockedCallback]: Mock<HeartbeatQueueDependencies[K]> } & {
   issuesSvc: Mocked<HeartbeatQueueDependencies["issuesSvc"]>;
   treeControlSvc: Mocked<HeartbeatQueueDependencies["treeControlSvc"]>;
@@ -27,8 +27,14 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     ...state,
     getAgent: vi.fn<HeartbeatQueueDependencies["getAgent"]>(async () => { throw new Error("Unexpected agent lookup"); }),
     options: {},
-    setRunStatus: vi.fn<HeartbeatQueueDependencies["setRunStatus"]>(async (id, status, patch) =>
-      db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning().then(rows => rows[0] ?? null)),
+    // Same compare-and-set contract as the run lifecycle: write only from one of fromStatuses.
+    setRunStatusFromLive: vi.fn<HeartbeatQueueDependencies["setRunStatusFromLive"]>(async (id, status, fromStatuses, patch, _report, condition) => {
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status })
+        .where(and(eq(heartbeatRuns.id, id), inArray(heartbeatRuns.status, fromStatuses), ...(condition ? [condition] : []))).returning();
+      if (updated) return { run: updated, updated: true as const };
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
+      return { run: current ?? null, updated: false as const };
+    }),
     setWakeupStatus: vi.fn<HeartbeatQueueDependencies["setWakeupStatus"]>(async () => undefined),
     appendRunEvent: vi.fn<HeartbeatQueueDependencies["appendRunEvent"]>(async () => undefined),
     finalizeAgentStatus: vi.fn<HeartbeatQueueDependencies["finalizeAgentStatus"]>(async () => undefined),
