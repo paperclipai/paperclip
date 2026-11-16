@@ -21,3 +21,13 @@ describe("buildDistillLocalConfig", () => {
     });
   });
 });
+
+describe("buildDistillLocalConfig distill settings", () => {
+  it("copies execution mode, worker and variant choices from the create form", () => {
+    const ac = buildDistillLocalConfig({
+      adapterSchemaValues: { mode: "normal", workerModel: "glm-5.3", workerEffort: "low", mainVariant: "nitro", workerVariant: "" },
+    } as never);
+    expect(ac).toMatchObject({ mode: "normal", workerModel: "glm-5.3", workerEffort: "low", mainVariant: "nitro" });
+    expect(ac).not.toHaveProperty("workerVariant");
+  });
+});

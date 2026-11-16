@@ -34,7 +34,7 @@ import {
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { DEFAULT_DISTILL_LOCAL_MODEL, type as adapterType } from "../index.js";
+import { DEFAULT_DISTILL_LOCAL_MODEL, NO_WORKER_MODEL, type as adapterType } from "../index.js";
 import { isDistillUnknownSessionError, parseDistillJsonl, type ParsedDistillRun } from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -167,6 +167,45 @@ function wakeEnv(context: Record<string, unknown>): Record<string, string> {
   return env;
 }
 
+export interface DistillConfigOverlayInput {
+  workerModel: string;
+  workerEffort: string;
+  mainVariant: string;
+  workerVariant: string;
+  /** GROK_CONFIG already present in the run env (for example from the agent's env config). */
+  existing?: string;
+}
+
+/**
+ * Builds the per-run `GROK_CONFIG` overlay for Distill settings that have no CLI flag.
+ * Distill deep-merges it over `config.toml`; keys already in `existing` are kept.
+ * Returns null when nothing is set so the host config applies unchanged.
+ */
+export function buildDistillConfigOverlay({
+  workerModel,
+  workerEffort,
+  mainVariant,
+  workerVariant,
+  existing,
+}: DistillConfigOverlayInput): string | null {
+  const models: Record<string, string> = {};
+  if (workerModel) models.worker = workerModel === NO_WORKER_MODEL ? "" : workerModel;
+  if (workerEffort) models.worker_effort = workerEffort;
+  if (mainVariant) models.main_variant = mainVariant;
+  if (workerVariant) models.worker_variant = workerVariant;
+  if (Object.keys(models).length === 0) return null;
+  let base: Record<string, unknown> = {};
+  if (existing) {
+    try {
+      const parsed: unknown = JSON.parse(existing);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) base = parsed as Record<string, unknown>;
+    } catch {
+      // Distill ignores a malformed overlay too; replace it.
+    }
+  }
+  return JSON.stringify({ ...base, models: { ...parseObject(base.models), ...models } });
+}
+
 export interface BuildDistillArgsInput {
   cwd: string;
   resumeSessionId: string | null;
@@ -232,6 +271,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, DEFAULT_DISTILL_LOCAL_MODEL).trim() || DEFAULT_DISTILL_LOCAL_MODEL;
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const mode = asString(config.mode, "").trim();
+  const workerModel = asString(config.workerModel, "").trim();
+  const workerEffort = asString(config.workerEffort, "").trim();
+  const mainVariant = asString(config.mainVariant, "").trim();
+  const workerVariant = asString(config.workerVariant, "").trim();
   const permissionMode = asString(config.permissionMode, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
@@ -282,6 +325,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     if (authToken) env.PAPERCLIP_API_KEY = authToken;
     if (trustWorkspace && env.GROK_FOLDER_TRUST === undefined) env.GROK_FOLDER_TRUST = "0";
+    const configOverlay = buildDistillConfigOverlay({
+      workerModel,
+      workerEffort,
+      mainVariant,
+      workerVariant,
+      existing: env.GROK_CONFIG,
+    });
+    if (configOverlay) env.GROK_CONFIG = configOverlay;
 
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
@@ -308,6 +359,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model === "auto") commandNotes.push("Model \"auto\" lets Distill route across its saved accounts.");
     if (alwaysApprove) commandNotes.push("Added --always-approve for unattended execution.");
     if (trustWorkspace) commandNotes.push("Set GROK_FOLDER_TRUST=0 so Distill loads workspace instructions and skills.");
+    if (configOverlay) commandNotes.push(`Distill config overlay (GROK_CONFIG): ${configOverlay}`);
     if (staged.stagedInstructionsPath) commandNotes.push(`Staged project instructions at ${staged.stagedInstructionsPath}.`);
     if (staged.inlineInstructions) commandNotes.push(`Included ${instructionsFilePath} in the prompt.`);
     if (staged.stagedSkillsCount > 0) commandNotes.push(`Staged ${staged.stagedSkillsCount} Paperclip skill(s) into .claude/skills.`);

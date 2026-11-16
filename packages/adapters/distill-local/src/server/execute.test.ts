@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDistillArgs } from "./execute.js";
+import { buildDistillArgs, buildDistillConfigOverlay } from "./execute.js";
 
 const base = {
   cwd: "/w",
@@ -50,5 +50,40 @@ describe("buildDistillArgs", () => {
     ]) {
       expect(joined).toContain(part);
     }
+  });
+});
+
+describe("buildDistillConfigOverlay", () => {
+  const empty = { workerModel: "", workerEffort: "", mainVariant: "", workerVariant: "" };
+
+  it("returns null when nothing is set so the host config.toml applies unchanged", () => {
+    expect(buildDistillConfigOverlay(empty)).toBeNull();
+  });
+
+  it("maps worker and variant settings to Distill [models] keys", () => {
+    expect(
+      JSON.parse(
+        buildDistillConfigOverlay({
+          workerModel: "deepseek-v4.1-flash-eco",
+          workerEffort: "low",
+          mainVariant: "nitro",
+          workerVariant: "floor",
+        })!,
+      ),
+    ).toEqual({
+      models: { worker: "deepseek-v4.1-flash-eco", worker_effort: "low", main_variant: "nitro", worker_variant: "floor" },
+    });
+  });
+
+  it("disables the worker with an empty string, which Distill reads as main model does all the work", () => {
+    expect(JSON.parse(buildDistillConfigOverlay({ ...empty, workerModel: "none" })!).models.worker).toBe("");
+  });
+
+  it("merges into an existing GROK_CONFIG instead of dropping its other keys", () => {
+    const existing = JSON.stringify({ features: { web_fetch: true }, models: { default_reasoning_effort: "high" } });
+    expect(JSON.parse(buildDistillConfigOverlay({ ...empty, workerModel: "glm-5.3", existing })!)).toEqual({
+      features: { web_fetch: true },
+      models: { default_reasoning_effort: "high", worker: "glm-5.3" },
+    });
   });
 });

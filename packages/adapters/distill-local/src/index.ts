@@ -9,6 +9,10 @@ export const models = [
 ];
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const EXECUTION_MODES = ["auto", "normal", "ultrafast", "ultracode", "ultrasave"];
+/** OpenRouter routing suffixes Distill accepts for `[models].main_variant` / `worker_variant`. */
+export const OPENROUTER_VARIANTS = ["floor", "nitro", "exacto", "none"];
+/** workerModel value that disables the worker so the main model does all the work. */
+export const NO_WORKER_MODEL = "none";
 
 export const agentConfigurationDoc = `# distill_local agent configuration
 
@@ -30,6 +34,9 @@ Core fields:
 - model (string, optional): Distill model id. Defaults to "auto", which routes across the saved accounts by remaining quota. Any id printed by \`distill models\` works.
 - reasoningEffort (string, optional): passed via \`--reasoning-effort\` (none|minimal|low|medium|high|xhigh|max; support depends on the model)
 - mode (string, optional): Distill execution mode via \`--mode\` (auto|normal|ultrafast|ultracode|ultrasave)
+- workerModel (string, optional): model that runs the subagents the main model delegates (Distill \`[models].worker\`). Empty inherits the host's Distill config; "none" disables the worker so the main model does all the work. Ignored by Distill when model is "auto", which routes the worker too.
+- workerEffort (string, optional): worker effort (Distill \`[models].worker_effort\`): "auto" or a level the worker model offers
+- mainVariant / workerVariant (string, optional): OpenRouter routing suffix for the main / worker model (floor|nitro|exacto|none)
 - maxTurns (number, optional): maximum agent turns for the run
 - permissionMode (string, optional): passed via \`--permission-mode\`; unset by default
 - alwaysApprove (boolean, optional): adds \`--always-approve\` so unattended runs never wait for approval. Default true.
@@ -45,6 +52,7 @@ Operational fields:
 
 Notes:
 - Runs use \`distill --single\` with \`--output-format streaming-json\`.
+- Worker and OpenRouter variant settings have no CLI flag; they travel per run in the \`GROK_CONFIG\` config overlay and never write the host's \`config.toml\`.
 - Accounts and models come from the Distill home of the user running Paperclip (\`~/.distill\`). Use \`distill accounts list\` and \`distill models\` on the host to inspect them.
 - Paperclip stages desired runtime skills into \`.claude/skills\` inside the workspace so Distill discovers them as project skills.
 `;

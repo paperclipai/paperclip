@@ -29,6 +29,9 @@ The `distill_local` adapter runs the Distill coding agent CLI (`distill`) on the
 | `command` | string | No | CLI command override. Defaults to `distill`. |
 | `extraArgs` | string[] | No | Additional CLI arguments appended to every run |
 | `env` | object | No | Environment variables, for example `DISTILL_HOME` or provider API keys (supports secret refs) |
+| `workerModel` | string | No | Model for subagents the main model delegates. Empty uses the host Distill config; `none` disables the worker. Ignored when `model` is `auto` |
+| `workerEffort` | string | No | Worker effort: `auto` or a level the worker model offers |
+| `mainVariant` / `workerVariant` | string | No | OpenRouter routing suffix for the main / worker model (`floor`, `nitro`, `exacto`, `none`) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill. Default 20. |
 
@@ -37,6 +40,10 @@ The `distill_local` adapter runs the Distill coding agent CLI (`distill`) on the
 Each run executes `distill --cwd <dir> --output-format streaming-json --model <model> --single <prompt>`. When a session exists for the same working directory, the adapter adds `--resume <sessionId>`. If Distill reports that the session no longer exists, the adapter starts a fresh session and clears the saved one.
 
 The adapter reads the `streaming-json` event stream. Token usage comes from the final `end` event. Distill reports Anthropic-style usage, so cache reads are kept separate from input tokens. With `model: auto`, the run reports the model that used the most tokens, not the routing classifier.
+
+## Worker Model and Variants
+
+Distill has no CLI flag for the worker model or OpenRouter variants. Paperclip passes them per run in the `GROK_CONFIG` overlay, merged with any `GROK_CONFIG` from the agent's environment. The host `config.toml` is never written. The worker only runs in execution modes that allow delegation, such as `normal`.
 
 ## Instructions and Skills
 
