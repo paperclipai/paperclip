@@ -1,3 +1,5 @@
+import { classifyClaudeTerminalSessionFailure } from "@paperclipai/adapter-claude-local/server";
+import { logger } from "../../middleware/logger.js";
 import { and, eq } from "drizzle-orm";
 import { companySecrets, type Db } from "@paperclipai/db";
 import type { AiConnectionRouterSelection } from "@paperclipai/shared";
@@ -6,8 +8,8 @@ import { quotaIdentityFromSessionSnapshot } from "../ai-connection-router.js";
 import { POOL_ACCOUNT_DEFAULT_COOLDOWN_MS } from "../ai-connection-pool-cooldown.js";
 
 type Scope = { companyId: string; agentId: string; userId: string | null;
-  selection: AiConnectionRouterSelection; credentialIdentity: string | undefined };
-export type LegacyPoolAccountProof = { secretId: string; epoch: number; version: number; retryAt: Date; providerEvidence: "anthropic_oauth_usage_v1" | "codex_wham_v1" | "saved_account_http_401_v1" };
+  selection: AiConnectionRouterSelection; credentialIdentity: string | undefined; terminalQuotaFailure?: { category: string; title: string } };
+export type LegacyPoolAccountProof = { secretId: string; epoch: number; version: number; retryAt: Date; providerEvidence: "anthropic_oauth_usage_v1" | "codex_wham_v1" | "saved_account_http_401_v1" | "claude_acp_task_quota_v1" };
 
 async function selectedCredential(db: Db, input: Scope, lock = false) {
   const binding = input.selection.binding;
@@ -29,7 +31,10 @@ async function selectedCredential(db: Db, input: Scope, lock = false) {
 export async function observeLegacyPoolAccountFailure(db: Db, input: Scope, now: Date, kind: "quota" | "auth"): Promise<LegacyPoolAccountProof | null> {
   try {
     const before = await selectedCredential(db, input);
-    if (!before || !input.userId || input.selection.binding.mode === "responsible_user") return null;
+    if (!before || !input.userId || input.selection.binding.mode === "responsible_user") {
+      logger.warn({ companyId: input.companyId, agentId: input.agentId, kind, reason: "credential_identity_unverified" }, "Pool account attribution refused");
+      return null;
+    }
     const usage = await aiConnectionService(db).probeUsage(input.companyId, input.userId,
       input.selection.binding.connectionId, input.selection.binding.grantId);
     let providerEvidence: LegacyPoolAccountProof["providerEvidence"];
@@ -46,7 +51,15 @@ export async function observeLegacyPoolAccountFailure(db: Db, input: Scope, now:
       const exhausted = usage.status === "ok" && evidence && accountDenied
         ? usage.limits.filter(limit => limit.scope === null && limit.limitReached === true &&
             (usage.source !== "codex_wham" || limit.allowed === false)) : [];
-      if (!exhausted.length || !evidence) return null;
+      if (!exhausted.length || !evidence) {
+        logger.warn({ companyId: input.companyId, agentId: input.agentId, kind, status: usage.status,
+          errorCode: usage.errorCode, providerStatus: usage.providerStatus, source: usage.source,
+          overageEnabled: usage.overage?.enabled, overageAvailable: usage.overage?.available,
+          exhaustedLimits: usage.limits.filter(limit => limit.scope === null && limit.limitReached === true).length }, "Pool account quota proof unavailable");
+        if (input.selection.binding.provider !== "anthropic" || !input.terminalQuotaFailure ||
+            !classifyClaudeTerminalSessionFailure(input.terminalQuotaFailure as Parameters<typeof classifyClaudeTerminalSessionFailure>[0], now)) return null;
+        return { secretId: before.id, epoch: before.epoch, version: before.version, providerEvidence: "claude_acp_task_quota_v1", retryAt: new Date(now.getTime() + 60_000) };
+      }
       providerEvidence = evidence;
       const resets = exhausted.map(limit => Date.parse(limit.resetsAt ?? "")).filter(reset => Number.isFinite(reset) && reset > now.getTime());
       retryAt = new Date(resets.length ? Math.max(...resets) : now.getTime() + POOL_ACCOUNT_DEFAULT_COOLDOWN_MS);
@@ -54,7 +67,11 @@ export async function observeLegacyPoolAccountFailure(db: Db, input: Scope, now:
     const after = await selectedCredential(db, input);
     if (!after || after.id !== before.id || after.epoch !== before.epoch || (kind === "auth" && after.version !== before.version)) return null;
     return { secretId: before.id, epoch: before.epoch, version: before.version, providerEvidence, retryAt };
-  } catch { return null; }
+  } catch (error) {
+    logger.warn({ companyId: input.companyId, agentId: input.agentId, kind,
+      errorType: error instanceof Error ? error.name : "unknown" }, "Pool account attribution check failed");
+    return null;
+  }
 }
 
 export async function isCurrentLegacyPoolAccountProof(db: Db, input: Scope, proof: LegacyPoolAccountProof) {
@@ -67,6 +84,6 @@ export async function isCurrentLegacyPoolAccountProof(db: Db, input: Scope, proo
 
 export function legacyPoolAccountEvidenceMatches(kind: "quota" | "auth", provider: unknown, evidence: unknown) {
   if (provider !== "anthropic" && provider !== "openai") return false;
-  return evidence === (kind === "auth" ? "saved_account_http_401_v1"
+  return (kind === "quota" && provider === "anthropic" && evidence === "claude_acp_task_quota_v1") || evidence === (kind === "auth" ? "saved_account_http_401_v1"
     : provider === "anthropic" ? "anthropic_oauth_usage_v1" : "codex_wham_v1");
 }

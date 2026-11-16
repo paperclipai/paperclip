@@ -40,7 +40,7 @@ function assertFrozenLegacyPoolPolicy(selection: AiConnectionRouterSelection, so
   const frozen = selection.runtimeConfig;
   const flags = ["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove"];
   const permission = frozen.permissionMode ?? frozen.acpPermissionMode;
-  const nonInteractive = frozen.nonInteractivePermissions ?? frozen.acpNonInteractivePermissions;
+  const nonInteractive = permission === "approve-all" ? undefined : frozen.nonInteractivePermissions ?? frozen.acpNonInteractivePermissions;
   const restrictedPermission = typeof permission === "string" && permission.trim() && permission !== "approve-all";
   if (!flags.some(key => frozen[key] === false) && !restrictedPermission && nonInteractive == null) return;
   const target = { ...sourceConfig, ...targetConfig };
@@ -580,6 +580,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
   }
   async function transitionQuotaPin(input: {
     companyId: string; poolId: string; agentId: string; taskKey: string;
+    taskQuotaEvidence?: boolean;
     expectedSelection: AiConnectionRouterSelection; userId: string | null; adapterType: string; taskless?: boolean;
     attemptedMemberIds: string[];
     failureKind?: "quota" | "auth" | "runner";
@@ -605,7 +606,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     const sourceSelection = { ...pin.selection, adapterType: pin.selection.adapterType ??
       (pin.member.runner === "paperclip" ? "paperclip_runner" : pin.member.runner === "legacy"
         ? poolExecutionAdapterType(pin.member.binding, "paperclip_runner", true, "legacy") : undefined) };
-    const members = row.pool.config.members.filter((member) => !input.attemptedMemberIds.includes(member.id));
+    const members = row.pool.config.members.filter((member) => !input.attemptedMemberIds.includes(member.id) && (!input.taskQuotaEvidence || member.id !== pin.member.id));
     const platform = await resolvePoolExecutionPlatform(db, input.companyId, input.environmentId !== undefined ? input.environmentId : input.expectedSelection.runnerScope?.environmentId);
     const memberIdentities = new Map<string, string>();
     let legacySourceIdentity: string | null = null;
@@ -654,7 +655,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           adapterType: config.adapterType, binding: pin.member.binding, model: config.config.model,
           runnerProvider: config.config.provider, acpxAgent: config.config.acpxAgent });
         if (await quotaIdentity(selected, input.companyId, db, true) !== legacySourceIdentity ||
-            !(await accountCooldown(input.companyId, pin.member.binding.connectionId, legacySourceIdentity))) return { kind: "unavailable" };
+            (!input.taskQuotaEvidence && !(await accountCooldown(input.companyId, pin.member.binding.connectionId, legacySourceIdentity)))) return { kind: "unavailable" };
       } catch (error) {
         if (error instanceof HttpError && [400, 401, 403, 404, 409, 422].includes(error.status)) return { kind: "unavailable" };
         throw error;
@@ -682,7 +683,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
         const identity = await quotaIdentity(authorized, input.companyId, db, true);
-        if (!identity || identity !== memberIdentities.get(member.id)) continue;
+        if (!identity || identity !== memberIdentities.get(member.id) || (input.taskQuotaEvidence && identity === legacySourceIdentity)) continue;
         const cooldown = await accountCooldown(input.companyId, member.binding.connectionId, identity, row.pool.config.kind === "harness_pool" && (input.environmentId !== undefined || input.expectedSelection.runnerScope) ? { adapterType: effective.adapterType, config: effective.config, scope: { environmentId: input.environmentId ?? input.expectedSelection.runnerScope?.environmentId ?? null } } : undefined);
         if (cooldown) {
           if (input.failureKind === "auth" && (!failedAuthIdentity || identity === failedAuthIdentity)) continue;

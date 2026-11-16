@@ -145,3 +145,9 @@ it.each([
   expect(() => check(frozen, "paperclip_runner")).toThrow("frozen pool member execution policy");
   expect(() => check(frozen)).not.toThrow();
 });
+
+it("allows a native backup when the legacy member approves every tool and its non-interactive fallback is unreachable", () => {
+  const selection = { poolId: "pool", memberId: "legacy", binding: claude.binding, adapterType: "claude_local",
+    runtimeConfig: { engine: "acp", permissionMode: "approve-all", nonInteractivePermissions: "deny", dangerouslySkipPermissions: true }, notes: [] };
+  expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "paperclip_runner", { provider: "codex" }, selection)).not.toThrow();
+});

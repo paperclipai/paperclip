@@ -125,7 +125,12 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   const legacyAccountFailure = source && source.run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") ? kind : null;
   const proofScope = source ? { companyId: input.companyId, agentId: input.agentId, userId: source.run.responsibleUserId,
     selection: parseObject(source.run.contextSnapshot?.aiRouterSelection) as unknown as AiConnectionRouterSelection,
-    credentialIdentity: input.credentialIdentity } : null;
+    credentialIdentity: input.credentialIdentity,
+    ...(source.run.status === "failed" && source.run.errorCode === "provider_quota" &&
+      parseObject(parseObject(source.run.runnerProfileJson).adapterDispatch).adapterType === "claude_local" &&
+      parseObject(source.run.resultJson?.terminalSessionFailure).category === "limit" &&
+      typeof parseObject(source.run.resultJson?.terminalSessionFailure).title === "string"
+      ? { terminalQuotaFailure: source.run.resultJson!.terminalSessionFailure as { category: string; title: string } } : {}) } : null;
   const accountProof = legacyAccountFailure && proofScope ? await observeLegacyPoolAccountFailure(db, proofScope, now, legacyAccountFailure) : null;
   if (legacyAccountFailure && !accountProof) return false;
   const supplied = accountProof ? accountProof.retryAt.getTime() : kind === "quota" && input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
@@ -210,10 +215,29 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
       await tx.insert(heartbeatRunEvents).values({ companyId: run.companyId, runId: run.id, agentId: run.agentId, seq,
         eventType: `ai_connection.${kind}_attributed`, stream: "system", level: "info", sourceEventId: eventId, payload });
     }
-    await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
+    if (accountProof?.providerEvidence !== "claude_acp_task_quota_v1")
+      await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
     await input.beforeCommit?.();
     return true;
   });
+}
+
+export async function recoverLegacyPoolAttribution(db: Db, run: Run) {
+  const kind = poolFailureKind(run);
+  if (run.runtimeMode === "native" || !run.finishedAt || (kind !== "quota" && kind !== "auth")) return false;
+  const selection = parseObject(run.contextSnapshot?.aiRouterSelection);
+  const binding = parseObject(selection.binding);
+  const account = parseObject(run.contextSnapshot?.aiConnection);
+  const identity = readNonEmptyString(account.sessionIdentity);
+  if (!identity || account.connectionId !== binding.connectionId || account.grantId !== binding.grantId ||
+      account.provider !== binding.provider) return false;
+  const [receipt] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${run.id}`),
+    isNull(heartbeatRunEvents.sourceInstanceId)));
+  if (receipt) return true;
+  return recordVerifiedRouterQuotaCooldown(db, { runId: run.id, companyId: run.companyId, agentId: run.agentId,
+    credentialIdentity: identity, failureKind: kind, retryNotBefore: null });
 }
 
 /** Restart recovery uses only the account revision captured before provider admission. */

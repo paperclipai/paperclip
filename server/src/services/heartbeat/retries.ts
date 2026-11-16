@@ -107,6 +107,7 @@ type PlanApprovalResumeFailure = {
 
 /** The retry module owns scheduling writes; the service owns lifecycle effects. */
 export interface HeartbeatRetryDependencies {
+  recoverPoolAttribution?: (run: HeartbeatRun) => Promise<boolean>;
   hasCaseHandoffForRun: (run: Pick<HeartbeatRun, "id" | "companyId">) => Promise<boolean>;
   runDispatch: Pick<ReturnType<typeof createRunDispatch>,
     "evaluateScheduledRetryGate" | "promoteDueScheduledRetries" | "promoteScheduledRetry" | "nextScheduledRetryAt">;
@@ -576,6 +577,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const now = opts?.now ?? new Date();
     const poolFailure = poolFailureKind(run);
+    if (poolFailure && run.runtimeMode !== "native") await dependencies.recoverPoolAttribution?.(run);
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
     const interruptedPreparation = ["interrupted", "failed"].includes(run.status) &&
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false

@@ -18,7 +18,7 @@ import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
 import { fenceLegacyQuotaPrestartStop, switchUnstartedLegacyQuotaPin } from "./quota-prestart-fence.js";
 import { preparePoolAdapterClaim } from "./effective-run-adapter.js";
-import { recordVerifiedRouterQuotaCooldown } from "./run-completion.js";
+import { recordVerifiedRouterQuotaCooldown, recoverLegacyPoolAttribution } from "./run-completion.js";
 import { reopenNativeQuotaPoolWaits } from "../native-runtime/native-quota-wake.js";
 
 describe("legacy quota prestart retry", () => {
@@ -64,7 +64,9 @@ describe("legacy quota prestart retry", () => {
       runnerProfileJson: { legacyQuotaPrestartFence: { schema: "paperclip.legacy-quota-prestart.v1", companyId, agentId: agent.id, runId: run.id, state: "preparing" } },
       resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false }, cancellation: { source: "control_plane", reason: "Waiting for an AI connection pool account" } } }).where(eq(heartbeatRuns.id, run.id)).returning();
     if (postStart) {
-      const contextSnapshot = { ...source!.contextSnapshot, aiRouterSelection: selected };
+      const contextSnapshot = { ...source!.contextSnapshot, aiRouterSelection: selected,
+        aiConnection: { connectionId: first.connectionId, grantId: first.grantId, provider,
+          sessionIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` } };
       const resultJson = { errorFamily: "provider_quota", conversationContinuation: "continue_conversation_v1",
         executionSettlement: { providerStopped: true, workspaceSettled: true, actionOutcomes: "unknown" },
         summary: "Completed the first change; continue with verification." };
@@ -75,7 +77,7 @@ describe("legacy quota prestart retry", () => {
         credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}`, retryNotBefore: null })).toBe(true);
     }
     if (!taskless) await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
-    const deps = { hasCaseHandoffForRun: async () => false, getRun: async () => null, getAgent: async () => undefined,
+    const deps = { recoverPoolAttribution: (run: typeof source) => recoverLegacyPoolAttribution(db, run), hasCaseHandoffForRun: async () => false, getRun: async () => null, getAgent: async () => undefined,
       resolveSessionBeforeForWakeup: async () => null, resolveResponsibleUserIdForRunContext: async () => userId,
       getAgentInvokability: async () => ({ invokable: true }), appendRunEvent: async () => undefined,
       escalatePlanApprovalResumeFailureNeedsAttention: async () => null, recordPlanApprovalResumeFailureRetry: async () => null,
@@ -92,6 +94,32 @@ describe("legacy quota prestart retry", () => {
     return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
+  it.each([429, 403])("continues a typed Claude quota failure without an account-wide cooldown when usage returns %s", async status => {
+    const f = await fixture(true);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    const [source] = await db.update(heartbeatRuns).set({
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      resultJson: { ...f.source.resultJson, terminalSessionFailure: { category: "limit", title: "You've hit your weekly limit" } },
+    }).where(eq(heartbeatRuns.id, f.source.id)).returning();
+    Object.assign(f.source, source);
+    vi.mocked(globalThis.fetch).mockImplementation(async () => new Response("unavailable", { status }));
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    expect(await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId))).toHaveLength(0);
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin.selection.memberId).toBe(f.members[1].id);
+  }, 30_000);
+  it("rechecks missing account evidence when a settled quota run is retried after a transient probe failure", async () => {
+    const f = await fixture(true);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response("busy", { status: 429 }));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id,
+      runId: f.source.id, credentialIdentity: f.credentialIdentity, retryNotBefore: null })).toBe(false);
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
+    expect(pin.selection.memberId).toBe(f.members[1].id);
+  }, 30_000);
   it.each(["healthy", "offline", "reconnected", "forged_adapter_hint", "confirmed"] as const)("requires account-side evidence for model-visible quota text (%s)", async mode => {
     const f = await fixture(true);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
@@ -375,7 +403,10 @@ describe("legacy quota prestart retry", () => {
     const f = await fixture(true);
     if (condition === "stop") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, legacyQuotaStopRequested: { requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.source.id));
     if (condition === "unsettled") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, executionSettlement: undefined } }).where(eq(heartbeatRuns.id, f.source.id));
-    if (condition === "missing_receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    if (condition === "missing_receipt") {
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+      vi.mocked(globalThis.fetch).mockResolvedValue(new Response("busy", { status: 429 }));
+    }
     if (condition === "unverified_quota_receipt") {
       const [receipt] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
       const { providerEvidence: _ignored, ...oldPayload } = receipt.payload!;

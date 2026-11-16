@@ -101,12 +101,14 @@ export async function switchFailedPoolPin(db: Db, input: {
   const admissionAuthFailure = kind === "auth" && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false &&
     parseObject(run.resultJson?.configurationIncomplete).reason === "ai_connection_unavailable" &&
     parseObject(parseObject(run.runnerProfileJson?.adapterDispatch).poolPreparationFailure).kind === "configuration";
+  let taskQuotaEvidence = false;
   if (!admissionAuthFailure) {
     const [receipt] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId),
       eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.agentId, run.agentId),
       eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`), isNull(heartbeatRunEvents.sourceInstanceId),
       eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${run.id}`)));
     const proof = parseObject(receipt?.payload);
+    taskQuotaEvidence = proof.providerEvidence === "claude_acp_task_quota_v1";
     if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
         !isDeepStrictEqual(proof.selection, selection)) return null;
     if (run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") &&
@@ -117,7 +119,7 @@ export async function switchFailedPoolPin(db: Db, input: {
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
     adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
     sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
-    allowCoolingSelection: true });
+    taskQuotaEvidence, allowCoolingSelection: true });
 }
 
 /** Reconsider a waiting allocation before any adapter admission, under Stop's locks. */
@@ -157,6 +159,7 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
       eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`),
       eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${source.id}`)));
     const proof = parseObject(receipt?.payload);
+    if (proof.providerEvidence === "claude_acp_task_quota_v1") return;
     if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
         !isDeepStrictEqual(proof.selection, selection)) return;
     const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId))).for("share");
