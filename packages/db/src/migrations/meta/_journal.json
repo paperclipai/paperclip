@@ -3412,28 +3412,28 @@
       "breakpoints": true
     },
     {
-      "idx": 489,
+      "idx": 487,
       "version": "7",
       "when": 1794830378447,
       "tag": "0489_skill_source_security_override",
       "breakpoints": true
     },
     {
-      "idx": 490,
+      "idx": 488,
       "version": "7",
       "when": 1794830403922,
       "tag": "0490_skill_version_security_approval",
       "breakpoints": true
     },
     {
-      "idx": 491,
+      "idx": 489,
       "version": "7",
       "when": 1794830429160,
       "tag": "0491_skill_source_security_override_summary",
       "breakpoints": true
     },
     {
-      "idx": 492,
+      "idx": 490,
       "version": "7",
       "when": 1794830451797,
       "tag": "0492_skill_version_security_approval_index",
