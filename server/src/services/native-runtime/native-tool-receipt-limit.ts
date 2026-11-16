@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRunEvents, type heartbeatRuns, type Db } from "@paperclipai/db";
 import { validatePrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
+import { readRunCancellation } from "../run-cancellation.js";
 
 export const NATIVE_TOOL_RECEIPT_LIMIT_CODE = "semantic_tool_turn_receipt_limit";
 export const NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS = 2;
@@ -9,6 +10,15 @@ export const NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS = 5_000;
 export const NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE = "The agent's turn held too many tool results at once. Paperclip continues the task in a fresh session.";
 export const NATIVE_TOOL_RECEIPT_LIMIT_HINT = "The previous turn stopped because it held too many tool results at once. "
   + "Continue the task from its saved work. Make fewer tool calls in parallel, and do not re-read data you already have.";
+
+export function nativeRunHasStopRequest(resultJson: Record<string, unknown> | null | undefined): boolean {
+  if (!resultJson) return false;
+  const cancellation = readRunCancellation(resultJson);
+  return Boolean(resultJson.nativeCancellation || resultJson.executionCancellation || resultJson.cancelledByActorType
+    || resultJson.cancelledByUserId || resultJson.interruptedByActorType || resultJson.queuedCommentInterruptQueueId
+    || resultJson.issueMutationStopId || resultJson.operatorInterrupted === true
+    || (cancellation && cancellation.initiator.type !== "system" && cancellation.initiator.type !== "provider"));
+}
 
 export async function readPersistedNativeToolReceiptLimitStop(
   db: Pick<Db, "select">,

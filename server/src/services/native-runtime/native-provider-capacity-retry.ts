@@ -6,7 +6,8 @@ import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS, NATIVE_TOOL_RECEIPT_LIMIT_HINT,
-  NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE } from "./native-tool-receipt-limit.js";
+  NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
+import { NativeStatusRaceError } from "./status-decision-committer.js";
 
 type NativeRetryTarget = {
   tx: Db;
@@ -24,6 +25,7 @@ type NativeRetryLane = {
   idempotencyPrefix: string;
   exhaustedError: string;
   context?: (run: typeof heartbeatRuns.$inferSelect) => Record<string, unknown>;
+  refuseStopped?: boolean;
 };
 
 /** Called under the finalizer's issue/coordinator locks, in the status-effect transaction. */
@@ -46,6 +48,7 @@ export async function materializeNativeToolReceiptLimitContinuation(input: Nativ
     message: NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE,
     idempotencyPrefix: "native-tool-receipt-limit",
     exhaustedError: "native_tool_receipt_limit_continuation_exhausted",
+    refuseStopped: true,
     context: run => ({
       livenessContinuationSourceRunId: run.id,
       livenessContinuationReason: NATIVE_TOOL_RECEIPT_LIMIT_CODE,
@@ -60,6 +63,7 @@ async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane
     eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
   )).for("update");
   if (!run || run.runtimeMode !== "native") throw new Error("native_capacity_retry_run_binding_mismatch");
+  if (lane.refuseStopped && nativeRunHasStopRequest(run.resultJson)) throw new NativeStatusRaceError();
   // Share the predecessor claim with every other failure-retry lane.
   const [existing] = await input.tx.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.retryOfRunId, run.id),

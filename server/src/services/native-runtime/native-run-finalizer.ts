@@ -32,7 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
@@ -1763,7 +1763,7 @@ export async function finalizeNativeRun(input: {
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
       toolReceiptLimitStopped: terminalState !== "succeeded" && ownsProviderFailureDecision && !reviewContext
-        && await readPersistedNativeToolReceiptLimitStop(input.db, run),
+        && !nativeRunHasStopRequest(run.resultJson) && await readPersistedNativeToolReceiptLimitStop(input.db, run),
       failureRetryCount: executionFailureRetryCount(run),
       // Only the task's current owner may turn its own failed continuation
       // into a blocker; the committer rechecks that under the issue lock.

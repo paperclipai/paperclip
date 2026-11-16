@@ -33,7 +33,7 @@ describe("native turn stopped at its tool receipt limit", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string) {
+  async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string, beforeFinalize?: () => Promise<unknown>) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -70,6 +70,7 @@ describe("native turn stopped at its tool receipt limit", () => {
     });
     const unexpected = async () => { throw new Error("Unexpected provider call"); };
     await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
+    await beforeFinalize?.();
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     expect(provider.execute).toHaveBeenCalledTimes(1);
     return (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
@@ -114,6 +115,17 @@ describe("native turn stopped at its tool receipt limit", () => {
     expect(await taskInterruptionPresentation(db, issue!)).toMatchObject({ state: "working", canRetry: false, userAction: null });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry!.id))).toHaveLength(1);
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry!.id));
+  });
+
+  it("does not continue a turn a person stopped while it settled", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Stopped task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId } });
+    await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE, () => db.update(heartbeatRuns)
+      .set({ resultJson: { cancelledByActorType: "user", cancelledByUserId: "receipt-owner" } }).where(eq(heartbeatRuns.id, runId)));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
+    expect(decision?.reasonCode).not.toBe(NATIVE_TOOL_RECEIPT_LIMIT_CODE);
   });
 
   it("leaves another cancelled turn to its existing recovery", async () => {
