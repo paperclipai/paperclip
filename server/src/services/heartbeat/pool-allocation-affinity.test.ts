@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db, heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import { getNativeReviewAssignment } from "../native-runtime/native-review-participant.js";
 import { hasReviewPoolAllocation } from "./pool-allocation-affinity.js";
 vi.mock("../native-runtime/native-review-participant.js", async importOriginal => ({
@@ -9,7 +9,7 @@ const interactionId = "11111111-1111-4111-8111-111111111111", decisionId = "2222
 const run = { id: "failed-review", companyId: "company", agentId: "reviewer", status: "failed", runtimeMode: "native",
   scopeKind: "issue", issueId: "issue", nativeIssueId: "issue", contextSnapshot: {
     nativeReviewInteractionId: interactionId, nativeReviewDecisionId: decisionId,
-  } } as typeof heartbeatRuns.$inferSelect;
+  } } as const;
 const db = {} as Db, key = `native-review:${interactionId}`;
 describe("review pool attribution affinity", () => {
   beforeEach(() => vi.mocked(getNativeReviewAssignment).mockReset());

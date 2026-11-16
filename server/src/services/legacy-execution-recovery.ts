@@ -38,7 +38,8 @@ import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const UNRESTORED_FILES_NEXT_ACTION = "The task's saved files could not be put back after the run stopped. "
   + "They are kept where they were and are not applied. Press Retry to continue from the last saved version in a new workspace.";
-export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
+import { LEGACY_RECOVERY_CAUSE } from "./legacy-execution-recovery-contract.js";
+export { LEGACY_RECOVERY_CAUSE };
 
 const unusedReconciliationContextKeys = [
   "executionContinuation", "paperclipWake", "paperclipWakeComment",
