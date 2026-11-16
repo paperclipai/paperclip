@@ -610,7 +610,11 @@ impl ExternalCommandExecutor {
                     }
                     let outcome = json!({"status":"rejected","requestId":id,"error":{
                         "code":"tool_calls_in_flight","message":error.safe_provider_message(),"retryable":true}});
-                    state.settle(&id, outcome.clone())?;
+                    state.operations.remove(&id);
+                    state.push(
+                        "external_provider.operation_settled",
+                        json!({"binding":state.binding(),"requestId":id,"outcome":outcome}),
+                    )?;
                     return Ok(outcome);
                 }
                 state.push("semantic_tool.input", json!({"semantic_tool":{
@@ -1387,9 +1391,29 @@ mod tests {
             call(
                 &mut executor,
                 "external_provider.operation",
-                tool("burst-11")
+                tool("burst-10")
             )["status"],
             "pending"
+        );
+        drop(executor);
+        let mut recovered = DotCommandExecutor::with_runner_config(dir.path(), &config(dir.path()));
+        assert_eq!(
+            call(
+                &mut recovered,
+                "external_provider.operation",
+                tool("burst-10")
+            )["status"],
+            "pending"
+        );
+        assert_eq!(
+            recovered
+                .poll_events()
+                .unwrap()
+                .iter()
+                .filter(|e| e.event_type == "semantic_tool.input"
+                    && e.payload.to_string().contains("\"callId\":\"burst-10\""))
+                .count(),
+            1
         );
     }
 

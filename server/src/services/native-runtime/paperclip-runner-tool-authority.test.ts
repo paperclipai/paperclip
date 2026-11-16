@@ -1660,6 +1660,32 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("orders the loop continuation's locks task first, like Stop, so a concurrent Stop wins without a deadlock", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId"], 400, "refused");
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    let holdingTask!: () => void;
+    const taskLocked = new Promise<void>(resolve => { holdingTask = resolve; });
+    try {
+      const stop = db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        holdingTask();
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await tx.update(heartbeatRuns).set({ resultJson: { ...before!.resultJson, cancelledByActorType: "user", cancelledByUserId: "board-user" } })
+          .where(eq(heartbeatRuns.id, runId));
+      });
+      await taskLocked;
+      const scheduled = authority.scheduleToolCallLoopContinuation(loop);
+      await expect(stop).resolves.toBeUndefined();
+      await expect(scheduled).resolves.toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(0);
+    } finally {
+      await db.update(heartbeatRuns).set({ resultJson: before!.resultJson }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    }
+  });
+
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
     const wakes: Array<{ agentId: string; options: Record<string, unknown> }> =
       [];

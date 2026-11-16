@@ -359,6 +359,8 @@ export class PaperclipRunnerToolAuthority {
     const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
       tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
     return this.db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId))).for("update");
       const [run] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("share");
       if (!run || nativeRunHasStopRequest(run.resultJson)) return false;
