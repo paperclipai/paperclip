@@ -506,6 +506,10 @@ export async function settleCancelledLegacyPreparation(
     const now = new Date();
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+      // The preparation owner has unwound and every execution reference agrees.
+      // Confirm Stop without waiting for a provider that was never started.
+      executionCancellation: { ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
+        state: "acknowledged", acknowledgedAt: now.toISOString() },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     // The automatic disposition may already have closed the incident with
     // replay blocked, and moved the task to blocked. Correct both verdicts.

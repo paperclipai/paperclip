@@ -145,6 +145,14 @@ export function recordedUserStop(run: Pick<Run, "status" | "resultJson">) {
     ["operator", "queued_message"].includes(cancellation.source) ? cancellation : null;
 }
 
+/** Presentation of a settled operator Stop; this does not grant replay authority. */
+export function isAcknowledgedLegacyUserStop(run: Pick<Run, "status" | "resultJson"> & Partial<Pick<Run, "runtimeMode" | "finishedAt">>): boolean {
+  const cancellation = recordedUserStop(run);
+  const receipt = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  return run.status === "cancelled" && run.runtimeMode === "legacy" && Boolean(run.finishedAt)
+    && cancellation?.source === "operator" && cancellation.expected && receipt?.state === "acknowledged";
+}
+
 /** When a user's Stop or interrupt took effect for message ordering. A native
  * run finishes only after its provider stop and workspace save settle, which
  * can take many seconds. A message written after the Stop request is a new

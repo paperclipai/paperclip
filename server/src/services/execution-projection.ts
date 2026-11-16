@@ -23,6 +23,7 @@ import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
+import { isAcknowledgedLegacyUserStop } from "./run-cancellation.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const ANOTHER_ROUTINE_TASK = "another task in this routine";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
@@ -52,6 +53,13 @@ const executionRunColumns = {
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
     'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
   resultJson: sql<Record<string, unknown>>`jsonb_build_object(
+    'cancellation', jsonb_build_object(
+      'source', left(${heartbeatRuns.resultJson}->'cancellation'->>'source', 32),
+      'expected', ${heartbeatRuns.resultJson}->'cancellation'->'expected',
+      'initiator', jsonb_build_object('type', left(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', 32)),
+      'reason', left(${heartbeatRuns.resultJson}->'cancellation'->>'reason', 512),
+      'recordedAt', left(${heartbeatRuns.resultJson}->'cancellation'->>'recordedAt', 64)),
+    'executionCancellation', jsonb_build_object('state', ${heartbeatRuns.resultJson}->'executionCancellation'->'state'),
     'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
     'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };
@@ -537,6 +545,11 @@ export function projectExecution(
       return set("waiting_for_answer", "Waiting for a reply");
     }
     return set("completed", "Completed");
+  }
+  if (isAcknowledgedLegacyUserStop(run)) {
+    projection.cause = null;
+    projection.nextAction = "Send a new message to continue from saved work.";
+    return set("completed", "Stopped");
   }
   if (["failed", "cancelled", "timed_out", "interrupted"].includes(run.status))
     return set("failed", run.status === "cancelled" ? "Cancelled" : "Failed");
