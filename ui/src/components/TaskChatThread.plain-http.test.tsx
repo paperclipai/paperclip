@@ -3,7 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskChatThread } from "./TaskChatThread";
+import { TaskChatThread, type TaskChatThreadProps } from "./TaskChatThread";
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: () => ({ transcriptByRun: new Map(), isInitialHydrating: false }),
@@ -71,7 +71,7 @@ describe("TaskChatThread plain HTTP", () => {
   });
 
   it("assigns a request id when the sender omits one and randomUUID is missing", async () => {
-    const onAdd = vi.fn(async () => {});
+    const onAdd = vi.fn<TaskChatThreadProps["onAdd"]>(async () => {});
     await act(() => root.render(
       <QueryClientProvider client={client}>
         <TaskChatThread issueId="chat" currentUserId="viewer" comments={[]} onAdd={onAdd} />
@@ -84,7 +84,8 @@ describe("TaskChatThread plain HTTP", () => {
     });
 
     expect(onAdd).toHaveBeenCalledOnce();
-    expect(onAdd.mock.calls[0]?.[0]).toBe("Ship the note");
-    expect(onAdd.mock.calls[0]?.[4]).toMatch(REQUEST_ID);
+    const [body, , , , requestId] = onAdd.mock.calls[0] ?? [];
+    expect(body).toBe("Ship the note");
+    expect(requestId).toMatch(REQUEST_ID);
   });
 });
