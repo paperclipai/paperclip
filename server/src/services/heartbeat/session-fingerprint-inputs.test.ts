@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES } from "@paperclipai/adapter-utils";
 import { getServerAdapter } from "../../adapters/registry.js";
+import { resolvePaperclipRunnerNativeProviderInput, resolvePaperclipRunnerProviderProfile } from "../native-runtime/provider-profile.js";
+import { resolveHeartbeatNativeLifecyclePolicy } from "./native-lifecycle.js";
 import { CONFIG_REVISION_FIELDS } from "../../lib/agent-records.js";
 import { ENVIRONMENT_CONFIG_SCHEMA_KEYS } from "../environment-config.js";
 import {
@@ -45,6 +47,34 @@ describe("session fingerprint input classification (backstop)", () => {
     expect(Object.keys(ENVIRONMENT_CONFIG_SESSION_INPUTS).filter(key => !schemaKeys.includes(key))).toEqual([]);
   });
 
+  it.each([
+    { provider: "codex", model: "gpt-5.4-mini", codexPermissionMode: "never", lifecycleMode: "warm", idleTimeoutMs: 60_000 },
+    { provider: "opencode", model: "openai/gpt-5.4-mini", opencodePermissionMode: "allow" },
+  ])("keeps every excluded runner key out of the native execution input: %j", base => {
+    const nativeInputs = (config: Record<string, unknown>) => {
+      const backend = resolvePaperclipRunnerProviderProfile(config).backend;
+      return {
+        provider: resolvePaperclipRunnerNativeProviderInput({ backend, adapterConfig: config }),
+        lifecyclePolicy: resolveHeartbeatNativeLifecyclePolicy({
+          adapterType: "paperclip_runner", backend, agentMode: config.lifecycleMode, agentIdleTimeoutMs: config.idleTimeoutMs,
+          managedAiSelected: false, taskOwned: true, localTarget: false,
+        }),
+      };
+    };
+    const reference = nativeInputs(base);
+    const inertKeys = [
+      ...Object.entries(PAPERCLIP_RUNNER_ADAPTER_CONFIG_SESSION_INPUTS).filter(([, value]) => value.kind === "excluded").map(([key]) => key),
+      ...Object.values(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES).flatMap(capability => capability.configurable ? [capability.configKey] : [])
+        .filter(key => key !== PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[base.provider as "codex" | "opencode"].configKey),
+    ];
+    expect(inertKeys.length).toBeGreaterThan(0);
+    for (const key of inertKeys) {
+      expect(nativeInputs({ ...base, [key]: 12_345 }), `${key} reaches the native execution input; keep it in the fingerprint`).toEqual(reference);
+    }
+    expect(nativeInputs({ ...base, idleTimeoutMs: 120_000, lifecycleMode: "warm" }).lifecyclePolicy)
+      .not.toEqual(nativeInputs({ ...base, idleTimeoutMs: 60_000, lifecycleMode: "warm" }).lifecyclePolicy);
+  });
+
   it("pins the shape of every hashed category, so a new field cannot join the fingerprint unclassified", () => {
     const values = buildSessionConfigCategoryValues({
       adapterType: "paperclip_runner",
@@ -67,7 +97,6 @@ describe("session fingerprint input classification (backstop)", () => {
       runtimeSkills: [],
       agentConfigRevision: { id: "revision-1", changedKeys: ["adapterConfig"], configRevisionAt: "2099-01-01T00:00:00.000Z" },
     });
-    // Update these lists only together with a classification table entry.
     expect(Object.keys(values).sort(), CLASSIFY).toEqual([
       "adapter", "adapterConfig", "agentRuntimeConfig", "envBindings", "environment", "instructions",
       "issueOverrides", "runtimeSkills", "secrets", "workspaceConfig",
@@ -140,16 +169,14 @@ describe("session fingerprint keeps sessions across non-thread changes", () => {
     ["a new config revision, even one that restores the same values",
       { agentConfigRevision: { id: "revision-2", changedKeys: ["adapterConfig"], configRevisionAt: "2099-01-02T00:00:00.000Z" } }],
     ["a revision of display-only agent fields", { agentConfigRevision: { id: "revision-3", changedKeys: ["name", "icon"], configRevisionAt: "2099-01-03T00:00:00.000Z" } }],
-    ["the warm idle window", withAdapterConfig({ idleTimeoutMs: 300_000 })],
-    ["clearing the warm idle window", withAdapterConfig({ idleTimeoutMs: undefined })],
     ["the turn time limit", withAdapterConfig({ timeoutSec: 3600 })],
     ["the legacy kill grace", withAdapterConfig({ graceSec: 30 })],
     ["another provider's permission mode", withAdapterConfig({ opencodePermissionMode: "deny", acpxPermissionMode: "deny-all" })],
     ["wake scheduling", { agentRuntimeConfig: { aiConnection: { mode: "shared", grantId: "grant-1" }, heartbeat: { enabled: true, intervalSec: 300 } } }],
     ["the environment row's update time", withSelectedEnvironment({ configRevisionAt: "2099-02-01T00:00:00.000Z" })],
     ["how the same environment was selected", { environment: { ...(baseInput.environment as object), selectionSource: "issue" } }],
-    ["the environment's warm window and lease handling",
-      withSelectedEnvironment({}, { runnerIdleTimeoutMs: 300_000, reuseLease: true, archiveOnRelease: true, streamRunLogs: false, timeoutMs: 30_000 })],
+    ["the environment's release, log streaming, and RPC timeout settings",
+      withSelectedEnvironment({}, { archiveOnRelease: true, streamRunLogs: false, timeoutMs: 30_000 })],
   ])("does not reset for %s", async (_label, next) => {
     expect(await freshness(next)).toMatchObject({ reset: false, changedCategories: [] });
   });
@@ -169,6 +196,9 @@ describe("session fingerprint still resets for thread changes", () => {
     ["the provider", withAdapterConfig({ provider: "opencode" })],
     ["the active provider's permission mode", withAdapterConfig({ codexPermissionMode: "on-request" })],
     ["the lifecycle mode", withAdapterConfig({ lifecycleMode: "per_turn" })],
+    ["the warm idle window, which the native session digest compares", withAdapterConfig({ idleTimeoutMs: 300_000 })],
+    ["the environment's warm idle window", withSelectedEnvironment({}, { runnerIdleTimeoutMs: 300_000 })],
+    ["the environment's lease reuse, which can change the default lifecycle", withSelectedEnvironment({}, { reuseLease: true })],
     ["the provider account", { agentRuntimeConfig: { aiConnection: { mode: "shared", grantId: "grant-2" }, heartbeat: { enabled: false, maxConcurrentRuns: 20 } } }],
     ["an unclassified runtime setting", { agentRuntimeConfig: { aiConnection: { mode: "shared", grantId: "grant-1" }, futureSetting: true } }],
     ["an unclassified adapter setting", withAdapterConfig({ futureSetting: true })],
@@ -182,8 +212,6 @@ describe("session fingerprint still resets for thread changes", () => {
 
 describe("legacy session fingerprints", () => {
   it("reproduces the fingerprint saved before non-thread inputs left it", async () => {
-    // Values computed by the fingerprint code before this change. A drift here
-    // would discard every saved session once on upgrade.
     const input: MetadataInput = {
       adapterType: "paperclip_runner",
       effectiveAdapterConfig: { provider: "codex", model: "model-a", codexPermissionMode: "never", lifecycleMode: "warm", idleTimeoutMs: 60000, timeoutSec: 0, graceSec: 15, opencodePermissionMode: "allow" },
@@ -215,8 +243,6 @@ describe("legacy session fingerprints", () => {
       },
     });
     expect((await decide({})).reset).toBe(false);
-    // The legacy composition still hashes the revision, so a legacy session
-    // saved before a later revision resets as it did before this change.
     expect((await decide({ agentConfigRevision: { id: "revision-2", changedKeys: ["adapterConfig"], configRevisionAt: "2099-01-02T00:00:00.000Z" } })).reset).toBe(true);
   });
 });

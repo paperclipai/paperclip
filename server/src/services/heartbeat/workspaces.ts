@@ -2820,9 +2820,6 @@ export function buildSessionConfigCategoryValues(input: {
   const issueSettings = { ...parseObject(workspaceConfig.issueSettings) };
   if (issueSettings.mode === workspaceConfig.requestedMode) delete issueSettings.mode;
   workspaceConfig.issueSettings = Object.keys(issueSettings).length ? issueSettings : null;
-  // Inputs that cannot change the provider thread are left out (see
-  // session-fingerprint-inputs.ts). The legacy composition hashes them, so a
-  // session saved before that change still matches once.
   const legacy = input.legacyComposition === true;
   return {
     adapter: {
@@ -2865,11 +2862,6 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   runtimeSkills: unknown;
   agentConfigRevision?: unknown;
   agentIdentityKeyId?: string;
-  /**
-   * Hash the inputs that were in the fingerprint before non-thread inputs were
-   * left out. Session preparation accepts a saved fingerprint built this way,
-   * so the change does not discard every saved session once.
-   */
   legacyComposition?: boolean;
 }): Promise<EffectiveRunSessionConfigMetadata> {
   const secretManifest = input.secretManifest ?? [];

@@ -155,7 +155,6 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
   const storedFingerprint = taskSession ? readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint : undefined;
   const storedFingerprintDiffers = Boolean(taskSession) && storedFingerprint !== sessionConfigMetadata.fingerprint;
-  // Exact alternative inputs whose fingerprint may stand for the saved one.
   const compatibleInputs: SessionMetadataInput[] = [];
   const importedManagedInstructions = Boolean(storedFingerprintDiffers && sessionConfigMetadataInput.managedInstructions?.contentHash);
   if (importedManagedInstructions) {
@@ -178,9 +177,6 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       ...(importedManagedInstructions ? [{ ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true }] : []),
     ]));
   }
-  // A session saved before non-thread inputs left the fingerprint carries the
-  // legacy composition. Accept it once for the same inputs; the run then saves
-  // the current fingerprint.
   const legacyInputs = storedFingerprintDiffers
     ? [sessionConfigMetadataInput, ...compatibleInputs].map(candidate => ({ ...candidate, legacyComposition: true }))
     : [];

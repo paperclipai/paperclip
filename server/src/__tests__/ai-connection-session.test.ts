@@ -47,8 +47,6 @@ describe("AI pool session adoption", () => {
     expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentConfigRevision: aiConnectionRevisionMetadata(edit), effectiveAdapterConfig: { ...config, model: "gpt-5.6-terra" } }, { revisions: [edit, first] })).reset).toBe(true);
   });
   it("keeps the session when the same edit also renames the agent", async () => {
-    // The agent name reaches the thread only through tools that read it live,
-    // and the revision row is not part of the fingerprint.
     const first = revision("revision-1", null, binding);
     const edit = revision("revision-2", binding, pool, { name: "Renamed agent" });
     expect(aiConnectionOnlyConfigRevision(edit)).toBe(false);
