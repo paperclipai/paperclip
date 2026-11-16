@@ -248,3 +248,34 @@ it("shows the shared dirty footer and discards edits without leaving the selecte
     expect(host.querySelector('[aria-label="Danger zone"]')).toBeTruthy();
   }finally{flushSync(()=>root.unmount());client.clear();host.remove();}
 });
+
+it.each(["another pool", "new pool"])("keeps dirty pool drafts until a switch to %s is confirmed", async target => {
+  const configs = ["Alpha", "Beta"].map(name => ({ id: crypto.randomUUID(), companyId: "company", revision: 1,
+    schemaVersion: 2, kind: "harness_pool", name, enabled: true, mode: "failover", members: [] }));
+  mocks.accounts.mockResolvedValue({ canManageConnections: true, connections: [] }); mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue(configs); mocks.inspect.mockResolvedValue({ members: {}, usedBy: [] });
+  const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><TooltipProvider><HarnessPoolSettings companyId="company" /></TooltipProvider></QueryClientProvider>)); await settle();
+    const row = (name: string) => host.querySelector<HTMLButtonElement>(`[aria-label="${name} · 0 members"]`)!;
+    const name = () => host.querySelector<HTMLInputElement>('[aria-label="Pool name"]')!;
+    flushSync(() => row("Alpha").click()); await settle();
+    flushSync(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name(), "Unsaved draft"); name().dispatchEvent(new Event("input", { bubbles: true })); });
+    flushSync(() => row("Alpha").click());
+    expect(name().value).toBe("Unsaved draft");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const switchPool = () => target === "another pool" ? row("Beta").click() : host.querySelector<HTMLButtonElement>('[aria-label="Add pool"]')!.click();
+    flushSync(switchPool); await settle();
+    expect(name().value).toBe("Unsaved draft");
+    const dialogButton = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(button => button.textContent === label)!;
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Discard unsaved pool changes?");
+    flushSync(() => dialogButton("Keep editing").click()); await settle();
+    expect(name().value).toBe("Unsaved draft");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    flushSync(switchPool); await settle();
+    flushSync(() => dialogButton("Discard changes").click()); await settle();
+    expect(name().value).toBe(target === "another pool" ? "Beta" : "");
+    expect(mocks.save).not.toHaveBeenCalled();
+  } finally { flushSync(() => root.unmount()); client.clear(); host.remove(); }
+});

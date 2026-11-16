@@ -79,27 +79,40 @@ export async function hasCompanyPoolAffinity(db: Db, run: Run, taskKey: string):
 async function failedPoolCredentialHashes(db: Db, run: Run, taskKey: string, poolId: string): Promise<string[] | null> {
   const hashes: string[] = [], seen = new Set<string>();
   let current = run;
+  let needsFailureProof = true;
   for (let depth = 0; depth < 100; depth++) {
     if (seen.has(current.id)) return null;
     seen.add(current.id);
-    const context = parseObject(current.contextSnapshot), kind = poolFailureKind(current);
+    const context = parseObject(current.contextSnapshot);
     const selection = parseObject(context.aiRouterSelection);
-    if (!kind || context.aiRouterTaskKey !== taskKey || selection.poolId !== poolId) return null;
-    const [receipt] = await db.select().from(heartbeatRunEvents).where(and(
-      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
-      eq(heartbeatRunEvents.runId, current.id), isNull(heartbeatRunEvents.sourceInstanceId),
-      eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`),
-      eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${current.id}`)));
-    const proof = parseObject(receipt?.payload);
-    if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
-        !isDeepStrictEqual(proof.selection, selection)) return null;
-    if (kind === "quota" && typeof proof.quotaIdentityHash === "string") hashes.push(proof.quotaIdentityHash);
+    if (context.aiRouterTaskKey !== taskKey || selection.poolId !== poolId ||
+        !["failed", "cancelled", "timed_out", "interrupted", "succeeded"].includes(current.status)) return null;
+    if (needsFailureProof) {
+      const kind = poolFailureKind(current);
+      if (!kind) return null;
+      const [receipt] = await db.select().from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
+        eq(heartbeatRunEvents.runId, current.id), isNull(heartbeatRunEvents.sourceInstanceId),
+        eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`),
+        eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${current.id}`)));
+      const proof = parseObject(receipt?.payload);
+      if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
+          !isDeepStrictEqual(proof.selection, selection)) return null;
+      if (kind === "quota" && typeof proof.quotaIdentityHash === "string") hashes.push(proof.quotaIdentityHash);
+    }
     const sourceRunId = parseObject(context.aiPoolFailover).sourceRunId;
-    if (!sourceRunId) return hashes;
-    if (sourceRunId !== current.retryOfRunId) return null;
-    const [previous] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceRunId as string),
+    if (!sourceRunId) return needsFailureProof ? hashes : null;
+    if (typeof sourceRunId !== "string" || !current.retryOfRunId) return null;
+    const [previous] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, current.retryOfRunId),
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId)));
     if (!previous || previous.scopeKind !== run.scopeKind || previous.issueId !== run.issueId) return null;
+    needsFailureProof = sourceRunId === current.retryOfRunId;
+    // Ordinary retries retain the last pool transition marker. Traverse their
+    // actual retry links only while the admitted account and marker agree;
+    // the transition's source still needs its own verified failure receipt.
+    if (!needsFailureProof && (previous.runtimeMode !== current.runtimeMode ||
+        parseObject(previous.contextSnapshot?.aiPoolFailover).sourceRunId !== sourceRunId ||
+        !isDeepStrictEqual(previous.contextSnapshot?.aiRouterSelection, selection))) return null;
     current = previous;
   }
   return null;

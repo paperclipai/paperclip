@@ -109,7 +109,10 @@ describe("legacy quota prestart retry", () => {
     const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
     expect(pin.selection.memberId).toBe(f.members[1].id);
   }, 30_000);
-  it.each([true, false])("does not revisit exhausted credentials in a failover chain (healthy third account: %s)", async healthy => {
+  it.each([
+    ...[0, 1, 2].flatMap(ordinaryRetries => [true, false].map(healthy => ({ ordinaryRetries, healthy, tamper: "none" }))),
+    ...["selection", "marker"].map(tamper => ({ ordinaryRetries: 1, healthy: true, tamper })),
+  ])("does not revisit exhausted credentials in a failover chain (healthy: $healthy, ordinary retries: $ordinaryRetries, tamper: $tamper)", async ({ healthy, ordinaryRetries, tamper }) => {
     const f = await fixture(true);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
@@ -130,16 +133,33 @@ describe("legacy quota prestart retry", () => {
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.members[1].binding.grantId));
     const ref = grant.credentialSecretRefs[0];
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    let retry = successor;
+    for (let index = 0; index < ordinaryRetries; index++) {
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", finishedAt: new Date(),
+        resultJson: { ...failure, errorFamily: "transient_upstream", terminalSessionFailure: undefined },
+      }).where(eq(heartbeatRuns.id, retry.id));
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+        issueId: f.issue.id, scopeKind: "issue", runtimeMode: "legacy", status: "scheduled_retry",
+        retryOfRunId: retry.id, responsibleUserId: f.userId, contextSnapshot: retry.contextSnapshot,
+      }).returning();
+      if (index === ordinaryRetries - 1 && tamper !== "none") {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...retry.contextSnapshot,
+          ...(tamper === "selection" ? { aiRouterSelection: { ...retry.contextSnapshot?.aiRouterSelection, memberId: randomUUID() } }
+            : { aiPoolFailover: { sourceRunId: randomUUID() } }),
+        } }).where(eq(heartbeatRuns.id, retry.id));
+      }
+      retry = next;
+    }
     const [second] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "provider_quota", finishedAt: new Date(),
       runnerProfileJson: first.runnerProfileJson, resultJson: failure,
-      contextSnapshot: { ...successor.contextSnapshot, aiConnection: { ...f.members[1].binding,
+      contextSnapshot: { ...retry.contextSnapshot, aiConnection: { ...f.members[1].binding,
         sessionIdentity: `${grant.id}:fixture:${secret.id}:${secret.aiSessionEpoch}` } },
-    }).where(eq(heartbeatRuns.id, successor.id)).returning();
+    }).where(eq(heartbeatRuns.id, retry.id)).returning();
     await db.update(issues).set({ executionRunId: second.id, checkoutRunId: second.id }).where(eq(issues.id, f.issue.id));
     Object.assign(f.source, second);
-    expect((await f.schedule()).outcome).toBe(healthy ? "scheduled" : "not_scheduled");
+    expect((await f.schedule()).outcome).toBe(healthy && tamper === "none" ? "scheduled" : "not_scheduled");
     const [pin] = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id));
-    expect(pin.selection.memberId).toBe(healthy ? thirdMember.id : f.members[1].id);
+    expect(pin.selection.memberId).toBe(healthy && tamper === "none" ? thirdMember.id : f.members[1].id);
   }, 30_000);
   it("rechecks missing account evidence when a settled quota run is retried after a transient probe failure", async () => {
     const f = await fixture(true);

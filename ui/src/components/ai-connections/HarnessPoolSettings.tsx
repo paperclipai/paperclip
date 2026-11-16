@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { ConfigSaveBar } from "@/components/ConfigSaveBar";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 import { HarnessPoolMemberFields, type HarnessPoolMemberDraft } from "./HarnessPoolMemberFields";
 
@@ -38,6 +39,7 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
   const [error, setError] = useState("");
   const [archiveRequested, setArchiveRequested] = useState(false);
   const [conversion, setConversion] = useState<HarnessPool>();
+  const [pendingSelection, setPendingSelection] = useState<{ pool?: HarnessPool }>();
   const inspection = useQuery({ queryKey: ["harness-pool-inspection", companyId, editing?.id], queryFn: () => harnessPoolsApi.inspect(companyId, editing!.id), enabled: Boolean(editing) });
   const inspectionReady = inspection.isSuccess && !inspection.isFetching;
   async function refresh() {
@@ -47,7 +49,14 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
     setBusy(true); setError("");
     try { await work(); } catch (failure) { setError(describeError(failure).body); } finally { setBusy(false); }
   }
-  function start(name: string) { setEditing(undefined); setDraft(emptyPool(name)); setArchiveRequested(false); setError(""); }
+  function selectPool(pool?: HarnessPool) {
+    setEditing(pool); setDraft(pool ? poolDraft(pool) : emptyPool("")); setArchiveRequested(false); setError("");
+  }
+  function requestSelection(pool?: HarnessPool) {
+    if (busy || pool?.id === editing?.id && Boolean(pool || draft)) return;
+    if (dirty) setPendingSelection({ pool });
+    else selectPool(pool);
+  }
   function updateMember(id: string, patch: Partial<HarnessPoolMemberDraft>) {
     setDraft(current => current && ({ ...current, members: current.members.map(member => member.id === id ? { ...member, ...patch } : member) }));
   }
@@ -68,14 +77,14 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
               className="h-9 pl-8 pr-8 text-xs md:text-xs" />
             {search && <Button variant="ghost" size="icon-xs" aria-label="Clear pool search" disabled={busy} className="absolute right-1 top-1/2 -translate-y-1/2" onClick={clearSearch}><X aria-hidden="true" className="size-3" /></Button>}
           </div>
-          <Button variant="ghost" size="icon-sm" aria-label="Add pool" disabled={busy} onClick={() => start("")}><Plus aria-hidden="true" className="size-4" /></Button>
+          <Button variant="ghost" size="icon-sm" aria-label="Add pool" disabled={busy} onClick={() => requestSelection()}><Plus aria-hidden="true" className="size-4" /></Button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3 scrollbar-auto-hide">
           <nav aria-label="Pool list" className="flex flex-col gap-1">{visiblePools.map(({ pool }) =>
             <Button key={pool.id} variant="ghost" aria-label={`${pool.name} · ${pool.members.length} members${pool.enabled ? "" : " · disabled"}`}
               className={`h-auto w-full justify-start whitespace-normal rounded-md px-2.5 py-3 text-left ${editing?.id === pool.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
               aria-pressed={editing?.id === pool.id} disabled={busy}
-              onClick={() => { setEditing(pool); setDraft(poolDraft(pool)); setArchiveRequested(false); setError(""); }}>
+              onClick={() => requestSelection(pool)}>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5"><span className="truncate text-sm font-medium">{pool.name}</span><span className="truncate text-xs text-muted-foreground">{pool.members.length} members{pool.enabled ? "" : " · disabled"}</span></span>
             </Button>)}</nav>
           {!pools.data?.length ? <p className="px-2 py-6 text-sm text-muted-foreground">No pools yet. Add a pool to share harness settings between agents.</p>
@@ -124,5 +133,20 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
       {conversion && <div className="space-y-2"><p className="text-sm">Convert {conversion.name} with {conversion.members.length} ordered members? Existing agents and active sessions keep their settings. Select Pool explicitly on each agent.</p><Button variant="outline" disabled={busy} onClick={() => setConversion(undefined)}>Cancel conversion</Button><Button disabled={busy} onClick={() => void action(async () => { await harnessPoolsApi.convert(companyId, conversion.id, conversion.revision, false); setConversion(undefined); await refresh(); })}>Convert pool</Button></div>}
     </>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    <Dialog open={Boolean(pendingSelection)} onOpenChange={open => { if (!open) setPendingSelection(undefined); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Discard unsaved pool changes?</DialogTitle>
+          <DialogDescription>Your changes to this pool will be lost if you continue.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={() => setPendingSelection(undefined)}>Keep editing</Button>
+          <Button variant="destructive" size="sm" disabled={busy} onClick={() => {
+            if (!pendingSelection || busy) return;
+            selectPool(pendingSelection.pool); setPendingSelection(undefined);
+          }}>Discard changes</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </section>;
 }
