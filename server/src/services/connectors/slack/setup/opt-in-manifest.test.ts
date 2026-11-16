@@ -11,7 +11,7 @@ import {
   toolConnections,
   toolCatalogEntries,
 } from "@paperclipai/db";
-import { buildSlackAppManifest, SLACK_OPT_IN_SCOPE_GROUPS } from "@paperclipai/shared";
+import { buildSlackAppManifest, SLACK_DEFAULT_BOT_SCOPES, SLACK_OPT_IN_SCOPE_GROUPS } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../../__tests__/helpers/embedded-postgres.js";
 import { applySlackOptInManifestChange, canonicalJson, ensureSlackManifestScopesCurrent, recordInstalledSlackOptIns, slackInstallManifestHash } from "./opt-in-manifest.js";
 import { instanceSettingsService } from "../../../instance-settings.js";
@@ -56,6 +56,7 @@ describe("Slack opt-in manifest machinery", () => {
         slackApp: { appName: "maya-paperclip", botName: "maya", command: "/maya" },
         slackOptInScopeGroups: [],
         slackInstalledOptInScopeGroups: [],
+        slackInstalledDefaultScopes: [...SLACK_DEFAULT_BOT_SCOPES],
       },
     }).returning();
     const manifest = buildSlackAppManifest({
@@ -136,6 +137,7 @@ describe("Slack opt-in manifest machinery", () => {
       await pending;
       const [saved] = await db!.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
       expect(saved!.setup.slackInstalledOptInScopeGroups).toEqual(["file_upload"]);
+      expect(saved!.setup.slackInstalledDefaultScopes).toEqual([]);
       expect((saved!.setup as { runtimeGeneration?: number }).runtimeGeneration).toBe(9);
     });
 
@@ -157,6 +159,103 @@ describe("Slack opt-in manifest machinery", () => {
       [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
       expect(row!.errorCode).toBeNull();
       expect(row!.status).toBe("configured");
+    });
+
+    it("keeps errorCode pending on withdrawal when legacy install lacks default scopes snapshot", async () => {
+      const f = await fixture();
+      const app = f.endpoint.setup.slackApp;
+      const legacySetup = {
+        ...f.endpoint.setup,
+        slackInstalledDefaultScopes: undefined,
+        slackOptInScopeGroups: [],
+        slackInstalledOptInScopeGroups: [],
+      };
+      const oldManifest = buildSlackAppManifest({
+        app: app!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        status: "configured",
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      // 1. Toggle file_upload ON: becomes pending
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: { ...legacySetup, slackOptInScopeGroups: ["file_upload"] },
+      });
+      let [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+
+      // 2. Toggle file_upload OFF (back to installed): withdrawal on legacy without snapshot stays pending!
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: legacySetup,
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).toContain("im:write");
+      expect(botScopes).not.toContain("files:write");
+
+      // 3. ensureSlackManifestScopesCurrent leaves it pending
+      await ensureSlackManifestScopesCurrent(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: legacySetup,
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+    });
+
+    it("keeps errorCode pending on withdrawal when install has partial snapshot lacking im:write", async () => {
+      const f = await fixture();
+      const app = f.endpoint.setup.slackApp;
+      const partialSnapshotSetup = {
+        ...f.endpoint.setup,
+        slackInstalledDefaultScopes: ["chat:write", "commands"],
+        slackOptInScopeGroups: [],
+        slackInstalledOptInScopeGroups: [],
+      };
+      const oldManifest = buildSlackAppManifest({
+        app: app!,
+        agentName: "Maya",
+        webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: slackInstallManifestHash(oldManifest),
+        status: "configured",
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      // Toggle file_upload ON then OFF
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: { ...partialSnapshotSetup, slackOptInScopeGroups: ["file_upload"] },
+      });
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: partialSnapshotSetup,
+      });
+      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBe("slack_permissions_update_pending");
+    });
+
+    it("records both installed opt-in groups and installed default scopes from real granted scopes", async () => {
+      const f = await fixture();
+      await recordInstalledSlackOptIns(db!, {
+        endpointId: f.endpoint.id,
+        companyId: f.company.id,
+        grantedScopes: ["files:write", "chat:write", "im:write"],
+      });
+      const [saved] = await db!.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+      expect(saved!.setup.slackInstalledOptInScopeGroups).toEqual(["file_upload"]);
+      expect(saved!.setup.slackInstalledDefaultScopes).toEqual(["chat:write", "im:write"]);
     });
 
     it("scopes its registration writes by company", async () => {
@@ -497,7 +596,7 @@ describe("Slack opt-in manifest machinery", () => {
       })).rejects.toThrow("The saved Slack app manifest is unavailable. Resume Slack setup to update its permissions.");
     });
 
-    it("logs a warning and returns when app configuration fails schema parsing in ensureSlackManifestScopesCurrent", async () => {
+    it("throws conflict and logs a warning when app configuration fails schema parsing in ensureSlackManifestScopesCurrent", async () => {
       const f = await fixture();
       const oldManifest = buildSlackAppManifest({
         app: f.endpoint.setup.slackApp!,
@@ -512,19 +611,13 @@ describe("Slack opt-in manifest machinery", () => {
       }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
 
       // Invalid app config
-      await ensureSlackManifestScopesCurrent(db!, {
+      await expect(ensureSlackManifestScopesCurrent(db!, {
         endpointId: f.endpoint.id,
         companyId: f.company.id,
         agentName: "Maya",
         app: { invalid: true },
         setup: f.endpoint.setup,
-      });
-
-      const [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
-      // Did not update errorCode or manifest because parsedApp failed
-      expect(row!.errorCode).toBeNull();
-      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
-      expect(botScopes).not.toContain("im:write");
+      })).rejects.toThrow("The saved Slack app configuration is unavailable. Resume Slack setup to update its permissions.");
     });
 
     it("preserves scopes from manifest when slackOptInScopeGroups is undefined even if installed groups is defined", async () => {

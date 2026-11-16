@@ -25,8 +25,8 @@ Connect conversations require verified requester membership. Membership checks
 paginate and fail closed. Outbound DMs to eligible workspace members are standard
 for all agents when the installation has Slack's `im:write` grant; there is no
 separate Proactive DMs checkbox. The bot's DMs with any active workspace member are
-readable by agents and that read is not gated on im:write. Once PR #410 is deployed alongside this capability,
-inbound DM replies require the sender to be authorized to direct the endpoint's assigned
+readable by agents and that read is not gated on im:write. PR #410 must be deployed before
+rollout of this capability; once deployed, inbound DM replies require the sender to be authorized to direct the endpoint's assigned
 agent, rather than merely receiving a message.
 
 **Allowed Channels controls responses and writes, not reads.** Invite the bot to
@@ -220,8 +220,8 @@ default `im:write` grant. Existing installations without that grant require a
 manifest refresh and reconnect/reinstall; saving the new default does not update
 an existing bot token. The target must
 be a full member of the bot's own workspace: bots, deactivated users, guests and
-people from other workspaces are refused. With the same permission the agent can also
-read and post in those DMs. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Reply-reading behavior is unchanged from #308: a received DM is not enough to trigger work; with PR #410 deployed, the sender must be authorized to direct the assigned agent. Sharing private channel material is governed by bot membership/access and Allowed Channels write permissions rather than per-channel destination boundaries; private reads are recorded for audit. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
+people from other workspaces are refused. Only opening and posting in those DMs requires the
+`im:write` grant; reading existing bot DMs is not gated on `im:write` and remains unchanged. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Reply-reading behavior is unchanged from #308: a received DM is not enough to trigger work; with PR #410 deployed, the sender must be authorized to direct the assigned agent. Sharing private channel material is governed by bot membership/access and Allowed Channels write permissions rather than per-channel destination boundaries; private reads are recorded for audit. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
 not a Slack-specific timer. Routine results are sent explicitly through the tool;
 ordinary task finals are not automatically broadcast to Slack.
 

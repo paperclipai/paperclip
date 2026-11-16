@@ -7,6 +7,7 @@ import {
   normalizeSlackOptInGroups,
   slackAppConfigurationSchema,
   slackBotScopes,
+  SLACK_DEFAULT_BOT_SCOPES,
   slackManifestBotScopes,
   slackOptInGroupsForSetup,
   slackOptInGroupsFromScopes,
@@ -78,6 +79,7 @@ export async function applySlackOptInManifestChange(
     setup: {
       slackOptInScopeGroups?: readonly SlackOptInScopeGroup[];
       slackInstalledOptInScopeGroups?: readonly SlackOptInScopeGroup[];
+      slackInstalledDefaultScopes?: readonly string[];
     };
   },
 ): Promise<void> {
@@ -120,7 +122,12 @@ export async function applySlackOptInManifestChange(
     const rebuiltScopes = [...slackManifestBotScopes(manifest)].sort();
     const scopesChanged = JSON.stringify(storedScopes) !== JSON.stringify(rebuiltScopes);
     const withdrawingUnpushedChange =
-      row.status === "configured" && row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING;
+      row.status === "configured" &&
+      row.errorCode === SLACK_PERMISSIONS_UPDATE_PENDING &&
+      input.setup.slackInstalledDefaultScopes !== undefined &&
+      SLACK_DEFAULT_BOT_SCOPES.every((scope) =>
+        input.setup.slackInstalledDefaultScopes!.includes(scope),
+      );
     const mustRepush =
       (scopesChanged && !withdrawingUnpushedChange) ||
       (row.status !== "configured" &&
@@ -191,10 +198,23 @@ export async function recordInstalledSlackOptIns(
   input: { endpointId: string; companyId: string; grantedScopes: readonly string[] },
 ): Promise<void> {
   const installed = slackOptInGroupsFromScopes(input.grantedScopes);
+  const installedDefaults = SLACK_DEFAULT_BOT_SCOPES.filter((s) =>
+    input.grantedScopes.includes(s),
+  );
   await executor
     .update(chatEndpoints)
     .set({
-      setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackInstalledOptInScopeGroups}', ${JSON.stringify(installed)}::jsonb, true)`,
+      setup: sql`jsonb_set(
+        jsonb_set(
+          ${chatEndpoints.setup},
+          '{slackInstalledOptInScopeGroups}',
+          ${JSON.stringify(installed)}::jsonb,
+          true
+        ),
+        '{slackInstalledDefaultScopes}',
+        ${JSON.stringify(installedDefaults)}::jsonb,
+        true
+      )`,
       updatedAt: new Date(),
     })
     .where(
@@ -258,7 +278,9 @@ export async function ensureSlackManifestScopesCurrent(
       { endpointId: input.endpointId, companyId: input.companyId, error: parsedApp.error },
       "Invalid Slack app configuration for manifest scope update",
     );
-    return;
+    throw conflict(
+      "The saved Slack app configuration is unavailable. Resume Slack setup to update its permissions.",
+    );
   }
   const app = parsedApp.data;
   const manifest = buildSlackAppManifest({

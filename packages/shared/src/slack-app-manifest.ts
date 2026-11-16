@@ -169,7 +169,7 @@ export function slackRegistrationErrorMessage(code: string): string {
     slack_install_expired: "Slack authorization expired. Install the same app again to continue.",
     slack_install_failed: "Slack installation could not be completed. Authorize the same app again.",
     slack_install_identity_mismatch: "Slack returned a different app, workspace, or bot. Install the app created for this connection.",
-    slack_install_scopes_missing: "Slack did not grant all requested bot permissions. Ask the Slack workspace administrator to approve the direct-message (im:write) permission, or turn off an optional permission group if one is enabled in this agent's Slack setup.",
+    slack_install_scopes_missing: "Slack did not grant all requested bot permissions. Ask the Slack workspace administrator to approve missing permissions, such as the direct-message (im:write) permission, or turn off an optional permission group if one is enabled in this agent's Slack setup.",
     slack_bot_already_connected: "This Slack bot is already connected to Paperclip. Resume its existing connection or use a different app.",
     slack_install_token_invalid: "Slack rejected the saved bot credentials. Continue in Slack to authorize this app again.",
     slack_configuration_incomplete: "The app is installed, but Paperclip could not finish connecting it. Retry connecting the saved installation.",

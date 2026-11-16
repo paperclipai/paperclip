@@ -158,6 +158,7 @@ export interface ChatEndpoint {
     slackOptInScopeGroups?: import("@paperclipai/shared").SlackOptInScopeGroup[];
     /** The groups the live installation holds, until a reinstall lands. */
     slackInstalledOptInScopeGroups?: import("@paperclipai/shared").SlackOptInScopeGroup[];
+    slackInstalledDefaultScopes?: string[];
     slackOAuthCallbackUri?: string | null;
     webhookVerifiedAt?: string | null;
     webhookSecretConfigured?: boolean;

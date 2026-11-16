@@ -154,14 +154,14 @@ verification of this exemption remains separate from provider-fixture coverage.
 
 Inbound chat task authorization: an inbound message, direct reply, or provider action requires the acting user to hold permission to direct the endpoint's assigned agent (`tasks:assign`), rather than merely possessing channel access or receiving a bot DM. This gate applies across inbound surfaces including session stop, setup probe activation, reactions, task-control publications, provider effects, and interactive actions/commands. Instance administrators evaluate company membership grants without bypass (`ignoreInstanceAdmin: true`). External guests are authorized through their sponsor's grant (in GitHub: the configured per-person sponsor). Self-hosted endpoints without an acting user or sponsor identity remain open. Automatic events evaluate the configured responsible user rather than the webhook author at admission, at the late-bound task fence, and at wakeup authorization. Actor-initiated surfaces—reactions, message edits, control commands, and interactive actions—evaluate the person performing the action. Unauthorized callers are filtered silently without triggering task creation, comment creation, agent execution, or outbound notifications. Sources: [inbound authorization](../../server/src/services/chat-channels/inbound/authorization.ts) and [chat admission](../../server/src/services/chat-channels.ts).
 
-TECH-8783 Slack outbound DM access: `im:write` is part of the default bot-scope
+Slack outbound DM access: `im:write` is part of the default bot-scope
 request for every agent, so `slack_open_dm`/`slack_post_message` do not depend on
 a Proactive DMs opt-in. A legacy installation without the granted scope requires
 the privileged manifest refresh and reconnect/reinstall flow; a GET/capability
 refresh and an existing bot token do not grant it. Channel management and file
 upload remain optional groups. Outbound DM rollout requires deployment of
-TECH-8806 (PR #410), which adds per-agent inbound task authorization; until
-TECH-8806 is deployed, inbound message routing does not evaluate per-agent
+PR #410 before this capability, which adds per-agent inbound task authorization; until
+PR #410 is deployed, inbound message routing does not evaluate per-agent
 assignment grants. Sharing is governed by bot membership/access and Allowed
 Channels write permissions; private reads are recorded for audit only.
 Sources: [Slack scopes](../../packages/shared/src/slack-scopes.ts),

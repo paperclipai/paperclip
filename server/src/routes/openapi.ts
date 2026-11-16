@@ -844,6 +844,7 @@ const chatEndpointSetupResponseSchema = z
     slackAccount: slackAccountStateSchema.optional(),
     slackOptInScopeGroups: slackOptInScopeGroupsSchema.optional(),
     slackInstalledOptInScopeGroups: slackOptInScopeGroupsSchema.optional(),
+    slackInstalledDefaultScopes: z.array(z.string()).optional(),
     slackOAuthCallbackUri: z.string().nullable().optional(),
     slackApp: slackAppConfigurationSchema.optional(),
     testStartedAt: z.string().datetime().nullable().optional(),
