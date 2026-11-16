@@ -4,6 +4,7 @@ import { useOptionalCompany } from "../context/CompanyContext";
 import { useLocation, useNavigate } from "../lib/router";
 import { isOnboardingPath } from "../lib/onboarding-route";
 import { DeferredOverlay } from "./DeferredOverlay";
+import { invalidateOnboardingActions } from "./onboarding-actions";
 import { OnboardingOrganizationSwitch } from "./OnboardingOrganizationSwitch";
 
 const OnboardingWizard = lazy(() => import("./OnboardingWizard").then((module) => ({ default: module.OnboardingWizard })));
@@ -29,6 +30,7 @@ export function OnboardingWizardVariant() {
         companies={companyState.companies}
         selectedCompanyId={companyState.selectedCompanyId}
         onSelect={(company) => {
+          invalidateOnboardingActions();
           closeOnboarding();
           setOnboardingRouteDismissed(true);
           companyState.setSelectedCompanyId(company.id);
@@ -37,6 +39,7 @@ export function OnboardingWizardVariant() {
       />
     ) : null}
     <DeferredOverlay requested={requested} title="Setup" onClose={() => {
+      invalidateOnboardingActions();
       closeOnboarding();
       if (isOnboardingPath(pathname)) setOnboardingRouteDismissed(true);
     }}><OnboardingWizard /></DeferredOverlay>

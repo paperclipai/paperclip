@@ -91,9 +91,14 @@ describe("OnboardingOrganizationSwitch", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect.mock.calls[0]?.[0].issuePrefix).toBe("AND");
 
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     const current = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((item) =>
       item.textContent?.includes("BMC"),
     );
+    expect(current).toBeTruthy();
     onSelect.mockClear();
     await act(async () => {
       current?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));

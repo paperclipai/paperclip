@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ONBOARDING_AGENT_STEP } from "../lib/onboarding-route";
+import { invalidateOnboardingActions } from "./onboarding-actions";
 
 /**
  * Which step the onboarding wizard *lands on*, and what is allowed to move it
@@ -445,6 +446,36 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(document.body.textContent).toContain(
       "Organization created, but onboarding switched to another organization.",
     );
+  });
+
+  it("does not select a company created after the operator left setup", async () => {
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Continue",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    invalidateOnboardingActions();
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+    expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(currentStep()).toBe("other");
   });
 
   it("finishes advancing when the returned company was already adopted", async () => {
