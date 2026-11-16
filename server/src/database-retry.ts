@@ -28,6 +28,19 @@ export function isEndedDbPoolError(error: unknown): boolean {
 }
 
 /**
+ * PostgreSQL SQLSTATE codes that mean the running query named a column
+ * (`42703` undefined_column) or relation (`42P01` undefined_table) that the
+ * live database does not have. These signal schema drift — deployed code
+ * running ahead of the applied migrations — rather than a transient fault or a
+ * client-input error. postgres.js surfaces the SQLSTATE on `error.code`.
+ */
+const schemaDriftSqlStates = new Set(["42703", "42P01"]);
+
+export function isSchemaDriftError(error: unknown): boolean {
+  return hasDbConnectionErrorCode(error, (code) => schemaDriftSqlStates.has(code));
+}
+
+/**
  * Retry only an explicitly idempotent operation, such as a known read-only
  * lookup or receipt-protected synchronization. Neither a SQL prefix nor a
  * connection error message proves replay safety: a disconnected write may

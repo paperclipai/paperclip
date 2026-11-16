@@ -75,6 +75,59 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.error?.message).toBe("boom");
   });
 
+  it("tags a schema-drift (undefined column) 500 with a stable code", () => {
+    // postgres.js reports an undefined column as SQLSTATE 42703 on
+    // `error.code`; Drizzle wraps it. This is the AGE-759 production failure:
+    // deployed code selecting a column the migrated schema does not have. The
+    // response carries `code: "schema_drift"` so a recurrence is diagnosable
+    // from the HTTP response without server-log access.
+    const driverError = Object.assign(
+      new Error('column "attachment_max_bytes" does not exist'),
+      { code: "42703" },
+    );
+    const err = new Error('Failed query: select "attachment_max_bytes" from "companies"', {
+      cause: driverError,
+    });
+    const req = makeReq();
+    const res = makeRes() as any;
+
+    errorHandler(err, req, res, vi.fn() as unknown as NextFunction);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Internal server error",
+      code: "schema_drift",
+    });
+  });
+
+  it("tags a schema-drift (undefined table) 500 with a stable code", () => {
+    const driverError = Object.assign(
+      new Error('relation "companies" does not exist'),
+      { code: "42P01" },
+    );
+    const err = new Error('Failed query: select 1 from "companies"', { cause: driverError });
+    const req = makeReq();
+    const res = makeRes() as any;
+
+    errorHandler(err, req, res, vi.fn() as unknown as NextFunction);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Internal server error",
+      code: "schema_drift",
+    });
+  });
+
+  it("leaves an unrelated 500 without a schema-drift code", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+
+    errorHandler(new Error("boom"), req, res, vi.fn() as unknown as NextFunction);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+  });
+
   it("ends aborted client requests without reporting a crash", () => {
     // A closed tab or dropped network surfaces as `Error: aborted` with
     // ECONNRESET; there is no server fault and nobody left to answer.
