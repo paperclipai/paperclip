@@ -55,7 +55,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     expect(errors).toEqual([]);
   });
   afterAll(async () => { meter?.uninstall(); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); vi.unstubAllEnvs(); });
-  async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
+  async function start(options: { backstopMs?: number; fullBackstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
     tasks.clear();
