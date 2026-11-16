@@ -747,6 +747,43 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       taskId: reassigned!.id, agentAdapter: "process",
     }));
   });
+  describe("a newer continuation dropped before it started (Gate C C1 t169)", () => {
+    const seed = async (newer: Partial<typeof heartbeatRuns.$inferInsert>) => {
+      const companyId = randomUUID(), agentId = randomUUID(), runningId = randomUUID(), droppedId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Continuing task", issuePrefix: `C${companyId.slice(0, 7)}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Continuing agent", adapterType: "paperclip_runner" });
+      const [issue] = await db.insert(issues).values({ companyId, title: "Keep working",
+        status: "in_progress", assigneeAgentId: agentId }).returning();
+      const now = Date.now();
+      await db.insert(heartbeatRuns).values({ id: runningId, companyId, agentId, nativeIssueId: issue!.id, scopeKind: "issue",
+        status: "running", runtimeMode: "native", createdAt: new Date(now - 60_000), startedAt: new Date(now - 59_000) });
+      await db.insert(heartbeatRuns).values({ id: droppedId, companyId, agentId, nativeIssueId: issue!.id, scopeKind: "issue",
+        status: "cancelled", runtimeMode: "native", createdAt: new Date(now - 30_000), finishedAt: new Date(now - 30_000),
+        contextSnapshot: { issueId: issue!.id, wakeReason: "issue_continuation_needed" }, ...newer });
+      return { companyId, issue: issue!, runningId, droppedId };
+    };
+
+    it.each(["recovery_no_longer_needed", "issue_closed_before_start"])(
+      "shows the running run, not a failed attempt (%s)", async errorCode => {
+        const f = await seed({ errorCode, error: "The task no longer needed this recovery run when its turn came." });
+        for (const presentation of [(await taskInterruptionPresentations(db, f.companyId, [f.issue])).get(f.issue.id),
+          await taskInterruptionPresentation(db, f.issue)]) {
+          expect(presentation).toMatchObject({ state: "working", canRetry: false, observedRunId: f.runningId });
+        }
+      });
+
+    it("still reports a cancelled run that had started", async () => {
+      const f = await seed({ errorCode: "recovery_no_longer_needed", startedAt: new Date(Date.now() - 29_000) });
+      expect((await taskInterruptionPresentations(db, f.companyId, [f.issue])).get(f.issue.id))
+        .toMatchObject({ state: "failed", canRetry: true, observedRunId: f.droppedId });
+    });
+
+    it("still reports a run a person cancelled before it started", async () => {
+      const f = await seed({ errorCode: "cancelled", resultJson: { cancelledByActorType: "user", cancelledByUserId: "board" } });
+      expect((await taskInterruptionPresentations(db, f.companyId, [f.issue])).get(f.issue.id))
+        .toMatchObject({ state: "failed", canRetry: true, observedRunId: f.droppedId });
+    });
+  });
   // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
   // retry. Nothing failed, yet the banner offered a Retry that cannot help.
   it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait", "storage_unavailable_wait"])(
