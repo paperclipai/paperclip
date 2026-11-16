@@ -35,7 +35,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { DEFAULT_DISTILL_LOCAL_MODEL, NO_WORKER_MODEL, type as adapterType } from "../index.js";
-import { isDistillUnknownSessionError, parseDistillJsonl, type ParsedDistillRun } from "./parse.js";
+import {
+  createRuntimeEventExtractor,
+  isDistillUnknownSessionError,
+  parseDistillJsonl,
+  type DistillRuntimeEvent,
+  type ParsedDistillRun,
+} from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -259,7 +265,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -294,7 +300,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : [];
   const configuredCwd = asString(config.cwd, "");
   const effectiveWorkspaceCwd = workspaceSource === "agent_home" && configuredCwd ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // taskCwd pins one task to its own checkout (for example a per-card git worktree), ahead of the project workspace.
+  const taskCwd = asString(config.taskCwd, "").trim();
+  const cwd = taskCwd || effectiveWorkspaceCwd || configuredCwd || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const skillEntries = await readPaperclipRuntimeSkillEntries(config, moduleDir);
@@ -313,7 +321,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     refreshPaperclipWorkspaceEnvForExecution({
       env,
       envConfig,
-      workspaceCwd: effectiveWorkspaceCwd,
+      workspaceCwd: taskCwd || effectiveWorkspaceCwd,
       workspaceSource,
       workspaceId,
       workspaceRepoUrl,
@@ -435,6 +443,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           context,
         });
       }
+      const extractor = createRuntimeEventExtractor();
+      const emit = async (events: DistillRuntimeEvent[]) => {
+        for (const event of events) await onEvent?.({ ...event, stream: "stdout" });
+      };
       const proc = await runAdapterExecutionTargetProcess(runId, null, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -443,8 +455,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
+        onLog: async (stream, chunk) => {
+          await onLog(stream, chunk);
+          if (onEvent && stream === "stdout") await emit(extractor.push(chunk)).catch(() => undefined);
+        },
       });
+      if (onEvent) await emit(extractor.flush()).catch(() => undefined);
       return { proc, parsed: parseDistillJsonl(proc.stdout) };
     };
 

@@ -29,6 +29,7 @@ Don't use when:
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
+- taskCwd (string, optional): working directory for one task, usually set per issue through assigneeAdapterOverrides. Wins over the project workspace and cwd.
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file. Staged as \`Agents.md\` in the workspace when free, otherwise prepended to the prompt.
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Distill model id. Defaults to "auto", which routes across the saved accounts by remaining quota. Any id printed by \`distill models\` works.

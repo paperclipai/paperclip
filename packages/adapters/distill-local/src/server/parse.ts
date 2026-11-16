@@ -157,3 +157,69 @@ export function parseDistillModelsOutput(stdout: string): { defaultModel: string
   }
   return { defaultModel, models: Array.from(new Set(ids)) };
 }
+
+export type DistillRuntimeEvent = {
+  eventType: string;
+  message?: string;
+  payload: Record<string, unknown>;
+};
+
+// Live status for Paperclip's issue thread: maps stdout lines to `onEvent` payloads.
+// Streamed text arrives as tiny deltas, so it is kept as a rolling tail and emitted at most
+// once per `textIntervalMs`.
+export function createRuntimeEventExtractor({
+  textIntervalMs = 2000,
+  tailChars = 300,
+  now = Date.now,
+}: { textIntervalMs?: number; tailChars?: number; now?: () => number } = {}) {
+  let buffer = "";
+  let tail = "";
+  let tailType = "";
+  let lastTextAt = 0;
+
+  const textEvent = (): DistillRuntimeEvent[] => {
+    const text = tail.replace(/\s+/g, " ").trim();
+    tail = "";
+    if (!text) return [];
+    lastTextAt = now();
+    return [{ eventType: tailType, message: text, payload: { text } }];
+  };
+
+  const handle = (raw: string): DistillRuntimeEvent[] => {
+    const event = parseLine(raw.trim());
+    if (!event) return [];
+    const type = str(event.type);
+    if (type === "text" || type === "thought") {
+      const data = str(event.data);
+      if (!data) return [];
+      const eventType = type === "text" ? "assistant" : "thinking";
+      const out = tailType && tailType !== eventType ? textEvent() : [];
+      tailType = eventType;
+      tail = (tail + data).slice(-tailChars);
+      return now() - lastTextAt >= textIntervalMs ? out.concat(textEvent()) : out;
+    }
+    if (type === "tool_call") {
+      const toolName = str(event.toolName) || str(event.title);
+      return toolName ? textEvent().concat({ eventType: "tool_call", payload: { toolName } }) : [];
+    }
+    return [];
+  };
+
+  return {
+    push(chunk: string): DistillRuntimeEvent[] {
+      buffer += chunk;
+      const events: DistillRuntimeEvent[] = [];
+      let i: number;
+      while ((i = buffer.indexOf("\n")) !== -1) {
+        events.push(...handle(buffer.slice(0, i)));
+        buffer = buffer.slice(i + 1);
+      }
+      return events;
+    },
+    flush(): DistillRuntimeEvent[] {
+      const events = buffer.trim() ? handle(buffer) : [];
+      buffer = "";
+      return events.concat(textEvent());
+    },
+  };
+}
