@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from "node:fs/promises";
+import * as objectCache from "../services/repository-object-cache.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +9,7 @@ import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, r
 
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
-afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-repository-publication-"));
   directories.push(root);
@@ -21,6 +22,81 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+  it.each([false, true])("cancels a running clone and cleans staging (cached reference: %s)", async cached => {
+    const { root, target } = await fixture();
+    const bin = path.join(root, "bin");
+    const started = path.join(root, "clone-started.json");
+    const stopped = path.join(root, "clone-stopped");
+    await mkdir(bin);
+    await writeFile(path.join(bin, "git"), `#!${process.execPath}\n`
+      + `const fs = require('node:fs');\n`
+      + `fs.appendFileSync(${JSON.stringify(started)}, JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }) + '\\n');\n`
+      + `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(stopped)}, 'stopped'); process.exit(0); });\n`
+      + `setTimeout(() => process.exit(1), 5000);\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", bin);
+    const controller = new AbortController();
+    const reason = new Error("controller lease lost");
+    const beforePublish = vi.fn();
+    const resolveGitAuth = vi.fn(async () => null);
+    if (cached) {
+      vi.spyOn(objectCache, "resolveRepositoryObjectCache").mockResolvedValue({} as never);
+      vi.spyOn(objectCache, "readRepositoryObjectCache").mockResolvedValue(path.join(root, "reference"));
+    }
+    const result = materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://example.test/source.git", signal: controller.signal,
+      objectCacheCompanyDirectory: cached ? path.join(root, "cache") : undefined,
+      resolveGitAuth, beforePublish,
+    }).then(() => null, (error: unknown) => error);
+    let pid: number | undefined;
+    try {
+      await vi.waitFor(async () => {
+        const calls = (await readFile(started, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+        pid = calls[0].pid;
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args.includes("--reference-if-able")).toBe(cached);
+      });
+      controller.abort(reason);
+      const abortedAt = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await expect(Promise.race([result, new Promise(resolve => { timer = setTimeout(() => resolve("abort deadline exceeded"), 1500); })])).resolves.toBe(reason);
+      } finally { clearTimeout(timer); }
+      expect(Date.now() - abortedAt).toBeLessThan(1500);
+      await vi.waitFor(async () => expect(await readFile(stopped, "utf8")).toBe("stopped"));
+      expect((await readFile(started, "utf8")).trim().split("\n")).toHaveLength(1);
+      expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+      expect(beforePublish).not.toHaveBeenCalled();
+      expect(await stat(target).catch(() => null)).toBeNull();
+      expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+    } finally {
+      if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+      await result;
+    }
+  });
+  it("rejects a cancelled admission before creating staging or running Git", async () => {
+    const { root, target } = await fixture();
+    vi.stubEnv("PATH", path.join(root, "missing-git"));
+    const reason = new Error("run stopped");
+    const beforeCopy = vi.fn();
+    await expect(materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://example.test/source.git", signal: AbortSignal.abort(reason), beforeCopy,
+    })).rejects.toBe(reason);
+    expect(beforeCopy).not.toHaveBeenCalled();
+    expect(await stat(target).catch(() => null)).toBeNull();
+    expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+  });
+  it("does not publish when cancellation arrives during the publication check", async () => {
+    const { root, source, target } = await fixture();
+    const controller = new AbortController();
+    const reason = new Error("run stopped before publication");
+    await expect(materializeManagedProjectWorkspace(target, {
+      repoUrl: source, signal: controller.signal,
+      beforePublish: async () => controller.abort(reason),
+    })).rejects.toBe(reason);
+    expect(await stat(target).catch(() => null)).toBeNull();
+    expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+  });
+
   it("keeps managed repositories separate without requiring Git or touching an ancestor", async () => {
     const { source, target } = await fixture();
     await mkdir(target);

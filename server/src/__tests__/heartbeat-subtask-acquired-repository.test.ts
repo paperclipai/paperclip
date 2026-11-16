@@ -4,15 +4,17 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, lstat } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositories, executionWorkspaces,
   heartbeatRuns, issues, projectWorkspaces, projects,
 } from "@paperclipai/db";
+import { adapterExecutionControls } from "../services/adapter-execution-control.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { taskRepositoryRelativePath } from "../services/execution-workspace-repositories.js";
+import { materializeIsolatedTaskDirectory } from "../services/isolated-task-directory.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -52,9 +54,14 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
     await git("add", ".");
     await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "base");
     await writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
-      `const { spawnSync } = require('node:child_process'); const args = process.argv.slice(2);\n` +
+      `const { spawnSync } = require('node:child_process'); const fs = require('node:fs'); const args = process.argv.slice(2);\n` +
       `const remote = args.includes('clone') ? args.at(-2) : null;\n` +
       `if (remote && remote !== ${JSON.stringify(REPO_URL)}) process.exit(97);\n` +
+      `if (remote && fs.existsSync(${JSON.stringify(path.join(root, "block-clone"))})) {\n` +
+      `fs.writeFileSync(${JSON.stringify(path.join(root, "clone-started"))}, String(process.pid));\n` +
+      `fs.writeFileSync(${JSON.stringify(path.join(root, "clone-destination"))}, args.at(-1));\n` +
+      `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(path.join(root, "clone-terminated"))}, 'SIGTERM'); process.exit(143); });\n` +
+      `setTimeout(() => process.exit(96), 45000); return; }\n` +
       `if (remote) args[args.length - 2] = ${JSON.stringify(source)};\n` +
       `const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\n` +
       `if (result.status) process.exit(result.status);\n` +
@@ -76,6 +83,63 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
     vi.unstubAllEnvs();
     if (root) await rm(root, { recursive: true, force: true });
   });
+
+  it("aborts repository preparation when the controller lease expires before dispatch", async () => {
+    const companyId = randomUUID(), userId = randomUUID(), agentId = randomUUID();
+    const projectId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
+    const cwd = await materializeIsolatedTaskDirectory({ companyId, issueId });
+    const relativePath = taskRepositoryRelativePath(REPO_URL);
+    await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companies).values({ id: companyId, name: "Lease-lost preparation", issuePrefix: `S${companyId.slice(0, 6)}`,
+      defaultResponsibleUserId: userId, requireBoardApprovalForNewAgents: false });
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", membershipRole: "owner", status: "active" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Task repositories", status: "in_progress" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Prepare repository", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: userId });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, sourceIssueId: issueId,
+      name: "Task files", cwd, mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs",
+      metadata: { source: "task_session" } });
+    await db.update(issues).set({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "project_primary" } } }).where(eq(issues.id, issueId));
+    await db.insert(executionWorkspaceRepositories).values({ companyId, executionWorkspaceId: workspaceId,
+      requestedByIssueId: issueId, repoUrl: REPO_URL, repositoryIdentity: REPO_URL, relativePath,
+      requestedRef: "HEAD", state: "pending", requestKey: "lease-lost-repository", requestKeys: ["lease-lost-repository"] });
+    await writeFile(path.join(root, "block-clone"), "");
+    execute.mockResolvedValue({ exitCode: 0, signal: null, timedOut: false });
+    try {
+      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => {
+        expect(await readFile(path.join(root, "clone-started"), "utf8")).toMatch(/^\d+$/);
+      }, { timeout: 10_000 });
+      await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      await vi.waitFor(async () => {
+        expect(await readFile(path.join(root, "clone-terminated"), "utf8")).toBe("SIGTERM");
+      }, { timeout: 13_000 });
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(adapterExecutionControls.has(run!.id)).toBe(false);
+      expect(execute).not.toHaveBeenCalled();
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
+        resultJson: { controllerLeaseLoss: { cause: "renewal_rejected" },
+          cancellation: { source: "controller_lease", expected: false },
+          executionRecovery: { providerWorkStarted: false } } });
+      const [receipt] = await db.select().from(executionWorkspaceRepositories)
+        .where(and(eq(executionWorkspaceRepositories.companyId, companyId), eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId)));
+      expect(receipt.state).not.toBe("ready");
+      expect(await lstat(path.join(cwd, relativePath)).catch(() => null)).toBeNull();
+      const staging = await readFile(path.join(root, "clone-destination"), "utf8");
+      expect(await lstat(staging).catch(() => null)).toBeNull();
+    } finally {
+      await rm(path.join(root, "block-clone"), { force: true });
+      const pid = await readFile(path.join(root, "clone-started"), "utf8").catch(() => null);
+      if (pid) {
+        try { process.kill(Number(pid), "SIGTERM"); } catch {}
+      }
+    }
+  }, 30_000);
 
   it.each(["new", "older-release", "cross-project"] as const)("gives a %s child its own workspace and never the parent's checkout", async (shape) => {
     const companyId = randomUUID(), userId = randomUUID(), agentId = randomUUID(), projectId = randomUUID();

@@ -37,6 +37,20 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(context.cleanup);
   const { fixture, lowTrustPeer, standardPeer, privateTask, localPrivateClone } = context;
 
+  it("passes cancellation through admission and preserves the reason", async () => {
+    const f = await fixture();
+    await f.request({ kind: "url", url: "https://github.com/example/cancelled" });
+    const controller = new AbortController();
+    const reason = new Error("controller lease lost during admission");
+    acquisition.materialize.mockImplementationOnce(async (_cwd, input) => {
+      expect(input.signal).toBe(controller.signal);
+      controller.abort(reason);
+      input.signal.throwIfAborted();
+    });
+    await expect(f.service.prepareForAdmission({ ...f.admission, signal: controller.signal })).rejects.toBe(reason);
+    expect(acquisition.materialize).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["same_root", "ancestor", "descendant", "symlink"] as const)("ignores private historical filesystem owners at a %s path", async relation => {
     const f = await fixture(), peer = await standardPeer(f);
     await privateTask(f);
