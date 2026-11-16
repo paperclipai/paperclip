@@ -77,7 +77,7 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
-import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
+import { isTransientLockContention, postgresErrorCode, retryTransientLockContention } from "../transient-lock-contention.js";
 import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
 import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
@@ -928,12 +928,15 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         intent.actorId !== wake.requestedByActorId) return;
     const issueId = readNonEmptyString(wake.payload?.issueId);
     if (!issueId) return;
-    await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+    // NOWAIT contention aborts the whole admission transaction. Retry only
+    // after rollback, so every attempt rechecks the same saved receipt and
+    // current authority without waiting while holding the task row.
+    await retryTransientLockContention(() => enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
       requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
       payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,
         responsibleUserId: intent.actorId },
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
-      idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+      idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id));
     // Admission held this Retry because its source run's files are saved and
     // its accepted result can be applied. Apply it now instead of a new turn.
     // One key read after admission; the resumption runs only for a held Retry.
