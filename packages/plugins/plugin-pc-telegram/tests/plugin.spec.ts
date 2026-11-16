@@ -1,4 +1,8 @@
-import { createElement } from "react";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
@@ -16,6 +20,7 @@ import {
   OTHER_COMPANY_ID,
   createMockTelegram,
   inboundMessage,
+  seedCompanies,
   waitFor,
 } from "./support.js";
 
@@ -85,6 +90,7 @@ describe("pc-telegram plugin", () => {
       createClient: telegram.factory,
       resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
     });
+    seedCompanies(harness, COMPANY_ID);
     await restarted.definition.setup(harness.ctx);
     await waitFor(() => telegram.connectFromSessionCalls.length === 2);
     expect(telegram.connectFromSessionCalls[1]?.session).toBe(MOCK_SESSION);
@@ -115,6 +121,7 @@ describe("pc-telegram plugin", () => {
       createClient: telegram.factory,
       resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
     });
+    seedCompanies(harness, COMPANY_ID, OTHER_COMPANY_ID);
     await restarted.definition.setup(harness.ctx);
     await waitFor(() => telegram.connectFromSessionCalls.length === 4);
     expect(telegram.connectFromSessionCalls.slice(2).map((call) => call.companyId).sort()).toEqual(
@@ -143,6 +150,7 @@ describe("pc-telegram plugin", () => {
       createClient: telegram.factory,
       resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
     });
+    seedCompanies(harness, COMPANY_ID);
     await restarted.definition.setup(harness.ctx);
     await waitFor(() => telegram.connectStarted === 2);
     expect(await restarted.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
@@ -362,6 +370,38 @@ describe("pc-telegram plugin", () => {
     expect(status.state).toBe("idle");
   });
 
+  it("keeps the newer login when an older login is cancelled while connecting", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    telegram.holdConnect();
+    const older = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin(undefined, "session-old");
+    await waitFor(() => telegram.connectStarted === 1);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin(undefined, "session-new");
+    await waitFor(() => telegram.connectStarted === 2);
+    const cancelPromise = harness.performAction("cancel-login", {
+      companyId: COMPANY_ID,
+      loginId: older.loginId,
+    }, boardUser);
+    for (let step = 0; step < 20; step += 1) await Promise.resolve();
+    telegram.releaseConnect();
+    await cancelPromise;
+    await waitFor(() => telegram.connectFromSessionCalls.length === 2);
+    const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; paused: boolean }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(telegram.connectFromSessionCalls.map((call) => call.session)).toEqual(["session-old", "session-new"]);
+    expect(overview.connections).toEqual([
+      expect.objectContaining({ telegramUserId: "1001", hasSession: true, paused: false }),
+    ]);
+  });
+
   it("does not attach an account that was disconnected while reconnect was in flight", async () => {
     const telegram = createMockTelegram();
     const plugin = createTelegramUserClientPlugin({
@@ -379,6 +419,7 @@ describe("pc-telegram plugin", () => {
       createClient: telegram.factory,
       resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
     });
+    seedCompanies(harness, COMPANY_ID);
     await restarted.definition.setup(harness.ctx);
     await waitFor(() => telegram.connectStarted === 2);
     await harness.performAction("disconnect-account", {
@@ -442,5 +483,186 @@ describe("pc-telegram plugin", () => {
     expect(html).toContain("var(--text-sm--line-height)");
     expect(html).not.toContain("calc(");
     expect(html).not.toContain("220");
+  });
+
+  it("does not download inbound media for a paused account or past the peer cap", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    let downloads = 0;
+    await telegram.deliver(inboundMessage({
+      text: "",
+      peerId: "media-peer",
+      attachments: [],
+      loadAttachments: async () => {
+        downloads += 1;
+        const bytes = new Uint8Array([1, 2, 3, 4]);
+        return [{
+          id: "voice-live",
+          filename: "voice.ogg",
+          mimeType: "audio/ogg",
+          byteLength: bytes.byteLength,
+          kind: "voice" as const,
+          bytes,
+        }];
+      },
+    }));
+    expect(downloads).toBe(1);
+    await harness.performAction("set-paused", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      paused: true,
+    }, boardUser);
+    await telegram.deliver(inboundMessage({
+      text: "paused",
+      peerId: "media-peer",
+      messageId: "2",
+      attachments: [],
+      loadAttachments: async () => {
+        downloads += 1;
+        return [];
+      },
+    }));
+    expect(downloads).toBe(1);
+    await harness.performAction("set-paused", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      paused: false,
+    }, boardUser);
+    downloads = 0;
+    for (let index = 0; index < 9; index += 1) {
+      await telegram.deliver(inboundMessage({
+        messageId: String(index + 10),
+        text: "",
+        peerId: "capped-peer",
+        attachments: [],
+        loadAttachments: async () => {
+          downloads += 1;
+          return [];
+        },
+      }));
+    }
+    expect(downloads).toBe(8);
+  });
+
+  it("drops the previous company's login when the settings page changes company", async () => {
+    const requireFromServer = createRequire(resolve(dirname(fileURLToPath(import.meta.url)), "../../../../server/package.json"));
+    const { JSDOM } = requireFromServer("jsdom") as {
+      JSDOM: new (html: string, options?: { url?: string }) => { window: Window & typeof globalThis };
+    };
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+    const view = dom.window;
+    const previous = {
+      window: globalThis.window,
+      document: globalThis.document,
+      HTMLElement: globalThis.HTMLElement,
+      Node: globalThis.Node,
+      MutationObserver: globalThis.MutationObserver,
+    };
+    const restoreDom = () => {
+      globalThis.window = previous.window;
+      globalThis.document = previous.document;
+      globalThis.HTMLElement = previous.HTMLElement;
+      globalThis.Node = previous.Node;
+      globalThis.MutationObserver = previous.MutationObserver;
+    };
+    globalThis.window = view as unknown as Window & typeof globalThis;
+    globalThis.document = view.document;
+    globalThis.HTMLElement = view.HTMLElement;
+    globalThis.Node = view.Node;
+    globalThis.MutationObserver = view.MutationObserver;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const passwordStatus = { state: "password_required" as const, loginId: "login-a", hint: "cloud" };
+    const passwordStream = {
+      events: [] as unknown[],
+      lastEvent: { status: passwordStatus },
+      connecting: false,
+      connected: false,
+      error: null,
+      close() {},
+    };
+    const idleStream = {
+      events: [] as unknown[],
+      lastEvent: null,
+      connecting: false,
+      connected: false,
+      error: null,
+      close() {},
+    };
+    const overview = {
+      data: { pluginId: PLUGIN_ID, credentialsConfigured: true, connections: [] as unknown[] },
+      loading: false,
+      error: null,
+      refresh() {},
+    };
+    (globalThis as TestBridgeGlobal).__paperclipPluginBridge__ = {
+      react: { createElement },
+      sdkUi: {
+        usePluginData: (key: string, params?: { companyId?: string }) => {
+          if (key === "login-status") {
+            return {
+              data: params?.companyId === COMPANY_ID ? passwordStatus : { state: "idle" as const },
+              loading: false,
+              error: null,
+              refresh() {},
+            };
+          }
+          return overview;
+        },
+        usePluginAction: () => async () => ({}),
+        usePluginStream: (_channel: string, params?: { companyId?: string }) => (
+          params?.companyId === COMPANY_ID ? passwordStream : idleStream
+        ),
+        AssigneePicker: () => createElement("div", null, "Assignee"),
+        StatusBadge: ({ label }: { label: string }) => createElement("span", null, label),
+      },
+    };
+    const host = view.document.createElement("div");
+    view.document.body.appendChild(host);
+    let root: Root | null = null;
+    const page = (companyId: string) => createElement(TelegramConnectPage, {
+      context: {
+        companyId,
+        companyPrefix: "AND",
+        projectId: null,
+        entityId: null,
+        entityType: null,
+        userId: "user-1",
+      },
+    });
+    try {
+      root = createRoot(host as unknown as HTMLElement);
+      await act(async () => {
+        root?.render(page(COMPANY_ID));
+      });
+      const input = view.document.querySelector("input[name='cloud-password']") as HTMLInputElement | null;
+      expect(input).not.toBeNull();
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype, "value")?.set;
+        setter?.call(input, "secret");
+        input?.dispatchEvent(new view.Event("input", { bubbles: true }));
+      });
+      expect(input?.value).toBe("secret");
+      await act(async () => {
+        root?.render(page(OTHER_COMPANY_ID));
+      });
+      expect(view.document.querySelector("input[name='cloud-password']")).toBeNull();
+      expect(view.document.body.textContent).not.toContain("secret");
+      expect(view.document.body.textContent).toContain("Connect Telegram");
+    } finally {
+      if (root) {
+        await act(async () => {
+          root?.unmount();
+        });
+      }
+      restoreDom();
+    }
   });
 });

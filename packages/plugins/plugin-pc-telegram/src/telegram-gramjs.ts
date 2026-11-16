@@ -1,3 +1,4 @@
+import { MAX_INBOUND_MEDIA_BYTES } from "./constants.js";
 import { qrImageDataUrl, telegramQrUrl } from "./qr.js";
 import type {
   InboundAttachment,
@@ -84,7 +85,9 @@ function readEventMessage(event: unknown): {
   peerId?: unknown;
   sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown };
   media?: unknown;
-  downloadMedia?: () => Promise<Buffer | Uint8Array | string | null>;
+  downloadMedia?: (params?: {
+    progressCallback?: (downloaded: unknown, total: unknown) => void;
+  }) => Promise<Buffer | Uint8Array | string | null | undefined>;
 } | null {
   if (!event || typeof event !== "object") return null;
   const record = event as { message?: unknown; isPrivate?: boolean; isGroup?: boolean; isChannel?: boolean };
@@ -94,11 +97,59 @@ function readEventMessage(event: unknown): {
   return record;
 }
 
-async function collectAttachments(message: NonNullable<ReturnType<typeof readEventMessage>>): Promise<InboundAttachment[]> {
+function asByteCount(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (value && typeof value === "object" && "toString" in value && typeof value.toString === "function") {
+    const parsed = Number(value.toString());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function declaredMediaBytes(media: unknown): number | null {
+  if (!media || typeof media !== "object") return null;
+  const record = media as {
+    size?: unknown;
+    document?: { size?: unknown } | null;
+    photo?: { sizes?: Array<{ size?: unknown } | null> | null } | null;
+  };
+  const direct = asByteCount(record.size);
+  if (direct != null) return direct;
+  const documentSize = asByteCount(record.document?.size);
+  if (documentSize != null) return documentSize;
+  const sizes = record.photo?.sizes;
+  if (!Array.isArray(sizes)) return null;
+  let largest: number | null = null;
+  for (const size of sizes) {
+    const bytes = asByteCount(size?.size);
+    if (bytes == null) continue;
+    if (largest == null || bytes > largest) largest = bytes;
+  }
+  return largest;
+}
+
+export async function collectInboundAttachments(
+  message: NonNullable<ReturnType<typeof readEventMessage>>,
+): Promise<InboundAttachment[]> {
   if (!message.media || typeof message.downloadMedia !== "function") return [];
-  const downloaded = await message.downloadMedia();
+  const declared = declaredMediaBytes(message.media);
+  if (declared != null && declared > MAX_INBOUND_MEDIA_BYTES) return [];
+  const downloaded = await message.downloadMedia({
+    progressCallback: (downloadedBytes) => {
+      const received = asByteCount(downloadedBytes);
+      if (received != null && received > MAX_INBOUND_MEDIA_BYTES) {
+        throw new Error("Telegram media exceeds the attachment limit.");
+      }
+    },
+  });
   if (!downloaded) return [];
   const bytes = typeof downloaded === "string" ? Buffer.from(downloaded) : Buffer.from(downloaded);
+  if (bytes.byteLength > MAX_INBOUND_MEDIA_BYTES) return [];
   const media = message.media as { className?: string; mimeType?: string; fileName?: string };
   const className = media.className ?? "";
   const kind = className.includes("Document") && (media.mimeType ?? "").startsWith("audio/")
@@ -193,7 +244,6 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
         const sender = message.sender;
         const peerId = asUserId(sender?.id ?? message.peerId);
-        const attachments = await collectAttachments(message);
         const inbound: InboundDirectMessage = {
           companyId: input.companyId,
           accountId: account.telegramUserId,
@@ -204,7 +254,8 @@ export function createGramJsClientFactory(): TelegramClientFactory {
           isPrivate: true,
           isGroup: false,
           isOutgoing: false,
-          attachments,
+          attachments: [],
+          ...(message.media ? { loadAttachments: () => collectInboundAttachments(message) } : {}),
         };
         await input.onInbound(inbound);
       }, new gram.events.NewMessage({ incoming: true }));

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { DIALOG_ORIGIN_KIND } from "../src/constants.js";
-import { ingestInboundMessage, shouldAcceptInbound } from "../src/inbound.js";
+import { DIALOG_ORIGIN_KIND, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
+import { inboundShapeAllowed, ingestInboundMessage, shouldAcceptInbound, takePeerMediaSlot } from "../src/inbound.js";
+import { collectInboundAttachments } from "../src/telegram-gramjs.js";
 import manifest from "../src/manifest.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import {
@@ -54,7 +55,7 @@ describe("inbound issue mapping", () => {
     expect(containsSecretMaterial(comments, [MOCK_SESSION])).toBe(false);
   });
 
-  it("stores inbound voice bytes in plugin file storage, not the issue body", async () => {
+  it("links inbound voice without keeping the bytes in plugin state", async () => {
     const harness = createTestHarness({ manifest });
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const issue = await ingestInboundMessage(harness.ctx, connection, inboundMessage({
@@ -77,11 +78,7 @@ describe("inbound issue mapping", () => {
       scopeId: COMPANY_ID,
       namespace: "inbound-files",
       stateKey: "voice-1",
-    })).toMatchObject({
-      filename: "voice.ogg",
-      mimeType: "audio/ogg",
-      kind: "voice",
-    });
+    })).toBeUndefined();
   });
 
   it("keeps the dialog text when an attachment is rejected", async () => {
@@ -113,6 +110,89 @@ describe("inbound issue mapping", () => {
     expect(issue?.description).toContain("Attachment exceeds 4194304 bytes");
     expect(issue?.description).not.toContain("[Attachment: clip.bin](");
     expect(wakeups).toBe(1);
+    expect(harness.getState({
+      scopeKind: "company",
+      scopeId: COMPANY_ID,
+      namespace: "inbound-files",
+      stateKey: "clip-1",
+    })).toBeUndefined();
+  });
+
+  it("drops media above the byte cap before creating an attachment", async () => {
+    const harness = createTestHarness({ manifest });
+    let created = 0;
+    harness.ctx.issues.createAttachment = async () => {
+      created += 1;
+      throw new Error("should not attach");
+    };
+    const issue = await ingestInboundMessage(harness.ctx, connection, inboundMessage({
+      text: "Need a quote",
+      attachments: [{
+        id: "huge",
+        filename: "huge.bin",
+        mimeType: "application/octet-stream",
+        byteLength: MAX_INBOUND_MEDIA_BYTES + 1,
+        kind: "file",
+        bytes: new Uint8Array([1]),
+      }],
+    }));
+    expect(created).toBe(0);
+    expect(issue?.description).toContain("Need a quote");
+    expect(issue?.description).not.toContain("huge.bin");
+  });
+
+  it("allows empty text when the chat shape is acceptable", () => {
+    expect(inboundShapeAllowed(connection, inboundMessage({ text: "", attachments: [] }))).toBe(true);
+    expect(shouldAcceptInbound(connection, inboundMessage({ text: "", attachments: [] }))).toBe(false);
+    expect(inboundShapeAllowed({ ...connection, paused: true }, inboundMessage())).toBe(false);
+  });
+
+  it("limits media downloads per peer", () => {
+    const peerKey = "company:account:slot-peer";
+    const now = 5_000_000;
+    for (let index = 0; index < 8; index += 1) {
+      expect(takePeerMediaSlot(peerKey, now)).toBe(true);
+    }
+    expect(takePeerMediaSlot(peerKey, now)).toBe(false);
+    expect(takePeerMediaSlot(peerKey, now + 60_000)).toBe(true);
+  });
+
+  it("does not download media whose declared size is over the cap", async () => {
+    let downloads = 0;
+    const attachments = await collectInboundAttachments({
+      id: 1,
+      media: {
+        className: "MessageMediaDocument",
+        document: { size: MAX_INBOUND_MEDIA_BYTES + 1 },
+        mimeType: "application/octet-stream",
+      },
+      downloadMedia: async () => {
+        downloads += 1;
+        return Buffer.from("nope");
+      },
+    });
+    expect(downloads).toBe(0);
+    expect(attachments).toEqual([]);
+  });
+
+  it("drops a downloaded buffer that is still over the cap", async () => {
+    const attachments = await collectInboundAttachments({
+      id: 3,
+      media: { className: "MessageMediaPhoto", photo: { sizes: [{ size: 32 }, { size: 128 }] } },
+      downloadMedia: async () => Buffer.alloc(MAX_INBOUND_MEDIA_BYTES + 1),
+    });
+    expect(attachments).toEqual([]);
+  });
+
+  it("stops a download once the received byte count passes the cap", async () => {
+    await expect(collectInboundAttachments({
+      id: 2,
+      media: { className: "MessageMediaDocument", mimeType: "application/octet-stream" },
+      downloadMedia: async (params) => {
+        params?.progressCallback?.(MAX_INBOUND_MEDIA_BYTES + 1, MAX_INBOUND_MEDIA_BYTES + 1);
+        return Buffer.from("late");
+      },
+    })).rejects.toThrow(/attachment limit/);
   });
 
   it("reopens a completed dialog before waking the assigned agent", async () => {

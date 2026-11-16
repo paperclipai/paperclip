@@ -156,21 +156,21 @@ export async function patchConnection(
 }
 
 export async function listKnownCompanyIds(ctx: PluginContext): Promise<string[]> {
-  const ids = new Set<string>();
+  const ids: string[] = [];
+  const seen = new Set<string>();
   const limit = 100;
   let offset = 0;
   for (;;) {
-    const records = await ctx.entities.list({
-      entityType: ACCOUNT_ENTITY_TYPE,
-      scopeKind: "company",
-      limit,
-      offset,
-    });
-    for (const record of records) {
-      if (record.scopeId) ids.add(record.scopeId);
+    const page = await ctx.companies.list({ limit, offset });
+    let added = 0;
+    for (const company of page) {
+      if (!company.id || seen.has(company.id)) continue;
+      seen.add(company.id);
+      ids.push(company.id);
+      added += 1;
     }
-    if (records.length < limit) break;
-    offset += records.length;
+    if (page.length < limit || added === 0) break;
+    offset += page.length;
   }
-  return [...ids];
+  return ids;
 }

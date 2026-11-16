@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Issue } from "@paperclipai/plugin-sdk";
+import type { TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type {
   InboundDirectMessage,
   LiveTelegramAccount,
@@ -109,10 +110,10 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   let inboundHandler: ((message: InboundDirectMessage) => Promise<void>) | null = null;
   let qrCallback: ((qr: LoginQrPayload) => void) | null = null;
   let passwordCallback: ((hint: string | null) => void) | null = null;
-  let latestSignIn: {
+  const pendingSignIns: Array<{
     resolve: (value: SignedInSession) => void;
     reject: (error: unknown) => void;
-  } | null = null;
+  }> = [];
   const accountsBySession = new Map<string, PublicTelegramAccount>();
 
   const factory: TelegramClientFactory = {
@@ -124,7 +125,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
         resolveSignIn = resolve;
         rejectSignIn = reject;
       });
-      latestSignIn = { resolve: resolveSignIn, reject: rejectSignIn };
+      pendingSignIns.push({ resolve: resolveSignIn, reject: rejectSignIn });
       qrCallback = input.onQr;
       passwordCallback = input.onPasswordRequired;
       input.onQr({ imageDataUrl: "data:image/svg+xml;utf8,qr" });
@@ -183,7 +184,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
     },
     completeLogin(nextAccount = account, session = MOCK_SESSION) {
       accountsBySession.set(session, nextAccount);
-      latestSignIn?.resolve({ session, account: nextAccount });
+      pendingSignIns.shift()?.resolve({ session, account: nextAccount });
     },
     requirePassword(hint = "hint") {
       passwordCallback?.(hint);
@@ -214,4 +215,10 @@ export function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<voi
 
 export function newId(): string {
   return randomUUID();
+}
+
+export function seedCompanies(harness: Pick<TestHarness, "seed">, ...ids: string[]) {
+  harness.seed({
+    companies: ids.map((id, index) => ({ id, name: `Company ${index + 1}` })) as never,
+  });
 }

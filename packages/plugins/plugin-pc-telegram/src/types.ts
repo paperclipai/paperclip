@@ -53,6 +53,7 @@ export type InboundDirectMessage = {
   isGroup: boolean;
   isOutgoing: boolean;
   attachments: InboundAttachment[];
+  loadAttachments?: () => Promise<InboundAttachment[]>;
 };
 
 export type LoginQrPayload = {

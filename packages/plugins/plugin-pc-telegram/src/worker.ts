@@ -28,7 +28,7 @@ import {
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { ingestInboundMessage } from "./inbound.js";
+import { inboundShapeAllowed, ingestInboundMessage, takePeerMediaSlot } from "./inbound.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
 import { authorizeSendText } from "./send.js";
@@ -151,6 +151,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     account: { telegramUserId: string; username: string | null; displayName: string },
     secretId: string,
   ): Promise<void> {
+    const current = await findConnection(ctx, companyId, account.telegramUserId, liveAccountIds());
+    if (current?.sessionSecretId && current.sessionSecretId !== secretId) {
+      if (secretId) await deleteAccountSession(ctx, companyId, secretId);
+      return;
+    }
     if (secretId) await deleteAccountSession(ctx, companyId, secretId);
     await upsertConnection(ctx, {
       companyId,
@@ -192,8 +197,26 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       });
       return;
     }
+    let attachments = message.attachments;
+    if (message.loadAttachments) {
+      attachments = [];
+      if (inboundShapeAllowed(connection, message)) {
+        const peerKey = `${message.companyId}:${message.accountId}:${message.peerId}`;
+        if (takePeerMediaSlot(peerKey)) {
+          try {
+            attachments = await message.loadAttachments();
+          } catch (error) {
+            log.warn("Skipped inbound Telegram media", {
+              companyId: message.companyId,
+              accountId: message.accountId,
+              message: error instanceof Error ? error.message : "unknown error",
+            });
+          }
+        }
+      }
+    }
     try {
-      await ingestInboundMessage(ctx, connection, message);
+      await ingestInboundMessage(ctx, connection, { ...message, attachments });
     } catch (error) {
       log.error("Failed to ingest Telegram inbound message", {
         companyId: message.companyId,
@@ -218,7 +241,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   function launchReconnect(ctx: PluginContext, companyId?: string): Promise<void> {
     if (shuttingDown) return Promise.resolve();
     const log = wrapLogger(ctx);
-    const job = (companyId ? reconnectCompany(ctx, companyId) : reconnectAll(ctx)).catch((error: unknown) => {
+    const work = companyId
+      ? ctx.runInCompanyBackground(companyId, () => reconnectCompany(ctx, companyId))
+      : reconnectAll(ctx);
+    const job = work.catch((error: unknown) => {
       log.error("Failed to reconnect Telegram accounts", {
         message: error instanceof Error ? error.message : "unknown error",
       });
@@ -287,7 +313,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     const companyIds = await listKnownCompanyIds(ctx);
     for (const companyId of companyIds) {
       if (shuttingDown) return;
-      await reconnectCompany(ctx, companyId);
+      await ctx.runInCompanyBackground(companyId, () => reconnectCompany(ctx, companyId));
     }
   }
 

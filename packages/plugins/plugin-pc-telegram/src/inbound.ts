@@ -1,5 +1,12 @@
 import type { Issue, PluginContext } from "@paperclipai/plugin-sdk";
-import { DIALOG_ORIGIN_KIND, DEFAULT_INCOMING_MODE, FILE_NAMESPACE } from "./constants.js";
+import {
+  DIALOG_ORIGIN_KIND,
+  DEFAULT_INCOMING_MODE,
+  FILE_NAMESPACE,
+  INBOUND_MEDIA_WINDOW_MS,
+  MAX_INBOUND_MEDIA_BYTES,
+  MAX_INBOUND_MEDIA_PER_PEER,
+} from "./constants.js";
 import type { InboundAttachment, InboundDirectMessage, TelegramConnection } from "./types.js";
 
 export function dialogOriginId(accountId: string, peerId: string): string {
@@ -16,13 +23,35 @@ export function parseDialogOriginId(originId: string | null | undefined): { acco
   };
 }
 
-export function shouldAcceptInbound(connection: TelegramConnection, message: InboundDirectMessage): boolean {
+export function inboundShapeAllowed(connection: TelegramConnection, message: InboundDirectMessage): boolean {
   if (connection.paused) return false;
   if (connection.incomingMode !== DEFAULT_INCOMING_MODE) return false;
   if (connection.telegramUserId !== message.accountId) return false;
   if (connection.companyId !== message.companyId) return false;
-  if (!message.isPrivate || message.isGroup || message.isOutgoing) return false;
+  return message.isPrivate && !message.isGroup && !message.isOutgoing;
+}
+
+export function shouldAcceptInbound(connection: TelegramConnection, message: InboundDirectMessage): boolean {
+  if (!inboundShapeAllowed(connection, message)) return false;
   return message.text.trim().length > 0 || message.attachments.length > 0;
+}
+
+const peerMediaHits = new Map<string, number[]>();
+
+export function takePeerMediaSlot(peerKey: string, now = Date.now()): boolean {
+  const recent = (peerMediaHits.get(peerKey) ?? []).filter((at) => now - at < INBOUND_MEDIA_WINDOW_MS);
+  if (recent.length >= MAX_INBOUND_MEDIA_PER_PEER) {
+    peerMediaHits.set(peerKey, recent);
+    return false;
+  }
+  recent.push(now);
+  peerMediaHits.set(peerKey, recent);
+  return true;
+}
+
+function withinMediaCap(attachment: InboundAttachment): boolean {
+  return attachment.byteLength <= MAX_INBOUND_MEDIA_BYTES
+    && attachment.bytes.byteLength <= MAX_INBOUND_MEDIA_BYTES;
 }
 
 const dialogLocks = new Map<string, Promise<void>>();
@@ -74,34 +103,31 @@ export function formatNewIssueTitle(message: InboundDirectMessage): string {
   return `Telegram · ${name}`;
 }
 
-export async function storeInboundFiles(
+export function storeInboundFiles(
+  attachments: InboundAttachment[],
+): Array<Pick<InboundAttachment, "id" | "filename" | "mimeType" | "byteLength" | "kind">> {
+  return attachments.map((attachment) => ({
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    byteLength: attachment.byteLength,
+    kind: attachment.kind,
+  }));
+}
+
+async function discardInboundFiles(
   ctx: PluginContext,
   companyId: string,
   attachments: InboundAttachment[],
-): Promise<Array<Pick<InboundAttachment, "id" | "filename" | "mimeType" | "byteLength" | "kind">>> {
-  const stored = [];
+): Promise<void> {
   for (const attachment of attachments) {
-    await ctx.state.set({
+    await ctx.state.delete({
       scopeKind: "company",
       scopeId: companyId,
       namespace: FILE_NAMESPACE,
       stateKey: attachment.id,
-    }, {
-      filename: attachment.filename,
-      mimeType: attachment.mimeType,
-      byteLength: attachment.byteLength,
-      kind: attachment.kind,
-      contentBase64: Buffer.from(attachment.bytes).toString("base64"),
-    });
-    stored.push({
-      id: attachment.id,
-      filename: attachment.filename,
-      mimeType: attachment.mimeType,
-      byteLength: attachment.byteLength,
-      kind: attachment.kind,
     });
   }
-  return stored;
 }
 
 const CLOSED_DIALOG_STATUSES = new Set(["backlog", "done", "cancelled"]);
@@ -144,8 +170,12 @@ async function attachInboundFiles(
 export async function ingestInboundMessage(
   ctx: PluginContext,
   connection: TelegramConnection,
-  message: InboundDirectMessage,
+  input: InboundDirectMessage,
 ): Promise<Issue | null> {
+  const message: InboundDirectMessage = {
+    ...input,
+    attachments: input.attachments.filter(withinMediaCap),
+  };
   if (!shouldAcceptInbound(connection, message)) return null;
   const originId = dialogOriginId(message.accountId, message.peerId);
   return withDialogLock(`${connection.companyId}:${originId}`, () => ingestDialog(ctx, connection, message, originId));
@@ -157,7 +187,20 @@ async function ingestDialog(
   message: InboundDirectMessage,
   originId: string,
 ): Promise<Issue | null> {
-  const storedFiles = await storeInboundFiles(ctx, connection.companyId, message.attachments);
+  try {
+    return await writeDialog(ctx, connection, message, originId);
+  } finally {
+    await discardInboundFiles(ctx, connection.companyId, message.attachments);
+  }
+}
+
+async function writeDialog(
+  ctx: PluginContext,
+  connection: TelegramConnection,
+  message: InboundDirectMessage,
+  originId: string,
+): Promise<Issue | null> {
+  const storedFiles = storeInboundFiles(message.attachments);
   const existing = await ctx.issues.list({
     companyId: connection.companyId,
     originKind: DIALOG_ORIGIN_KIND,

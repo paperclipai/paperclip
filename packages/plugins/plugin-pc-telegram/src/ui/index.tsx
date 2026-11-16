@@ -110,7 +110,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
-export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps) {
+export function TelegramConnectPage(props: PluginCompanySettingsPageProps) {
+  return <TelegramCompanyConnect key={props.context.companyId ?? ""} {...props} />;
+}
+
+function TelegramCompanyConnect({ context }: PluginCompanySettingsPageProps) {
   const companyId = context.companyId;
   const overview = usePluginData<OverviewData>("overview", companyId ? { companyId } : undefined);
   const startLogin = usePluginAction("start-login");
