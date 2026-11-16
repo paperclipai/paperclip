@@ -1,3 +1,4 @@
+import { isIPv4 } from "node:net";
 import path from "node:path";
 import type { Command } from "commander";
 import pc from "picocolors";
@@ -22,7 +23,8 @@ interface OpenOptions {
 function isLoopbackBase(apiBase: string): boolean {
   try {
     const host = new URL(apiBase).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return host === "localhost" || host === "::1" || host.startsWith("127.");
+    if (host === "localhost" || host === "::1") return true;
+    return isIPv4(host) && host.split(".")[0] === "127";
   } catch {
     return false;
   }

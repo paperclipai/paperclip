@@ -22,6 +22,8 @@ describe("paperclipai open", () => {
 
   it("refuses to sign in to a Paperclip that is not on this computer", () => {
     expect(() => buildLocalBoardSignInUrl("https://paperclip.example.com", "/nonexistent/key")).toThrow(/not local/);
+    expect(() => buildLocalBoardSignInUrl("http://127.attacker.example:3100", "/nonexistent/key")).toThrow(/not local/);
+    expect(() => buildLocalBoardSignInUrl("http://localhost.attacker.example:3100", "/nonexistent/key")).toThrow(/not local/);
   });
 });
 

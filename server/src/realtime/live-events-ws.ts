@@ -445,7 +445,7 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const onRawSocketError = (err: Error) => {
-      logger.warn({ err, path: req.url }, "live websocket upgrade socket error");
+      logger.warn({ err, path: req.url?.split("?")[0] }, "live websocket upgrade socket error");
     };
     const cleanupRawSocketListeners = () => {
       socket.off("error", onRawSocketError);
@@ -494,7 +494,7 @@ export function setupLiveEventsWebSocketServer(
         });
       })
       .catch((err) => {
-        logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
+        logger.error({ err, path: req.url?.split("?")[0] }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       }));
   });
