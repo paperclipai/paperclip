@@ -20,7 +20,7 @@ import { writeEnvironmentCleanup } from "../services/environment-cleanup-notific
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup, hasConfirmedSandboxStopAndRetain } from "../services/sandbox-stop-and-retain.js";
 import { beginLegacyShutdownWorkspaceSettlement } from "../services/legacy-shutdown-workspace-settlement.js";
 import { renewLegacyControllerLease, legacyControllerBootId } from "../services/legacy-controller-lease.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { idleWorkSnapshot, isIdleTaskDrainActive, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 import { createHeartbeatRunOutput } from "../services/heartbeat/run-output.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -59,7 +59,7 @@ describe("residual recovery production matrix", () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIVE_RECOVERY_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("live-recovery-");
     else await applyPendingMigrations(external);
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   });
   beforeEach(async () => {
@@ -99,9 +99,9 @@ describe("residual recovery production matrix", () => {
     const [issue] = await db.insert(issues).values({ companyId, title: "Recovered work", status: "done", assigneeAgentId: agent.id }).returning();
     return { companyId, agent, issue, actorId };
   }
-  async function start(realClock = false) {
+  async function start(realClock = false, admission?: () => boolean) {
     if (!realClock && !vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    const admitted = () => !draining && !standby;
+    const admitted = admission ?? (() => !draining && !standby);
     await heartbeat.registerResidualRecoveryWork(coordinator, admitted).ready;
     await heartbeat.registerActiveRunSilenceWork(coordinator, admitted).ready;
     await heartbeat.registerIssueStateRecoveryWork(coordinator, admitted, { backstopMs: 0 }).ready;
@@ -1110,5 +1110,46 @@ describe("residual recovery production matrix", () => {
     standby = true; draining = false; await advance(60_000); expect((await getLease(lease.id)).status).toBe("active");
     standby = false; await advance(30_000);
     await vi.waitFor(async () => expect((await getLease(lease.id)).status).toBe("pending_cleanup")); await quiet();
+  });
+  it("reconciles settled recovery intent on real idle drain and resumes the retained lease deadline", async () => {
+    const f = await fixture();
+    const [lease] = await writeEnvironmentCleanup(db, tx => tx.insert(environmentLeases).values({
+      companyId: f.companyId, status: "active", provider: "local", updatedAt: new Date(),
+    }).returning(), { companyId: f.companyId });
+    await coordinator.stop();
+    coordinator = createDeliveryWorkCoordinator({ owner: db,
+      canRun: () => !standby && !isIdleTaskDrainActive(), canReconcile: () => !standby,
+      onError: error => errors.push(error) });
+    try {
+      await start(false, () => !standby && !isIdleTaskDrainActive());
+      // Startup has reconciled '*'; another settled notification within its
+      // reconstruction interval owns a real idle intent until reconciled.
+      await db.transaction(async tx => {
+        await notifyLiveRunRecovery(tx);
+        await notifyLiveResourceRecovery(tx);
+      });
+      await advance(1);
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      const queries: string[] = [], prior = db.$client.options.debug;
+      db.$client.options.debug = (_connection, query) => { queries.push(query); };
+      try {
+        startTaskDrain({ purpose: "idle", ttlMs: 600_000 });
+        await advance(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        const drained = idleWorkSnapshot();
+        await advance(60_000);
+        expect(idleWorkSnapshot()).toEqual(drained);
+        expect(queries).toEqual([]);
+      } finally { db.$client.options.debug = prior; }
+      expect((await getLease(lease.id)).status).toBe("active");
+      stopTaskDrain();
+      await advance(1);
+      expect((await getLease(lease.id)).status).toBe("active");
+      // The original future lease obligation survived drain; resume neither
+      // drops it nor performs cleanup before its real five-minute deadline.
+      await advance(5 * 60_000);
+      await vi.waitFor(async () => expect((await getLease(lease.id)).status).toBe("pending_cleanup"));
+      await quiet();
+    } finally { stopTaskDrain(); }
   });
 });
