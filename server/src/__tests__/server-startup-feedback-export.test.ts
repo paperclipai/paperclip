@@ -402,6 +402,9 @@ vi.mock("@paperclipai/db", async (importOriginal) => ({
   getPostgresDataDirectory: vi.fn(),
   inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
   applyPendingMigrations: vi.fn(),
+  // The boot-time schema-drift gate opens its own utility connection against the
+  // serving database; this fixture never starts Postgres, so stub it clean.
+  verifyLiveSchema: vi.fn(async () => ({ status: "ok", checkedTables: 1 })),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
