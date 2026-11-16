@@ -48,22 +48,6 @@ export async function authorizeSlackDocument(
   if (file.id !== args.file)
     throw forbidden("Slack did not verify the requested document");
   if (write) {
-    const [privateSource] = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.companyId, authority.endpoint.companyId),
-          eq(chatActions.endpointId, authority.endpoint.id),
-          eq(chatActions.kind, "slack_private_source"),
-          sql`${chatActions.payload}->>'issueId' = ${authority.issueId}`,
-        ),
-      )
-      .limit(1);
-    if (privateSource)
-      throw forbidden(
-        "Slack does not expose a complete document sharing audience. Deliver private research as a message or upload in its source channel or your DM instead.",
-      );
     const shares = object(file.shares);
     const destinations = [
       ...Object.keys(object(shares.public)),

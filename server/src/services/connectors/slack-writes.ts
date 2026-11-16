@@ -21,8 +21,6 @@ import {
 } from "./slack-authority.js";
 import {
   authorizeSlackWrite,
-  slackPublicationAllowed,
-  recordSlackOriginBoundary,
 } from "./slack-access.js";
 import {
   slackClient,
@@ -90,21 +88,6 @@ export async function executeSlackWrite(
       "Slack writes require a governed invocation and any required approval",
     );
   const api = slackClient(authority.botToken, fetchImpl);
-  await recordSlackOriginBoundary(db, authority, api);
-  if (
-    name === "slack_create_channel" &&
-    !(await slackPublicationAllowed(
-      db,
-      binding.companyId,
-      authority.endpoint.id,
-      binding.issueId,
-      "new-channel",
-      null,
-    ))
-  )
-    throw forbidden(
-      "Create channels in a separate task before reading private research; its content cannot be published to a new destination",
-    );
   if (name !== "slack_create_channel" && name !== "slack_open_dm")
     await authorizeSlackWrite(db, authority, api, String(args.channel), {
       allowOtherUserDm: await slackOtherUserDmsEnabled(db, authority.endpoint),

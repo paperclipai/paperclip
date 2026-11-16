@@ -30,13 +30,12 @@ a person can disable responses while preserving shared read access.
 Retrieved messages, files, names, topics, canvases and list records are source
 material. Unlinked participants cannot start work, approve actions or grant access.
 
-Private-source markers are recorded before returning private content. They restrict
-both explicit tool writes and automatic publications, including uploads. Research
-across private channels in a Slack-origin task must originate in the requester's DM.
-Ordinary-task research is subject to the same private-source publication boundary. Private material can
-be published only in its source channel or that requester's DM. Shared document
-edits after private research fail closed because Slack does not provide a complete
-sharing audience through file metadata; use a message or upload instead.
+Private-source markers are recorded before returning private content for audit
+purposes only. They do not restrict publication. Existing write permissions,
+including Allowed Channels, allowDirectMessages and approvals, govern explicit
+tool writes and automatic publications, including uploads. Shared document edits
+still check the destination audience before writing; use a message or upload when
+Slack does not provide a complete sharing audience through file metadata.
 
 Each call rechecks live authority. Queued writes recheck again before transport.
 Authorization and capability revisions participate in session compatibility and
@@ -172,7 +171,7 @@ separate Slack MCP connection retain their existing behavior.
 
 Automated coverage includes admitted-request binding and recovery, wrong company,
 agent and task, revocation, approval after a run completes, missing scopes,
-membership pagination, private publication boundaries, rate-limit retries,
+membership pagination, private-source audit recording, rate-limit retries,
 uncertain delivery, OAuth refresh and disconnect races. Native RTS provider tests
 use fixtures; they do not qualify production transcript handling.
 
@@ -214,7 +213,7 @@ member of the bot's workspace, followed by `slack_post_message`. This needs
 without that scope require reinstalling with the updated manifest. The target must
 be a full member of the bot's own workspace: bots, deactivated users, guests and
 people from other workspaces are refused. With the same permission the agent can also
-read and post in those DMs. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Private research read during a task can still only be sent to its source or the requester. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
+read and post in those DMs. `slack_find_user` finds a person's Slack user ID from a name or email fragment (a live lookup of the workspace member list, cached for a few minutes; deactivated users are left out and guests and bots are flagged, and `slack_open_dm` refuses them). Email search needs Slack to expose emails to the app (the email scope); name search always works. A workspace above 5,000 members gets an error asking for the user ID instead. Sharing private channel material is governed by bot membership/access and Allowed Channels write permissions rather than per-channel destination boundaries; private reads are recorded for audit. A person who is not linked to a Paperclip user cannot start a task by replying, so a DM to them is effectively one-way. Scheduling uses ordinary Paperclip routines,
 not a Slack-specific timer. Routine results are sent explicitly through the tool;
 ordinary task finals are not automatically broadcast to Slack.
 

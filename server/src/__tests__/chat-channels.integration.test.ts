@@ -10028,7 +10028,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(executeConnectorTool(db, { ...binding, endpointId: undefined }, "slack_open_dm", { endpointId: endpoint.id, idempotencyKey: randomUUID() })).resolves.toMatchObject({ status: "completed" });
     await db.insert(chatEndpointResources).values({ companyId: fixture.companyId, endpointId: endpoint.id, type: "channel", providerResourceId: "CPUBLIC", label: "Public", enabled: true, availability: "available" });
     await expect(executeConnectorTool(db, binding, "slack_history", { channel: "CPRIVATE" })).resolves.toMatchObject({ status: "completed" });
-    await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "CPUBLIC", text: "Private research", idempotencyKey: randomUUID() })).rejects.toThrow();
+    // TECH-8774: the private-source marker left by that read is audit-only, so
+    // a destination that is otherwise an Allowed Channel accepts the post.
+    const [privateSource] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_private_source")));
+    expect(privateSource).toMatchObject({ status: "processed", payload: { channelId: "CPRIVATE", requesterId: "UROUTINE" } });
+    await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "CPUBLIC", text: "Private research", idempotencyKey: randomUUID() })).resolves.toMatchObject({ status: "completed" });
+    expect(upstream.mock.calls.filter(call => String(call[0]).endsWith("chat.postMessage"))).toHaveLength(2);
     await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "DROUTINE", text: "Your private briefing", idempotencyKey: randomUUID() })).resolves.toMatchObject({ status: "completed" });
     await service.update(endpoint.id, { allowDirectMessages: false }, "owner-user");
     await expect(executeConnectorTool(db, binding, "slack_open_dm", { idempotencyKey: randomUUID() })).rejects.toThrow("Direct messages are disabled");
@@ -10280,8 +10285,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (method === "conversations.members" && args.channel === "GNOUSER") return Response.json({ ok: true, members: ["UOTHER"] });
       return fetched(input, init);
     });
-    await expect(executeSlackTool(db, binding, "slack_channels", {}, directoryFetch as typeof fetch)).resolves.toMatchObject({ channels: [{ id: "COTHER" }], nextCursor: "directory-next" });
-    await expect(executeSlackTool(db, binding, "slack_channels", { cursor: "directory-next" }, directoryFetch as typeof fetch)).resolves.toMatchObject({ channels: [{ id: "COTHER" }], nextCursor: "directory-next" });
+    await expect(executeSlackTool(db, binding, "slack_channels", {}, directoryFetch as typeof fetch)).resolves.toMatchObject({
+      channels: [{ id: "DREQUESTER", direct: true }, { id: "GPRIVATE", private: true }, { id: "COTHER" }],
+      nextCursor: "directory-next",
+    });
+    await expect(executeSlackTool(db, binding, "slack_channels", { cursor: "directory-next" }, directoryFetch as typeof fetch)).resolves.toMatchObject({
+      channels: [{ id: "DREQUESTER", direct: true }, { id: "GPRIVATE", private: true }, { id: "COTHER" }],
+      nextCursor: "directory-next",
+    });
     const usersConversationsCalls = directoryFetch.mock.calls.filter(call => String(call[0]).endsWith("/users.conversations"));
     expect(usersConversationsCalls).toHaveLength(2);
     expect(Object.fromEntries(new URLSearchParams(String(usersConversationsCalls[0][1]?.body ?? "")))).toMatchObject({
@@ -10315,7 +10326,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       matches: [{ user: "UUNLINKED", ts: "7000.1" }],
       inspected: [{ channel: "COTHER", count: 1, nextCursor: "older", hasMore: true }],
     });
-    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, fetched as typeof fetch)).rejects.toThrow("in a DM");
+    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, fetched as typeof fetch)).resolves.toMatchObject({
+      sourceTrust: "untrusted",
+      nextCursor: "older",
+      hasMore: true,
+    });
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "slack-tools-integration-signing-secret");
     onTestFinished(() => vi.unstubAllEnvs());
     const originalFetch = globalThis.fetch;
@@ -10501,6 +10516,160 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db.update(chatIdentityLinks).set({ status: "revoked", revokedAt: new Date() }).where(eq(chatIdentityLinks.principalId, principal.id));
     await expect(resolveConnectorAssignments(db, recovered)).resolves.toEqual([]);
     await expect(executeConnectorTool(db, recovered, "slack_history", { channel: "CTOOLS" })).rejects.toThrow("no longer assigned");
+    await service.shutdown();
+  });
+
+  it("keeps Slack private-source markers audit-only: allowed destinations publish and access denials stay (TECH-8774)", async () => {
+    const { executeConnectorTool } = await import("../services/connector-runtime.js");
+    const { executeSlackTool } = await import("../services/connectors/slack.js");
+    const { resolveSlackTaskAuthority } = await import("../services/connectors/slack-authority.js");
+    const { authorizeSlackDocument } = await import("../services/connectors/slack-document.js");
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+    // slack_create_channel is an approval-gated channel_management tool.
+    await db.update(chatEndpoints).set({ status: "active", setup: sql`${chatEndpoints.setup} || ${JSON.stringify({ slackOptInScopeGroups: ["channel_management"], slackInstalledOptInScopeGroups: ["channel_management"] })}::jsonb` }).where(eq(chatEndpoints.id, endpoint.id));
+    const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "UQUIET" }).returning();
+    await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+    const thread = makeThread({ channelId: "slack:CORIGIN", id: "slack:CORIGIN:7100.1", name: "origin" });
+    await deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread, message: makeMessage({ id: "7100.1", text: "@maya research the private plan", mentioned: true, userId: "UQUIET" }), trigger: "mention" });
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    expect(conversation).toBeDefined();
+    const [wakeup] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "inbound_wakeup")));
+    expect(wakeup).toBeDefined();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "running", invocationSource: "assignment", responsibleUserId: "owner-user", contextSnapshot: { issueId: conversation.issueId } });
+    await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: conversation.issueId, responsibleUserId: "owner-user", messageIds: [String(wakeup.payload.commentId)], cause: "instruction" });
+    const binding = { companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId, issueId: conversation.issueId };
+    const provider = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const method = String(input).split("/").at(-1);
+      const args = Object.fromEntries(new URLSearchParams(String(init?.body ?? "")));
+      if (method === "users.info") return Response.json({ ok: true, user: { id: args.user, team_id: "T-PAPERCLIP" } });
+      if (method === "conversations.info") {
+        if (["GPRIVATE", "TMPIM", "GOTHER"].includes(String(args.channel)))
+          return Response.json({ ok: true, channel: { id: args.channel, is_private: true, ...(args.channel === "TMPIM" ? { is_mpim: true } : {}), is_member: true } });
+        if (String(args.channel).startsWith("D")) return Response.json({ ok: true, channel: { id: args.channel, is_im: true, user: "UQUIET" } });
+        return Response.json({ ok: true, channel: { id: args.channel, is_member: true } });
+      }
+      if (method === "conversations.members") return Response.json({ ok: true, members: args.channel === "GOTHER" ? ["USOMEONEELSE"] : ["UQUIET"] });
+      if (method === "conversations.history") return Response.json({ ok: true, messages: [{ ts: "7000.1", user: "UUNLINKED", text: "Confidential plan" }], has_more: false, response_metadata: {} });
+      if (method === "users.conversations") return Response.json({ ok: true, channels: [
+        { id: "CORIGIN", is_member: true },
+        { id: "GPRIVATE" },
+        { id: "TMPIM" },
+        { id: "DSELF", is_im: true, user: "UQUIET" },
+        { id: "GOTHER" },
+      ], response_metadata: { next_cursor: "" } });
+      if (method === "chat.postMessage") return Response.json({ ok: true, channel: args.channel, ts: "7200.1" });
+      if (method === "conversations.create") return Response.json({ ok: true, channel: { id: "CNEWCHANNEL", name: args.name } });
+      throw new Error(`Unexpected Slack method ${method}`);
+    });
+    vi.stubGlobal("fetch", provider);
+    onTestFinished(() => vi.unstubAllGlobals());
+    const privateSourceRows = async () => db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "slack_private_source")));
+    // A cross-channel private read from a channel-origin conversation is
+    // allowed and recorded as exactly one audit row, even when repeated.
+    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, provider as typeof fetch)).resolves.toMatchObject({ sourceTrust: "untrusted" });
+    await executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, provider as typeof fetch);
+    let markers = await privateSourceRows();
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({
+      status: "processed",
+      providerActionId: `slack-private:${conversation.issueId}:GPRIVATE:UQUIET`,
+      payload: { issueId: conversation.issueId, channelId: "GPRIVATE", requesterId: "UQUIET", allowedDmChannel: null },
+    });
+    // The web-origin directory lists mixed public/private/MPIM/IM conversations
+    // it can authorize, omits the one the requester does not belong to, and
+    // records no further private reads.
+    const directory = await executeSlackTool(db, binding, "slack_channels", {}, provider as typeof fetch);
+    expect(directory).toMatchObject({
+      channels: [
+        { id: "CORIGIN" },
+        { id: "GPRIVATE", private: true },
+        { id: "TMPIM", private: true },
+        { id: "DSELF", direct: true },
+      ],
+    });
+    expect(JSON.stringify(directory)).not.toContain("GOTHER");
+    expect(await privateSourceRows()).toHaveLength(1);
+    // Removing the publication gate is not a blanket bypass: destinations
+    // outside Allowed Channels keep the existing denial, marker or not.
+    await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "CNOTALLOWED", text: "Summary", idempotencyKey: randomUUID() })).rejects.toThrow("Responses are disabled in this channel");
+    await db.insert(chatEndpointResources).values({ companyId: fixture.companyId, endpointId: endpoint.id, type: "channel", providerResourceId: "CDISABLED", label: "Disabled", enabled: false, availability: "available" });
+    await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "CDISABLED", text: "Summary", idempotencyKey: randomUUID() })).rejects.toThrow("Responses are disabled in this channel");
+    expect(provider.mock.calls.filter(call => String(call[0]).endsWith("/chat.postMessage"))).toHaveLength(0);
+    // The private-source marker no longer blocks a post to a destination that
+    // is otherwise an Allowed Channel.
+    await db.insert(chatEndpointResources).values({ companyId: fixture.companyId, endpointId: endpoint.id, type: "channel", providerResourceId: "CALLOWED", label: "Allowed", enabled: true, availability: "available" });
+    await expect(executeConnectorTool(db, binding, "slack_post_message", { channel: "CALLOWED", text: "Research summary", idempotencyKey: randomUUID() })).resolves.toMatchObject({ status: "completed" });
+    expect(provider.mock.calls.filter(call => String(call[0]).endsWith("/chat.postMessage"))).toHaveLength(1);
+    // Private-channel access denials did not change: a private channel the
+    // linked user does not belong to stays unreadable and records no marker.
+    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GOTHER" }, provider as typeof fetch)).rejects.toThrow("must belong");
+    expect(await privateSourceRows()).toHaveLength(1);
+    // Capture the task authority while the run is still active; the document
+    // checks below reuse it after the approval flow retires the run.
+    const authority = await resolveSlackTaskAuthority(db, binding);
+    // slack_create_channel is no longer vetoed by private research in scope:
+    // its only remaining gate is the approval request.
+    vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "slack-tools-integration-signing-secret");
+    onTestFinished(() => vi.unstubAllEnvs());
+    await expect(executeConnectorTool(db, binding, "slack_create_channel", { name: "quiet-research", is_private: false, idempotencyKey: randomUUID() }))
+      .rejects.toMatchObject({ reasonCode: expect.stringMatching(/approval/) });
+    const [approval] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, fixture.companyId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    await createToolGatewayService(db).approveActionRequest({ companyId: fixture.companyId, actionRequestId: approval.id, actor: { userId: "owner-user" } });
+    expect(provider.mock.calls.filter(call => String(call[0]).endsWith("/conversations.create"))).toHaveLength(1);
+    // Document sharing checks every listed destination through
+    // authorizeSlackWrite; the marker alone no longer forbids the share.
+    const documentApi = (shares: Record<string, Record<string, unknown>[]>) =>
+      vi.fn(async (method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        if (method === "conversations.history") return { messages: [{ ts: args?.latest, files: [{ id: "FDOC" }] }] };
+        if (method === "files.info") return { file: { id: "FDOC", shares } };
+        if (method === "conversations.info") return { channel: { id: args?.channel, is_member: true } };
+        if (method === "users.info") return { user: { id: "UQUIET", team_id: "T-PAPERCLIP" } };
+        if (method === "conversations.members") return { members: ["UQUIET"], response_metadata: {} };
+        throw new Error(`Unexpected document method ${method}`);
+      });
+    const documentArgs = { file: "FDOC", channel: "CALLOWED", ts: "7100.5" };
+    await expect(authorizeSlackDocument(db, authority, documentApi({ public: { CALLOWED: [{}] } }), documentArgs, true))
+      .resolves.toMatchObject({ id: "FDOC" });
+    await expect(authorizeSlackDocument(db, authority, documentApi({ public: { CALLOWED: [{}] }, private: { CNOTALLOWED: [{}] } }), documentArgs, true))
+      .rejects.toThrow("Responses are disabled in this channel");
+    // Automatic publications (publications/authorization) follow the same
+    // model: the marker does not block the permitted destination, while a
+    // destination that is no longer allowed cancels the publication. Finals
+    // ride on dedicated presentation runs; the tool run's approval
+    // interaction is intentionally internal.
+    const chatSnapshot = await chatWakeContext({ endpointId: endpoint.id, issueId: conversation.issueId, provider: "slack", providerMessageId: "7100.1" });
+    const { resolveChatRunPresentationAuthorizationReason, CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } = await import("../services/chat-run-publications.js");
+    const publicationRun = async () => {
+      const [row] = await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "succeeded", responsibleUserId: "owner-user", contextSnapshot: chatSnapshot }).returning();
+      return row;
+    };
+    const deniedRun = await publicationRun();
+    await expect(resolveChatRunPresentationAuthorizationReason(db, { companyId: fixture.companyId, issueId: conversation.issueId, runId: deniedRun.id })).resolves.toBe(CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
+    await db.update(chatEndpointResources).set({ enabled: false }).where(and(eq(chatEndpointResources.endpointId, endpoint.id), eq(chatEndpointResources.providerResourceId, "CORIGIN")));
+    const deniedFinal = await addSelectedChatFinal({ companyId: fixture.companyId, issueId: conversation.issueId, agentId: fixture.assignedAgentId, runId: deniedRun.id, body: "Must stay internal" });
+    const [deniedPublication] = await readChatPublicationsByCommentId(deniedFinal.id);
+    expect(deniedPublication).toBeDefined();
+    await service.processPendingPublications();
+    await service.processPendingPublications();
+    expect((await readChatPublicationsById(deniedPublication.id))[0].state).toBe("cancelled");
+    expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("Must stay internal"))).toHaveLength(0);
+    await db.update(chatEndpointResources).set({ enabled: true }).where(and(eq(chatEndpointResources.endpointId, endpoint.id), eq(chatEndpointResources.providerResourceId, "CORIGIN")));
+    const sharedRun = await publicationRun();
+    const sharedFinal = await addSelectedChatFinal({ companyId: fixture.companyId, issueId: conversation.issueId, agentId: fixture.assignedAgentId, runId: sharedRun.id, body: "Shared summary" });
+    const [sharedPublication] = await readChatPublicationsByCommentId(sharedFinal.id);
+    expect(sharedPublication).toBeDefined();
+    await service.processPendingPublications();
+    await service.processPendingPublications();
+    expect((await readChatPublicationsById(sharedPublication.id))[0].state).toBe("published");
+    expect(runtime.endpoints.get(endpoint.id)!.posts).toContainEqual({ threadId: thread.thread.id, text: "Shared summary" });
+    // The marker stayed a single audit row across writes, directory, document
+    // and publication activity, and never blocked any of them.
+    markers = await privateSourceRows();
+    expect(markers).toHaveLength(1);
     await service.shutdown();
   });
 

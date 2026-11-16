@@ -20,7 +20,7 @@ contract; its pass does not establish the probe's complete outcome.
 | Files | Current-chat artifact handoff; explicit uploads elsewhere use an existing attachment. Verify delivery. | `file-reply` |
 | Mentions and replies | A bare mention starts a real conversation; unmentioned thread replies continue it. | `thread-followup` |
 | Search and history | Use authorized sources and real permalinks; disclose bounded coverage. | `search-coverage` |
-| Private research | Honor source/destination restrictions, including files. | `private-source` |
+| Private research | Require bot membership/access and Allowed Channels write permissions; audit private reads without per-channel destination restrictions. | `private-source` |
 | Posts, reactions, pins, bookmarks | Ordinary replies are delivered automatically; explicit actions use assigned tools. | `explicit-post-and-reaction` |
 | Uncertain writes | Keep the operation identity and inspect delivery; never resend with a new key. | `uncertain-write` |
 | Destructive changes and invitations | Honor the saved action policy and approval decision. | `approval-decline` |

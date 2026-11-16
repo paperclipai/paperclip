@@ -33,9 +33,6 @@ The bot must belong to a channel and the requester must have access. Allowed
 Channels controls responding and writes; another shared channel can be readable
 without being enabled for responses. Do not join existing channels or change
 connection settings to widen access. Other people's bot DMs are only available when Proactive DMs is enabled.
-Private-channel material stays in that channel or a DM with the requester. Ask
-the requester to move to a DM for research spanning private channels in a Slack-origin task. Ordinary tasks must also keep private research in source channels or the requester's DM.
-
 Use source links in summaries. Search reports its mode and coverage. A bounded
 history scan is not workspace-wide search and does not automatically inspect
 thread replies. Fetch further history/thread pages when needed. Report omitted

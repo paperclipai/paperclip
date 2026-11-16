@@ -9,8 +9,6 @@ import { type CredentialMutationLeaseGuard } from "../../chat-credential-mutatio
 
 import { authorizeSlackBoardPublication } from "../../slack-board-authority.js";
 
-import { slackPublicationAllowed } from "../../connectors/slack-access.js";
-
 import {
   and,
   eq,
@@ -195,7 +193,6 @@ export function createChatPublicationAuthorization(db: Db, options: PublicationA
       const destinationAllowed =
         endpoint !== null &&
         conversation !== null &&
-        (endpoint.provider !== "slack" || await slackPublicationAllowed(tx, endpoint.companyId, endpoint.id, input.publication.issueId, conversation.externalConversationId, null)) &&
         (conversation.isDirectMessage
           ? endpoint.allowDirectMessages
           : nonDirectDestinationAllowed(endpoint, resource));

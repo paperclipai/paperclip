@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { chatActions, chatEndpointResources, type Db } from "@paperclipai/db";
 import { HttpError, forbidden, unprocessable } from "../../errors.js";
 import type { SlackTaskAuthority } from "./slack-authority.js";
@@ -157,26 +157,17 @@ export async function authorizeSlackWrite(
         "Responses are disabled in this channel. Enable it in connection Settings first.",
       );
   }
-  if (
-    !(await slackPublicationAllowed(
-      db,
-      authority.endpoint.companyId,
-      authority.endpoint.id,
-      authority.issueId,
-      channelId,
-      // The existing rule: private research may only go to its source channel or a DM with the requester. A DM is
-      // delivered to its other party, so the requester's own DM matches and a DM with anyone else does not.
-      channel.is_im === true && typeof channel.user === "string" ? channel.user : null,
-    ))
-  )
-    throw forbidden(
-      "Private research may only be delivered in its source channel or a DM with the requester",
-    );
   return channel;
 }
 
-/** Persist only source identity, never retrieved message text. Commit before returning private data. */
-export async function recordSlackReadBoundary(
+/**
+ * Audit record of private channel content access.
+ *
+ * Audit-only, not publication enforcement. Bot membership/access plus existing
+ * write permissions define allowed sharing. Preserves existing chat_actions
+ * audit records without schema or data migration.
+ */
+export async function recordSlackPrivateRead(
   db: Db,
   authority: SlackTaskAuthority,
   channel: SlackObject,
@@ -187,15 +178,6 @@ export async function recordSlackReadBoundary(
     channel.is_mpim !== true
   )
     return;
-  if (
-    authority.conversation &&
-    !authority.conversation.isDirectMessage &&
-    channel.id !==
-      authority.conversation.externalConversationId.replace(/^slack:/, "")
-  )
-    throw forbidden(
-      "Ask for cross-channel private research in a DM with the bot",
-    );
   await db
     .insert(chatActions)
     .values({
@@ -216,47 +198,4 @@ export async function recordSlackReadBoundary(
       },
     })
     .onConflictDoNothing();
-}
-export async function slackPublicationAllowed(
-  db: Pick<Db, "select">,
-  companyId: string,
-  endpointId: string,
-  issueId: string,
-  channelId: string,
-  directRecipient: string | null,
-) {
-  channelId = channelId.replace(/^slack:/, "");
-  const sources = await db
-    .select({ payload: chatActions.payload })
-    .from(chatActions)
-    .where(
-      and(
-        eq(chatActions.companyId, companyId),
-        eq(chatActions.endpointId, endpointId),
-        eq(chatActions.kind, "slack_private_source"),
-        sql`${chatActions.payload}->>'issueId' = ${issueId}`,
-      ),
-    );
-  return sources.every(
-    ({ payload }) =>
-      payload.channelId === channelId ||
-      payload.allowedDmChannel === channelId ||
-      (directRecipient !== null && directRecipient === payload.requesterId),
-  );
-}
-
-/** Initial messages in a private channel are already model context, even before
- * the first history call. Their publication boundary must cover tool writes. */
-export async function recordSlackOriginBoundary(
-  db: Db,
-  authority: SlackTaskAuthority,
-  api: Api,
-) {
-  if (!authority.conversation || authority.conversation.isDirectMessage) return;
-  const origin = await authorizeSlackChannel(
-    authority,
-    api,
-    authority.conversation.externalConversationId.replace(/^slack:/, ""),
-  );
-  await recordSlackReadBoundary(db, authority, origin);
 }
