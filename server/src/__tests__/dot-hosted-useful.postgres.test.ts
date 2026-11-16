@@ -1030,8 +1030,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       startSecond:async()=>{
         // First real Node/group closed before this new child can be started.
         await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
-        await makePhysicalSecond();
         await reconstructCloudOwner();
+        await makePhysicalSecond();
         expect(appOwnerGenerations).toBe(2);expect(cloudOwnerGenerations).toBe(2);
         const restoredBinding=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
         expect(restoredBinding).toMatchObject({id:firstBindingSnapshot.id,companyId,agentId,grantId:originalGrant.id,generation:firstBindingSnapshot.generation,status:"ready"});
