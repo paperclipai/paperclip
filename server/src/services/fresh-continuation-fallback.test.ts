@@ -747,11 +747,7 @@ suite("fresh-continuation fallback", () => {
       sourceRunId: f.runId, retainedSourceIds: [] });
   }, 60_000);
 
-  // The recorded process identity (host, PID space, start time) of this process,
-  // with the OS-observed start time a run records (persistHeartbeatRunProcessMetadata).
-  // Date.now() - process.uptime() is not that time: Linux reports it from the
-  // whole-second btime and Node starts after the fork, so the two can differ by
-  // a second and read as a recycled PID.
+  // The recorded process identity (host, PID space, start time) of this process.
   const liveIdentity = async () => {
     const startedAt = await observedProcessStartedAt(process.pid);
     if (startedAt === null) throw new Error("This host cannot report this process's start time");

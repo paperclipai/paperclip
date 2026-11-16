@@ -36,9 +36,6 @@ async function exitedPid(): Promise<number> {
   return pid;
 }
 
-/** The OS-observed start time this server stamps as its controller identity.
- * Date.now() - process.uptime() is not that time: it can differ by a second
- * and read as a recycled PID. */
 async function ownProcessStartedAt(): Promise<Date> {
   const startedAt = await currentProcessStartedAtMs();
   if (startedAt === null) throw new Error("This host cannot report this process's start time");
