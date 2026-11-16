@@ -392,6 +392,7 @@ async function promoteDeferredWake(
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
+        selfAuthorship.includesPersonComment ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
         // The agent watching the task posted it while the run that closed the
         // task was active. That agent receives the completed result and can
