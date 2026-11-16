@@ -332,7 +332,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  if (authToken) {
+  // The run JWT authenticates host-side Paperclip API calls. A remote target
+  // never needs it: every remote target talks to Paperclip through the callback
+  // bridge, which takes the JWT host-side (hostApiToken below) and gives the
+  // target its own bridge token. Keep it out of `env` for remote targets so no
+  // exec issued before the bridge starts can carry it to the target.
+  // (PAPERCLIP_API_KEY is never accepted from config env, so authToken is the
+  // only source.)
+  if (authToken && !executionTargetIsRemote) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) into a managed
@@ -502,7 +509,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "pi",
         timeoutSec,
-        hostApiToken: env.PAPERCLIP_API_KEY,
+        hostApiToken: authToken,
         onLog,
       });
       if (paperclipBridge) {
