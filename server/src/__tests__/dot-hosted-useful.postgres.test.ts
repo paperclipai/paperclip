@@ -326,7 +326,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   type IdleSleepEnvelope={status:number;errorCode:string;jsonObject:boolean;requestPurposeIdle:boolean;
     ownerUUID:boolean;expiryISO:boolean;expiryFutureKnown:boolean;expiryFuture:boolean;
     drainingPresence:boolean;drainingTrue:boolean};
-  const idleSleepWire:{post:IdleSleepEnvelope|null;sleep:IdleSleepEnvelope|null}={post:null,sleep:null};
+  type SafetyReadEnvelope={status:number;backgroundWork:"none"|"present"|"unknown"|"INVALID";
+    draining:"TRUE"|"FALSE"|"UNKNOWN";quiescent:"TRUE"|"FALSE"|"UNKNOWN";
+    activeRunsZero:boolean;pendingWakesZero:boolean;ownerMatches:boolean;
+    reportVersionKnown:boolean;incomingWakePresent:boolean;deadlineProofPresent:boolean;scheduledWakePresent:boolean};
+  const idleSleepWire:{post:IdleSleepEnvelope|null;sleep:IdleSleepEnvelope|null;safetyReads:SafetyReadEnvelope[]}={post:null,sleep:null,safetyReads:[]};
   const safeIdleSleepEnvelope=(status:number,received:unknown,requestPurposeIdle=false,
     expiryFuture?:boolean):IdleSleepEnvelope=>{
     const result:IdleSleepEnvelope={status,errorCode:"UNKNOWN",jsonObject:false,requestPurposeIdle,
@@ -393,6 +397,32 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
               }
               if(capturePost)idleSleepWire.post=safeIdleSleepEnvelope(status,received,idleRequest.success,expiryFuture);
             }catch{/* Invalid real replies remain unchanged and cannot arm the boundary. */}
+          }
+          // Preserve only fixed safety classifications from the same original
+          // response bytes. No extra request, SQL, timer, async step or raw authority.
+          if(safetyRead&&idleSleepWire.safetyReads.length<2){
+            const diagnostic:SafetyReadEnvelope={status,backgroundWork:"INVALID",draining:"UNKNOWN",quiescent:"UNKNOWN",
+              activeRunsZero:false,pendingWakesZero:false,ownerMatches:false,reportVersionKnown:false,
+              incomingWakePresent:false,deadlineProofPresent:false,scheduledWakePresent:false};
+            try{
+              const value=JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string,unknown>;
+              if(value&&typeof value==="object"&&!Array.isArray(value)){
+                diagnostic.draining=value.draining===true?"TRUE":value.draining===false?"FALSE":"UNKNOWN";
+                diagnostic.quiescent=value.quiescent===true?"TRUE":value.quiescent===false?"FALSE":"UNKNOWN";
+                diagnostic.activeRunsZero=value.activeRuns===0;diagnostic.pendingWakesZero=value.pendingWakes===0;
+                diagnostic.ownerMatches=typeof value.ownerId==="string"&&value.ownerId===safetyRead.ownerId;
+                const report=value.idleSleepSafety;
+                if(report&&typeof report==="object"&&!Array.isArray(report)){
+                  const fields=report as Record<string,unknown>;
+                  if(fields.backgroundWork==="none"||fields.backgroundWork==="present"||fields.backgroundWork==="unknown")diagnostic.backgroundWork=fields.backgroundWork;
+                  diagnostic.reportVersionKnown=fields.version===1||fields.version===2||fields.version===3;
+                  diagnostic.incomingWakePresent=fields.incomingWake!==undefined;
+                  diagnostic.deadlineProofPresent=fields.deadlineProof!==undefined;
+                  diagnostic.scheduledWakePresent=fields.scheduledWake!==undefined;
+                }
+              }
+            }catch{/* Keep UNKNOWN classifications; never alter the response or failure. */}
+            idleSleepWire.safetyReads.push(diagnostic);
           }
           if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));resolve(new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders}));});
       });

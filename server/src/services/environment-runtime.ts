@@ -1,4 +1,4 @@
-import { observeStoppedExecutionResource } from "./environment-resource-observation.js";
+import { observeStoppedExecutionResource, type EnvironmentResourceObservationScope } from "./environment-resource-observation.js";
 import { readPluginLoginCredential } from "./plugin-login-credential.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller.js";
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
@@ -662,7 +662,7 @@ export interface EnvironmentDriverRunnerIngressInput
 
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
-  inspectLeaseResource?(input: { environment: Environment | null; lease: EnvironmentLease; deadline?: number }): Promise<PluginEnvironmentLeaseObservation | undefined>;
+  inspectLeaseResource?(input: { environment: Environment | null; lease: EnvironmentLease; deadline?: number; observation?: EnvironmentResourceObservationScope }): Promise<PluginEnvironmentLeaseObservation | undefined>;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
   releaseRunLease(input: EnvironmentDriverReleaseInput): Promise<EnvironmentLease | null>;
   resumeRunLease?(input: EnvironmentDriverResumeInput): Promise<PluginEnvironmentLease | EnvironmentLease | null>;
@@ -1519,9 +1519,11 @@ function createSandboxEnvironmentDriver(
     return runParent !== undefined ? runWithRuntimeParent(runParent, call) : call();
   }
 
-  async function resolveSandboxProviderPlugin(input: { provider: string; pluginId?: string }) {
+  async function resolveSandboxProviderPlugin(input: { provider: string; pluginId?: string }, lookupDb: Db = db, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (input.pluginId) {
-      const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: input.pluginId, driverKey: input.provider });
+      const pinned = await resolvePluginSandboxProviderDriverById({ db: lookupDb, pluginId: input.pluginId, driverKey: input.provider });
+      signal?.throwIfAborted();
       if (!pinned) return { state: "missing" as const, resolved: null };
       if (pinned.plugin.status !== "ready") {
         return pluginWorkerManager?.requestActivationTimeoutRecovery?.(pinned.plugin)
@@ -1531,21 +1533,23 @@ function createSandboxEnvironmentDriver(
       return { state: "running" as const, resolved: pinned };
     }
     const running = await resolvePluginSandboxProviderDriverByKey({
-      db,
+      db: lookupDb,
       driverKey: input.provider,
       workerManager: pluginWorkerManager,
       requireRunning: true,
     });
+    signal?.throwIfAborted();
     if (running) {
       return { state: "running" as const, resolved: running };
     }
 
     const installed = await resolvePluginSandboxProviderDriverByKey({
-      db,
+      db: lookupDb,
       driverKey: input.provider,
       workerManager: pluginWorkerManager,
       requireRunning: false,
     });
+    signal?.throwIfAborted();
     if (!installed) {
       return { state: "missing" as const, resolved: null };
     }
@@ -1562,7 +1566,7 @@ function createSandboxEnvironmentDriver(
     const deadline = Date.now() + Math.max(0, pluginWorkerReadyTimeoutMs);
     while (Date.now() < deadline) {
       const retried = await resolvePluginSandboxProviderDriverByKey({
-        db,
+        db: lookupDb,
         driverKey: input.provider,
         workerManager: pluginWorkerManager,
         requireRunning: true,
@@ -2449,7 +2453,10 @@ function createSandboxEnvironmentDriver(
       });
     },
 
-    async inspectLeaseResource({ lease, deadline }) {
+    async inspectLeaseResource({ lease, deadline, observation }) {
+      const signal = observation?.signal;
+      const inspectionDb = observation?.db ?? db;
+      signal?.throwIfAborted();
       const provider = lease.provider;
       const config = sandboxConfigFromLeaseMetadataLoose(lease);
       if (!provider || isBuiltinSandboxProvider(provider) || !config || config.provider !== provider ||
@@ -2458,11 +2465,13 @@ function createSandboxEnvironmentDriver(
       // Historical observations must use the recorded plugin and credentials.
       // A different installation cannot establish that this allocation is gone.
       if (!pluginId) return undefined;
-      const resolved = await resolveSandboxProviderPlugin({ provider, pluginId });
+      const resolved = await resolveSandboxProviderPlugin({ provider, pluginId }, inspectionDb, signal);
+      signal?.throwIfAborted();
       if (resolved.state !== "running" || !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentInspectLease")) return undefined;
-      const resolvedConfig = await historicalProviderCredentials(db, lease.companyId, config,
+      const resolvedConfig = await historicalProviderCredentials(inspectionDb, lease.companyId, config,
         resolved.resolved.driver.configSchema as Record<string, unknown> | undefined,
-        { issueId: lease.issueId, heartbeatRunId: lease.heartbeatRunId });
+        { issueId: lease.issueId, heartbeatRunId: lease.heartbeatRunId }, signal);
+      signal?.throwIfAborted();
       if (!resolvedConfig) return undefined;
       const timeoutMs = deadline === undefined ? 15_000 : Math.min(15_000, Math.floor(deadline - performance.now()));
       if (!Number.isFinite(timeoutMs) || timeoutMs < 1) return undefined;
@@ -4717,11 +4726,18 @@ export function environmentRuntimeService(
         return await driver.execute(input);
       } catch (originalError) {
         if (deadline !== null && driver.inspectLeaseResource) {
-          const stopped = await observeStoppedExecutionResource({ expected: input.lease, originalError, deadline,
-            readCurrentLease: () => environmentsSvc.getLeaseById(input.lease.id),
+          const stopped = await observeStoppedExecutionResource({ expected: input.lease, originalError, deadline, db,
+            readCurrentLease: ({ db: scopedDb, signal }) => {
+              signal.throwIfAborted();
+              return environmentService(scopedDb!).getLeaseById(input.lease.id);
+            },
             // Use the driver's existing historical-credential observation port,
             // not the failed-ephemeral-cleanup-only public dispatcher.
-            inspect: (lease, timeoutMs) => driver.inspectLeaseResource!({ environment: input.environment, lease, deadline: Math.min(deadline, performance.now() + timeoutMs) }),
+            inspect: (lease, timeoutMs, observation) => {
+              observation.signal.throwIfAborted();
+              return driver.inspectLeaseResource!({ environment: input.environment, lease,
+                deadline: Math.min(deadline, performance.now() + timeoutMs), observation });
+            },
           });
           if (stopped) throw stopped;
         }
