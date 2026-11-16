@@ -519,7 +519,7 @@ export function ProjectDetail() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: project?.name ?? routeProjectRef ?? "Project", literal: Boolean(project?.name || routeProjectRef) },
     ]);
   }, [setBreadcrumbs, project, routeProjectRef]);
 

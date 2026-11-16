@@ -6089,6 +6089,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       sourceBreadcrumb,
       ...(breadcrumbParent ? [{
         label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
+        literal: !isLockedIssueStub(breadcrumbParent),
         href: isLockedIssueStub(breadcrumbParent)
           ? undefined
           : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),

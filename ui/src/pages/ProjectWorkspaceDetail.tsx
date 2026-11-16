@@ -327,9 +327,9 @@ export function ProjectWorkspaceDetail() {
     if (!project) return;
     setBreadcrumbs([
       { label: "Projects", href: "/projects" },
-      { label: project.name, href: `/projects/${canonicalProjectRef}` },
+      { label: project.name, href: `/projects/${canonicalProjectRef}`, literal: true },
       { label: "Workspaces", href: `/projects/${canonicalProjectRef}/workspaces` },
-      { label: workspace?.name ?? routeWorkspaceId },
+      { label: workspace?.name ?? routeWorkspaceId, literal: true },
     ]);
   }, [setBreadcrumbs, project, canonicalProjectRef, workspace?.name, routeWorkspaceId]);
 

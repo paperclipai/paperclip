@@ -270,7 +270,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     if (!activeTab) return;
     setBreadcrumbs([
       { label: "Connectors", href: "/apps" },
-      { label: appName, href: appTabHref(connectionId, "permissions") },
+      { label: appName, href: appTabHref(connectionId, "permissions"), literal: true },
       { label: appTabLabel(activeTab) },
     ]);
     return () => setBreadcrumbs([]);

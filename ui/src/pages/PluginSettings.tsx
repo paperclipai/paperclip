@@ -127,10 +127,10 @@ export function PluginSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard", literal: Boolean(selectedCompany?.name) },
       { label: "Settings", href: "/company/settings" },
       { label: "Plugins", href: "/company/settings/instance/plugins" },
-      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
+      { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details", literal: Boolean(plugin?.manifestJson?.displayName || plugin?.packageName) },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
 

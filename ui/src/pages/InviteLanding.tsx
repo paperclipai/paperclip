@@ -218,7 +218,7 @@ export function InviteLandingPage() {
   return (
     <>
       <div className="fixed top-4 right-4 z-30">
-        <LanguageSwitcher className="border-zinc-700 bg-zinc-950 text-zinc-100" />
+        <LanguageSwitcher className="border-border bg-background text-foreground" />
       </div>
       <InviteLandingBody />
     </>

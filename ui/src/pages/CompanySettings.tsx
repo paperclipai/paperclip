@@ -243,7 +243,7 @@ export function CompanySettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard", literal: Boolean(selectedCompany?.name) },
       { label: "Settings" }
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);

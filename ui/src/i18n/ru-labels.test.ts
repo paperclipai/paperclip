@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { clearUiLanguageChoice, noteUiLanguageChoice } from "./preference";
 import { ruLabels } from "./ru-labels";
-import { translateLabel } from "./tx";
+import { effectiveUiLanguage, translateLabel } from "./tx";
 
 describe("translateLabel", () => {
+  afterEach(() => {
+    clearUiLanguageChoice();
+  });
+
   it("returns the English string unless the language is Russian", () => {
     expect(translateLabel("en", "New Task")).toBe("New Task");
     expect(translateLabel(undefined, "Dashboard")).toBe("Dashboard");
@@ -52,6 +57,18 @@ describe("translateLabel", () => {
     expect(translateLabel("ru", "Earlier")).toBe("Ранее");
     expect(translateLabel("ru", "Paperclip")).toBe("Paperclip");
     expect(translateLabel("ru", "A task title")).toBe("A task title");
+  });
+
+  it("returns inherited names unchanged", () => {
+    expect(translateLabel("ru", "__proto__")).toBe("__proto__");
+    expect(translateLabel("ru", "constructor")).toBe("constructor");
+    expect(translateLabel("ru", "toString")).toBe("toString");
+  });
+
+  it("keeps the live language after a choice when storage stays Russian", () => {
+    noteUiLanguageChoice("en");
+    expect(effectiveUiLanguage("en", "ru")).toBe("en");
+    expect(effectiveUiLanguage("ru", "ru")).toBe("en");
   });
 
   it("keeps every Russian value non-empty and free of markup", () => {
