@@ -107,6 +107,7 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-cut-turn-start-retry.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
   "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
+  "server/src/services/native-runtime/native-warm-successor-runner-release.integration.test.ts",
   "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts",
   "server/src/services/native-runtime/plugin-runner-release-resume.integration.test.ts",
   "server/src/services/native-runtime/plugin-runner-eviction.integration.test.ts",
