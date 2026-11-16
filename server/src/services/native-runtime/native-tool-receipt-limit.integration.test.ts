@@ -7,6 +7,17 @@ import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embed
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
 
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
+const receiptLimitRead = vi.hoisted(() => ({ after: null as null | (() => Promise<unknown>) }));
+vi.mock("./native-tool-receipt-limit.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./native-tool-receipt-limit.js")>();
+  return { ...original, readPersistedNativeToolReceiptLimitStop: async (...args: Parameters<typeof original.readPersistedNativeToolReceiptLimitStop>) => {
+    const stopped = await original.readPersistedNativeToolReceiptLimitStop(...args);
+    const after = receiptLimitRead.after;
+    receiptLimitRead.after = null;
+    await after?.();
+    return stopped;
+  } };
+});
 vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>()), executeNativeSession: provider.execute,
 }));
@@ -20,6 +31,8 @@ import { heartbeatService } from "../heartbeat.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
+import { materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
+import { NativeStatusRaceError } from "./status-decision-committer.js";
 
 describe("native turn stopped at its tool receipt limit", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -33,7 +46,9 @@ describe("native turn stopped at its tool receipt limit", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string, beforeFinalize?: () => Promise<unknown>) {
+  let finalTurnId: string | null = null;
+  async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string, beforeFinalize?: () => Promise<unknown>,
+    diagnosticTurnId?: string) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const [run] = await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -52,7 +67,7 @@ describe("native turn stopped at its tool receipt limit", () => {
     };
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
     const event: PrpEvent = {
-      schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: native.turnId,
+      schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId, turnId: diagnosticTurnId ?? native.turnId,
       sourceInstanceId: native.runnerInstanceId, sourceEventId: "receipt-limit", sourceSeq: 1, sourceKind: "runner", eventType: "harness.diagnostic", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
       payload: { provider: "opencode", code: diagnosticCode, operationId: "get_task", callId: "call-80",
         message: "The active provider turn reached its durable semantic-tool receipt limit and was interrupted", paperclipExecuted: false },
@@ -73,6 +88,7 @@ describe("native turn stopped at its tool receipt limit", () => {
     await beforeFinalize?.();
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     expect(provider.execute).toHaveBeenCalledTimes(1);
+    finalTurnId = native.turnId;
     return (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
   }
 
@@ -90,7 +106,8 @@ describe("native turn stopped at its tool receipt limit", () => {
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId, wakeCommentId: "original-message" } });
     const stopped = await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE);
     expect(stopped.status).toBe("cancelled");
-    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped)).toBe(true);
+    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, finalTurnId)).toBe(true);
+    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, "another-turn")).toBe(false);
 
     const [retry, ...others] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(others).toHaveLength(0);
@@ -128,12 +145,50 @@ describe("native turn stopped at its tool receipt limit", () => {
     expect(decision?.reasonCode).not.toBe(NATIVE_TOOL_RECEIPT_LIMIT_CODE);
   });
 
+  it("settles the cancellation when a person stops the run after finalization first read it", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Late stop task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId } });
+    await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE, async () => {
+      receiptLimitRead.after = () => db.update(heartbeatRuns)
+        .set({ resultJson: { cancelledByActorType: "user", cancelledByUserId: "receipt-owner" } }).where(eq(heartbeatRuns.id, runId));
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(coordinator).toMatchObject({ phase: "committed", failureCode: null });
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
+    expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
+  it("does not continue when only an earlier turn hit the receipt limit", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Earlier turn task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId } });
+    const stopped = await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE, undefined, "earlier-provider-turn");
+    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, finalTurnId)).toBe(false);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
+    expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });
+  });
+
+  it("refuses to create the continuation under the run lock once a person's Stop is saved", async () => {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Locked stop task", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "cancelled", runtimeMode: "native", nativeIssueId: issueId,
+      contextSnapshot: { issueId }, resultJson: { cancelledByActorType: "user", cancelledByUserId: "receipt-owner" } });
+    await expect(db.transaction(tx => materializeNativeToolReceiptLimitContinuation({ tx: tx as never, companyId, issueId, runId, agentId })))
+      .rejects.toBeInstanceOf(NativeStatusRaceError);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `native-tool-receipt-limit:${companyId}:${runId}`))).toHaveLength(0);
+  });
+
   it("leaves another cancelled turn to its existing recovery", async () => {
     const issueId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Other diagnostic task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId } });
     const stopped = await stopAtReceiptLimit(runId, issueId, "semantic_tool_denied");
-    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped)).toBe(false);
+    expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, finalTurnId)).toBe(false);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });

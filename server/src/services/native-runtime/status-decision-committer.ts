@@ -825,6 +825,19 @@ async function materializeDecisionEffect(input: {
             summary: effect.summary,
           },
         };
+      const [stopped] = effect.idempotencyKey === toolCallLoopContinuationKey(input.runId)
+        ? await input.tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, effect.agentId),
+          eq(agentWakeupRequests.idempotencyKey, effect.idempotencyKey), eq(agentWakeupRequests.status, "cancelled"),
+        )).limit(1)
+        : [];
+      if (stopped)
+        return {
+          effectKind: effect.kind,
+          targetType: "agent_wakeup_request",
+          targetId: stopped.id,
+          payload: { continuationKind: effect.continuationKind, summary: effect.summary, cancelled: true },
+        };
     }
     if (effect.continuationKind === "monitor") throw new Error("Monitor delivery belongs to the issue monitor scheduler");
     const wakeId = await enqueueWake({
