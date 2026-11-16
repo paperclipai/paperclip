@@ -38,14 +38,17 @@ describe("sandbox session Runner inspection", () => {
       const inspection = await inspect();
       expect(inspection).toEqual({
         state: { lifecycle: "suspended", runId: "run-1", normalizedSessionId: "session-1", runnerInstanceId: "runner-1", settled: true },
-        markerPid: 522, markerRunnerIdMatchesState: true, procfs: true,
+        markerPid: 522, markerRunnerIdMatchesState: true, procfs: true, unreadableProcesses: 0,
         processes: [{ pid: 522, state: "S", carriesRunnerId: true }, { pid: 600, state: "Z", carriesRunnerId: false }],
       });
       expect(JSON.stringify(inspection)).not.toMatch(/private/);
       await rm(join(proc, "522"), { recursive: true });
       await writeFile(join(state, "runner-state.json"), JSON.stringify({ runnerInstanceId: "runner-1", runId: "run-1",
         normalizedSessionId: "session-1", lifecycle: "suspended", outbox: [{ seq: 1 }], pendingTerminalDelivery: null }));
-      expect(await inspect()).toMatchObject({ state: { settled: false }, processes: [{ pid: 600, carriesRunnerId: false }] });
+      expect(await inspect()).toMatchObject({ state: { settled: false }, unreadableProcesses: 0,
+        processes: [{ pid: 600, carriesRunnerId: false }] });
+      await mkdir(join(proc, "800", "cmdline"), { recursive: true });
+      expect(await inspect()).toMatchObject({ procfs: true, unreadableProcesses: 1, processes: [{ pid: 600 }] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -58,7 +61,7 @@ describe("sandbox session Runner inspection", () => {
       await symlink(join(root, "elsewhere.json"), join(state, "runner-state.json"));
       const script = SANDBOX_SESSION_RUNNER_INSPECT_SCRIPT.replaceAll("'/proc", `'${join(root, "missing-proc")}`);
       expect(await inspectSandboxSessionRunner({ runner: localRunner(script) as never, stateDirectory: state })).toEqual({
-        state: null, markerPid: null, markerRunnerIdMatchesState: false, procfs: false, processes: [] });
+        state: null, markerPid: null, markerRunnerIdMatchesState: false, procfs: false, unreadableProcesses: 0, processes: [] });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

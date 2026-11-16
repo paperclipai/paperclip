@@ -125,11 +125,11 @@ export const SANDBOX_SESSION_RUNNER_INSPECT_SCRIPT = [
   "const out={state:state&&{lifecycle:str(state.lifecycle),runId:str(state.runId),normalizedSessionId:str(state.normalizedSessionId),",
   "runnerInstanceId:str(state.runnerInstanceId),settled:Array.isArray(state.outbox)&&state.outbox.length===0&&state.pendingTerminalDelivery==null",
   "&&state.pendingProviderCleanup==null&&state.warmTransition==null},markerPid,",
-  "markerRunnerIdMatchesState:runnerId!==null&&state!==null&&state.runnerInstanceId===runnerId,procfs:false,processes:[]};",
+  "markerRunnerIdMatchesState:runnerId!==null&&state!==null&&state.runnerInstanceId===runnerId,procfs:false,unreadableProcesses:0,processes:[]};",
   "let entries=null;try{entries=fs.readdirSync('/proc')}catch{}",
   "if(entries&&fs.existsSync('/proc/self/cmdline')){out.procfs=true;for(const d of entries){",
   "if(String(Number(d))!==d||Number(d)===process.pid||Number(d)===process.ppid)continue;",
-  "let a;try{a=fs.readFileSync('/proc/'+d+'/cmdline','utf8').split(String.fromCharCode(0))}catch{continue}",
+  "let a;try{a=fs.readFileSync('/proc/'+d+'/cmdline','utf8').split(String.fromCharCode(0))}catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')out.unreadableProcesses++;continue}",
   "const carries=runnerId!==null&&a.includes('--runner-id')&&a.includes(runnerId);",
   "if(!carries&&(a[0]||'').split('/').pop()!=='paperclip-runnerd')continue;",
   "let st=null;try{const s=fs.readFileSync('/proc/'+d+'/stat','utf8');st=s.slice(s.lastIndexOf(')')+2).split(' ')[0]||null}catch{}",
@@ -143,6 +143,7 @@ export type SandboxSessionRunnerInspection = {
   markerPid: number | null;
   markerRunnerIdMatchesState: boolean;
   procfs: boolean;
+  unreadableProcesses: number;
   processes: Array<{ pid: number; state: string | null; carriesRunnerId: boolean }>;
 };
 

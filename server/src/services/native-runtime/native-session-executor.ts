@@ -1210,13 +1210,14 @@ function warmCloseFailureEvidence(entry: WarmNativeSession, error: unknown, insp
         && inspection.state.normalizedSessionId === entry.normalizedSessionId && inspection.markerRunnerIdMatchesState,
       markerPid: inspection.markerPid,
       procfs: inspection.procfs,
+      unreadableProcesses: inspection.unreadableProcesses,
       processes: inspection.processes.slice(0, 20),
     } : "unavailable",
   };
 }
 
 function suspendedRunnerHasExited(entry: WarmNativeSession, inspection: SandboxSessionRunnerInspection | null): boolean {
-  return inspection !== null && inspection.procfs && inspection.state?.lifecycle === "suspended" && inspection.state.settled
+  return inspection !== null && inspection.procfs && inspection.unreadableProcesses === 0 && inspection.state?.lifecycle === "suspended" && inspection.state.settled
     && inspection.state.runId === entry.runId && inspection.state.normalizedSessionId === entry.normalizedSessionId
     && inspection.markerRunnerIdMatchesState && !inspection.processes.some(process => process.carriesRunnerId);
 }
@@ -12843,6 +12844,7 @@ async function executePaperclipNativeSessionAttempt(
                     controllerBootId: controller.bootId, controllerGeneration } : undefined;
                   existing.session = session;
                   existing.sandboxRunner = warmSandboxRunner(input.runnerExecutionTarget);
+                  existing.closeFailureEvidenceLogged = false;
                   existing.runId = input.execution.binding.runId;
                   existing.issueId = input.execution.binding.issueId;
                 } else
