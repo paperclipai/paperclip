@@ -345,6 +345,22 @@ it("keeps a previous-release provider running without managed GitHub after the c
   expect(current.resolveCredentials).not.toHaveBeenCalled();
   await expect(liveParent(current.env)()).resolves.toMatchObject({ value: "fixture-run-a" });
 }, 45_000);
+it("tells a local provider adopted after a restart that managed GitHub is unavailable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-local-restart-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const before = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const operation = liveParent(before.env);
+  const releaseBefore = before.activate(run("run-a"));
+  expect((await operation()).value).toBe("fixture-run-a");
+  releaseBefore();
+  await before.stop({ preserveLaunchers: true });
+  const after = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-a" });
+  after.activate(run("run-a"));
+  const adopted = await operation();
+  expect(adopted.value).toBe("anonymous");
+  expect(adopted.stderr).toMatch(/^Paperclip: GitHub (broker_transport_unavailable|capability_rejected|broker_response_unavailable); continuing without managed credentials\.\n$/);
+  expect(after.resolveCredentials).not.toHaveBeenCalled();
+}, 45_000);
 it("keeps the broker capability out of local launcher files", async () => {
   const b = await broker(undefined, false, false, undefined, undefined, { launcherKey: "session-a" });
   const files = await readdir(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, { recursive: true });
