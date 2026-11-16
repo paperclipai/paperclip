@@ -32,7 +32,8 @@ uv run python -m scripts.import_memories "${COMMON[@]}" "${GUARDS[@]}"
 RH_MEMORY_IMPORT_ALLOWED=true uv run python -m scripts.import_memories \
   "${COMMON[@]}" "${GUARDS[@]}" --expect-host-fingerprint "$HOST_FINGERPRINT" --apply
 uv run python -m scripts.import_memories "${COMMON[@]}" --verify
-uv run python -m scripts.import_memories "${COMMON[@]}" "${GUARDS[@]}" \
+RH_MEMORY_IMPORT_ALLOWED=true uv run python -m scripts.import_memories \
+  "${COMMON[@]}" "${GUARDS[@]}" \
   --expect-host-fingerprint "$HOST_FINGERPRINT" --rollback \
   --migration-id "$MIGRATION_ID" --apply
 ```

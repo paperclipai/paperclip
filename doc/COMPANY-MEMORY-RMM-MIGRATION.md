@@ -25,17 +25,20 @@ guards, transfer gate, and rollback detail. Exact flags below were checked again
 > **Warning: enrolment alone does NOT convert old memory.** An enrolled agent starts
 > **empty** and no longer sees the old shared company memory. Ask an operator to
 > run the conversion (section B, steps 0-4) **before**, or right after, you enrol.
+> Conversion covers only Hermes (`hermes_local`) agents. Claude and Codex agents cannot
+> be exported, so their share of the old company memory is not carried over.
 
 ### Who may run it
 
-A member of that company who is an owner or admin, or holds `tools:manage_connections`
-(or an instance admin). Other callers get HTTP 403. Agents created by other agents
+A member of that company who is an owner or admin, or holds `tools:manage_connections`,
+or an instance admin (no membership needed). Other callers get HTTP 403. Agents created by other agents
 may report `owner_required`; an operator can fix that (see B5).
 
 ### Steps
 
 1. **Ask an operator to convert the company's old memory first** (B0-B4). Skip only if
-   the company has no memory database or only archived/paused agents.
+   the company has no memory database, or its only agents are archived or terminated
+   (paused Hermes agents are still exportable and should be converted).
 2. **Dry run** (the default, writes nothing):
    `POST /api/companies/:companyId/default-mcp/missing-entry-enrollment` with
    `{ "keys": ["agent-memory"] }`. Read the per-agent outcomes: `would_add`, or
@@ -112,8 +115,8 @@ embedding model and dims (`text-embedding-3-small`, 1536 is supported), projecte
 1. Deterministic rules run first, then the pinned-prompt classifier (drop reasons
    `run_status`, `transient_id`, `environment_detail`, `uninformative`). Typical keep
    rate was 30-55%.
-2. Output goes **only** to an atomic staging directory that ends in `COMPLETE`.
-   An abort loses that agent's whole run. Use only directories containing `COMPLETE`.
+2. Output goes **only** to an atomic staging directory that holds a `COMPLETE` marker
+   file. An abort loses that agent's whole run. Use only directories containing `COMPLETE`.
 3. Known failure: `FILTER_INVALID_CLASSIFICATION` (classifier gave a keep decision with a
    drop reason, or the reverse) aborts the whole run.
 4. Practice that worked for big agents:
@@ -167,6 +170,8 @@ Dry run first, then the real run (calls in section A, steps 2-3).
 | `skipped: agent_terminated` | Terminated agent. |
 | `skipped: nothing_missing` | Already enrolled, or the server backfill flag is off (below). |
 | `skipped: owner_required` | No responsible user in the audit log (agent created by an agent). |
+| `failed: enrollment_error` | Per-agent error; inspect server logs, then re-run (idempotent). |
+| top-level `blocked` | `feature_flag_off` or `enrollment_in_progress`: nothing scanned, no outcomes, null `nextCursor`. |
 | other skips | `company_archived`, `company_out_of_scope`, `no_default_mcp_state` (legacy enrolment first), `corrupted_existing_state`, `legacy_access_conflict`, `lost_race`. |
 
 - The server must have `PAPERCLIP_AGENT_MEMORY_BACKFILL_ENABLED=true` and a valid memory
@@ -174,8 +179,8 @@ Dry run first, then the real run (calls in section A, steps 2-3).
 - `owner_required`: once PR #414 (merge `773eed4a`) is deployed, an operator can add
   `responsibleUserId` to the body. It fills only agents with no audit-log owner, the
   user must be an active verified member, and it is audited per agent.
-- HTTP 403 means the caller is not a member of the company, or not a manager (code
-  checks both).
+- HTTP 403 means the caller has no access to the company, or is not a manager (owner,
+  admin, `tools:manage_connections`, or instance admin; the code checks both).
 - **What an agent receives:** Hermes gets env `MEM0_API_KEY` (secret ref), `MEM0_HOST`,
   `MEM0_USER_ID`, `MEM0_PROXY`, plus `memoryProvider: mem0` and `runtimeMemory: false`.
   Claude and Codex get `RH_MEMORY_TOKEN`, `RH_MEMORY_URL`, `RH_MEMORY_PROXY` and are wired
@@ -206,8 +211,9 @@ Dry run first, then the real run (calls in section A, steps 2-3).
   stuck `sweeping` rows (step 1).
 - **Quality caveat:** kept sets still contain some stale point-in-time status facts;
   consolidation is tracked in TECH-8751..8756.
-- Companies with no memory database, or only archived/paused agents, have nothing to
-  convert; enrol their live agents directly.
+- Companies with no memory database, or whose agents are all archived or terminated,
+  have nothing to convert; enrol their live agents directly. Paused Hermes agents are
+  still exportable (only non-`hermes_local` and terminated agents are refused).
 
 ## Timings and costs from the first full run
 
@@ -218,7 +224,7 @@ Dry run first, then the real run (calls in section A, steps 2-3).
 | DAN | 7,822 rows, $1.28, about 6.5 h |
 | RED | 7,061 sources |
 | All 20 companies | about $3.3, about 9 h wall (2 sweeps in parallel) |
-| Import speed | about 0.4 s per record, serial (15,658 records in about 102 min) |
+| Import speed | about 0.4 s per record, serial (15,658 records in about 102 min observed; 0.4 s is rounded) |
 | Filter keep rate | typically 30-55% |
 
 ## Not done by this runbook
