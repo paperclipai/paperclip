@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, dotAgentBindings,
   dotRunnerAssignments, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, agentWakeupRequests,
   applyPendingMigrations, closeLivenessDb, closeCheckpointDb } from "@paperclipai/db";
@@ -109,6 +109,15 @@ describe("native checkpoint Retry beside a status commit", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.input.issueId));
     const applicationName = "checkpoint-status-" + randomUUID();
     const committingDb = createDb(databaseURL, { maxConnections: 1, applicationName });
+    const previousCommitDebug = committingDb.$client.options.debug;
+    let committerIssuedCoordinatorLock = false, committerIssuedIssueLock = false, blockerObserved = false;
+    committingDb.$client.options.debug = (connection, query, parameters, types) => {
+      if (typeof previousCommitDebug === "function") previousCommitDebug(connection, query, parameters, types);
+      const text = query.toLowerCase();
+      if (text.includes('from "native_run_finalizations"') && text.includes("for update")) committerIssuedCoordinatorLock = true;
+      if (text.includes('from "issues"') && text.includes("for update")) committerIssuedIssueLock = true;
+    };
+    const admissionErrors: unknown[] = [];
     let release!: () => void, queued!: () => void, second!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const queueAtIssue = new Promise<void>(resolve => { queued = resolve; });
@@ -123,7 +132,8 @@ describe("native checkpoint Retry beside a status commit", () => {
           queuePID = identity.pid; queued(); await held;
         } else if (admissionCalls === 2) { secondAt = Date.now(); second(); }
       }
-      return actualPending(tx, input);
+      // Retain the actual owner error before Queue/deferred handlers can consume it.
+      return actualPending(tx, input).catch(error => { admissionErrors.push(error); throw error; });
     });
     const failures: unknown[] = [], sqlStates: string[] = [];
     const allErrors = (error: unknown): unknown[] => {
@@ -150,7 +160,13 @@ describe("native checkpoint Retry beside a status commit", () => {
     const firstOwner = makeCoordinator();
     let restarted: ReturnType<typeof makeCoordinator> | undefined;
     let ready: Promise<unknown> | undefined, committing: Promise<unknown> | undefined, primary: unknown;
-    let commitError: unknown;
+    let commitError: unknown, actorOutcomesReported = false;
+    onTestFailed(() => console.error("NATIVE_CHECKPOINT_LOCK_FRONTIER", JSON.stringify({
+      committerIssuedCoordinatorLock, committerIssuedIssueLock, blockerObserved, admissionCalls,
+      admission: admissionErrors.map(error => ({ name: error instanceof Error ? error.name : "unknown", sqlState: postgresErrorCode(error) })),
+      committer: commitError ? { name: commitError instanceof Error ? commitError.name : "unknown", sqlState: postgresErrorCode(commitError) } : null,
+      deferredErrors: failures.length, sqlStates,
+    })));
     try {
       ready = heartbeatService(db).registerDeferredReceiptWork(firstOwner.coordinator, () => true).ready;
       void ready.catch(() => {});
@@ -164,17 +180,28 @@ describe("native checkpoint Retry beside a status commit", () => {
       await vi.waitFor(async () => {
         const [row] = await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
           where datname=current_database() and application_name=${applicationName} and wait_event_type='Lock'
-            and query ilike '%"issues"%' and query ilike '%for update%'
             and ${queuePID!}=any(pg_blocking_pids(pid))) as waiting`);
+        // pg_stat_activity.query is bounded; the owned driver's untruncated
+        // call-through debug proves the real statements without a suffix guess.
+        expect(committerIssuedCoordinatorLock).toBe(true);
+        expect(committerIssuedIssueLock).toBe(true);
         expect(row.waiting).toBe(true);
       }, { timeout: 5_000 });
+      blockerObserved = true;
       release(); await Promise.all([ready, committing]);
       // A deadlock in EITHER real actor is an original PostgreSQL failure, never an expected status refusal.
-      if (sqlStates.includes("40P01")) throw new AggregateError([...failures, ...(commitError ? [commitError] : [])], "Native Retry/status commit PostgreSQL deadlock");
+      if (sqlStates.includes("40P01") || admissionErrors.some(error => postgresErrorCode(error) === "40P01")) {
+        actorOutcomesReported = true;
+        throw new AggregateError([...new Set([...admissionErrors, ...failures, ...(commitError ? [commitError] : [])])], "Native Retry/status commit PostgreSQL deadlock");
+      }
       expect(commitError).toBeInstanceOf(NativeStatusRaceError);
       expect(failures).toHaveLength(1);
       expect(allErrors(failures[0]).some(error => error instanceof Error && error.name === "NativeCheckpointAdmissionBusyError")).toBe(true);
       expect(sqlStates).not.toContain("40P01");
+      expect(admissionErrors).toHaveLength(1);
+      expect(postgresErrorCode(admissionErrors[0])).toBe("55P03");
+      expect(allErrors(admissionErrors[0]).some(error => error instanceof Error && error.name === "NativeCheckpointAdmissionBusyError")).toBe(true);
+      actorOutcomesReported = true;
       const retryAt = firstOwner.next();
       expect(retryAt).not.toBeNull();
       expect(retryAt!).toBeGreaterThan(Date.now());
@@ -209,11 +236,13 @@ describe("native checkpoint Retry beside a status commit", () => {
       release();
       const joins = await Promise.allSettled([...(ready ? [ready] : []), ...(committing ? [committing] : [])]);
       const cleanup = joins.filter(value => value.status === "rejected").map(value => value.reason);
+      if (!actorOutcomesReported) cleanup.push(...new Set([...admissionErrors, ...failures, ...(commitError ? [commitError] : [])]));
       for (const stop of [() => firstOwner.coordinator.stop(), () => restarted?.coordinator.stop(),
         () => committingDb.$client.end({ timeout: 1 })]) {
         try { await stop(); } catch (error) { cleanup.push(error); }
       }
       admission.mockRestore();
+      committingDb.$client.options.debug = previousCommitDebug;
       if (cleanup.length) throw new AggregateError([...(primary ? [primary] : []), ...cleanup], "Native checkpoint Retry concurrency cleanup failed");
     }
   }, 90_000);
