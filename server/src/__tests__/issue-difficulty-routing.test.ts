@@ -38,7 +38,7 @@ const answer = (choice: string, probability = 0.8): DecisionProviderOutcome => (
 });
 
 let sequence = 0;
-async function fixture(options: { decisions?: boolean; runtimeConfig?: Record<string, unknown>; overrides?: Record<string, unknown> | null } = {}) {
+async function fixture(options: { decisions?: boolean; runtimeConfig?: Record<string, unknown>; overrides?: Record<string, unknown> | null; adapterType?: string; adapterConfig?: Record<string, unknown> } = {}) {
   const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Difficulty tests", issuePrefix: `DR${++sequence}` });
   await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "owner" });
@@ -56,10 +56,11 @@ async function fixture(options: { decisions?: boolean; runtimeConfig?: Record<st
     await service.configure(companyId, "alice", { ...binding, enabled: true, allowBackground: true });
   }
   const loadIssue = async () => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
-  const resolve = async () => resolveIssueDifficultyRouting({
-    db, decide: service.decide, agent: { id: agentId, companyId, adapterType: "codex_local", runtimeConfig }, runId, issue: await loadIssue(),
+  const agent = { id: agentId, companyId, adapterType: options.adapterType ?? "codex_local", adapterConfig: options.adapterConfig ?? {}, runtimeConfig };
+  const resolve = async (issue?: Awaited<ReturnType<typeof loadIssue>>) => resolveIssueDifficultyRouting({
+    db, decide: service.decide, agent, runId, issue: issue ?? await loadIssue(),
   });
-  return { companyId, agentId, issueId, runId, provider, loadIssue, resolve };
+  return { companyId, agentId, issueId, runId, provider, loadIssue, resolve, agent };
 }
 
 describe("issue difficulty routing", () => {
@@ -99,6 +100,36 @@ describe("issue difficulty routing", () => {
     const f = await fixture({ runtimeConfig: {} });
     expect(await f.resolve()).toEqual({ applied: false, reason: "disabled" });
     expect(f.provider).not.toHaveBeenCalled();
+  });
+
+  it("does nothing for runner harnesses that ignore task model overrides", async () => {
+    const f = await fixture({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi" } });
+    expect(await f.resolve()).toEqual({ applied: false, reason: "unsupported" });
+    expect(f.provider).not.toHaveBeenCalled();
+  });
+
+  it("uses the agent defaults when the decision call throws", async () => {
+    const f = await fixture();
+    const outcome = await resolveIssueDifficultyRouting({
+      db, decide: vi.fn().mockRejectedValue(new Error("request too large")), agent: f.agent, runId: f.runId, issue: await f.loadIssue(),
+    });
+    expect(outcome).toEqual({ applied: false, reason: "failed", detail: "decision_error" });
+    expect((await f.loadIssue()).difficultyRouting).toBeNull();
+  });
+
+  it("keeps a newer tier choice when a run reuses an older snapshot", async () => {
+    const f = await fixture();
+    const pinned = { tier: "L2", source: "manual", agentId: f.agentId, model: "old", effort: "medium",
+      confidence: null, decidedAt: "2026-01-01T00:00:00.000Z", decisionInvocationId: null };
+    await db.update(issues).set({ difficultyRouting: pinned }).where(eq(issues.id, f.issueId));
+    const snapshot = await f.loadIssue();
+    const newer = { ...pinned, tier: "L3", decidedAt: "2026-01-02T00:00:00.000Z" };
+    await db.update(issues).set({ difficultyRouting: newer }).where(eq(issues.id, f.issueId));
+    expect(await f.resolve(snapshot)).toMatchObject({ applied: true, reused: true, routing: { tier: "L2", model: "gpt-main" } });
+    expect((await f.loadIssue()).difficultyRouting).toEqual(newer);
+    await db.update(issues).set({ difficultyRouting: null }).where(eq(issues.id, f.issueId));
+    await f.resolve(snapshot);
+    expect((await f.loadIssue()).difficultyRouting).toBeNull();
   });
 
   it("rates the task again after it moves to another agent", async () => {
@@ -141,11 +172,12 @@ describe("difficulty routing helpers", () => {
       .toEqual({ adapterConfig: { chrome: true, model: "m" }, useProjectWorkspace: true });
   });
 
-  it("truncates long descriptions in the decision request", () => {
-    const requestBody = buildDifficultyRequest({ id: randomUUID(), title: "T", description: "x".repeat(7000), priority: "high", workMode: "standard",
+  it("truncates long titles and descriptions in the decision request", () => {
+    const requestBody = buildDifficultyRequest({ id: randomUUID(), title: "t".repeat(40000), description: "x".repeat(7000), priority: "high", workMode: "standard",
       projectId: null, assigneeAgentId: null, assigneeAdapterOverrides: null, difficultyRouting: null });
     expect(requestBody.state).toMatchObject({ descriptionTruncated: true, priority: "high", inProject: false });
     expect(((requestBody.state as Record<string, string>).description).length).toBe(6000);
+    expect(((requestBody.state as Record<string, string>).title).length).toBe(500);
     expect(Object.keys((requestBody.questions.difficulty as { criteria: Record<string, string> }).criteria)).toEqual(["L1", "L2", "L3"]);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  difficultyEffortConfigKey, difficultyTierAdapterConfig, hasManualModelOrEffortOverride, readDifficultyRoutingConfig,
+  difficultyEffortConfigKey, difficultyRoutingSupported, difficultyTierAdapterConfig, hasManualModelOrEffortOverride, readDifficultyRoutingConfig,
 } from "./difficulty-routing.js";
 import { agentRuntimeConfigSchema } from "./validators/agent.js";
 
@@ -15,6 +15,17 @@ describe("difficulty routing contract", () => {
     expect(difficultyTierAdapterConfig("claude_local", { model: "opus", effort: "high" })).toEqual({ model: "opus", effort: "high" });
     expect(difficultyTierAdapterConfig("http", { model: "m", effort: "high" })).toEqual({ model: "m" });
     expect(difficultyTierAdapterConfig("codex_local", undefined)).toEqual({});
+  });
+
+  it("supports only runtimes that apply task model and effort overrides", () => {
+    expect(difficultyRoutingSupported("claude_local", {})).toBe(true);
+    expect(difficultyRoutingSupported("http", {})).toBe(false);
+    expect(difficultyRoutingSupported("paperclip_runner", {})).toBe(true);
+    expect(difficultyRoutingSupported("paperclip_runner", { provider: "acpx" })).toBe(true);
+    expect(difficultyRoutingSupported("paperclip_runner", { provider: "acpx", acpxAgent: "grok" })).toBe(true);
+    expect(difficultyRoutingSupported("paperclip_runner", { provider: "acpx", acpxAgent: "pi" })).toBe(false);
+    expect(difficultyRoutingSupported("paperclip_runner", { provider: "acpx", acpxAgent: "codex" })).toBe(false);
+    expect(difficultyRoutingSupported("paperclip_runner", { provider: "claude_managed" })).toBe(false);
   });
 
   it("treats only model and effort keys as a manual override", () => {

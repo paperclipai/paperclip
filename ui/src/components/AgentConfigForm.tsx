@@ -101,7 +101,7 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
-import { difficultyEffortConfigKey } from "@paperclipai/shared";
+import { difficultyEffortConfigKey, difficultyRoutingSupported } from "@paperclipai/shared";
 import { readDifficultyRoutingDraft, runtimeConfigWithDifficultyRouting } from "../lib/difficulty-routing";
 import { AgentDifficultyRoutingFields } from "./AgentDifficultyRoutingFields";
 
@@ -2070,7 +2070,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
-              {!isCreate && (
+              {!isCreate && difficultyRoutingSupported(adapterType, config) && (
                 <AgentDifficultyRoutingFields
                   value={readDifficultyRoutingDraft(((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig).difficultyRouting)}
                   onChange={(next) => mark("runtime", "runtimeConfig", runtimeConfigWithDifficultyRouting(runtimeConfig, overlay.runtime.runtimeConfig as Record<string, unknown> | undefined, next))}

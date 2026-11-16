@@ -1,7 +1,7 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import {
-  DIFFICULTY_TIERS, DIFFICULTY_TIER_CRITERIA, difficultyTierAdapterConfig, hasManualModelOrEffortOverride,
+  DIFFICULTY_TIERS, DIFFICULTY_TIER_CRITERIA, difficultyRoutingSupported, difficultyTierAdapterConfig, hasManualModelOrEffortOverride,
   issueDifficultyRoutingSchema, readDifficultyRoutingConfig,
   type DecisionRequest, type DecisionResult, type DifficultyRoutingConfig, type DifficultyTier, type IssueDifficultyRouting,
 } from "@paperclipai/shared";
@@ -10,6 +10,7 @@ import { defineDecisionFeature, type DecisionContext } from "../decision-models.
 
 export const issueDifficultyRoutingFeature = defineDecisionFeature("issue.difficulty_routing", { background: true });
 
+const TITLE_LIMIT = 500;
 const DESCRIPTION_LIMIT = 6000;
 
 export type DifficultyDecide = (context: DecisionContext, request: DecisionRequest, signal?: AbortSignal) => Promise<DecisionResult>;
@@ -18,6 +19,7 @@ export interface DifficultyRoutingAgent {
   id: string;
   companyId: string;
   adapterType: string;
+  adapterConfig: Record<string, unknown> | null;
   runtimeConfig: Record<string, unknown> | null;
 }
 
@@ -33,7 +35,7 @@ export interface DifficultyRoutingIssue {
   difficultyRouting: unknown;
 }
 
-export type DifficultyRoutingSkipReason = "disabled" | "not_assignee" | "manual_override" | "unavailable" | "failed";
+export type DifficultyRoutingSkipReason = "disabled" | "unsupported" | "not_assignee" | "manual_override" | "unavailable" | "failed";
 
 export type DifficultyRoutingOutcome =
   | { applied: false; reason: DifficultyRoutingSkipReason; detail?: string }
@@ -43,7 +45,7 @@ export function buildDifficultyRequest(issue: DifficultyRoutingIssue): DecisionR
   const description = (issue.description ?? "").slice(0, DESCRIPTION_LIMIT);
   return {
     state: {
-      title: issue.title,
+      title: issue.title.slice(0, TITLE_LIMIT),
       description,
       descriptionTruncated: (issue.description ?? "").length > DESCRIPTION_LIMIT,
       priority: issue.priority,
@@ -88,13 +90,13 @@ function sameRouting(left: IssueDifficultyRouting, right: IssueDifficultyRouting
     && left.model === right.model && left.effort === right.effort;
 }
 
-async function persistRouting(db: Db, agent: DifficultyRoutingAgent, issueId: string, routing: IssueDifficultyRouting) {
+async function persistRouting(db: Db, agent: DifficultyRoutingAgent, issueId: string, routing: IssueDifficultyRouting, previous: IssueDifficultyRouting | null) {
   await db.update(issues).set({ difficultyRouting: routing })
     .where(and(
       eq(issues.id, issueId),
       eq(issues.companyId, agent.companyId),
-      routing.source === "manual"
-        ? undefined
+      previous
+        ? and(sql`${issues.difficultyRouting}->>'source' = ${previous.source}`, sql`${issues.difficultyRouting}->>'decidedAt' = ${previous.decidedAt}`)
         : or(isNull(issues.difficultyRouting), sql`${issues.difficultyRouting}->>'source' <> 'manual'`),
     ));
 }
@@ -111,6 +113,7 @@ export async function resolveIssueDifficultyRouting(input: {
   const { db, agent, issue } = input;
   const config = readDifficultyRoutingConfig(agent.runtimeConfig);
   if (!config) return { applied: false, reason: "disabled" };
+  if (!difficultyRoutingSupported(agent.adapterType, agent.adapterConfig)) return { applied: false, reason: "unsupported" };
   if (issue.assigneeAgentId !== agent.id) return { applied: false, reason: "not_assignee" };
   if (hasManualModelOrEffortOverride(parseObject(parseObject(issue.assigneeAdapterOverrides).adapterConfig))) {
     return { applied: false, reason: "manual_override" };
@@ -122,14 +125,20 @@ export async function resolveIssueDifficultyRouting(input: {
       agent, config, tier: stored.data.tier, source: stored.data.source, confidence: stored.data.confidence,
       decisionInvocationId: stored.data.decisionInvocationId, decidedAt: stored.data.decidedAt,
     });
-    if (!sameRouting(stored.data, next.routing)) await persistRouting(db, agent, issue.id, next.routing);
+    if (!sameRouting(stored.data, next.routing)) await persistRouting(db, agent, issue.id, next.routing, stored.data);
     return { applied: true, reused: true, ...next };
   }
-  const result = await input.decide(
-    { companyId: agent.companyId, feature: issueDifficultyRoutingFeature, actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: input.runId }, issueId: issue.id },
-    buildDifficultyRequest(issue),
-    input.signal,
-  );
+  let result: DecisionResult;
+  try {
+    result = await input.decide(
+      { companyId: agent.companyId, feature: issueDifficultyRoutingFeature, actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: input.runId }, issueId: issue.id },
+      buildDifficultyRequest(issue),
+      input.signal,
+    );
+  } catch (error) {
+    if (input.signal?.aborted) throw error;
+    return { applied: false, reason: "failed", detail: "decision_error" };
+  }
   if (result.status === "unavailable") return { applied: false, reason: "unavailable", detail: result.reason };
   if (result.status === "failed") return { applied: false, reason: "failed", detail: result.errorCode };
   const answer = result.answers.difficulty;
@@ -140,7 +149,7 @@ export async function resolveIssueDifficultyRouting(input: {
     confidence: typeof confidence === "number" && confidence >= 0 && confidence <= 1 ? confidence : null,
     decisionInvocationId: result.invocationId, decidedAt: now().toISOString(),
   });
-  await persistRouting(db, agent, issue.id, next.routing);
+  await persistRouting(db, agent, issue.id, next.routing, null);
   return { applied: true, reused: false, ...next };
 }
 

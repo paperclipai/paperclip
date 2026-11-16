@@ -2487,6 +2487,7 @@ export function heartbeatService(
       const difficultyRouting = issueContext && !isConversation(issueContext)
         ? await timePreparation("difficulty_routing", () => resolveIssueDifficultyRouting({
             db, decide: decisionModelService(db, { budgetHooks }).decide, agent, runId: run.id, issue: issueContext!,
+            signal: executionControl.controller.signal,
           }))
         : null;
       if (difficultyRouting?.applied) {

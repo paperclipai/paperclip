@@ -54,6 +54,16 @@ export function difficultyEffortConfigKey(adapterType: string): string | null {
   }
 }
 
+const RUNNER_TASK_CONFIG_PROVIDERS = ["codex", "opencode", "cursor_cloud"];
+const RUNNER_TASK_CONFIG_ACPX_AGENTS = ["claude", "grok", "copilot"];
+
+export function difficultyRoutingSupported(adapterType: string, adapterConfig: Record<string, unknown> | null | undefined): boolean {
+  if (adapterType !== "paperclip_runner") return difficultyEffortConfigKey(adapterType) !== null;
+  const provider = adapterConfig?.provider ?? "codex";
+  if (provider === "acpx") return RUNNER_TASK_CONFIG_ACPX_AGENTS.includes(String(adapterConfig?.acpxAgent ?? "claude"));
+  return RUNNER_TASK_CONFIG_PROVIDERS.includes(String(provider));
+}
+
 export function difficultyTierAdapterConfig(adapterType: string, setting: DifficultyTierSetting | undefined): Record<string, string> {
   const config: Record<string, string> = {};
   if (!setting) return config;

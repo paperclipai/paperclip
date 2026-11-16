@@ -44,6 +44,7 @@
   "requestDepth": 0,
   "billingCode": null,
   "assigneeAdapterOverrides": null,
+  "difficultyRouting": null,
   "executionPolicy": null,
   "executionState": null,
   "monitorNextCheckAt": null,

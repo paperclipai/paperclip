@@ -204,6 +204,31 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 
 Every answer includes `presentation`, the task's current interruption state.
 
+## Difficulty Routing
+
+An agent can turn on difficulty routing in `runtimeConfig.difficultyRouting`. Then, before the agent's first run on a task, the company decision model rates the task as `L1`, `L2`, or `L3`. The run uses the model and effort that the agent sets for that tier. The task stores the result in `difficultyRouting`.
+
+A model or effort in the task's `assigneeAdapterOverrides` always wins. When it is set, routing does not run. When the decision model is off, has no budget, or fails, the run uses the agent's own settings.
+
+### Pin a Tier
+
+```
+PUT /api/issues/{issueId}/difficulty-routing
+{ "tier": "L3" }
+```
+
+Saves a manual tier on the task. Automatic rating does not replace it. The next run uses the tier's settings from the assigned agent. If that agent has no difficulty routing, the tier is saved but has no effect. Returns `{ "difficultyRouting": { ... } }`.
+
+### Reset to Automatic
+
+```
+DELETE /api/issues/{issueId}/difficulty-routing
+```
+
+Removes the saved tier. The next run rates the task again. Returns `{ "difficultyRouting": null }`.
+
+Both routes need permission to change the task, and write an activity log entry.
+
 ## Comments
 
 ### List Comments
