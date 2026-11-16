@@ -1,5 +1,6 @@
 import { pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { issues } from "./issues.js";
 
 /**
  * When a task recovery queue last finished checking every task of a company.
@@ -14,4 +15,20 @@ export const issueRecoveryFullPasses = pgTable("issue_recovery_full_passes", {
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
 }, table => ({
   pk: primaryKey({ name: "issue_recovery_full_passes_pk", columns: [table.companyId, table.queue] }),
+}));
+
+/**
+ * A task whose recovery check deferred itself to a later deadline (a grace
+ * period, a back-off, a live owner's lease). The row exists while a deferral
+ * is pending, so the successor of a replaced or crashed server re-checks these
+ * tasks at boot and keeps their deadlines without re-checking every task.
+ * The deadline itself is not stored: the boot check computes it again.
+ */
+export const issueRecoveryDeferrals = pgTable("issue_recovery_deferrals", {
+  queue: text("queue").notNull(),
+  issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  deferredAt: timestamp("deferred_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({
+  pk: primaryKey({ name: "issue_recovery_deferrals_pk", columns: [table.queue, table.issueId] }),
 }));

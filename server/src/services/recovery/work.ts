@@ -62,6 +62,9 @@ export function registerIssueRecoveryWork(
     // a server replaced mid-pass leaves no saved pass and its replacement runs
     // the full pass again instead of skipping the tasks it never reached.
     const unsaved: Array<{ unchecked: Set<string>; save: () => Promise<void> }> = [];
+    // Tasks with a saved pending deferral (issue_recovery_deferrals) as far as
+    // this server knows: filled at each reload, kept by its own checks.
+    const deferred = new Set<string>();
     // Saved passes from before scheduling was suppressed are ignored: entries
     // were dropped while suppressed, so the next pass must look at every task.
     let distrustBefore = 0;
@@ -102,7 +105,15 @@ export function registerIssueRecoveryWork(
             const since = sql`(greatest((select p.started_at from issue_recovery_full_passes p
               where p.company_id = ${issues.companyId} and p.queue = ${queue}), ${at(changedAt.get("*") ?? 0)})
               - ${`${ISSUE_RECOVERY_BACKSTOP_MS} milliseconds`}::interval)`;
-            scan.filter = sql`(not ${recentFull(sql`${issues.companyId}`, cutoff)} or ${changedTaskCondition(since)})`;
+            // A task with a pending deferral is checked again too, so its
+            // deadline survives the server that set it.
+            scan.filter = sql`(not ${recentFull(sql`${issues.companyId}`, cutoff)} or ${changedTaskCondition(since)}
+              or exists (select 1 from issue_recovery_deferrals d where d.queue = ${queue} and d.issue_id = ${issues.id}))`;
+            // Unreadable deferrals mean a full reload, never a lost deadline.
+            const saved: Array<{ issue_id: string }> | null = await db.execute<{ issue_id: string }>(sql`select issue_id::text
+              from issue_recovery_deferrals where queue = ${queue}`).then(rows => [...rows], () => null);
+            if (saved) for (const row of saved) deferred.add(row.issue_id);
+            else scan.filter = null;
           } else if (scope && (scope.backstop || isPlainCompany(scope))) {
             await readSaved(scope.companyId);
             if (!fullDue(scope.companyId)) scan.filter = changedTaskCondition(new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS));
@@ -138,6 +149,23 @@ export function registerIssueRecoveryWork(
       seen(key: string, ids: readonly string[]) {
         const scan = scans.get(key);
         if (scan) for (const id of ids) scan.unchecked.add(id);
+      },
+      /** Saves whether a checked task deferred itself. False when a pending
+       * deferral could not be saved: the check then does not count toward a
+       * saved full pass, so a successor's full pass rebuilds the deadline. */
+      async deferral(id: string, companyId: string, pending: boolean): Promise<boolean> {
+        if (pending && !deferred.has(id)) {
+          const saved = await db.execute(sql`insert into issue_recovery_deferrals (queue, issue_id, company_id)
+            values (${queue}, ${id}::uuid, ${companyId}::uuid) on conflict (queue, issue_id) do nothing`).then(() => true, () => false);
+          if (saved) deferred.add(id);
+          return saved;
+        } else if (!pending && deferred.has(id)) {
+          deferred.delete(id);
+          // A row left behind costs one extra check at the next boot.
+          await db.execute(sql`delete from issue_recovery_deferrals where queue = ${queue} and issue_id = ${id}::uuid`)
+            .catch(() => undefined);
+        }
+        return true;
       },
       /** A task was checked; save each full pass that has no unchecked task left. */
       async checked(id: string) {
@@ -238,7 +266,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id, pass,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-        await passes.checked(entry.id);
+        if (await passes.deferral(entry.id, entry.companyId, next !== null)) await passes.checked(entry.id);
         return next === null ? null : { ...entry, dueAt: next, ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
@@ -288,7 +316,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null, unchanged = false;
         await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: (at, detail) => { next = next === null ? at : Math.min(next, at); unchanged ||= detail?.unchanged === true; } });
-        await passes.checked(entry.id);
+        if (await passes.deferral(entry.id, entry.companyId, next !== null)) await passes.checked(entry.id);
         const { unchanged: _previous, fromBackstop: _source, ...rest } = entry;
         return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}),
           ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
