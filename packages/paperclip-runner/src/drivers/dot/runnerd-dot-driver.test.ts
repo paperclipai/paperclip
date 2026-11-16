@@ -587,7 +587,7 @@ describe("external checkpoint recovery eligibility", () => {
   });
   it("does not grant Muse or an unknown turn the Dot restart policy", () => {
     const input = execution("/synthetic/checkpoint-policy");
-    const identity = { runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId };
+    const identity = { runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! };
     expect(externalRunnerCheckpointRecovery({ provider: input.provider, companyId: input.binding.companyId, agentId: input.binding.agentId }, identity).recoveryEligibility(async () => null)).toBeUndefined();
     const muse: NativeExecutionInputV8 = { ...input, schema: "paperclip.native-execution-input.v8",
       provider: { kind: "muse", model: null, binding: input.provider.binding, bridgeRevision: "muse-v1" },
