@@ -112,7 +112,7 @@ const closedUnavailable=(response:{status:number;body:unknown;text?:string;heade
   if(retry==="30"&&z.object({error:z.literal("temporarily_unavailable")}).strict().safeParse(value).success)return{wireContract:"code-only-retry-after",retryAfterMs:30000};
   if((retry===undefined||retry==="30")&&z.object({error:z.literal("temporarily_unavailable"),error_description:z.literal("This workspace is not ready. Open Paperclip to check its status, then retry.")}).strict().safeParse(value).success)return{wireContract:"fixed-broker-description",retryAfterMs:retry==="30"?30000:0};
 };
-const listen=async(server:Server)=>{server.listen(0,"127.0.0.1");await once(server,"listening");const address=server.address();if(!address||typeof address==="string")throw new Error("Missing owned principal listener");return `http://127.0.0.1:${address.port}`;};
+const listen=async(server:Server,port=0)=>{server.listen(port,"127.0.0.1");await once(server,"listening");const address=server.address();if(!address||typeof address==="string")throw new Error("Missing owned principal listener");return `http://127.0.0.1:${address.port}`;};
 const close=async(server:Server|undefined)=>{if(!server?.listening)return;await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));};
 describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device/subscription and genuine useful Retry",()=>{
   let objectStore:ObjectStore|undefined;
@@ -156,6 +156,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const setChildHealth=async(value:"ready"|"unavailable"|"wake-once-then-unavailable")=>{
     if(!childControl)throw new Error("Missing actual child owner");
     await childControl.request({command:"health",value},childDeadline());
+    healthAvailability=value;
   };
   let db:ReturnType<typeof createDb>,home:string,cloudServer:Server|undefined;
   let cloudService:{handler:(req:IncomingMessage,res:ServerResponse)=>unknown;stopBackgroundTasks:()=>void}|undefined,restoreOAuth:(()=>void)|undefined,restoreEventFactory:(()=>void)|undefined;
@@ -170,6 +171,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const callbacks:Array<{id:string;at:number;kind?:string}>=[],errors:unknown[]=[];
   let failures=1,unexpectedDecisionWakes=0;
   let reconstructCloudOwner:()=>Promise<void>,makePhysicalSecond:()=>Promise<void>;
+  let replaceAppForProviderWake:(()=>Promise<void>)|undefined;
   const controlledMasterKeys=new Map<string,Buffer>();
   let cloudOwnerGenerations=0,appOwnerGenerations=0;
   const ownedTenantOrigins=new Set<string>([origin]);
@@ -515,7 +517,14 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       async migrateStack(request:Parameters<FakeProvider["migrateStack"]>[0]){return routedResult(await super.migrateStack(request),"migrate");}
       async updateStack(request:Parameters<FakeProvider["updateStack"]>[0]){return routedResult(await super.updateStack(request),"update");}
       async sleepStack(...args:Parameters<FakeProvider["sleepStack"]>){return routedResult(await super.sleepStack(...args),"sleep");}
-      async wakeStack(...args:Parameters<FakeProvider["wakeStack"]>){return routedResult(await super.wakeStack(...args),"wake");}
+      async wakeStack(...args:Parameters<FakeProvider["wakeStack"]>){
+        const result=await super.wakeStack(...args);
+        // Railway wakes a new deployment; the controlled Fake provider must also
+        // replace the sleeping process before Cloud's REAL health probe runs.
+        if(!replaceAppForProviderWake)throw new Error("Missing owned App replacement for provider wake");
+        await replaceAppForProviderWake();
+        return routedResult(result,"wake");
+      }
       async inspectStack(currentStackId:string){
         const inspection=await super.inspectStack(currentStackId);expect(inspection.stackId).toBe(stackId);
         const resources=ownedWebResources(inspection.resources);
@@ -551,7 +560,10 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         return incomingWake?{incomingWake}:undefined;
       }});
     cloudService=service.createCloudHarnessService({registry,provider,entryReadinessProbe:actualEntryReadiness,wakeReadinessProbe:actualWakeReadiness,idleSleepDrain:actualIdleDrain,baseDomain:"paperclip.app",customerAppOrigin:cloudOrigin,customerSessionAllowedOrigins:[cloudOrigin],runtimeIdentity:signer,incomingMcpWakeEnabled:true,tenantSessionSigningKey:"principal-hop-tenant-session-".repeat(3),customerSessionSigningKey:"principal-hop-customer-session-".repeat(3),appVersion:"principal-hop",schemaVersion:"fixture",assistantMcp:{store:registry.assistantMcpStore(),encryptionKey:Buffer.alloc(32,9)},connector:{environment:"test",providers:providers.providerRegistryFromEnvironment({}),fetchImplementation:mapped,secrets:{resolve:async()=>{throw new Error("No external provider");}},store:connectorStore,stackEnrollment:{secrets:vault,secretRefPrefix:"secret://principal-hop"}}});
-    cloudServer=createServer((req,res)=>{observeInbound("cloud",req,res);const current=cloudService;if(!current)throw new Error("Missing normal Cloud handler");current.handler(req,res);});cloudLoopback=await listen(cloudServer);
+    cloudServer=createServer((req,res)=>{observeInbound("cloud",req,res);const current=cloudService;if(!current)throw new Error("Missing normal Cloud handler");current.handler(req,res);});
+    // The second App reads this URL once at boot. Reconstruct Cloud later on
+    // the SAME owned port, outside the in-flight wake request, without a third App.
+    cloudLoopback=await listen(cloudServer,cloudLoopback?Number(new URL(cloudLoopback).port):0);
       cloudOwnerGenerations++;
     };
     await makeCloudOwner();
@@ -1184,6 +1196,29 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     await pause(15_000);const quietTraceEnd=performance.now();quietAfter=await totalTenantSnapshot();
     expect(quietAfter).toEqual(before);expect(errors).toEqual([]);
     const [preWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
+    const firstBindingSnapshot=preWakeBinding;
+    const callbackCountBeforeRestart=callbacks.length;
+    if(!physicalApp)throw new Error("Missing first physical App generation");
+    const firstPhysicalApp=physicalApp;
+    const firstPhysicalIdentity={pid:firstPhysicalApp.pid,started:firstPhysicalApp.started,bootId:firstPhysicalApp.bootId};
+    let secondPhysicalApp:typeof physicalApp|undefined;
+    replaceAppForProviderWake=async()=>{
+      expect(appOwnerGenerations).toBe(1);expect(cloudOwnerGenerations).toBe(1);
+      const requestedHealth=healthAvailability;
+      await firstPhysicalApp.stop(Math.min(caseStarted+90_000,performance.now()+15_000));
+      await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
+      // Keep Cloud serving its current wake HTTP turn. Only the App is replaced here.
+      await makePhysicalSecond();
+      if(!physicalApp)throw new Error("Provider wake did not start the second real App");
+      secondPhysicalApp=physicalApp;
+      expect(appOwnerGenerations).toBe(2);expect(cloudOwnerGenerations).toBe(1);
+      expect(secondPhysicalApp.pid).not.toBe(firstPhysicalIdentity.pid);
+      expect(secondPhysicalApp.bootId).not.toBe(firstPhysicalIdentity.bootId);
+      await setChildHealth(requestedHealth); // ACK BEFORE Cloud can probe the new child.
+      process.stdout.write(JSON.stringify({kind:"owned_provider_wake_app_replacement",first:firstPhysicalIdentity,
+        second:{pid:secondPhysicalApp.pid,started:secondPhysicalApp.started,bootId:secondPhysicalApp.bootId},
+        appGenerations:appOwnerGenerations,cloudGenerations:cloudOwnerGenerations,healthMode:requestedHealth})+"\n");
+    };
     await setChildHealth("wake-once-then-unavailable");
     const failedReadiness=await tool(raw,"paperclip_dot_tasks",{});expect(failedReadiness.status).toBe(503);expect(failedReadiness.body).toMatchObject({error:"temporarily_unavailable"});
     await syncChildObservation();expect(readinessStatuses[0]).toBe(200);expect(readinessStatuses.some(status=>status===503)).toBe(true);expect(readinessOverflow).toBe(0);
@@ -1192,23 +1227,29 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     // Retry the same wrapped credential; do not mint or publish new authority.
     expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"active",sleepState:"awake",providerRefs:expect.arrayContaining([ownedTenantWebDomain])});
     await setChildHealth("ready");
-    const readyRetry=await tool(raw,"paperclip_dot_tasks",{});expect(readyRetry.status).toBe(200);expect(readyRetry.body.result.isError).toBe(false);
+    const readyRetry=await tool(raw,"paperclip_dot_tasks",{});
+    const readyRetryWire=closedUnavailable(readyRetry);
+    process.stdout.write(JSON.stringify({kind:"ready_retry_response",status:readyRetry.status,
+      code:readyRetryWire?"temporarily_unavailable":safeIdleSleepEnvelope(readyRetry.status,readyRetry.body).errorCode,wireClass:readyRetryWire?.wireContract??"unclassified",
+      retryAfter:readyRetry.headers["retry-after"]===undefined?"absent":readyRetry.headers["retry-after"]==="30"?"30":"other"})+"\n");
+    expect(readyRetry.status).toBe(200);expect(readyRetry.body.result.isError).toBe(false);
     const [postWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
     expect(postWakeBinding).toMatchObject({id:preWakeBinding.id,generation:preWakeBinding.generation,grantId:originalGrant.id,status:"ready"});
     expect((await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id,originalGrant.id)))[0].revokedAt).toBeNull();
     wakeEvidence={sleepStatus:sleepResponse.status,failedReadinessStatus:failedReadiness.status,retryStatus:readyRetry.status,admissionDigest,grantId:originalGrant.id,bindingGeneration:postWakeBinding.generation,healthStatuses:[...readinessStatuses],overflow:readinessOverflow};
-    const firstBindingSnapshot=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
-    const callbackCountBeforeRestart=callbacks.length;
-    if(!physicalApp)throw new Error("Missing first physical App generation");
     let resumedBefore:Awaited<ReturnType<typeof totalTenantSnapshot>>|undefined,resumedAfter:typeof resumedBefore;
     let resumedElapsed=0;
-    physicalFollowon=await usefulAfterPhysicalRestart({get db(){return db;},companyId,agentId,first:physicalApp,get cloudLoopback(){return cloudLoopback;},
+    physicalFollowon=await usefulAfterPhysicalRestart({get db(){return db;},companyId,agentId,first:firstPhysicalApp,get cloudLoopback(){return cloudLoopback;},
       caseDeadline:caseStarted+90_000,
       startSecond:async()=>{
-        // First real Node/group closed before this new child can be started.
-        await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
+        // usefulAfterPhysicalRestart rejoins first.stop(), which is memoized.
+        // The provider wake already stopped that owner and started generation2.
+        // Reconstruct ONLY Cloud now, after the prior wake HTTP turn has ended.
+        if(!secondPhysicalApp||physicalApp!==secondPhysicalApp)throw new Error("Missing provider-wake second App custody");
+        const previousCloudLoopback=cloudLoopback;
         await reconstructCloudOwner();
-        await makePhysicalSecond();
+        expect(cloudLoopback).toBe(previousCloudLoopback);
+        expect(physicalApp).toBe(secondPhysicalApp);
         expect(appOwnerGenerations).toBe(2);expect(cloudOwnerGenerations).toBe(2);
         const restoredBinding=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
         expect(restoredBinding).toMatchObject({id:firstBindingSnapshot.id,companyId,agentId,grantId:originalGrant.id,generation:firstBindingSnapshot.generation,status:"ready"});
