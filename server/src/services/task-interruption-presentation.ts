@@ -46,6 +46,14 @@ const WAITING_CONTINUATION_MOVE_FORWARD_MS = 15 * 60_000;
 const NO_WORK_CONTINUATION_HANDOFF_GRACE_MS = 30_000;
 const NO_WORK_CONTINUATION_CAUSES = new Set(["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]);
 
+function awaitsExactRemoteResume(issue: Pick<typeof issues.$inferSelect, "status" | "executionRunId">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid" | "processGroupId">,
+  coordinator: Pick<typeof nativeRunFinalizations.$inferSelect, "failureDetail">): boolean {
+  const detail = coordinator.failureDetail as Record<string, unknown> | null;
+  return issue.status === "blocked" && issue.executionRunId === run.id
+    && (run.processPid !== null || run.processGroupId !== null) && detail?.recoveryMode === "exact_checkpoint_resume";
+}
+
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
@@ -432,8 +440,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const requestedUuid = sql<string>`case when ${requestedIssueId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     then ${requestedIssueId}::uuid else null end`;
   const legacyIssue = sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const attempt = sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+    and coalesce(${heartbeatRuns.errorCode}, '') in ('recovery_no_longer_needed', 'issue_closed_before_start'))`;
   const candidate = (condition: ReturnType<typeof and>) => db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition))
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition, attempt))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   const candidates = unionAll(
     candidate(eq(heartbeatRuns.nativeIssueId, requestedUuid)),
@@ -598,13 +608,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         const issue = run?.nativeIssueId ? issueById.get(run.nativeIssueId) : undefined;
         const coordinator = coordinatorByRun.get(candidate.id);
         const admitted = run && issue && coordinator
-          && await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null);
+          && (awaitsExactRemoteResume(issue, run, coordinator)
+            || await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null));
         if (!admitted) candidate.nativeResumeAt = null;
       }));
     }
   }
   // A queued-message Interrupt records its queue on the stopped run. Newer
   // input can hide that wake from the latest-wait read, so load it by id.
+  // The click's recorded intent is the authority, not the wake's requester:
+  // a user's message can join an earlier automatic wake.
   const interruptQueueId = (run: typeof runs[number]) => {
     const id = run.status === "cancelled" ? run.resultJson?.queuedCommentInterruptQueueId : null;
     return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? id : null;
@@ -614,7 +627,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     requestedAt: agentWakeupRequests.requestedAt,
     queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40) })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, interruptQueueIds),
-      eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user"))) : [];
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      sql`${agentWakeupRequests.payload}#>>'{queuedCommentInterrupt,actorId}' is not null`)) : [];
   const interruptWaitById = new Map(interruptWaits.map(wait => [wait.id, wait]));
   const runIds = runs.map(run => run.id);
   const actions = runIds.length ? await db.selectDistinctOn([issueRecoveryActions.sourceIssueId]).from(issueRecoveryActions).where(and(

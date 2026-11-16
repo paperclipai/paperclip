@@ -279,7 +279,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
   });
 
-  it("coalesces concurrent identical syncs while keeping authority reads and stale-admin purges per request", async () => {
+  it("coalesces concurrent identical syncs and settings reads while keeping membership reads and stale-admin purges per request", async () => {
     let release!: () => void;
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -294,7 +294,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const actors = await Promise.all(requests);
     expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
     expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
-    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(1);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
     expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);

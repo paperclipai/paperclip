@@ -1,3 +1,4 @@
+import { readOncePerRequest } from "./authorization-read-scope.js";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentInteractionDenial, type AgentInteractionDenial, type AgentInteractionOperation } from "./agent-interaction-policy.js";
@@ -678,7 +679,12 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
     where p.id = n.project_id and p.company_id = n.company_id and p.visibility = 'private'
       and m.subject_type = ${principal.type} and m.subject_id = ${principal.id}
   )` : sql`false`;
-  return sql<boolean>`exists (
+  // A standalone open task without a project has no restricted ancestor.
+  // Keep the recursive predicate for every other shape, including inherited
+  // privacy and delegated principals. This avoids one recursive walk per row
+  // in large readable-child aggregates.
+  return sql<boolean>`((${issues.visibility} = 'open'
+    and ${issues.privacyParentIssueId} is null and ${issues.projectId} is null) or exists (
     with recursive privacy_ancestors as (
       select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
         p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
@@ -705,7 +711,7 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
           and private_project.company_id = restricted.company_id
         where restricted.visibility = 'private' or private_project.visibility = 'private'
       )
-  )`;
+  ))`;
 }
 
 function issuePrivacyCondition(actor: AuthorizationActor): SQL<boolean> {
@@ -725,14 +731,21 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
 }
 
 /** Filter every externally reachable task query with the same privacy predicate. */
+export async function readInstanceAdmin(db: Db | DbTransaction, userId: string): Promise<boolean> {
+  return db
+    .select({ id: instanceUserRoles.id })
+    .from(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+}
+
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   if (actor.authorizingUserId) return issuePrivacyCondition(actor);
   if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
   if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
-    && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))) return sql<boolean>`true`;
   return issuePrivacyCondition(actor);
 }
 
@@ -745,15 +758,7 @@ export async function projectReadSqlCondition(db: Db | DbTransaction, actor: Aut
     actor.type === "board"
     && !actor.ignoreInstanceAdmin
     && actor.source !== "cloud_tenant"
-    && Boolean(await db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(
-        eq(instanceUserRoles.userId, actor.userId ?? ""),
-        eq(instanceUserRoles.role, "instance_admin"),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null))
+    && await readOncePerRequest(`admin:${actor.userId ?? ""}`, () => readInstanceAdmin(db, actor.userId ?? ""))
   ) return sql<boolean>`true`;
   return projectPrivacyCondition(actor);
 }
@@ -928,18 +933,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
-    return batchRead(`admin:${userId}`, async () => {
-      if (
-        await db
-          .select({ id: instanceUserRoles.id })
-          .from(instanceUserRoles)
-          .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-          .then((rows) => rows[0] ?? null)
-      ) {
-        return true;
-      }
-      return false;
-    });
+    return batchRead(`admin:${userId}`, () => readOncePerRequest(`admin:${userId}`, () => readInstanceAdmin(db, userId)));
   }
 
   async function getActiveMembership(
@@ -947,7 +941,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     principalType: PrincipalType,
     principalId: string,
   ) {
-    return batchRead(`membership:${companyId}:${principalType}:${principalId}`, async () => {
+    const key = `membership:${companyId}:${principalType}:${principalId}`;
+    return batchRead(key, () => readOncePerRequest(key, async () => {
       return db
         .select()
         .from(companyMemberships)
@@ -960,7 +955,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           ),
         )
         .then((rows) => rows[0] ?? null);
-    });
+    }));
   }
 
   async function loadResponsibleUserSnapshot(companyId: string, userId: string): Promise<ResponsibleUserSnapshot> {

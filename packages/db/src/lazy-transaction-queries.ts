@@ -3,6 +3,7 @@ import { RelationalQueryBuilder } from "drizzle-orm/pg-core/query-builders/query
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { TableRelationalConfig } from "drizzle-orm";
 import type postgres from "postgres";
+import { statementCountingLogger } from "./statement-count.js";
 
 type Callback = (tx: Transaction) => unknown;
 type Transaction = {
@@ -27,18 +28,19 @@ type Transaction = {
  * built, bound to that transaction's session, and `tx._` still describes the
  * schema.
  *
- * Both clients and the builders' dialect take Drizzle's defaults. A Drizzle
- * option added here (`casing`, `logger`, `cache`) must go to all three.
+ * Both clients count each statement through `statementCountingLogger`, and
+ * otherwise both clients and the builders' dialect take Drizzle's defaults. A
+ * Drizzle option added here (`casing`, `cache`) must go to all three.
  */
 export function drizzleWithLazyTransactionQueries<TSchema extends Record<string, unknown>, TClient extends postgres.Sql<any>>(
   client: TClient,
   schema: TSchema,
 ): PostgresJsDatabase<TSchema> & { $client: TClient } {
-  const db = drizzle(client, { schema });
+  const db = drizzle(client, { schema, logger: statementCountingLogger });
   const tables = db._.schema;
   if (!tables) return db;
   const { fullSchema, tableNamesMap } = db._;
-  const transactions = drizzle(client) as unknown as Transaction;
+  const transactions = drizzle(client, { logger: statementCountingLogger }) as unknown as Transaction;
   const dialect = new PgDialect();
   const resolved = (value: unknown): PropertyDescriptor => ({ value, writable: true, enumerable: true, configurable: true });
   const lazyQuery: PropertyDescriptor = {

@@ -1193,6 +1193,7 @@ async function consumeTurn(
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   providerTurnWaitOptions?: ProviderTurnWaitOptions,
   resumedProviderTurnWait?: PrpEvent,
+  checkpointProviderTurn?: (signal: AbortSignal, sourceSeq: number) => Promise<unknown>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const providerTurnWait = createProviderTurnWait({
@@ -1264,6 +1265,7 @@ async function consumeTurn(
     // delta's receipt settles. Every other event, and every result, waits for
     // the receipts of the deltas before it.
     const pipelinesDeltas = controlPlane.pipelinesStreamingEvents === true;
+    const pipelinedEventTypes: ReadonlySet<string> = controlPlane.pipelinedEventTypes ?? new Set(["item.delta"]);
     let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
     let deltaFailure = null as { error: unknown } | null;
     const settlePendingDeltas = async () => {
@@ -1449,7 +1451,7 @@ async function consumeTurn(
       // A failed delta stops the turn before any later event is appended.
       if (deltaFailure) throw deltaFailure.error;
       let receipt: AppendedEventReceipt | null = null;
-      if (pipelinesDeltas && event.eventType === "item.delta") {
+      if (pipelinesDeltas && pipelinedEventTypes.has(event.eventType)) {
         const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
         const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
         outstandingDeltas.add(settled);
@@ -1475,6 +1477,10 @@ async function consumeTurn(
         if (ended !== null) return ended;
       }
       providerTurnWait.observe(event);
+      if (event.eventType === "turn.started" && payload.origin === "provider") {
+        await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+        appendAbort.signal.throwIfAborted();
+      }
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
         goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
@@ -1696,7 +1702,11 @@ async function consumeTurn(
           };
         }
         if (semanticResultProposal === null && governedResult === null && inputTimers.size === 0 &&
-            awaitsProviderTurn(event) && providerTurnWait.begin(event)) continue;
+            awaitsProviderTurn(event) && providerTurnWait.begin(event)) {
+          await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+          appendAbort.signal.throwIfAborted();
+          continue;
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         await settlePendingDeltas();
@@ -2933,8 +2943,8 @@ export async function executeNativeSession(
     if (reconciledRecoveryCheckpoint !== null) {
       await persistCheckpoint(reconciledRecoveryCheckpoint);
     }
-    const checkpoint = async (signal?: AbortSignal) => {
-      const snapshot = await session.snapshot(signal ? { signal } : undefined);
+    const checkpoint = async (signal?: AbortSignal, sourceSeq?: number) => {
+      const snapshot = await session.snapshot(signal ? { signal, ...(sourceSeq === undefined ? {} : { sourceSeq }) } : undefined);
       signal?.throwIfAborted();
       await persistCheckpoint(snapshot, signal);
       return snapshot;
@@ -3151,7 +3161,8 @@ export async function executeNativeSession(
         recovered &&
         persistedSession?.dispositionOnlyRecoveryConsumed &&
         !recoveredSnapshot.semanticResult &&
-        !recoveredActiveTurnId,
+        !recoveredActiveTurnId &&
+        recoveredSnapshot.awaitingProviderTurn !== true,
       );
       const dispositionRecoveryTurnId =
         persistedSession?.dispositionOnlyRecoveryTurnId ??
@@ -3251,6 +3262,7 @@ export async function executeNativeSession(
               supersededByRestartContinuation,
               options.providerTurnWait,
               resumedProviderTurnWait,
+              checkpoint,
             )
           : Promise.resolve({
               event: recoveryTerminal,
