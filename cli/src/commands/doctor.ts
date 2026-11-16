@@ -127,12 +127,12 @@ export async function doctor(opts: {
   results.push(diskSpaceResult);
   printResult(diskSpaceResult);
 
-  // 10. Port check
+  // 9. Port check
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
 
-  // 11. Runtime and managed install checks
+  // 10. Runtime and managed install checks
   const nodeResult = nodeRuntimeCheck();
   results.push(nodeResult);
   printResult(nodeResult);
@@ -141,7 +141,7 @@ export async function doctor(opts: {
     printResult(result);
   }
 
-  // 12. Background service checks
+  // 11. Background service checks
   for (const result of await serviceHealthChecks(config)) {
     results.push(result);
     printResult(result);
