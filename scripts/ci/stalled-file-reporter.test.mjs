@@ -70,15 +70,26 @@ test("finished files and hooks count as progress", () => {
       + " The run was stopped so this job fails with the file's name instead of reaching its time limit.");
 });
 
+test("a file that never finishes loading is named from the moment it is queued", () => {
+  let now = 0;
+  const lines = [];
+  const reporter = new StalledFileReporter({ limitMs: 1000, now: () => now, write: line => lines.push(line), exit: () => {}, root: "/repo" });
+  reporter.onTestModuleQueued({ moduleId: "/repo/server/src/top-level-await.test.ts" });
+  now = 1000; reporter.check();
+  assert.match(lines[0] ?? "", /^::error file=server\/src\/top-level-await\.test\.ts,.*while in: loading the file\./);
+  process.exitCode = 0;
+});
+
 // The failure this guards: a test awaiting a promise that never settles, with
 // a test timeout longer than the CI job, holds Vitest until the job is
 // cancelled and never prints the file's name.
-test("a real Vitest run with a file that never settles fails fast and names the file", () => {
+for (const [label, body, step] of [
+  ["a test that never settles", 'import { test } from "vitest";\ntest("waits forever", () => new Promise(() => {}), 600_000);\n', 'test "waits forever"'],
+  ["a top-level await that never settles", 'import { test } from "vitest";\nawait new Promise(() => {});\ntest("never collected", () => {});\n', "loading the file"],
+]) test(`a real Vitest run with ${label} fails fast and names the file`, () => {
   const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "stalled-file-reporter-")));
   try {
-    writeFileSync(path.join(directory, "stuck.test.mjs"), `import { test } from "vitest";
-test("waits forever", () => new Promise(() => {}), 600_000);
-`);
+    writeFileSync(path.join(directory, "stuck.test.mjs"), body);
     writeFileSync(path.join(directory, "quick.test.mjs"), `import { test } from "vitest";
 test("passes", () => {});
 `);
@@ -96,7 +107,7 @@ test("passes", () => {});
     assert.notEqual(result.status, 0, output);
     assert.ok(Date.now() - started < 30_000, `took ${Date.now() - started} ms:\n${output}`);
     assert.match(output, /::error file=stuck\.test\.mjs,title=Test file stopped making progress::stuck\.test\.mjs made no progress/);
-    assert.match(output, /while in: test "waits forever"/);
+    assert.ok(output.includes(`while in: ${step}.`), output);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

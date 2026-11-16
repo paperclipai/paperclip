@@ -85,9 +85,16 @@ export default class StalledFileReporter {
     entry.step = step;
   }
 
-  onTestModuleStart(testModule) {
+  // Queued fires before the file is imported, so a file that never finishes
+  // loading (a top-level await or a blocking setup import) is watched too.
+  onTestModuleQueued(testModule) {
     const file = path.relative(this.root, testModule.moduleId).split(path.sep).join("/");
     this.files.set(testModule.moduleId, { file, progressAt: this.now(), step: "loading the file" });
+  }
+
+  onTestModuleStart(testModule) {
+    if (!this.files.has(testModule.moduleId)) this.onTestModuleQueued(testModule);
+    this.progress(testModule.moduleId, "starting the file's tests");
   }
 
   onHookStart(hook) {
