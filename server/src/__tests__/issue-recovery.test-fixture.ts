@@ -70,7 +70,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Issue recovery fixture teardown failed");
   });
-  async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
+  async function start(options: { backstopMs?: number; fullBackstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
     tasks.clear();
