@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -395,15 +395,22 @@ test("the workflow budget fails closed after the last registry check", () => {
   assert.equal(result.calls.match(/^sleep /gm)?.length, budget.verifyAttempts - 1);
 });
 
-test("every publish job budgets for build time and four delayed packages", () => {
+test("every publish job budgets for build time, four delayed packages and the install deadline", () => {
   const { verifyAttempts, verifyDelaySeconds } = workflowVerifyBudget();
   const pollingSeconds = (verifyAttempts - 1) * verifyDelaySeconds;
-  const requiredSeconds = 30 * 60 + 4 * pollingSeconds;
+  const releaseScript = readFileSync(new URL("./release.sh", import.meta.url), "utf8");
+  const installDeadlineSeconds = Number(releaseScript.match(/NPM_INSTALL_VERIFY_TIMEOUT_SECONDS:-(\d+)/)?.[1]);
+  assert.ok(installDeadlineSeconds > 0);
 
-  for (const job of ["publish_canary", "publish_nightly", "publish_beta", "publish_stable"]) {
+  for (const [job, requiredSeconds] of [
+    ["publish_canary", 30 * 60 + 4 * pollingSeconds],
+    ["publish_nightly", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+    ["publish_beta", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+    ["publish_stable", 30 * 60 + 4 * pollingSeconds + installDeadlineSeconds],
+  ]) {
     const body = releaseWorkflow.split(`\n  ${job}:\n`)[1]?.split(/\n  [a-z_]+:\n/)[0] ?? "";
     const timeoutMinutes = Number(body.match(/^    timeout-minutes: (\d+)$/m)?.[1]);
-    assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build and polling`);
+    assert.ok(timeoutMinutes * 60 > requiredSeconds, `${job} must leave time beyond build, polling and the install deadline`);
   }
 });
 
@@ -496,4 +503,48 @@ test("a canary version is accepted only for the master commit whose position num
   fixture.git(fixture.repo, "commit", "-q", "--allow-empty", "-m", "side");
   const side = fixture.git(fixture.repo, "rev-parse", "HEAD").trim();
   assert.throws(() => confirm("2026.1116.0-canary.2600", side), /is not on origin\/master/);
+});
+
+function installRetryFixture({ failures = 0, hangSeconds = 0 }) {
+  const dir = mkdtempSync(join(tmpdir(), "paperclip-install-retry-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const counter = join(dir, "attempts");
+  writeFileSync(counter, "0");
+  writeExecutable(join(bin, "npm"), `#!/usr/bin/env bash
+n=$(( $(cat "${counter}") + 1 )); echo "$n" > "${counter}"
+if [ "${hangSeconds}" -gt 0 ]; then sleep "${hangSeconds}"; fi
+if [ "$n" -le "${failures}" ]; then echo "npm error code E404" >&2; exit 1; fi
+prefix="$3"; mkdir -p "$prefix/node_modules/paperclipai"
+printf '{"version":"1.2.3"}' > "$prefix/node_modules/paperclipai/package.json"
+`);
+  const run = (deadline, delay = 0) => {
+    const started = Date.now();
+    const result = spawnSync("bash", ["-c", `source "${repoRoot}/scripts/release-lib.sh"; wait_for_npm_installable paperclipai@canary 1.2.3 ${deadline} ${delay}`],
+      { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    return { status: result.status, seconds: (Date.now() - started) / 1000, attempts: Number(readFileSync(counter, "utf8")), stderr: result.stderr };
+  };
+  return { run };
+}
+
+test("a release install is retried while its tarball lags the metadata", () => {
+  const recovered = installRetryFixture({ failures: 3 }).run(60);
+  assert.equal(recovered.status, 0);
+  assert.equal(recovered.attempts, 4);
+  assert.match(recovered.stderr, /attempt 3, \d+s left/);
+  assert.equal(installRetryFixture({}).run(60).attempts, 1);
+});
+
+const hasTimeoutCommand = spawnSync("bash", ["-c", "command -v timeout"], { encoding: "utf8" }).status === 0;
+
+test("install retries stop at the deadline", () => {
+  const exhausted = installRetryFixture({ failures: 1000 }).run(3, 1);
+  assert.notEqual(exhausted.status, 0);
+  assert.ok(exhausted.seconds < 8, `took ${exhausted.seconds}s`);
+});
+
+test("an install that hangs is stopped at the deadline", { skip: !hasTimeoutCommand && "needs the timeout command (GNU coreutils)" }, () => {
+  const hung = installRetryFixture({ hangSeconds: 120 }).run(3, 1);
+  assert.notEqual(hung.status, 0);
+  assert.ok(hung.seconds < 20, `a hung install outlived the deadline: ${hung.seconds}s`);
 });

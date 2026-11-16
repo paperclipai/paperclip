@@ -924,7 +924,7 @@ async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
   entry.controllerDetachedForRestart = true;
   if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
   await entry.session.detachControllerForRestart();
-  await entry.githubAccess?.stop();
+  await entry.githubAccess?.stop({ preserveLaunchers: true });
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -2560,6 +2560,14 @@ function nativeSessionScopeKey(execution: NativeExecutionInput): string {
       identity: nativeProviderSessionScope(execution),
     },
     normalizedSessionId: nativeSessionKey(execution),
+  });
+}
+
+function nativeGitHubLauncherKey(execution: NativeExecutionInput): string {
+  return canonicalJson({
+    schema: "paperclip.native-github-launcher.v1",
+    session: nativeSessionScopeKey(execution),
+    issueId: execution.binding.issueId,
   });
 }
 
@@ -12520,6 +12528,7 @@ async function executePaperclipNativeSessionAttempt(
           env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
           resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
           onLog: input.onLog,
+          launcherKey: nativeGitHubLauncherKey(input.execution),
         }));
         executionContext?.assertOpen();
         releaseGitHubRun = githubAccess.activate(input.execution.binding);
@@ -13943,7 +13952,8 @@ async function executePaperclipNativeSessionAttempt(
     settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     releaseGitHubRun?.();
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
-      await timeController("github_stop", () => githubAccess!.stop());
+      const preserveLaunchers = nativeRunsDetachingForRestart.has(input.execution.binding.runId);
+      await timeController("github_stop", () => githubAccess!.stop({ preserveLaunchers }));
     }
   }
   let postExecutionFailed = false;
