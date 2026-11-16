@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql, inArray } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, plugins, pluginJobs, pluginJobRuns, pluginState, providerTraceRecords, issues, issueWatchdogs, issueThreadInteractions, toolApplications, toolConnections, connectionGrants, companySecrets, companySecretVersions, routines, routineTriggers,
   applyPendingMigrations, createDb, type Db } from "@paperclipai/db";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { readIdleDeadlineProof } from "../services/idle-deadline-proof.js";
@@ -31,6 +31,31 @@ import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-ca
 import { claimDueTimerHeartbeatForAgent } from "../services/heartbeat/queue.js";
 import { createHeartbeatTimerPolicy } from "../services/heartbeat/timer-policy.js";
 import { pluginJobStore } from "../services/plugin-job-store.js";
+
+// TEMPORARY TEST-ONLY passive evidence. Does not alter SQL, promises, predicates or budgets.
+const deadlineTraceRows:Array<{label:string;attempt:number;phase:string;seeded:number;bodySettled:boolean;cleanupSettled:boolean;lastRead?:unknown}>=[];
+let deadlineTraceSerial=0,deadlineTraceEvents=0,deadlineTraceOverflow=0,deadlineTraceErrors=0;
+const emitDeadlineTrace=(event:string)=>{
+  try{
+    if(deadlineTraceEvents++>=256){deadlineTraceOverflow++;return;}
+    console.error("IDLE_DOMAIN_DEADLINE_STAGE",JSON.stringify({event,monotonicMs:performance.now(),rows:deadlineTraceRows.map(row=>({...row})),
+      overflow:deadlineTraceOverflow,observerErrors:deadlineTraceErrors}));
+  }catch{deadlineTraceErrors++;}
+};
+function deadlineCaseTrace(label:string){
+  const row={label,attempt:++deadlineTraceSerial,phase:"entered",seeded:0,bodySettled:false,cleanupSettled:false,lastRead:undefined as unknown};
+  if(deadlineTraceRows.length<8)deadlineTraceRows.push(row);else deadlineTraceOverflow++;
+  onTestFailed(()=>emitDeadlineTrace("original-test-reported-failure"));
+  const stage=(phase:string)=>{row.phase=phase;emitDeadlineTrace("stage");};
+  const result=(name:string,value:Awaited<ReturnType<typeof readIdleSleepSafety>>)=>{
+    row.lastRead={name,version:value.version,backgroundWork:value.backgroundWork,
+      deadlineProofPresent:value.deadlineProof!==undefined,scheduledWakePresent:value.scheduledWake!==undefined,
+      diagnostics:value.diagnostics?{complete:value.diagnostics.complete,checks:value.diagnostics.checks}:undefined,
+      reasonLimit:value.diagnostics?"Existing diagnostic result only":"UNKNOWN: original aggregate result contains no individual blocking reason"};
+    emitDeadlineTrace("existing-read-returned");
+  };
+  stage("entered");return{row,stage,result};
+}
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_IDLE_DEADLINE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -52,6 +77,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     if (directory) await fs.rm(directory, { recursive: true, force: true }); });
 
   it.each(["routines", "issues"] as const)("marks overflowed %s incomplete under the negotiated deadline catalog", async family => {
+    const trace=family==="issues"?deadlineCaseTrace("issues-overflow"):undefined;
     const now = Date.now(), companyId = randomUUID(), agentId = randomUUID(), ownerId = randomUUID();
     const capability = { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities;
     const read = () => readIdleSleepSafety(db, () => ({ ownerId, draining: true,
@@ -71,19 +97,29 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         await db.insert(issues).values(batch.map(id => ({ id, companyId, title: "Passive backlog", status: "backlog" })));
       }
     };
+    trace?.stage("seed-company-issued");
     await db.insert(companies).values({ id: companyId, name: "Deadline overflow", issuePrefix: `O${companyId.slice(0, 6)}` });
     try {
+      trace?.stage("seed-agent-issued");
       await db.insert(agents).values({ id: agentId, companyId, name: "On-demand worker", role: "engineer",
         status: "idle", adapterType: "process" });
-      for (let offset = 0; offset < 10_000; offset += 500) await insert(ids.slice(offset, Math.min(offset + 500, 10_000)));
+      trace?.stage("seed-ten-thousand-issued");
+      for (let offset = 0; offset < 10_000; offset += 500) {
+        await insert(ids.slice(offset, Math.min(offset + 500, 10_000)));
+        if(trace)trace.row.seeded=Math.min(offset+500,10_000);
+      }
+      trace?.stage("at-limit-read-issued");
       const atLimit = await read();
+      trace?.result("at-limit",atLimit);trace?.stage("at-limit-read-returned");
       expect(atLimit).toMatchObject({ version: 3, backgroundWork: "none", diagnostics: { complete: true },
         deadlineProof: { catalog: "domain_deadlines_v1" } });
       expect(atLimit.diagnostics?.checks).toContainEqual({ reason, state: "none" });
       if (family === "routines") expect(atLimit.scheduledWake?.nextWakeAt).toBe(new Date(now + 600_000).toISOString());
       else expect(atLimit.scheduledWake).toBeUndefined();
 
+      trace?.stage("overflow-one-insert-issued");
       await insert([ids[10_000]!]);
+      if(trace)trace.row.seeded=10_001;trace?.stage("overflow-count-issued");
       const [rowCount] = await db.select({ count: sql<number>`count(*)::integer` })
         .from(family === "routines" ? routines : issues).where(eq(family === "routines" ? routines.companyId : issues.companyId, companyId));
       expect(rowCount?.count).toBe(10_001);
@@ -92,13 +128,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
           .where(eq(routineTriggers.companyId, companyId));
         expect(triggers?.count).toBe(10_001);
       }
+      trace?.stage("overflow-read-issued");
       const overflowed = await read();
+      trace?.result("overflow",overflowed);trace?.stage("overflow-read-returned");
       expect(overflowed.backgroundWork).not.toBe("none");
       expect(overflowed.diagnostics?.complete).toBe(false);
       expect(overflowed.diagnostics?.checks).toContainEqual({ reason, state: "unknown" });
       expect(overflowed.deadlineProof).toBeUndefined();
       expect(overflowed.scheduledWake).toBeUndefined();
 
+      trace?.stage("remove-overflow-row-and-make-original-due-issued");
       if (family === "routines") {
         await db.delete(routines).where(eq(routines.id, ids[10_000]!));
         await db.update(routineTriggers).set({ nextRunAt: new Date(now - 1) }).where(eq(routineTriggers.id, ids[0]!));
@@ -106,17 +145,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         await db.delete(issues).where(eq(issues.id, ids[10_000]!));
         await db.update(issues).set({ status: "in_progress", assigneeAgentId: agentId }).where(eq(issues.id, ids[0]!));
       }
+      trace?.stage("blocked-read-issued");
       const blocked = await read();
+      trace?.result("blocked",blocked);trace?.stage("blocked-read-returned");
       expect(blocked.backgroundWork).not.toBe("none");
       expect(blocked.diagnostics?.complete).toBe(true);
       expect(blocked.diagnostics?.checks).toContainEqual({ reason, state: "present" });
       expect(blocked.deadlineProof).toBeUndefined();
       expect(blocked.scheduledWake).toBeUndefined();
-    } finally {
+      if(trace)trace.row.bodySettled=true;trace?.stage("body-assertions-fulfilled");
+    } catch(error){if(trace)trace.row.bodySettled=true;trace?.stage("body-rejected-original-error");throw error;}
+    finally {
+      trace?.stage("cleanup-routines-issued");
       await db.delete(routines).where(eq(routines.companyId, companyId));
+      trace?.stage("cleanup-issues-issued");
       await db.delete(issues).where(eq(issues.companyId, companyId));
+      trace?.stage("cleanup-agents-issued");
       await db.delete(agents).where(eq(agents.companyId, companyId));
+      trace?.stage("cleanup-company-issued");
       await db.delete(companies).where(eq(companies.id, companyId));
+      if(trace)trace.row.cleanupSettled=true;trace?.stage("cleanup-fulfilled");
     }
   }, 30_000);
 
@@ -144,6 +192,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
 
   it("projects durable timers across client reconnection and executes the original plugin and trace owners", async () => {
+    const trace=deadlineCaseTrace("plugin-trace-owner");
     const now = Date.now(), companyId = randomUUID(), agentId = randomUUID(), pluginId = randomUUID(), runId = randomUUID();
     let hold: { ownerId: string; expiresAt: number } = { ownerId: randomUUID(), expiresAt: now + 300_000 };
     let pluginReceipt: Awaited<ReturnType<NonNullable<PluginWorkerManager["inspectIdleSleep"]>>> | undefined;
@@ -156,19 +205,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       return readIdleDeadlineProof(counted, hold, { now: Date.now(), verifiedCapability: capability, quietPluginIds,
         quietPluginGeneration: pluginReceipt?.catalogGeneration, quietPluginCatalog: pluginReceipt?.catalog });
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
+    trace.stage("seed-company-issued");
     await db.insert(companies).values({ id: companyId, name: "Deadline fixture", issuePrefix: `D${companyId.slice(0, 6)}` });
+    trace.stage("seed-agent-issued");
     await db.insert(agents).values({ id: agentId, companyId, name: "Timer", role: "engineer", status: "idle", adapterType: "codex_local",
       runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600 } }, createdAt: new Date(now), lastHeartbeatAt: new Date(now) });
     const central = (enabled: boolean, diagnostics = false) => readIdleSleepSafety(db, () => ({ ...hold, ownerId: hold.ownerId,
       draining: true, startedAt: new Date(now - 1000), expiresAt: new Date(hold.expiresAt), activeRuns: 0, pendingWakes: 0 }),
       () => now, hold.ownerId, async () => "none", undefined, undefined, enabled, enabled,
       enabled ? { deadlineCapability: capability, ...(diagnostics ? { collectDiagnostics: true as const } : {}) } : {});
+    trace.stage("central-disabled-issued");
     expect((await central(false)).backgroundWork).toBe("present");
+    trace.stage("central-enabled-issued");
     const negotiated = await central(true);
+    trace.result("initial-central-enabled",negotiated);trace.stage("central-enabled-returned-before-original-assertion");
     expect(negotiated).toMatchObject({ version: 3, backgroundWork: "none", deadlineProof: { catalog: "domain_deadlines_v1" },
       scheduledWake: { version: 2, kind: "domain_deadlines" } });
     expect(negotiated.deadlineProof?.generation).toBe(negotiated.scheduledWake?.generation);
+    trace.stage("initial-owner-proof-issued");
     const initial = await read();
+    trace.stage("initial-owner-proof-returned");
     expect(initial.blocked).toBe(false);
     expect(initial.scheduledWake?.nextWakeAt).toBe(new Date(now + 600_000).toISOString());
     expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0].lastHeartbeatAt?.getTime()).toBe(now);

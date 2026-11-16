@@ -18,7 +18,7 @@ export function startMuseMaintenance(
   const broker = museRunnerBroker(db);
   const receiver = museReceiver(db);
   let startupMarked = false;
-  type StartupQualification = Pick<typeof bindings.$inferSelect, "id" | "companyId" | "generation" | "revision" | "qualificationId">;
+  type StartupQualification = Pick<typeof bindings.$inferSelect, "id" | "companyId" | "generation" | "qualificationId">;
   let startupSnapshot: Promise<StartupQualification[]> | undefined;
   function initialQualifications(signal: AbortSignal) {
     // Both owners join this SQL-only snapshot before local duties can mutate
@@ -29,7 +29,7 @@ export function startMuseMaintenance(
       let after: string | undefined;
       while (!signal.aborted) {
         const page = await tx.select({ id: bindings.id, companyId: bindings.companyId,
-          generation: bindings.generation, revision: bindings.revision, qualificationId: bindings.qualificationId })
+          generation: bindings.generation, qualificationId: bindings.qualificationId })
           .from(bindings).where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, at),
             after ? gt(bindings.id, after) : undefined)).orderBy(asc(bindings.id)).limit(100);
         snapshot.push(...page);
@@ -58,11 +58,14 @@ export function startMuseMaintenance(
         signal.throwIfAborted();
         const unowned = initial.slice(offset, offset + 100).filter(b => continuous.get(b.id) !== b.generation);
         const exact = unowned.map(b => sql`(${bindings.id} = ${b.id} and ${bindings.companyId} = ${b.companyId}
-          and ${bindings.generation} = ${b.generation} and ${bindings.revision} = ${b.revision}
+          and ${bindings.generation} = ${b.generation}
           and ${b.qualificationId === null ? isNull(bindings.qualificationId) : eq(bindings.qualificationId, b.qualificationId)})`);
+        // Expiry, revocation and readiness revisions cannot restore missing
+        // contact history for this original qualification. This metadata-only
+        // mark grants no work authority; a different qualification/generation
+        // remains fenced by the exact initial identity.
         await db.update(bindings).set({ cadenceEvidenceIncompleteAt: new Date() })
-          .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date()),
-            exact.length ? sql`(${sql.join(exact, sql` or `)})` : sql`false`));
+          .where(exact.length ? sql`(${sql.join(exact, sql` or `)})` : sql`false`);
       }
       startupMarked = true;
     },
