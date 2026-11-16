@@ -105,6 +105,7 @@ export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
+const DEFAULT_CONNECTION_MODEL_LIMIT = { context: 96_000, output: 16_000 } as const;
 
 /** Resolve a declared, pinned native dependency without PATH or install fallback. */
 export function resolvePinnedOpenCodeCommand(
@@ -194,6 +195,7 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
 
 export interface OpenCodeServerDriverOptions {
   model: string;
+  modelLimit?: Readonly<{ context: number; output: number }>;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
   conversationMode?: "task" | "prepared";
@@ -2808,6 +2810,7 @@ async function startRuntime(input: {
           models: {
             [providerModelId]: {
               name: providerModelId,
+              ...(providerProxy ? { limit: input.options.modelLimit ?? DEFAULT_CONNECTION_MODEL_LIMIT } : {}),
               ...(modelProvider === "openrouter"
                 ? { variants: {
                     "paperclip-default": {},
