@@ -105,7 +105,7 @@ const COLLECT_SCRIPT = [
 ].join("\n");
 
 const RUN_SCRIPT = [
-  'd=$1; umask 077; mkdir -p "$d" || exit 125',
+  'd=$1; umask 077; mkdir -p "$d" || exit 125; echo $$ >"$d/pid"',
   'if [ -n "${PAPERCLIP_K8_SCRIPT+x}" ]; then printf %s "$PAPERCLIP_K8_SCRIPT" | base64 -d >"$d/script" || exit 125; fi',
   'if [ -n "${PAPERCLIP_K8_STDIN+x}" ]; then printf %s "$PAPERCLIP_K8_STDIN" | base64 -d >"$d/stdin" || exit 125; fi',
   'unset PAPERCLIP_K8_SCRIPT PAPERCLIP_K8_STDIN',
@@ -117,9 +117,15 @@ const RUN_SCRIPT = [
 ].join("\n");
 
 const STAGE_SCRIPT = 'umask 077; mkdir -p "$1" && printf %s "$PAPERCLIP_K8_CHUNK" | base64 -d >>"$1/$2"';
+const KILL_SCRIPT = [
+  'p=$(cat "$1/pid" 2>/dev/null) || exit 0',
+  'kill -s TERM -- -"$p" 2>/dev/null || kill -s TERM "$p" 2>/dev/null',
+  '(sleep 5; kill -s KILL -- -"$p" 2>/dev/null || kill -s KILL "$p" 2>/dev/null) >/dev/null 2>&1 </dev/null &',
+  'exit 0',
+].join("\n");
 const READ_SCRIPT = 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"';
 
-const activeExecs = new Map<string, Set<string>>();
+const activeExecs = new Map<string, Map<string, string>>();
 
 export class Kosa8ApiError extends Error {
   constructor(
@@ -407,15 +413,23 @@ async function sleepSandbox(config: Kosa8DriverConfig, id: string): Promise<Plug
   return { providerLeaseId: id, state: confirmed && confirmed.state === "sleeping" ? "stopped" : "destroyed" };
 }
 
+async function stopBackground(config: Kosa8DriverConfig, id: string, execId: string, dir: string): Promise<boolean> {
+  try {
+    await api(config, "POST", `${sandboxPath(id)}/exec/${execId}/stop`);
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    if (!(error instanceof Kosa8ApiError && (error.status === 501 || error.code === "no_pid"))) throw error;
+  }
+  const killed = await shellExec(config, id, KILL_SCRIPT, dir);
+  if (killed.exit !== 0) throw new Error(`Failed to stop command ${execId} on kosa8 sandbox ${id}: ${killed.stderr.trim()}`);
+  return true;
+}
+
 async function stopTrackedCommands(config: Kosa8DriverConfig, id: string): Promise<void> {
-  const execIds = [...(activeExecs.get(id) ?? [])];
-  await Promise.all(execIds.map(async (execId) => {
-    try {
-      await api(config, "POST", `${sandboxPath(id)}/exec/${execId}/stop`);
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-      return;
-    }
+  const execs = [...(activeExecs.get(id) ?? new Map<string, string>())];
+  await Promise.all(execs.map(async ([execId, dir]) => {
+    if (!(await stopBackground(config, id, execId, dir))) return;
     const deadline = Date.now() + STATE_CONFIRM_TIMEOUT_MS;
     for (;;) {
       const status = await backgroundStatus(config, id, execId);
@@ -605,15 +619,15 @@ async function startBackground(
   cmd: string[],
   env: string[],
   timeoutS: number,
-): Promise<Kosa8BackgroundExec> {
+): Promise<{ exec: Kosa8BackgroundExec; hostTimeout: boolean }> {
   const body = { cmd, ...(env.length > 0 ? { env } : {}), background: true };
   try {
     const answer = await api<{ exec: Kosa8BackgroundExec }>(config, "POST", `${sandboxPath(id)}/exec`, { ...body, timeout_s: timeoutS });
-    return answer.exec;
+    return { exec: answer.exec, hostTimeout: true };
   } catch (error) {
     if (!(isNotAvailable(error) && /timeout_s/.test(formatErrorMessage(error)))) throw error;
     const answer = await api<{ exec: Kosa8BackgroundExec }>(config, "POST", `${sandboxPath(id)}/exec`, body);
-    return answer.exec;
+    return { exec: answer.exec, hostTimeout: false };
   }
 }
 
@@ -630,17 +644,17 @@ async function runInBackground(
   timeoutMs: number,
 ): Promise<PluginEnvironmentExecuteResult> {
   const timeoutS = Math.max(1, Math.ceil(timeoutMs / 1000));
-  const started = await startBackground(config, id, cmd, env, timeoutS);
-  const tracked = activeExecs.get(id) ?? new Set<string>();
-  tracked.add(started.id);
+  const { exec: started, hostTimeout } = await startBackground(config, id, cmd, env, timeoutS);
+  const tracked = activeExecs.get(id) ?? new Map<string, string>();
+  tracked.set(started.id, dir);
   activeExecs.set(id, tracked);
   try {
-    const deadline = Date.now() + timeoutMs + EXEC_GRACE_MS;
+    const deadline = Date.now() + timeoutMs + (hostTimeout ? EXEC_GRACE_MS : 0);
     let interval = EXEC_POLL_MIN_MS;
     let status: Kosa8BackgroundExec | null = started;
     while (status && status.state !== "exited") {
       if (Date.now() >= deadline) {
-        await api(config, "POST", `${sandboxPath(id)}/exec/${started.id}/stop`).catch(() => undefined);
+        await stopBackground(config, id, started.id, dir).catch(() => undefined);
         await cleanupRun(config, id, dir);
         return timedOutResult();
       }

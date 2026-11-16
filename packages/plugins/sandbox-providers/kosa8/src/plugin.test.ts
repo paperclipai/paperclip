@@ -431,6 +431,27 @@ describe("kosa8 sandbox provider plugin", () => {
     await running.catch(() => undefined);
   });
 
+  it("ends a command itself when the host cannot stop or time out background commands", async () => {
+    const reuse = { ...config, reuseLease: true };
+    const lease = await acquire({ reuseLease: true });
+    const id = lease.providerLeaseId!;
+    fake.override = (call) => {
+      if (call.body?.background && call.body.timeout_s !== undefined) {
+        return json(501, { error: "not_available", message: "timeout_s on a background command is not available on this sandbox's host yet" });
+      }
+      if (/\/exec\/bg_[0-9a-f]+\/stop$/.test(call.route)) {
+        return json(501, { error: "not_available", message: "stopping a background command is not available on this sandbox's host yet" });
+      }
+      return null;
+    };
+    const running = execute(lease, { args: ["-c", "sleep 30"] });
+    await vi.waitFor(() => expect(calls("GET", /\/exec\/bg_/).length).toBeGreaterThan(0));
+    const receipt = await hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id, cancelActiveWork: true });
+    expect(receipt).toEqual({ providerLeaseId: id, state: "stopped" });
+    expect([...fake.execs.values()][0]!.state).toBe("exited");
+    await running.catch(() => undefined);
+  });
+
   it("keeps the sandbox asleep for stop and stop_and_retain", async () => {
     const lease = await acquire();
     const id = lease.providerLeaseId!;
