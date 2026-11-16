@@ -2249,6 +2249,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         payload: expect.objectContaining({ issueId: linked.issueId }) }));
     });
 
+    it("resumes a linked task left on the broken connection once that connection is reconnected after a replacement completed the card", async () => {
+      const f = await latchedFleet("replacement-later", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.find(task => task !== owner)!;
+      const replacement = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair replacement-later C",
+        apiKey: "fixture", agentIds: [owner.agentId], allAgents: false }, "fixture-repair-replacement-later-c");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: replacement.connectionId, grantId: replacement.grantId } } })
+        .where(eq(agents.id, owner.agentId));
+      await connectionIntentService(db).complete(card!.id, replacement.connectionId, f.userId);
+      const first = await f.deliverAll([card!.id]);
+      expect(first.mock.calls.map(([agentId]) => agentId)).toEqual([owner.agentId]);
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll((await f.cardsFor(f.tasks.map(task => task.issueId))).map(row => row.id));
+      expect(wakeup.mock.calls.map(([agentId]) => agentId)).toEqual([linked.agentId]);
+      expect(wakeup).toHaveBeenCalledWith(linked.agentId, expect.objectContaining({
+        payload: expect.objectContaining({ issueId: linked.issueId }) }));
+    });
+
     it("raises a separate card when a task's agent moves to another broken connection", async () => {
       const f = await latchedFleet("switched-connection", 1);
       const [task] = f.tasks;
