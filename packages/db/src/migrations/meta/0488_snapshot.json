@@ -1,5 +1,5 @@
 {
-  "id": "30293301-75b3-4fb3-85bc-baa62b3346ae",
+  "id": "8f935a52-5f1e-4afe-8d13-c1770ca33968",
   "prevId": "73c8fa97-70fc-49c0-804e-e49cfdffd156",
   "version": "7",
   "dialect": "postgresql",
@@ -40921,12 +40921,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "deferred_at": {
-          "name": "deferred_at",
+        "due_at": {
+          "name": "due_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": true
         }
       },
       "indexes": {},

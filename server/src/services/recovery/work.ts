@@ -57,15 +57,17 @@ export function registerIssueRecoveryWork(
   function fullPasses(queue: DeliveryQueue) {
     const completedAt = new Map<string, number>(), changedAt = new Map<string, number>();
     type Scan = { filter: SQL | null; startedAt: number; reloadCutoff?: number; unchecked: Set<string>;
-      seen: Set<string>; savedDeferrals?: string[] };
+      seen: Set<string>; savedDeferrals?: Map<string, number> };
     const scans = new Map<string, Scan>();
     // A full pass is saved only once every task it loaded has been checked, so
     // a server replaced mid-pass leaves no saved pass and its replacement runs
     // the full pass again instead of skipping the tasks it never reached.
     const unsaved: Array<{ unchecked: Set<string>; save: () => Promise<void> }> = [];
-    // Tasks with a saved pending deferral (issue_recovery_deferrals) as far as
-    // this server knows: filled at each reload, kept by its own checks.
-    const deferred = new Set<string>();
+    // The saved deferral row (issue_recovery_deferrals) this server last read
+    // or wrote for a task, by its deadline. Every delete names that deadline,
+    // so it never removes a row another server rewrote since; a lost race
+    // costs one extra check, never a missed one.
+    const deferred = new Map<string, number>();
     // Saved passes from before scheduling was suppressed are ignored: entries
     // were dropped while suppressed, so the next pass must look at every task.
     let distrustBefore = 0;
@@ -111,11 +113,12 @@ export function registerIssueRecoveryWork(
             scan.filter = sql`(not ${recentFull(sql`${issues.companyId}`, cutoff)} or ${changedTaskCondition(since)}
               or exists (select 1 from issue_recovery_deferrals d where d.queue = ${queue} and d.issue_id = ${issues.id}))`;
             // Unreadable deferrals mean a full reload, never a lost deadline.
-            const saved: Array<{ issue_id: string }> | null = await db.execute<{ issue_id: string }>(sql`select issue_id::text
+            const saved = await db.execute<{ issue_id: string; due_at: string | Date }>(sql`select issue_id::text, due_at
               from issue_recovery_deferrals where queue = ${queue}`).then(rows => [...rows], () => null);
-            if (saved) for (const row of saved) deferred.add(row.issue_id);
-            else scan.filter = null;
-            scan.savedDeferrals = saved?.map(row => row.issue_id);
+            if (saved) {
+              scan.savedDeferrals = new Map(saved.map(row => [row.issue_id, new Date(row.due_at).getTime()]));
+              for (const [id, dueAt] of scan.savedDeferrals) deferred.set(id, dueAt);
+            } else scan.filter = null;
           } else if (scope && (scope.backstop || isPlainCompany(scope))) {
             await readSaved(scope.companyId);
             if (!fullDue(scope.companyId)) scan.filter = changedTaskCondition(new Date(lastLook(scope.companyId) - ISSUE_RECOVERY_BACKSTOP_MS));
@@ -138,13 +141,17 @@ export function registerIssueRecoveryWork(
         };
         if (scope?.reload) {
           changedAt.set("*", Math.max(changedAt.get("*") ?? 0, startedAt));
-          // The reload loads every eligible task with a saved deferral; the
-          // rest closed or left this queue, and no check will clear them.
-          const stale = (scan?.savedDeferrals ?? []).filter(id => !scan!.seen.has(id));
+          // A saved deferral of a task this reload did not load and that is now
+          // closed will never be cleared by a check. The delete re-checks that
+          // the task is closed and the row is the one read, in one statement.
+          const stale = [...scan?.savedDeferrals ?? []].filter(([id]) => !scan!.seen.has(id))
+            .map(([id, dueAt]) => ({ id, due: new Date(dueAt).toISOString() }));
           if (stale.length > 0) {
-            for (const id of stale) deferred.delete(id);
-            await db.execute(sql`delete from issue_recovery_deferrals where queue = ${queue}
-              and issue_id in (select value::uuid from jsonb_array_elements_text(${JSON.stringify(stale)}::jsonb))`).catch(() => undefined);
+            for (const { id } of stale) deferred.delete(id);
+            await db.execute(sql`delete from issue_recovery_deferrals d using jsonb_to_recordset(${JSON.stringify(stale)}::jsonb)
+                as s(id uuid, due timestamptz), issues i
+              where d.queue = ${queue} and d.issue_id = s.id and d.due_at = s.due
+                and i.id = d.issue_id and i.status in ('done', 'cancelled')`).catch(() => undefined);
           }
           // The companies this reload loaded in full now have a recent full pass.
           await saveOnceChecked(sql`not ${recentFull(sql`c.id`, scan?.reloadCutoff ?? startedAt)}`);
@@ -160,20 +167,28 @@ export function registerIssueRecoveryWork(
         const scan = scans.get(key);
         if (scan) for (const id of ids) { scan.unchecked.add(id); scan.seen.add(id); }
       },
-      /** Saves whether a checked task deferred itself. False when a pending
-       * deferral could not be saved: the check then does not count toward a
-       * saved full pass, so a successor's full pass rebuilds the deadline. */
-      async deferral(id: string, companyId: string, pending: boolean): Promise<boolean> {
-        if (pending && !deferred.has(id)) {
-          const saved = await db.execute(sql`insert into issue_recovery_deferrals (queue, issue_id, company_id)
-            values (${queue}, ${id}::uuid, ${companyId}::uuid) on conflict (queue, issue_id) do nothing`).then(() => true, () => false);
-          if (saved) deferred.add(id);
-          return saved;
-        } else if (!pending && deferred.has(id)) {
+      /** Saves a checked task's deferral deadline, or clears the row this
+       * server knows of when the check no longer defers. One statement when
+       * the deadline changed or a known row is cleared; none otherwise. False
+       * when a deadline could not be saved: the check then does not count
+       * toward a saved full pass, so a successor's full pass rebuilds it. */
+      async deferral(id: string, companyId: string, dueAt: number | null): Promise<boolean> {
+        const known = deferred.get(id);
+        if (dueAt !== null) {
+          if (known === dueAt) return true;
           deferred.delete(id);
-          // A row left behind costs one extra check at the next boot.
-          await db.execute(sql`delete from issue_recovery_deferrals where queue = ${queue} and issue_id = ${id}::uuid`)
-            .catch(() => undefined);
+          const saved = await db.execute(sql`insert into issue_recovery_deferrals (queue, issue_id, company_id, due_at)
+            values (${queue}, ${id}::uuid, ${companyId}::uuid, ${at(dueAt)})
+            on conflict (queue, issue_id) do update set due_at = excluded.due_at`).then(() => true, () => false);
+          if (saved) deferred.set(id, dueAt);
+          return saved;
+        }
+        if (known !== undefined) {
+          deferred.delete(id);
+          // Only the row this server read or wrote; a newer deadline from
+          // another server stays. A row left behind costs one extra check.
+          await db.execute(sql`delete from issue_recovery_deferrals
+            where queue = ${queue} and issue_id = ${id}::uuid and due_at = ${at(known)}`).catch(() => undefined);
         }
         return true;
       },
@@ -276,7 +291,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id, pass,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-        if (await passes.deferral(entry.id, entry.companyId, next !== null)) await passes.checked(entry.id);
+        if (await passes.deferral(entry.id, entry.companyId, next)) await passes.checked(entry.id);
         return next === null ? null : { ...entry, dueAt: next, ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
@@ -326,7 +341,7 @@ export function registerIssueRecoveryWork(
         let next: number | null = null, unchanged = false;
         await sweep.checkIssue({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: (at, detail) => { next = next === null ? at : Math.min(next, at); unchanged ||= detail?.unchanged === true; } });
-        if (await passes.deferral(entry.id, entry.companyId, next !== null)) await passes.checked(entry.id);
+        if (await passes.deferral(entry.id, entry.companyId, next)) await passes.checked(entry.id);
         const { unchanged: _previous, fromBackstop: _source, ...rest } = entry;
         return next === null ? null : { ...rest, dueAt: next, ...(unchanged ? { unchanged: true as const } : {}),
           ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };

@@ -106,6 +106,42 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
     expect(atDeadline[0]!.at - deadline).toBeLessThanOrEqual(MINUTE);
   }, TEST_TIMEOUT_MS);
 
+  it("keeps a deferral another server rewrote while this server clears the one it saw", async () => {
+    const f = await bounded(seed(10), () => "the fixture to be seeded");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const target = f.tasks[4]!;
+    const checks: Array<{ id: string; at: number }> = [];
+    const first = Date.now() + 30 * MINUTE;
+    const b = { deferUntil: new Map([[target, first]]), suppressed: () => false, checks };
+    const a = { deferUntil: new Map([[target, first]]), suppressed: () => false, checks };
+    const hint = () => bounded(state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId, issueId: target })),
+      () => "the task hint to commit");
+    // Server B saves the first deadline; server A boots while it overlaps and reads that row.
+    const serverB = await server(b);
+    await advance(MINUTE);
+    await server(a);
+    reconcileDatabaseWorkNotifications(state.db);
+    await advance(MINUTE);
+    // B's check stops deferring and clears the row, then defers again to a new deadline.
+    b.deferUntil.delete(target);
+    await hint(); await advance(MINUTE);
+    const second = Date.now() + 15 * MINUTE;
+    b.deferUntil.set(target, second);
+    await hint(); await advance(MINUTE);
+    // A's check stops deferring and clears the row it read; B's new row must stay.
+    a.deferUntil.delete(target);
+    await hint(); await advance(MINUTE);
+    // B is replaced without shutdown work; its successor keeps B's deadline.
+    await bounded(serverB.stop(), () => "server B to stop");
+    await server({ deferUntil: new Map([[target, second]]), suppressed: () => false, checks });
+    reconcileDatabaseWorkNotifications(state.db);
+    const replacedAt = Date.now();
+    await advance(second - Date.now() + MINUTE);
+    const atDeadline = checks.filter(check => check.id === target && check.at >= second && check.at > replacedAt);
+    expect(atDeadline[0], "the successor did not check the task at the deadline server B saved").toBeDefined();
+    expect(atDeadline[0]!.at - second).toBeLessThanOrEqual(MINUTE);
+  }, TEST_TIMEOUT_MS);
+
   it("removes a saved deferral once its task has left the queue", async () => {
     const f = await bounded(seed(10), () => "the fixture to be seeded");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

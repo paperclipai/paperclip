@@ -22,13 +22,14 @@ export const issueRecoveryFullPasses = pgTable("issue_recovery_full_passes", {
  * period, a back-off, a live owner's lease). The row exists while a deferral
  * is pending, so the successor of a replaced or crashed server re-checks these
  * tasks at boot and keeps their deadlines without re-checking every task.
- * The deadline itself is not stored: the boot check computes it again.
+ * The boot check computes the deadline again from current state.
  */
 export const issueRecoveryDeferrals = pgTable("issue_recovery_deferrals", {
   queue: text("queue").notNull(),
   issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  deferredAt: timestamp("deferred_at", { withTimezone: true }).notNull().defaultNow(),
+  /** The deadline the check deferred to, as last saved; deletes name it, so a newer one is never removed. */
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
 }, table => ({
   pk: primaryKey({ name: "issue_recovery_deferrals_pk", columns: [table.queue, table.issueId] }),
 }));

@@ -9,6 +9,8 @@ import { createAgentLifecycle, createAgentLifecycleEffects } from "../services/a
 import { budgetService } from "../services/budgets.js";
 import { documentService } from "../services/documents.js";
 import { issueService } from "../services/issues.js";
+import { createHeartbeatAgentStatus } from "../services/heartbeat/agent-status.js";
+import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
 
 vi.hoisted(() => { process.env.PAPERCLIP_DEBUG_WORK_SIGNALS = "stranded-assignments:1,assigned-work-invariant:1"; });
@@ -182,6 +184,56 @@ describeIssueRecovery("company hints and notification reloads (census)", () => {
       expect(result.byWake[topic]?.reload ?? 0).toBe(0);
       expect(result.byWake[topic]?.every_task ?? 0).toBe(0);
     }
+  }, TEST_TIMEOUT_MS);
+
+  /** A run of the second agent (20 settled reviews plus its live task),
+   * through the writes and hints of a run start and a run finish: the run row,
+   * the agent row as execution start writes it, the execution-run hint, and
+   * finalizeAgentStatus. No process runs. */
+  async function runCycle(f: Awaited<ReturnType<typeof boot>>, issueId: string, outcome: "succeeded" | "failed") {
+    const run = await bounded(state.db.transaction(async tx => {
+      const [row] = await tx.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.secondId, status: "running",
+        runtimeMode: "native", startedAt: new Date(), contextSnapshot: { issueId }, nativeIssueId: issueId }).returning({ id: heartbeatRuns.id });
+      await notifyExecutionRunWork(tx, { companyId: f.companyId, agentId: f.secondId, runId: row!.id });
+      await tx.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, f.secondId));
+      return row!.id;
+    }), () => "the run start to commit");
+    await advance(2 * MINUTE, f.tick);
+    await bounded(state.db.transaction(async tx => {
+      await notifyExecutionRunWork(tx, { companyId: f.companyId, runId: run, issueId });
+      await tx.update(heartbeatRuns).set({ status: outcome, finishedAt: new Date(), updatedAt: new Date() }).where(eq(heartbeatRuns.id, run));
+    }), () => "the run finish to commit");
+    await bounded(createHeartbeatAgentStatus(state.db).finalizeAgentStatus(f.secondId, outcome), () => "the agent status to settle");
+    await advance(2 * MINUTE, f.tick);
+    return run;
+  }
+
+  it("does not re-check an agent's settled backlog when its runs start and finish", async () => {
+    const f = await boot();
+    const before = state.meter.read();
+    const [work] = await bounded(state.db.insert(issues).values({ companyId: f.companyId, title: "Second agent work", status: "in_progress",
+      assigneeAgentId: f.secondId }).returning({ id: issues.id }), () => "the run's task to be created");
+    for (let cycle = 0; cycle < 2; cycle++) await runCycle(f, work!.id, "succeeded");
+    const settled = new Set([...f.bigTasks, ...f.secondTasks]);
+    const checks = f.events.filter(event => event.name === "check");
+    const result = { cycles: 2, settledChecks: checks.filter(event => settled.has(String(event.fields.issueId))).length,
+      runTaskChecks: checks.filter(event => event.fields.issueId === work!.id).length, byWake: byWake(f.events),
+      statements: state.meter.read().statements - before.statements };
+    console.info(`run-cycle census: ${JSON.stringify(result)}`);
+    expect(result.settledChecks).toBe(0);
+    expect(result.runTaskChecks).toBeGreaterThan(0);
+  }, TEST_TIMEOUT_MS);
+
+  it("still checks a task promptly when its run fails", async () => {
+    const f = await boot();
+    const [work] = await bounded(state.db.insert(issues).values({ companyId: f.companyId, title: "Second agent work", status: "in_progress",
+      assigneeAgentId: f.secondId }).returning({ id: issues.id }), () => "the run's task to be created");
+    const startedAt = Date.now();
+    await runCycle(f, work!.id, "failed");
+    const finishedAt = startedAt + 2 * MINUTE;
+    const [checked] = checksOf(f.events, work!.id, finishedAt);
+    expect(checked, "the failed run's task was not checked after the run ended").toBeDefined();
+    expect(checked!.at - finishedAt).toBeLessThanOrEqual(MINUTE);
   }, TEST_TIMEOUT_MS);
 
   it("still checks a task stranded right before each writer within its bound", async () => {

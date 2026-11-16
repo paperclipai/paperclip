@@ -2,7 +2,7 @@ CREATE TABLE "issue_recovery_deferrals" (
 	"queue" text NOT NULL,
 	"issue_id" uuid NOT NULL,
 	"company_id" uuid NOT NULL,
-	"deferred_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"due_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "issue_recovery_deferrals_pk" PRIMARY KEY("queue","issue_id")
 );
 --> statement-breakpoint
