@@ -40,13 +40,6 @@ export async function startNormalDotAppGeneration(input: {
   health: () => "ready"|"unavailable"|"wake-once-then-unavailable";
   consumedWakeHealth: () => void;
 }) {
-  // The persistent per-journey directory is shared by both real App boots.
-  // Refuse ambient/default host backup storage before allocating any owners.
-  const config=loadConfig();
-  assert.equal(config.databaseBackupEnabled,true,"qualification retains automatic backups");
-  assert.equal(process.env.PAPERCLIP_DB_BACKUP_DIR,path.join(input.home,"database-backups"));
-  assert.equal(config.databaseBackupDir,path.join(input.home,"database-backups"));
-  assert(process.env.PAPERCLIP_PG_DUMP_PATH&&path.isAbsolute(process.env.PAPERCLIP_PG_DUMP_PATH),"qualification requires an explicitly configured absolute pg_dump path");
   const errors: unknown[]=[]; let unexpectedDecisionWakes=0,sessionCalls=0;
   const nativeTrace:Array<{at:number;event:string;value?:number|boolean|null}>=[];let nativeTraceDropped=0;
   const nativeEventCounts={registered:0,run_enter:0,run_fulfilled:0,run_rejected:0,has_pending:0,settled:0,next_run_at:0};
@@ -58,10 +51,6 @@ export async function startNormalDotAppGeneration(input: {
   const healthStatuses:number[]=[];let healthOverflow=0;
   const linuxBootstrap=await prepareOwnedLinuxDistribution(input.linuxInput);
   const db=createDb(input.databaseUrl,{maxConnections:2,applicationName:"dot-principal-normal-app"});
-  const backupSettings=instanceSettingsService(db);
-  const runDatabaseBackup=createDatabaseBackupOwner({connectionString:input.databaseUrl,
-    backupDir:config.databaseBackupDir,getRetention:async()=>(await backupSettings.getGeneral()).backupRetention,logger});
-  const idleDatabaseBackupEnabled=config.databaseBackupEnabled&&process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED==="1";
   let stopDatabaseBackups:(()=>Promise<void>)|undefined;
   const nativeSockets=new Set<Socket>();
   let dispatchWork:ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]>|undefined;
@@ -117,6 +106,17 @@ export async function startNormalDotAppGeneration(input: {
   try{
     await migrateCloudConfiguration(db);await initializeAdapterSettings(db);await initializeCloudRuntimeConfig(db);
     resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();await initializeCloudRuntimeIdentity(db);
+    // The persistent per-journey directory is shared by both real App boots.
+    // Refuse ambient/default host backup storage before allocating backup owners.
+    const config=loadConfig();
+    assert.equal(config.databaseBackupEnabled,true,"qualification retains automatic backups");
+    assert.equal(process.env.PAPERCLIP_DB_BACKUP_DIR,path.join(input.home,"database-backups"));
+    assert.equal(config.databaseBackupDir,path.join(input.home,"database-backups"));
+    assert(process.env.PAPERCLIP_PG_DUMP_PATH&&path.isAbsolute(process.env.PAPERCLIP_PG_DUMP_PATH),"qualification requires an explicitly configured absolute pg_dump path");
+    const backupSettings=instanceSettingsService(db);
+    const runDatabaseBackup=createDatabaseBackupOwner({connectionString:input.databaseUrl,
+      backupDir:config.databaseBackupDir,getRetention:async()=>(await backupSettings.getGeneral()).backupRetention,logger});
+    const idleDatabaseBackupEnabled=config.databaseBackupEnabled&&process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED==="1";
     const standby=await createCloudWarmStandby(db);assert.equal(standby(),input.generation===1);
     const {createApp}=await import("../../../app.js");
     const budgetResumeDelivery:BudgetResumeDelivery={};
