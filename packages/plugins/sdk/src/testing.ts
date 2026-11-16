@@ -2674,6 +2674,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     tracer: NOOP_PLUGIN_TRACER,
+    async runInCompanyBackground(_companyId, fn) {
+      return fn();
+    },
   };
 
   const harness: TestHarness = {

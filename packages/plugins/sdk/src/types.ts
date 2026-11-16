@@ -2325,4 +2325,11 @@ export interface PluginContext {
   /** Tracer for provider spans. The default is a no-op; the host records a span
    * only when tracing is on and an active host trace context is present. */
   tracer: PluginTracer;
+
+  /**
+   * Run work in a company-scoped background invocation that stays valid after
+   * the current host call returns. Host calls inside `fn` keep that company
+   * scope. The invocation closes when `fn` settles.
+   */
+  runInCompanyBackground<T>(companyId: string, fn: () => Promise<T>): Promise<T>;
 }

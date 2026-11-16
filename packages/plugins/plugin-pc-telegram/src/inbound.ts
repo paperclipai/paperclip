@@ -41,21 +41,26 @@ function withDialogLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   });
 }
 
+function attachmentLabel(kind: InboundAttachment["kind"], filename: string): string {
+  const name = kind === "voice" ? "Voice message" : kind === "photo" ? "Photo" : kind === "video" ? "Video" : "Attachment";
+  return `${name}: ${filename.replace(/[\[\]]/g, "")}`;
+}
+
 export function formatInboundComment(
   message: InboundDirectMessage,
   storedFiles: Array<Pick<InboundAttachment, "filename" | "mimeType" | "byteLength" | "kind">>,
-  attachmentIds: string[] = [],
+  attachments: Array<{ filename: string; kind: InboundAttachment["kind"]; contentPath: string }> = [],
 ): string {
   const lines: string[] = [];
   const speaker = message.peerName || message.peerId;
   lines.push(`**${speaker}**`);
   if (message.text.trim()) lines.push(message.text.trim());
   for (const file of storedFiles) {
-    const kind = file.kind === "voice" ? "Voice message" : file.kind === "photo" ? "Photo" : file.kind === "video" ? "Video" : "Attachment";
-    lines.push(`${kind}: ${file.filename} (${file.mimeType}, ${file.byteLength} bytes)`);
+    lines.push(`${attachmentLabel(file.kind, file.filename)} (${file.mimeType}, ${file.byteLength} bytes)`);
   }
-  for (const attachmentId of attachmentIds) {
-    lines.push(`attachment:${attachmentId}`);
+  for (const attachment of attachments) {
+    if (!attachment.contentPath.startsWith("/api/attachments/") || /[\s)]/.test(attachment.contentPath)) continue;
+    lines.push(`[${attachmentLabel(attachment.kind, attachment.filename)}](${attachment.contentPath})`);
   }
   return lines.join("\n\n");
 }
@@ -102,8 +107,8 @@ async function attachInboundFiles(
   companyId: string,
   issueId: string,
   attachments: InboundAttachment[],
-): Promise<string[]> {
-  const ids: string[] = [];
+): Promise<Array<{ filename: string; kind: InboundAttachment["kind"]; contentPath: string }>> {
+  const linked = [];
   for (const attachment of attachments) {
     const created = await ctx.issues.createAttachment({
       issueId,
@@ -112,9 +117,12 @@ async function attachInboundFiles(
       contentType: attachment.mimeType,
       contentBase64: Buffer.from(attachment.bytes).toString("base64"),
     });
-    ids.push(created.id);
+    const contentPath = created.contentPath.startsWith("/api/attachments/")
+      ? created.contentPath
+      : `/api/attachments/${created.id}/content`;
+    linked.push({ filename: attachment.filename, kind: attachment.kind, contentPath });
   }
-  return ids;
+  return linked;
 }
 
 export async function ingestInboundMessage(
@@ -163,8 +171,8 @@ async function ingestDialog(
     });
   }
 
-  const attachmentIds = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
-  const body = formatInboundComment(message, storedFiles, attachmentIds);
+  const linkedFiles = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
+  const body = formatInboundComment(message, storedFiles, linkedFiles);
   if (current) {
     await ctx.issues.createComment(issue.id, body, connection.companyId);
   } else if (body !== issue.description) {

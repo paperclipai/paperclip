@@ -1629,6 +1629,21 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           };
         },
       },
+
+      async runInCompanyBackground<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+        const retained = await callHost("background.retain", { companyId });
+        const stored: PluginInvocationContext = {
+          id: retained.invocationId,
+          scope: { companyId },
+        };
+        try {
+          return await invocationContextStorage.run(stored, fn);
+        } finally {
+          await invocationContextStorage.run(stored, () =>
+            callHost("background.release", { invocationId: retained.invocationId }),
+          );
+        }
+      },
     };
   }
 

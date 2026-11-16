@@ -13,6 +13,7 @@ import {
   MOCK_API_HASH,
   MOCK_SESSION,
   OTHER_AGENT_ID,
+  OTHER_COMPANY_ID,
   createMockTelegram,
   inboundMessage,
   waitFor,
@@ -72,6 +73,11 @@ describe("pc-telegram plugin", () => {
       expect.objectContaining({ telegramUserId: "1001", hasSession: true }),
     ]);
     expect(telegram.connectFromSessionCalls[0]?.session).toBe(MOCK_SESSION);
+    const loginStatus = await harness.getData<{ state: string }>("login-status", {
+      companyId: COMPANY_ID,
+      loginId: started.loginId,
+    });
+    expect(loginStatus.state).toBe("connected");
     secretFree(harness.logs);
     secretFree(overview);
 
@@ -220,5 +226,146 @@ describe("pc-telegram plugin", () => {
     expect(html).toContain("Front Desk");
     expect(html).toContain("dialog = task");
     secretFree(html);
+  });
+
+  it("rejects an agent and a user from another company before they can change account access", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const agent = { actor: { type: "agent" as const, agentId: AGENT_ID, companyId: COMPANY_ID } };
+    const outsider = { actor: { type: "user" as const, userId: "user-2", companyId: OTHER_COMPANY_ID } };
+    await expect(harness.performAction("start-login", { companyId: COMPANY_ID }, agent)).rejects.toThrow(/board user/);
+    await expect(harness.performAction("update-connection", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      assignedAgentId: AGENT_ID,
+    }, agent)).rejects.toThrow(/board user/);
+    await expect(harness.performAction("set-paused", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      paused: true,
+    }, agent)).rejects.toThrow(/board user/);
+    await expect(harness.performAction("disconnect-account", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+    }, agent)).rejects.toThrow(/board user/);
+    await expect(harness.performAction("start-login", { companyId: COMPANY_ID }, outsider)).rejects.toThrow(/board user/);
+    expect(telegram.startQrLoginCount).toBe(0);
+  });
+
+  it("does not keep a session when login is cancelled while the account is connecting", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    telegram.holdConnect();
+    const started = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectStarted === 1);
+    const cancelPromise = harness.performAction("cancel-login", {
+      companyId: COMPANY_ID,
+      loginId: started.loginId,
+    }, boardUser);
+    for (let step = 0; step < 20; step += 1) await Promise.resolve();
+    telegram.releaseConnect();
+    await cancelPromise;
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; live: boolean; paused: boolean }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.connections).toEqual([
+      expect.objectContaining({ telegramUserId: "1001", hasSession: false, live: false, paused: true }),
+    ]);
+    const status = await harness.getData<{ state: string }>("login-status", {
+      companyId: COMPANY_ID,
+      loginId: started.loginId,
+    });
+    expect(status.state).toBe("idle");
+  });
+
+  it("does not attach an account that was disconnected while reconnect was in flight", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+
+    telegram.holdConnect();
+    const restarted = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    await restarted.definition.setup(harness.ctx);
+    await waitFor(() => telegram.connectStarted === 2);
+    await harness.performAction("disconnect-account", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+    }, boardUser);
+    telegram.releaseConnect();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 2);
+    const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; live: boolean }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.connections).toEqual([
+      expect.objectContaining({ telegramUserId: "1001", hasSession: false, live: false }),
+    ]);
+  });
+
+  it("keeps Cancel on the left of the primary login action", () => {
+    (globalThis as TestBridgeGlobal).__paperclipPluginBridge__ = {
+      react: { createElement },
+      sdkUi: {
+        usePluginData: (key: string) => ({
+          data: key === "login-status"
+            ? { state: "password_required", loginId: "login-1", hint: "hint" }
+            : {
+                pluginId: PLUGIN_ID,
+                credentialsConfigured: true,
+                connections: [],
+              },
+          loading: false,
+          error: null,
+          refresh() {},
+        }),
+        usePluginAction: () => async () => ({}),
+        usePluginStream: () => ({
+          events: [],
+          lastEvent: null,
+          connecting: false,
+          connected: false,
+          error: null,
+          close() {},
+        }),
+        AssigneePicker: () => createElement("div", null, "Assignee"),
+        StatusBadge: ({ label }: { label: string }) => createElement("span", null, label),
+      },
+    };
+    const html = renderToStaticMarkup(createElement(TelegramConnectPage, {
+      context: {
+        companyId: COMPANY_ID,
+        companyPrefix: "AND",
+        projectId: null,
+        entityId: null,
+        entityType: null,
+        userId: "user-1",
+      },
+    }));
+    const cancelAt = html.indexOf(">Cancel<");
+    const continueAt = html.indexOf(">Continue<");
+    expect(cancelAt).toBeGreaterThan(-1);
+    expect(continueAt).toBeGreaterThan(cancelAt);
+    expect(html).toContain("justify-content:space-between");
   });
 });

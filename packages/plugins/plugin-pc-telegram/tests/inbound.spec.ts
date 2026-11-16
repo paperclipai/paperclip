@@ -69,7 +69,8 @@ describe("inbound issue mapping", () => {
       }],
     }));
     expect(issue?.description).toContain("Voice message: voice.ogg");
-    expect(issue?.description).toContain("attachment:");
+    expect(issue?.description).toContain("[Voice message: voice.ogg](/api/attachments/");
+    expect(issue?.description).toContain("/content)");
     expect(issue?.description).not.toContain("AQIDBA==");
     expect(harness.getState({
       scopeKind: "company",

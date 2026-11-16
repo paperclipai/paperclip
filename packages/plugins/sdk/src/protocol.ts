@@ -1795,6 +1795,15 @@ export interface WorkerToHostMethods {
     result: void,
   ];
 
+  "background.retain": [
+    params: { companyId: string },
+    result: { invocationId: string },
+  ];
+  "background.release": [
+    params: { invocationId: string },
+    result: void,
+  ];
+
   // Activity
   "activity.log": [
     params: {

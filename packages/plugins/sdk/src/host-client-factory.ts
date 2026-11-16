@@ -429,6 +429,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "secrets.resolve": "secrets.read-ref",
   "secrets.store": "secrets.write",
   "secrets.discard": "secrets.write",
+  "background.retain": null,
+  "background.release": null,
 
   // Activity
   "activity.log": "activity.log.write",
@@ -838,6 +840,13 @@ export function createHostClientHandlers(
     // Provider span sink. The context carries the host-minted `traceparent`.
     "span.record": gated("span.record", async (params, context) => {
       return services.tracer.record(params, context);
+    }),
+
+    "background.retain": gated("background.retain", async () => {
+      throw new Error("background.retain is handled by the plugin worker manager");
+    }),
+    "background.release": gated("background.release", async () => {
+      throw new Error("background.release is handled by the plugin worker manager");
     }),
 
     // Companies

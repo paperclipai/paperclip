@@ -2,6 +2,8 @@ const readline = require("node:readline");
 
 let nextRequestId = 1;
 const pendingNested = new Map();
+let retainedInvocationId = null;
+let releasedInvocationId = null;
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -50,6 +52,32 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     : {
         companyId: requestedCompanyId,
       };
+  if (mode === "retain" || mode === "use-retained" || mode === "release-retained") {
+    const retainedRequest = {
+      jsonrpc: "2.0",
+      id: nestedId,
+      method: mode === "retain"
+        ? "background.retain"
+        : mode === "release-retained"
+          ? "background.release"
+          : "companies.get",
+      params: mode === "retain"
+        ? { companyId: requestedCompanyId }
+        : mode === "release-retained"
+          ? { invocationId: retainedInvocationId }
+          : { companyId: requestedCompanyId },
+      paperclipInvocationId: mode === "retain"
+        ? invocationId
+        : (retainedInvocationId || releasedInvocationId || "released-invocation"),
+    };
+    pendingNested.set(nestedId, {
+      id: originalRequest.id,
+      capture: mode === "retain" ? "retain" : mode === "release-retained" ? "release" : undefined,
+    });
+    send(retainedRequest);
+    return;
+  }
+
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
@@ -92,6 +120,14 @@ rl.on("line", (line) => {
         error: message.error,
       });
       return;
+    }
+
+    if (original.capture === "retain" && message.result && typeof message.result.invocationId === "string") {
+      retainedInvocationId = message.result.invocationId;
+    }
+    if (original.capture === "release") {
+      releasedInvocationId = retainedInvocationId;
+      retainedInvocationId = null;
     }
 
     send({

@@ -2432,7 +2432,7 @@ export function pluginRoutes(
         companyId,
         { targetType: "plugin", targetId: plugin.id },
         secretRefs,
-        { replaceAll: true },
+        { replaceAll: true, preserveConfigPathPrefixes: ["plugin-secret."] },
       );
 
       const result = await registry.upsertConfig(plugin.id, companyId, {

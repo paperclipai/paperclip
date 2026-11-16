@@ -55,6 +55,14 @@ const row: CSSProperties = {
   alignItems: "center",
 };
 
+const footer: CSSProperties = {
+  display: "flex",
+  width: "100%",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "calc(var(--spacing) * 2)",
+};
+
 const muted: CSSProperties = {
   fontSize: "var(--text-sm)",
   color: "var(--muted-foreground)",
@@ -111,16 +119,20 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<LoginStatus | null>(null);
   const loginChannel = companyId ? `telegram-login:${companyId}` : "telegram-login:none";
   const loginStream = usePluginStream<{ status?: LoginStatus }>(loginChannel, companyId ? { companyId } : undefined);
 
-  const status = login.data ?? { state: "idle" as const };
+  const status = streamStatus ?? login.data ?? { state: "idle" as const };
 
   useEffect(() => {
-    if (!loginStream.lastEvent) return;
+    const next = loginStream.lastEvent?.status;
+    if (!next) return;
+    if (loginId && "loginId" in next && next.loginId !== loginId) return;
+    setStreamStatus(next);
     login.refresh();
     overview.refresh();
-  }, [loginStream.lastEvent]);
+  }, [loginStream.lastEvent, loginId]);
 
   useEffect(() => {
     if (status.state === "connected") {
@@ -133,6 +145,7 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
 
   async function onConnect() {
     if (!companyId) return;
+    setStreamStatus(null);
     setBusy(true);
     setError(null);
     try {
@@ -166,6 +179,7 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   async function onCancel() {
     if (!companyId || !loginId) return;
     setPassword("");
+    setStreamStatus(null);
     await cancelLogin({ companyId, loginId }).catch(() => undefined);
     setLoginId(null);
     login.refresh();
@@ -207,7 +221,7 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
                 onChange={(event) => setPassword(event.target.value)}
               />
             </label>
-            <div style={row}>
+            <div style={footer}>
               <button type="button" style={button} onClick={() => void onCancel()}>
                 Cancel
               </button>
@@ -217,15 +231,15 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
             </div>
           </form>
         ) : (
-          <div style={row}>
-            <button type="button" style={primaryButton} onClick={() => void onConnect()} disabled={busy || !companyId}>
-              {busy ? "Starting…" : "Connect Telegram"}
-            </button>
+          <div style={{ ...footer, justifyContent: status.state === "qr_pending" ? "space-between" : "flex-end" }}>
             {status.state === "qr_pending" ? (
               <button type="button" style={button} onClick={() => void onCancel()}>
                 Cancel
               </button>
             ) : null}
+            <button type="button" style={primaryButton} onClick={() => void onConnect()} disabled={busy || !companyId}>
+              {busy ? "Starting…" : "Connect Telegram"}
+            </button>
           </div>
         )}
       </div>

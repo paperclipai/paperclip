@@ -1002,6 +1002,7 @@ export function createPluginWorkerHandle(
   }
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  const retainedBackgroundInvocations = new Set<string>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
   // `environmentExecute` call with a log sink registers a route here. The
   // `execute.log` router delivers only through this map — never through the
@@ -2916,7 +2917,80 @@ export function createPluginWorkerHandle(
     }
   }
 
+  function retainBackgroundInvocation(request: JsonRpcRequest): { invocationId: string } {
+    const context = contextForWorkerMessage(request);
+    if (context.invalidInvocationScope) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    const companyId = isRecord(request.params) ? readNonEmptyString(request.params.companyId) : null;
+    if (!companyId) {
+      throw Object.assign(new Error("companyId is required"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    if (context.invocationScope?.agentOrigin) {
+      throw Object.assign(new Error("Agent invocations cannot open background company access"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    if (context.invocationScope) {
+      if (context.invocationScope.companyId !== companyId) {
+        throw Object.assign(new Error("Missing or unknown invocation scope"), {
+          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        });
+      }
+    } else if (!proactiveCompanyScopes.has(companyId)) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    const invocation = registerInvocation({ companyId });
+    retainedBackgroundInvocations.add(invocation.id);
+    return { invocationId: invocation.id };
+  }
+
+  function releaseBackgroundInvocation(request: JsonRpcRequest): null {
+    const params = isRecord(request.params) ? request.params : {};
+    const invocationId = readNonEmptyString(params.invocationId);
+    const echoed = readNonEmptyString((request as { paperclipInvocationId?: unknown }).paperclipInvocationId);
+    if (!invocationId || echoed !== invocationId || !retainedBackgroundInvocations.has(invocationId)) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    retainedBackgroundInvocations.delete(invocationId);
+    clearInvocation({ id: invocationId, scope: { companyId: "" } });
+    return null;
+  }
+
   async function dispatchWorkerRequest(request: JsonRpcRequest): Promise<void> {
+    if (request.method === "background.retain" || request.method === "background.release") {
+      try {
+        const result = request.method === "background.retain"
+          ? retainBackgroundInvocation(request)
+          : releaseBackgroundInvocation(request);
+        sendMessage({
+          jsonrpc: JSONRPC_VERSION,
+          id: request.id,
+          result: result ?? null,
+        });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        try {
+          sendMessage(createErrorResponse(
+            request.id,
+            errorCodeForWorkerHostError(err),
+            errorMessage,
+          ));
+        } catch {
+          // Worker may have exited, ignore send error
+        }
+      }
+      return;
+    }
+
     const method = request.method as WorkerToHostMethodName;
     const handler = options.hostHandlers[method] as
       | ((params: unknown, context?: WorkerHostCallContext) => Promise<unknown>)
@@ -3326,6 +3400,7 @@ export function createPluginWorkerHandle(
       if (invocation.timer) clearTimeout(invocation.timer);
     }
     activeInvocations.clear();
+    retainedBackgroundInvocations.clear();
   }
 
   // -----------------------------------------------------------------------

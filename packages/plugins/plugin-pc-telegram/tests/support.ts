@@ -86,6 +86,9 @@ export type MockTelegram = {
   sent: Array<{ accountId: string; peerId: string; text: string }>;
   connectFromSessionCalls: Array<{ companyId: string; session: string }>;
   startQrLoginCount: number;
+  connectStarted: number;
+  holdConnect(): void;
+  releaseConnect(): void;
   deliver(message: InboundDirectMessage): Promise<void>;
   completeLogin(account?: PublicTelegramAccount, session?: string): void;
   requirePassword(hint?: string | null): void;
@@ -100,6 +103,9 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   const sent: MockTelegram["sent"] = [];
   const connectFromSessionCalls: MockTelegram["connectFromSessionCalls"] = [];
   let startQrLoginCount = 0;
+  let connectStarted = 0;
+  let connectGate: Promise<void> = Promise.resolve();
+  let releaseGate: (() => void) | null = null;
   let inboundHandler: ((message: InboundDirectMessage) => Promise<void>) | null = null;
   let signedIn!: (value: SignedInSession) => void;
   let rejected!: (error: unknown) => void;
@@ -139,6 +145,8 @@ export function createMockTelegram(account: PublicTelegramAccount = {
       return handle;
     },
     async connectFromSession(input) {
+      connectStarted += 1;
+      await connectGate;
       connectFromSessionCalls.push({ companyId: input.companyId, session: input.session });
       inboundHandler = input.onInbound;
       live.companyId = input.companyId;
@@ -159,6 +167,19 @@ export function createMockTelegram(account: PublicTelegramAccount = {
     connectFromSessionCalls,
     get startQrLoginCount() {
       return startQrLoginCount;
+    },
+    get connectStarted() {
+      return connectStarted;
+    },
+    holdConnect() {
+      connectGate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+    },
+    releaseConnect() {
+      releaseGate?.();
+      releaseGate = null;
+      connectGate = Promise.resolve();
     },
     async deliver(message) {
       if (!inboundHandler) throw new Error("No live inbound handler");
