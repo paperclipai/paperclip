@@ -62,4 +62,29 @@ describePostgres("instruction apply task under concurrent approvals", () => {
       .where(eq(issues.id, result!.issueId));
     expect(task).toEqual({ parentId: privateIssueId, visibility: "private", privacyRootIssueId: privateIssueId });
   });
+
+  it("does not reuse an open apply task for a private approval of the same bundle", async () => {
+    const payload = { agentId, bundle: { files: [{ path: "AGENTS.md", content: "# Shared bundle\n", baseHash: null }] } };
+    const openApprovalId = randomUUID();
+    await db.insert(approvals).values({ id: openApprovalId, companyId, type: "instruction_generation", payload });
+    const openResult = await createInstructionApplyTask(db, { companyId, approvalId: openApprovalId, decidedByUserId: "board-user", payload });
+
+    const privateIssueId = randomUUID();
+    const privateApprovalId = randomUUID();
+    await db.insert(issues).values({
+      id: privateIssueId, companyId, title: "Private twin", visibility: "private", privacyRootIssueId: privateIssueId,
+    });
+    await db.insert(approvals).values({ id: privateApprovalId, companyId, type: "instruction_generation", payload });
+    await db.insert(issueApprovals).values({ companyId, issueId: privateIssueId, approvalId: privateApprovalId });
+    const privateResult = await createInstructionApplyTask(db, { companyId, approvalId: privateApprovalId, decidedByUserId: "board-user", payload });
+
+    expect(openResult?.created).toBe(true);
+    expect(privateResult?.created).toBe(true);
+    expect(privateResult!.issueId).not.toBe(openResult!.issueId);
+    const [task] = await db
+      .select({ parentId: issues.parentId, visibility: issues.visibility })
+      .from(issues)
+      .where(eq(issues.id, privateResult!.issueId));
+    expect(task).toEqual({ parentId: privateIssueId, visibility: "private" });
+  });
 });

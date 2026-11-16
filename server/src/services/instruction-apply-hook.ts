@@ -373,6 +373,8 @@ export async function createInstructionApplyTask(
             eq(issues.originKind, INSTRUCTION_APPLY_ORIGIN_KIND),
             eq(issues.originId, agentId),
             eq(issues.originFingerprint, fingerprint),
+            // Reuse only within the same privacy scope, so an approval never links to a task outside it
+            scope.parentId ? eq(issues.parentId, scope.parentId) : isNull(issues.parentId),
             isNull(issues.hiddenAt),
             notInArray(issues.status, APPLY_TASK_TERMINAL_STATUSES),
           ),
