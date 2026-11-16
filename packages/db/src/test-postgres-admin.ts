@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { applyPendingMigrations, closeRegisteredClients } from "./client.js";
 
+// Suites reset state with `TRUNCATE ... CASCADE`, and Postgres sends one
+// NOTICE per cascaded table. postgres.js prints each notice with console.log
+// unless the client sets `onnotice`, so one server shard printed about 77k
+// notice objects (~600k log lines) through Vitest's console capture. Setting
+// the level on the test database applies to every client a suite opens. A
+// suite that needs notices can still lower it for its own session.
+export const QUIET_TEST_DATABASE_SQL = (databaseName: string) =>
+  `ALTER DATABASE "${databaseName}" SET client_min_messages = warning`;
+
 export function testPostgresAdminUrl(): string | undefined {
   const value = process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim();
   if (!value) return undefined;
@@ -41,6 +50,7 @@ export async function startTestPostgresDatabase(adminUrl: string): Promise<{
   })();
   try {
     await admin.unsafe(`CREATE DATABASE "${name}"${template ? ` TEMPLATE "${template}"` : ""}`);
+    await admin.unsafe(QUIET_TEST_DATABASE_SQL(name));
     await applyPendingMigrations(connectionString);
     return { connectionString, cleanup };
   } catch (error) {
