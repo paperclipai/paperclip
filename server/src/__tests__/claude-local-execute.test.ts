@@ -80,6 +80,7 @@ const payload = {
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
   runPromptFile: process.env.PAPERCLIP_RUN_PROMPT_FILE || null,
   runPromptContents: process.env.PAPERCLIP_RUN_PROMPT_FILE ? fs.readFileSync(process.env.PAPERCLIP_RUN_PROMPT_FILE, "utf8") : null,
+  runPromptMode: process.env.PAPERCLIP_RUN_PROMPT_FILE ? fs.statSync(process.env.PAPERCLIP_RUN_PROMPT_FILE).mode & 0o777 : null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -188,6 +189,7 @@ type CapturePayload = {
   appendedSystemPromptFileContents?: string | null;
   runPromptFile?: string | null;
   runPromptContents?: string | null;
+  runPromptMode?: number | null;
 };
 
 afterEach(() => {
@@ -452,7 +454,8 @@ describe("claude execute", () => {
       expect(first.capture.runPromptContents).toContain("Work on run-a.");
       expect(second.capture.runPromptContents).toContain("Work on run-b.");
       expect(second.capture.runPromptFile).not.toBe(first.capture.runPromptFile);
-      expect((await fs.stat(first.capture.runPromptFile!)).mode & 0o777).toBe(0o600);
+      expect(first.capture.runPromptMode).toBe(0o600);
+      await expect(fs.access(first.capture.runPromptFile!)).rejects.toThrow();
 
       const sessionParams = sessionCodec.deserialize(sessionCodec.serialize(second.result.sessionParams ?? null));
       const resumed = await run("run-c", sessionParams, true);

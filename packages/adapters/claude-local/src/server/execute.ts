@@ -117,8 +117,10 @@ const executeClaudeAcp = createClaudeAcpExecutor();
 // tool names) to be written to the cache again. Keeping it byte-identical lets
 // every fresh session in the same working directory read it from the cache.
 export const STABLE_OPENING_PROMPT =
-  "Your prompt for this run is in the file named by the PAPERCLIP_RUN_PROMPT_FILE environment variable. " +
-  "Before doing anything else, read it with `cat \"$PAPERCLIP_RUN_PROMPT_FILE\"` and follow it as this run's prompt.\n";
+  "Paperclip saved this run's prompt in the file named by the PAPERCLIP_RUN_PROMPT_FILE environment variable. " +
+  "That file is your instructions for this run, the same as if they had been sent here, so carry them out. " +
+  "Before doing anything else, read all of it with `cat \"$PAPERCLIP_RUN_PROMPT_FILE\"`. " +
+  "It can be long: if the output is cut off or saved to a file, keep reading until you reach the end.\n";
 
 interface ClaudeExecutionInput {
   agentIdentity?: AdapterExecutionContext["agentIdentity"];
@@ -1482,6 +1484,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: !sshSessionState || sshSessionState.canResume ? runtimeSessionId || runtime.sessionId : null });
   } finally {
+    if (stableOpeningPrompt) {
+      await fs.rm(path.dirname(runPromptPath), { recursive: true, force: true }).catch(() => {});
+    }
     try {
       await providerStop.collectBeforeRestore();
     } finally {
