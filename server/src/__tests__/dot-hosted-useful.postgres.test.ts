@@ -1127,6 +1127,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         if(known.child.exitCode!==0||known.child.signalCode!==null||known.owner.liveGroups().length)
           errors.push(new Error("Known child startup/execution ownership remains unknown; retain evidence"));}
     }catch(error){errors.push(error);}
+    finally{
+      // Includes owners registered before readiness failed. Stop only their
+      // samplers; retained child/group custody and original failures stay intact.
+      for(const known of knownChildProcesses)known.owner.stopObserving();
+    }
     try{await cloudService?.stopBackgroundTasks();await close(cloudServer);await close(callback);await registry?.close();}catch(error){errors.push(error);}
     try{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});}catch(error){errors.push(error);}
     try{await storageProxy?.close();}catch(error){errors.push(error);}

@@ -69,6 +69,9 @@ export async function forkNormalDotApp(input: {
         }
         const after = await readProcessTable();
         if (!after || after.some(row => row.pid === child.pid)) throw new Error("owned_app_old_pid_not_absent");
+        // Keep observing uncertain/live ownership until all original absence
+        // checks pass; a retired App must not keep sampling during quiet.
+        owner.stopObserving();
       })();
     },
   };
