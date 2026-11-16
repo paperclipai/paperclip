@@ -669,7 +669,7 @@ describeDatabase("remote workspace ordinary file routes", () => {
     const first = Promise.allSettled([opener(input)]);
     const controllers = [new AbortController(), new AbortController(), new AbortController()];
     const observing = controllers.map(controller => observeIndexWait(controller.signal));
-    let waiters: typeof first | undefined, primary: unknown;
+    let waiters: Promise<PromiseSettledResult<Awaited<ReturnType<typeof opener>>>[]> | undefined, primary: unknown;
     try {
       await vi.waitFor(() => expect(reading).toBe(true), { timeout: 5000 });
       waiters = Promise.allSettled(controllers.map(controller => opener({ ...input, signal: controller.signal })));
