@@ -303,6 +303,9 @@ holds, approvals, budget limits and uncertain termination keep their own gates.
 The receipt's `preparation_settled` proof identifies that evidence path. Both page
 projections read the same bounded evidence and require that proof; an acknowledged
 receipt from a different path does not clear the preparation failure notice.
+Only a user's operator Stop gets this acknowledgement and clears an obsolete
+automatic-recovery marker. A system cancellation keeps its existing recovery
+delivery metadata, so saved comments and continuation intents still reach admission.
 
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and

@@ -504,12 +504,16 @@ export async function settleCancelledLegacyPreparation(
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease))) return null;
     const now = new Date();
+    const cancellation = readRunCancellation(run.resultJson);
+    const operatorStop = cancellation?.source === "operator" && cancellation.initiator.type === "user";
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
       // The preparation owner has unwound and every execution reference agrees.
-      // Confirm Stop without waiting for a provider that was never started.
-      executionCancellation: { ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
-        state: "acknowledged", proof: "preparation_settled", acknowledgedAt: now.toISOString() },
+      // Confirm the user's Stop; system cancellations keep their delivery path.
+      ...(operatorStop ? { executionCancellation: {
+        ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
+        state: "acknowledged", proof: "preparation_settled", acknowledgedAt: now.toISOString(),
+      } } : {}),
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     // The automatic disposition may already have closed the incident with
     // replay blocked, and moved the task to blocked. Correct both verdicts.
@@ -535,10 +539,12 @@ export async function settleCancelledLegacyPreparation(
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
       resolvedAt: now, updatedAt: now,
-      // A verified false positive no longer has a conservative no-replay
-      // disposition. Remove its marker so read projections do not retain the
-      // obsolete hold; the resolution and activity log retain the correction.
-      evidence: sql`${issueRecoveryActions.evidence} - 'automaticRecovery'`,
+      // A verified operator Stop no longer needs a recovery notice. System
+      // cancellations still use this metadata to deliver pending saved input.
+      evidence: operatorStop ? sql`${issueRecoveryActions.evidence} - 'automaticRecovery'`
+        : sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+          then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
+          else ${issueRecoveryActions.evidence} end`,
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });

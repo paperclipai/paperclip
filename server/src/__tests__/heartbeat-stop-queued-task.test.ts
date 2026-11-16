@@ -236,6 +236,30 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
     expect(executedIssueIds()).not.toContain(issue.id);
   });
 
+  it("preserves a system cancellation's recovery delivery when preparation settles", async () => {
+    const { companyId, agentId } = await seed();
+    const [issue] = await db.insert(issues).values({ companyId, assigneeAgentId: agentId,
+      title: "Stale continuation", status: "in_progress" }).returning();
+    const requestedAt = new Date().toISOString();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+      status: "cancelled", runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(),
+      contextSnapshot: { issueId: issue.id }, resultJson: {
+        cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "continuation_task_ownership_changed", recordedAt: requestedAt },
+        executionCancellation: { state: "requested", requestedAt },
+      } }).returning();
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "system", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${run.id}`,
+      nextAction: "Continue saved input through recovery.", evidence: { runId: run.id,
+        automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked", continuationDelivery: "pending" } } }).returning();
+    const result = await settleCancelledLegacyPreparation(db, { run, providerDispatchStarted: false });
+    expect(result?.resultJson?.executionCancellation).toEqual({ state: "requested", requestedAt });
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id));
+    expect(settled.evidence.automaticRecovery).toEqual({ policy: "preserve_without_replay_v1",
+      replay: "allowed", continuationDelivery: "pending" });
+  });
+
   it.each(["todo", "in_progress"] as const)("takes a %s task out of line in one Stop and still promotes the agent's next task", async (waitingStatus) => {
     const { companyId, agentId } = await seed();
     const busy = randomUUID();
