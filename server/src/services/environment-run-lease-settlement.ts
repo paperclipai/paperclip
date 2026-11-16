@@ -12,6 +12,7 @@ import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-regis
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
 import { pendingNativeCheckpointRetry } from "./native-runtime/native-session-resumption-admission.js";
+import { postgresErrorCode } from "./transient-lock-contention.js";
 
 /** Failure reason written on a run lease the shared ownership path settled. */
 export const ORPHANED_RUN_LEASE_FAILURE_REASON = "orphaned_active_lease_recovered";
@@ -50,6 +51,7 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
   const companyId = record.companyId;
   if (!companyId) return { settled: false, reason: "lease_company_unknown" };
   const runId = record.runId;
+  let awaitingNativeTaskLock = false;
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [sourceRun] = await tx.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -58,8 +60,11 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
     if (sourceRun && sourceRun.companyId !== companyId) return { settled: false, reason: "native_recovery_owner_changed" };
     let nativeCheckpointPending = false;
     if (sourceRun && sourceRun.companyId === companyId && sourceRun.runtimeMode === "native" && sourceRun.nativeIssueId) {
+      // A passive settle must not wait behind the task owner it is reconciling.
+      awaitingNativeTaskLock = true;
       const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, sourceRun.nativeIssueId),
-        eq(issues.companyId, sourceRun.companyId))).for("update");
+        eq(issues.companyId, sourceRun.companyId))).for("update", { noWait: true });
+      awaitingNativeTaskLock = false;
       if (issue) nativeCheckpointPending = await pendingNativeCheckpointRetry(tx, { companyId: sourceRun.companyId,
         issueId: sourceRun.nativeIssueId, agentId: sourceRun.agentId, runId });
       const [currentRun] = await tx.select({ agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
@@ -106,6 +111,12 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
         sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`))
       .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId, leaseId: lease.id });
     return flipped.length ? { settled: true, reason: context.proof.reason } : { settled: false, reason: "lease_no_longer_active" };
+  }).catch(error => {
+    // Catch outside the transaction: PostgreSQL has rolled back the refused lock.
+    if (awaitingNativeTaskLock && postgresErrorCode(error) === "55P03") {
+      return { settled: false, reason: "native_recovery_task_busy", watch: true };
+    }
+    throw error;
   });
 }
 
