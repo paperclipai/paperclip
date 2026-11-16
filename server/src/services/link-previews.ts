@@ -21,6 +21,7 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
   const byKey = new Map(providers.map(provider => [provider.key, provider]));
 
   function remember(key: string, entry: StoredLinkPreview) {
+    if ((cache.get(key)?.checkedAt ?? -Infinity) > entry.checkedAt) return;
     cache.delete(key);
     while (cache.size >= (options.maxEntries ?? 1_000)) cache.delete(cache.keys().next().value!);
     cache.set(key, entry);
@@ -72,6 +73,11 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       const deadline = new Promise<LinkPreviewResult>(resolve => {
         timer = setTimeout(() => {
           const current = cache.get(key);
+          if (current && current.checkedAt > checkedAt) {
+            controller.abort();
+            resolve(remaining(current));
+            return;
+          }
           const result = current && current.expiresAt > now() ? remaining(current) : fallback();
           const entry = { result, expiresAt: now() + result.maxAgeMs,
             checkedAt: durableReadSucceeded || storeWriteStarted ? checkedAt : previous?.checkedAt ?? 0 };
@@ -102,6 +108,10 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
         providerStarted = true;
         const result = await provider.resolve(target, scope, controller.signal).catch(() => UNAVAILABLE);
         if (controller.signal.aborted) return fallback();
+        // A page batch can hydrate another replica's newer status while the
+        // provider is pending. That result wins over this older lookup.
+        previous = newest(previous, cache.get(key));
+        if (previous && previous.checkedAt > checkedAt) return remaining(previous);
         const bounded = { ...result, maxAgeMs: Math.max(1_000, Math.min(result.maxAgeMs, 60 * 60_000)) };
         if (!bounded.preview && previous?.result.preview) bounded.preview = previous.result.preview;
         const entry = { result: bounded, expiresAt: now() + bounded.maxAgeMs,
@@ -117,6 +127,8 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       }).catch(fallback).finally(async () => { await timeoutWrite; activeOperations--; });
       const request = Promise.race([operation, deadline]).then(result => {
         const current = cache.get(key);
+        // Hydration can also finish while the operation awaits its SQL write.
+        if (current && current.checkedAt > checkedAt) return remaining(current);
         if (!current || current.expiresAt <= now()) remember(key, { result, expiresAt: now() + result.maxAgeMs, checkedAt });
         return result;
       }).finally(() => {

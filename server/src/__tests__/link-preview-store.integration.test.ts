@@ -19,6 +19,37 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     await context.db.insert(companies).values({ id: companyId, name: "Link cache", issuePrefix: companyId });
     return { companyId, userId: "alice" };
   }
+  it.each(["failure", "success", "timeout", "stale timeout"])("keeps another replica's concurrent hydration after provider %s", async (settlement) => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    let now = 1_000;
+    const oldPreview = { ...preview, state: "open" as const };
+    await store.write(scope, target, { result: { preview: oldPreview, maxAgeMs: 1_000 }, expiresAt: 2_000 }, now);
+    let finish!: (value: { preview: typeof oldPreview | null; maxAgeMs: number }) => void;
+    let started!: () => void;
+    const providerStarted = new Promise<void>(done => { started = done; });
+    const resolve = vi.fn(() => new Promise<{ preview: typeof oldPreview | null; maxAgeMs: number }>(done => { finish = done; started(); }));
+    const write = vi.fn(store.write);
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store: { ...store, write }, now: () => now, timeoutMs: 1_000 });
+    await first.cached(scope, [url]);
+    now = 3_000;
+    const pending = first.get(scope, url);
+    await providerStarted;
+    now = 4_000;
+    const expiresAt = settlement === "stale timeout" ? 3_500 : 34_000;
+    await store.write(scope, target, { result: { preview, maxAgeMs: 30_000 }, expiresAt }, now);
+    expect((await first.cached(scope, [url])).results[url].preview).toEqual(preview);
+    if (!settlement.includes("timeout")) finish({ preview: settlement === "success" ? oldPreview : null, maxAgeMs: 60_000 });
+    expect(await pending).toEqual({ preview, maxAgeMs: Math.max(0, expiresAt - now) });
+    // A second batch checks that the process did not retain the older status.
+    expect((await first.cached(scope, [url])).results[url].preview).toEqual(preview);
+    const saved = (await store.read(scope, [target])).get(url)!;
+    expect(saved.result.preview).toEqual(preview);
+    expect(saved.checkedAt).toBe(4_000);
+    expect(saved.expiresAt).toBe(expiresAt);
+    expect(write).not.toHaveBeenCalled();
+    finish({ preview: null, maxAgeMs: 60_000 });
+  });
   it.each(["open", "negative"])("rechecks expired %s memory before calling the provider", async (initialState) => {
     const scope = await fixture();
     const store = createLinkPreviewStore(context.db);
