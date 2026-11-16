@@ -108,6 +108,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const pendingLogins = new Map<string, PendingLogin>();
   const loginResults = new Map<string, SettledLogin>();
   const accountGenerations = new Map<string, number>();
+  const reconnectJobs = new Set<Promise<void>>();
   let pluginContext: PluginContext | null = null;
   let shuttingDown = false;
 
@@ -214,10 +215,28 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     liveByAccount.set(live.account.telegramUserId, live);
   }
 
+  function launchReconnect(ctx: PluginContext, companyId?: string): Promise<void> {
+    if (shuttingDown) return Promise.resolve();
+    const log = wrapLogger(ctx);
+    const job = (companyId ? reconnectCompany(ctx, companyId) : reconnectAll(ctx)).catch((error: unknown) => {
+      log.error("Failed to reconnect Telegram accounts", {
+        message: error instanceof Error ? error.message : "unknown error",
+      });
+    });
+    reconnectJobs.add(job);
+    void job.finally(() => {
+      reconnectJobs.delete(job);
+    });
+    return job;
+  }
+
   async function reconnectCompany(ctx: PluginContext, companyId: string) {
+    if (shuttingDown) return;
     const log = wrapLogger(ctx);
     const connections = await listConnections(ctx, companyId, liveAccountIds());
+    if (shuttingDown) return;
     for (const connection of connections) {
+      if (shuttingDown) return;
       if (liveByAccount.has(connection.telegramUserId)) continue;
       if (!connection.sessionSecretId) continue;
       const generation = accountGeneration(companyId, connection.telegramUserId);
@@ -227,7 +246,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         connection.sessionSecretId,
         connection.sessionConfigPath || `plugin-secret.${connection.sessionSecretId}`,
       );
-      if (!session || accountGeneration(companyId, connection.telegramUserId) !== generation) continue;
+      if (
+        shuttingDown
+        || !session
+        || accountGeneration(companyId, connection.telegramUserId) !== generation
+      ) continue;
       try {
         const credentials = await resolveCredentials(companyId);
         const live = await createClient.connectFromSession({
@@ -236,12 +259,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           session,
           onInbound: handleInbound,
         });
-        if (accountGeneration(companyId, connection.telegramUserId) !== generation) {
+        if (shuttingDown || accountGeneration(companyId, connection.telegramUserId) !== generation) {
           await live.disconnect().catch(() => undefined);
           continue;
         }
         await attachLiveSession(companyId, live);
-        if (accountGeneration(companyId, connection.telegramUserId) !== generation) {
+        if (shuttingDown || accountGeneration(companyId, connection.telegramUserId) !== generation) {
           await dropLive(companyId, connection.telegramUserId, live);
           continue;
         }
@@ -260,8 +283,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   }
 
   async function reconnectAll(ctx: PluginContext) {
+    if (shuttingDown) return;
     const companyIds = await listKnownCompanyIds(ctx);
     for (const companyId of companyIds) {
+      if (shuttingDown) return;
       await reconnectCompany(ctx, companyId);
     }
   }
@@ -548,11 +573,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         },
       );
 
-      void reconnectAll(ctx).catch((error: unknown) => {
-        log.error("Failed to reconnect Telegram accounts", {
-          message: error instanceof Error ? error.message : "unknown error",
-        });
-      });
+      void launchReconnect(ctx);
     },
 
     async onHealth(): Promise<PluginHealthDiagnostics> {
@@ -568,16 +589,17 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
 
     async onConfigChanged(_config, context) {
       if (!pluginContext) return;
-      if (context?.companyId) await reconnectCompany(pluginContext, context.companyId);
-      else await reconnectAll(pluginContext);
+      await launchReconnect(pluginContext, context?.companyId || undefined);
     },
 
     async onIdleDrain() {
-      return liveByAccount.size > 0 || pendingLogins.size > 0 ? "present" : "none";
+      if (reconnectJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
+      return "none";
     },
 
     async onShutdown() {
       shuttingDown = true;
+      await Promise.all([...reconnectJobs].map((job) => job.catch(() => undefined)));
       const finishing: Promise<void>[] = [];
       for (const pending of pendingLogins.values()) {
         pending.cancelled = true;

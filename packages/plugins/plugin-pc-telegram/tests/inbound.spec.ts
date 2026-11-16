@@ -84,6 +84,37 @@ describe("inbound issue mapping", () => {
     });
   });
 
+  it("keeps the dialog text when an attachment is rejected", async () => {
+    const harness = createTestHarness({ manifest });
+    let wakeups = 0;
+    const wake = harness.ctx.issues.requestWakeup.bind(harness.ctx.issues);
+    harness.ctx.issues.requestWakeup = async (...args) => {
+      wakeups += 1;
+      return wake(...args);
+    };
+    harness.ctx.issues.createAttachment = async () => {
+      throw new Error("Attachment exceeds 4194304 bytes");
+    };
+    const bytes = new Uint8Array([9, 9, 9]);
+    const issue = await ingestInboundMessage(harness.ctx, connection, inboundMessage({
+      text: "Need a quote",
+      attachments: [{
+        id: "clip-1",
+        filename: "clip.bin",
+        mimeType: "application/octet-stream",
+        byteLength: bytes.byteLength,
+        kind: "file",
+        bytes,
+      }],
+    }));
+    expect(issue?.description).toContain("Need a quote");
+    expect(issue?.description).toContain("Could not attach");
+    expect(issue?.description).toContain("clip.bin");
+    expect(issue?.description).toContain("Attachment exceeds 4194304 bytes");
+    expect(issue?.description).not.toContain("[Attachment: clip.bin](");
+    expect(wakeups).toBe(1);
+  });
+
   it("reopens a completed dialog before waking the assigned agent", async () => {
     const harness = createTestHarness({ manifest });
     const first = await ingestInboundMessage(harness.ctx, connection, inboundMessage());

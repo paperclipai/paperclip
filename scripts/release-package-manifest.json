@@ -125,6 +125,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-pc-telegram",
+    "name": "@andhash/plugin-pc-telegram",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/boxd",
     "name": "@paperclipai/plugin-boxd",
     "publishFromCi": true

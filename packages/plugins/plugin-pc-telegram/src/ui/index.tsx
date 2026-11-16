@@ -34,24 +34,24 @@ type LoginStatus =
 
 const layout: CSSProperties = {
   display: "grid",
-  gap: "calc(var(--spacing) * 4)",
-  maxWidth: "calc(var(--spacing) * 180)",
+  gap: "var(--spacing)",
+  maxWidth: "100%",
   fontFamily: "var(--font-sans)",
 };
 
 const card: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-md)",
-  padding: "calc(var(--spacing) * 4)",
+  padding: "var(--spacing)",
   display: "grid",
-  gap: "calc(var(--spacing) * 3)",
+  gap: "var(--spacing)",
   background: "var(--card, transparent)",
 };
 
 const row: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
-  gap: "calc(var(--spacing) * 2)",
+  gap: "var(--spacing)",
   alignItems: "center",
 };
 
@@ -60,13 +60,13 @@ const footer: CSSProperties = {
   width: "100%",
   alignItems: "center",
   justifyContent: "space-between",
-  gap: "calc(var(--spacing) * 2)",
+  gap: "var(--spacing)",
 };
 
 const muted: CSSProperties = {
   fontSize: "var(--text-sm)",
+  lineHeight: "var(--text-sm--line-height)",
   color: "var(--muted-foreground)",
-  lineHeight: 1.45,
 };
 
 const button: CSSProperties = {
@@ -75,7 +75,7 @@ const button: CSSProperties = {
   borderRadius: "var(--radius-md)",
   background: "transparent",
   color: "var(--foreground)",
-  padding: "calc(var(--spacing) * 1.5) calc(var(--spacing) * 3)",
+  padding: "var(--spacing)",
   fontSize: "var(--text-sm)",
   fontFamily: "var(--font-sans)",
   cursor: "pointer",
@@ -92,12 +92,16 @@ const input: CSSProperties = {
   width: "100%",
   border: "1px solid var(--border)",
   borderRadius: "var(--radius-md)",
-  padding: "calc(var(--spacing) * 2) calc(var(--spacing) * 2.5)",
+  padding: "var(--spacing)",
   background: "transparent",
   color: "var(--foreground)",
   fontFamily: "var(--font-sans)",
   fontSize: "var(--text-sm)",
 };
+
+function statusLoginId(status: LoginStatus): string | null {
+  return "loginId" in status ? status.loginId : null;
+}
 
 function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
@@ -124,6 +128,13 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   const loginStream = usePluginStream<{ status?: LoginStatus }>(loginChannel, companyId ? { companyId } : undefined);
 
   const status = streamStatus ?? login.data ?? { state: "idle" as const };
+  const activeLoginId = loginId ?? statusLoginId(status);
+
+  useEffect(() => {
+    const nextId = statusLoginId(status);
+    if (!nextId) return;
+    setLoginId((current) => current ?? nextId);
+  }, [status]);
 
   useEffect(() => {
     const next = loginStream.lastEvent?.status;
@@ -161,13 +172,13 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
 
   async function onPassword(event: FormEvent) {
     event.preventDefault();
-    if (!companyId || !loginId) return;
+    if (!companyId || !activeLoginId) return;
     const submitted = password;
     setPassword("");
     setBusy(true);
     setError(null);
     try {
-      await submitPassword({ companyId, loginId, password: submitted });
+      await submitPassword({ companyId, loginId: activeLoginId, password: submitted });
       login.refresh();
     } catch (err) {
       setError(errorMessage(err));
@@ -177,10 +188,10 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   }
 
   async function onCancel() {
-    if (!companyId || !loginId) return;
+    if (!companyId || !activeLoginId) return;
     setPassword("");
     setStreamStatus(null);
-    await cancelLogin({ companyId, loginId }).catch(() => undefined);
+    await cancelLogin({ companyId, loginId: activeLoginId }).catch(() => undefined);
     setLoginId(null);
     login.refresh();
   }
@@ -190,8 +201,8 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
 
   return (
     <section aria-label="Connect Telegram" style={layout}>
-      <div>
-        <h2 style={{ margin: 0, marginBottom: "calc(var(--spacing) * 1.5)", fontSize: "var(--text-xl)", fontFamily: "var(--font-sans)" }}>Telegram</h2>
+      <div style={{ display: "grid", gap: "var(--spacing)" }}>
+        <h2 style={{ margin: 0, fontSize: "var(--text-xl)", lineHeight: "var(--text-xl--line-height)", fontFamily: "var(--font-sans)" }}>Telegram</h2>
         <p style={muted}>
           Connect a personal Telegram account with QR login. Incoming direct messages become issues.
           Assign the answering agent on the connection; changing it does not require a new login.
@@ -206,10 +217,10 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
         {status.state === "error" ? <p role="alert">{status.message}</p> : null}
         {error ? <p role="alert">{error}</p> : null}
         {qrUrl ? (
-          <img src={qrUrl} alt="Telegram login QR code" width={220} height={220} style={{ width: "calc(var(--spacing) * 55)", height: "calc(var(--spacing) * 55)" }} />
+          <img src={qrUrl} alt="Telegram login QR code" style={{ maxWidth: "100%", height: "auto" }} />
         ) : null}
         {status.state === "password_required" ? (
-          <form onSubmit={onPassword} style={{ display: "grid", gap: "calc(var(--spacing) * 2)" }}>
+          <form onSubmit={onPassword} style={{ display: "grid", gap: "var(--spacing)" }}>
             <label>
               Cloud password{hint ? ` (${hint})` : ""}
               <input
@@ -303,7 +314,7 @@ function ConnectionCard({
     }
   }
   return (
-    <div style={{ ...card, padding: "calc(var(--spacing) * 3)" }}>
+    <div style={card}>
       <div style={row}>
         <strong>{connection.displayName}</strong>
         {connection.username ? <span style={muted}>@{connection.username}</span> : null}
@@ -311,7 +322,7 @@ function ConnectionCard({
         {connection.paused ? <StatusBadge label="Paused" status="pending" /> : null}
       </div>
       <div style={muted}>Incoming mode: dialog = task</div>
-      <label style={{ display: "grid", gap: "calc(var(--spacing) * 1.5)" }}>
+      <label style={{ display: "grid", gap: "var(--spacing)" }}>
         Answering agent
         <AssigneePicker
           companyId={companyId}

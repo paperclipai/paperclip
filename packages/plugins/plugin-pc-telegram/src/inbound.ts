@@ -50,6 +50,7 @@ export function formatInboundComment(
   message: InboundDirectMessage,
   storedFiles: Array<Pick<InboundAttachment, "filename" | "mimeType" | "byteLength" | "kind">>,
   attachments: Array<{ filename: string; kind: InboundAttachment["kind"]; contentPath: string }> = [],
+  failed: Array<{ filename: string; kind: InboundAttachment["kind"]; message: string }> = [],
 ): string {
   const lines: string[] = [];
   const speaker = message.peerName || message.peerId;
@@ -61,6 +62,9 @@ export function formatInboundComment(
   for (const attachment of attachments) {
     if (!attachment.contentPath.startsWith("/api/attachments/") || /[\s)]/.test(attachment.contentPath)) continue;
     lines.push(`[${attachmentLabel(attachment.kind, attachment.filename)}](${attachment.contentPath})`);
+  }
+  for (const failure of failed) {
+    lines.push(`Could not attach ${attachmentLabel(failure.kind, failure.filename)}: ${failure.message}`);
   }
   return lines.join("\n\n");
 }
@@ -107,22 +111,34 @@ async function attachInboundFiles(
   companyId: string,
   issueId: string,
   attachments: InboundAttachment[],
-): Promise<Array<{ filename: string; kind: InboundAttachment["kind"]; contentPath: string }>> {
+): Promise<{
+  linked: Array<{ filename: string; kind: InboundAttachment["kind"]; contentPath: string }>;
+  failed: Array<{ filename: string; kind: InboundAttachment["kind"]; message: string }>;
+}> {
   const linked = [];
+  const failed = [];
   for (const attachment of attachments) {
-    const created = await ctx.issues.createAttachment({
-      issueId,
-      companyId,
-      filename: attachment.filename,
-      contentType: attachment.mimeType,
-      contentBase64: Buffer.from(attachment.bytes).toString("base64"),
-    });
-    const contentPath = created.contentPath.startsWith("/api/attachments/")
-      ? created.contentPath
-      : `/api/attachments/${created.id}/content`;
-    linked.push({ filename: attachment.filename, kind: attachment.kind, contentPath });
+    try {
+      const created = await ctx.issues.createAttachment({
+        issueId,
+        companyId,
+        filename: attachment.filename,
+        contentType: attachment.mimeType,
+        contentBase64: Buffer.from(attachment.bytes).toString("base64"),
+      });
+      const contentPath = created.contentPath.startsWith("/api/attachments/")
+        ? created.contentPath
+        : `/api/attachments/${created.id}/content`;
+      linked.push({ filename: attachment.filename, kind: attachment.kind, contentPath });
+    } catch (error) {
+      failed.push({
+        filename: attachment.filename,
+        kind: attachment.kind,
+        message: error instanceof Error ? error.message : "Attachment failed.",
+      });
+    }
   }
-  return linked;
+  return { linked, failed };
 }
 
 export async function ingestInboundMessage(
@@ -171,8 +187,8 @@ async function ingestDialog(
     });
   }
 
-  const linkedFiles = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
-  const body = formatInboundComment(message, storedFiles, linkedFiles);
+  const attached = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
+  const body = formatInboundComment(message, storedFiles, attached.linked, attached.failed);
   if (current) {
     await ctx.issues.createComment(issue.id, body, connection.companyId);
   } else if (body !== issue.description) {

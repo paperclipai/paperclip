@@ -91,6 +91,78 @@ describe("pc-telegram plugin", () => {
     expect(telegram.startQrLoginCount).toBe(1);
   });
 
+  it("reconnects every saved company after a restart", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+
+    await harness.performAction("start-login", { companyId: OTHER_COMPANY_ID }, boardUser);
+    telegram.completeLogin(
+      { telegramUserId: "1002", username: "other", displayName: "Other Desk" },
+      "session-other",
+    );
+    await waitFor(() => telegram.connectFromSessionCalls.length === 2);
+
+    const restarted = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    await restarted.definition.setup(harness.ctx);
+    await waitFor(() => telegram.connectFromSessionCalls.length === 4);
+    expect(telegram.connectFromSessionCalls.slice(2).map((call) => call.companyId).sort()).toEqual(
+      [COMPANY_ID, OTHER_COMPANY_ID].sort(),
+    );
+    expect(telegram.connectFromSessionCalls.slice(2).map((call) => call.session).sort()).toEqual(
+      [MOCK_SESSION, "session-other"].sort(),
+    );
+    expect(telegram.startQrLoginCount).toBe(2);
+  });
+
+  it("reports startup reconnect to idle drain and waits for it during shutdown", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+
+    telegram.holdConnect();
+    const restarted = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    await restarted.definition.setup(harness.ctx);
+    await waitFor(() => telegram.connectStarted === 2);
+    expect(await restarted.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
+    let shutdownDone = false;
+    const shutdown = restarted.definition.onShutdown?.().then(() => {
+      shutdownDone = true;
+    });
+    for (let step = 0; step < 20; step += 1) await Promise.resolve();
+    expect(shutdownDone).toBe(false);
+    telegram.releaseConnect();
+    await shutdown;
+    expect(await restarted.definition.onIdleDrain?.(new AbortController().signal)).toBe("none");
+    const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; live: boolean }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.connections).toEqual([
+      expect.objectContaining({ telegramUserId: "1001", hasSession: true, live: false }),
+    ]);
+  });
+
   it("turns an inbound DM into an assigned issue and keeps assignment changes off the Telegram login", async () => {
     const telegram = createMockTelegram();
     const plugin = createTelegramUserClientPlugin({
@@ -367,5 +439,8 @@ describe("pc-telegram plugin", () => {
     expect(cancelAt).toBeGreaterThan(-1);
     expect(continueAt).toBeGreaterThan(cancelAt);
     expect(html).toContain("justify-content:space-between");
+    expect(html).toContain("var(--text-sm--line-height)");
+    expect(html).not.toContain("calc(");
+    expect(html).not.toContain("220");
   });
 });

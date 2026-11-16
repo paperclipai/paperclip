@@ -107,41 +107,36 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   let connectGate: Promise<void> = Promise.resolve();
   let releaseGate: (() => void) | null = null;
   let inboundHandler: ((message: InboundDirectMessage) => Promise<void>) | null = null;
-  let signedIn!: (value: SignedInSession) => void;
-  let rejected!: (error: unknown) => void;
   let qrCallback: ((qr: LoginQrPayload) => void) | null = null;
   let passwordCallback: ((hint: string | null) => void) | null = null;
-
-  const signedInPromise = new Promise<SignedInSession>((resolve, reject) => {
-    signedIn = resolve;
-    rejected = reject;
-  });
-
-  const live: LiveTelegramAccount = {
-    account,
-    companyId: COMPANY_ID,
-    async sendText(peerId, text) {
-      sent.push({ accountId: account.telegramUserId, peerId, text });
-    },
-    async disconnect() {},
-  };
-
-  const handle: QrLoginHandle = {
-    async submitPassword() {},
-    async waitUntilSignedIn() {
-      return signedInPromise;
-    },
-    async abort() {
-      rejected(new Error("cancelled"));
-    },
-  };
+  let latestSignIn: {
+    resolve: (value: SignedInSession) => void;
+    reject: (error: unknown) => void;
+  } | null = null;
+  const accountsBySession = new Map<string, PublicTelegramAccount>();
 
   const factory: TelegramClientFactory = {
     async startQrLogin(input) {
       startQrLoginCount += 1;
+      let resolveSignIn!: (value: SignedInSession) => void;
+      let rejectSignIn!: (error: unknown) => void;
+      const signedInPromise = new Promise<SignedInSession>((resolve, reject) => {
+        resolveSignIn = resolve;
+        rejectSignIn = reject;
+      });
+      latestSignIn = { resolve: resolveSignIn, reject: rejectSignIn };
       qrCallback = input.onQr;
       passwordCallback = input.onPasswordRequired;
       input.onQr({ imageDataUrl: "data:image/svg+xml;utf8,qr" });
+      const handle: QrLoginHandle = {
+        async submitPassword() {},
+        async waitUntilSignedIn() {
+          return signedInPromise;
+        },
+        async abort() {
+          rejectSignIn(new Error("cancelled"));
+        },
+      };
       return handle;
     },
     async connectFromSession(input) {
@@ -149,15 +144,16 @@ export function createMockTelegram(account: PublicTelegramAccount = {
       await connectGate;
       connectFromSessionCalls.push({ companyId: input.companyId, session: input.session });
       inboundHandler = input.onInbound;
-      live.companyId = input.companyId;
-      return {
-        ...live,
-        account,
+      const connectedAccount = accountsBySession.get(input.session) ?? account;
+      const live: LiveTelegramAccount = {
+        account: connectedAccount,
         companyId: input.companyId,
         async sendText(peerId, text) {
-          sent.push({ accountId: account.telegramUserId, peerId, text });
+          sent.push({ accountId: connectedAccount.telegramUserId, peerId, text });
         },
+        async disconnect() {},
       };
+      return live;
     },
   };
 
@@ -186,7 +182,8 @@ export function createMockTelegram(account: PublicTelegramAccount = {
       await inboundHandler(message);
     },
     completeLogin(nextAccount = account, session = MOCK_SESSION) {
-      signedIn({ session, account: nextAccount });
+      accountsBySession.set(session, nextAccount);
+      latestSignIn?.resolve({ session, account: nextAccount });
     },
     requirePassword(hint = "hint") {
       passwordCallback?.(hint);
