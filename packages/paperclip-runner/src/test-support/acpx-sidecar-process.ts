@@ -87,8 +87,9 @@ export class SidecarProcess {
 
   async next(
     predicate: (frame: Record<string, unknown>) => boolean,
+    timeoutMs = 5_000,
   ): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const index = this.#frames.findIndex(predicate);
       if (index >= 0) return this.#frames.splice(index, 1)[0]!;
