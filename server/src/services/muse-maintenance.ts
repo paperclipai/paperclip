@@ -18,6 +18,57 @@ export function startMuseMaintenance(
   const broker = museRunnerBroker(db);
   const receiver = museReceiver(db);
   let startupMarked = false;
+  type StartupQualification = Pick<typeof bindings.$inferSelect, "id" | "companyId" | "generation" | "revision" | "qualificationId">;
+  let startupSnapshot: Promise<StartupQualification[]> | undefined;
+  function initialQualifications(signal: AbortSignal) {
+    // Both owners join this SQL-only snapshot before local duties can mutate
+    // qualifications. Commit it before any Cloud I/O; retry never widens it.
+    return startupSnapshot ??= db.transaction(async tx => {
+      const snapshot: StartupQualification[] = [];
+      const at = new Date();
+      let after: string | undefined;
+      while (!signal.aborted) {
+        const page = await tx.select({ id: bindings.id, companyId: bindings.companyId,
+          generation: bindings.generation, revision: bindings.revision, qualificationId: bindings.qualificationId })
+          .from(bindings).where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, at),
+            after ? gt(bindings.id, after) : undefined)).orderBy(asc(bindings.id)).limit(100);
+        snapshot.push(...page);
+        if (page.length < 100) return snapshot;
+        after = page.at(-1)!.id;
+      }
+      signal.throwIfAborted();
+      return snapshot;
+    }, { isolationLevel: "repeatable read", accessMode: "read only" }).catch(error => {
+      startupSnapshot = undefined;
+      throw error;
+    });
+  }
+  const continuity = coordinator.register(DELIVERY_QUEUES.museContinuity, {
+    retryMs: 5_000,
+    pausePassiveMaintenance: true,
+    async run(signal) {
+      if (startupMarked) return;
+      const initial = await initialQualifications(signal);
+      signal.throwIfAborted();
+      const continuous = await recoverMuseReceiverContinuity(db, signal);
+      signal.throwIfAborted();
+      // Keep the original startup UPDATE even for an empty cohort. A failed
+      // evidence write remains unresolved; it cannot complete startup recovery.
+      for (let offset = 0; offset < Math.max(1, initial.length); offset += 100) {
+        signal.throwIfAborted();
+        const unowned = initial.slice(offset, offset + 100).filter(b => continuous.get(b.id) !== b.generation);
+        const exact = unowned.map(b => sql`(${bindings.id} = ${b.id} and ${bindings.companyId} = ${b.companyId}
+          and ${bindings.generation} = ${b.generation} and ${bindings.revision} = ${b.revision}
+          and ${b.qualificationId === null ? isNull(bindings.qualificationId) : eq(bindings.qualificationId, b.qualificationId)})`);
+        await db.update(bindings).set({ cadenceEvidenceIncompleteAt: new Date() })
+          .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date()),
+            exact.length ? sql`(${sql.join(exact, sql` or `)})` : sql`false`));
+      }
+      startupMarked = true;
+    },
+    hasPending: async () => false,
+    nextRunAt: () => startupMarked ? null : Date.now() + 5_000,
+  });
   const requested = new Set<string>(["*"]);
   let nextDeadline: number | null = null;
   const worker = coordinator.register(DELIVERY_QUEUES.museMaintenance, {
@@ -30,16 +81,10 @@ export function startMuseMaintenance(
       for (const hint of hints) requested.delete(hint);
       try {
         const global = hints.includes("*");
+        await initialQualifications(signal);
+        signal.throwIfAborted();
         const settlementAllowed = await canSettle();
         const inspected = new Set<string>();
-        if (!startupMarked) {
-          const continuous=await recoverMuseReceiverContinuity(db,signal);
-          const owned=[...continuous].map(([id,generation])=>sql`(${bindings.id}=${id} and ${bindings.generation}=${generation})`);
-          await db.update(bindings).set({ cadenceEvidenceIncompleteAt: new Date() })
-            .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date()),
-              owned.length?sql`not (${sql.join(owned,sql` or `)})`:undefined));
-          startupMarked = true;
-        }
         let failed = false;
         let verificationEnabled: boolean | undefined;
         let after: string | undefined;
@@ -145,13 +190,13 @@ export function startMuseMaintenance(
           }
         }
         if (signal.aborted) throw new Error("Muse maintenance stopped");
-        if (failed) throw new Error("Muse maintenance has unfinished recovery");
         if (global) {
           const [next] = await db.select({ at: bindings.qualificationExpiresAt }).from(bindings)
-            .where(isNull(bindings.revokedAt))
+            .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date())))
             .orderBy(asc(bindings.qualificationExpiresAt)).limit(1);
           nextDeadline = next?.at?.getTime() ?? null;
         }
+        if (failed) throw new Error("Muse maintenance has unfinished recovery");
       } catch (error) {
         for (const hint of hints) requested.add(hint);
         throw error;
@@ -162,5 +207,11 @@ export function startMuseMaintenance(
     nextRunAt: () => requested.size ? Math.min(Date.now() + 5_000, nextDeadline ?? Infinity) : nextDeadline,
   });
   receiver.start();
-  return Object.assign(() => receiver.stop(), { ready: worker.ready });
+  return Object.assign(async () => {
+    const stopped = await Promise.allSettled([
+      () => continuity.stop(), () => worker.stop(), () => receiver.stop(),
+    ].map(stopOwner => Promise.resolve().then(stopOwner)));
+    const failures = stopped.filter(result => result.status === "rejected");
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Muse maintenance shutdown failed");
+  }, { ready: worker.ready });
 }

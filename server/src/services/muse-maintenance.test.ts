@@ -373,6 +373,59 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     }
   });
 
+  it("honors a nearer future qualification while overdue local recovery and Cloud continuity both fail", async () => {
+    const expired = await fixture(new Date(Date.now() - 1000));
+    const at = new Date(Date.now() + 1000), near = await fixture(at);
+    let unavailable = true;
+    const endQualification = effects.endQualification.getMockImplementation()!;
+    effects.endQualification.mockImplementation(async (input) => {
+      if (unavailable && input.bindingId === expired.id) throw new Error("Controlled overdue qualification unavailable");
+      return endQualification(input);
+    });
+    const recover = vi.spyOn(externalAgents, "recoverMuseReceiverContinuity").mockImplementation(async () => {
+      if (unavailable) throw new Error("Controlled Cloud continuity unavailable");
+      return new Map();
+    });
+    let primaryFailed = false;
+    let primaryFailure: unknown;
+    try {
+      await start();
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(errors).toHaveLength(2); // Both concrete duties remain unresolved.
+      expect((await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, expired.id)))[0].revokedAt).toBeNull();
+      expect(coordinator.nextWakeAt()).toBe(at.getTime());
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now())); await settle();
+      expect(effects.endQualification).toHaveBeenCalledWith(expect.objectContaining({ bindingId: near.id }));
+      expect((await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, near.id)))[0].revokedAt).toBeInstanceOf(Date);
+      expect(recover).toHaveBeenCalledTimes(1); // No early Cloud retry for a local deadline.
+      expect(errors).toHaveLength(3);
+      expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      unavailable = false;
+      await vi.advanceTimersByTimeAsync(5000); await settle();
+      expect(recover).toHaveBeenCalledTimes(2);
+      expect((await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, expired.id)))[0].revokedAt).toBeInstanceOf(Date);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const baseline = [...calls];
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(calls).toEqual(baseline); expect(recover).toHaveBeenCalledTimes(2);
+    } catch (error) {
+      primaryFailed = true; primaryFailure = error;
+    } finally {
+      unavailable = false;
+      const cleanupFailures: unknown[] = [];
+      const attempt = async (cleanup: () => unknown) => {
+        try { await cleanup(); } catch (error) { cleanupFailures.push(error); }
+      };
+      await attempt(() => coordinator?.stop());
+      await attempt(() => stop?.());
+      await attempt(() => recover.mockRestore());
+      if (primaryFailed && cleanupFailures.length) throw new AggregateError(
+        [primaryFailure, ...cleanupFailures], "Muse nearer-deadline assertion and cleanup failed", { cause: primaryFailure });
+      if (primaryFailed) throw primaryFailure;
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Muse nearer-deadline cleanup failed");
+    }
+  });
+
   it("moves a scheduled deadline earlier on a committed change", async () => {
     const binding = await fixture(new Date(Date.now() + 600_000)); await start();
     const at = new Date(Date.now() + 60_000);
