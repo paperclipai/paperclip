@@ -11,6 +11,7 @@ import { documentService } from "../services/documents.js";
 import { issueService } from "../services/issues.js";
 import { createHeartbeatAgentStatus } from "../services/heartbeat/agent-status.js";
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
+import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
 
 vi.hoisted(() => { process.env.PAPERCLIP_DEBUG_WORK_SIGNALS = "stranded-assignments:1,assigned-work-invariant:1"; });
@@ -157,6 +158,67 @@ describeIssueRecovery("company hints and notification reloads (census)", () => {
 
   const checksOf = (events: Recorded[], issueId: string, after: number) => events.filter(event => event.topic === "stranded-assignments"
     && event.name === "check" && event.fields.issueId === issueId && event.at >= after);
+
+  /** An agent left "running" with a large settled backlog: one abandoned
+   * run past its execution-control deadline, or (stranded) no run at all. */
+  async function settlingAgent(f: Awaited<ReturnType<typeof boot>>, name: string, abandoned: boolean) {
+    const old = new Date(Date.now() - 2 * HOUR);
+    const [agent] = await state.db.insert(agents).values({ companyId: f.companyId, name, role: "engineer", status: "running",
+      adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", "0"], cwd: process.cwd() },
+      runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false } },
+      createdAt: old, updatedAt: old, lastHeartbeatAt: old }).returning({ id: agents.id });
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 140 }, (_, index) => ({ companyId: f.companyId,
+      title: `Settled ${index}`, status: "in_review", assigneeAgentId: agent!.id, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    let runTask: string | null = null;
+    if (abandoned) {
+      const [task] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Abandoned run's task", status: "in_progress",
+        assigneeAgentId: agent!.id, createdAt: old, updatedAt: old }).returning({ id: issues.id });
+      runTask = task!.id;
+      const [run] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status: "running",
+        startedAt: old, updatedAt: old, contextSnapshot: { issueId: runTask }, executionControlDeadlineAt: new Date(Date.now() - MINUTE) })
+        .returning({ id: heartbeatRuns.id });
+      await state.db.update(issues).set({ executionRunId: run!.id, updatedAt: old }).where(eq(issues.id, runTask));
+    }
+    return { agentId: agent!.id, tasks: tasks.map(row => row.id), runTask };
+  }
+
+  it("does not re-check an agent's settled backlog when an abandoned or stranded run settles the agent", async () => {
+    const f = await boot();
+    const abandoned = await bounded(settlingAgent(f, "Abandoned worker", true), () => "the abandoned agent to be seeded");
+    const stranded = await bounded(settlingAgent(f, "Stranded worker", false), () => "the stranded agent to be seeded");
+    await advance(MINUTE, f.tick);
+    f.events.length = 0;
+    const before = state.meter.read();
+    await bounded(reconcileAbandonedExecutionControl(state.db, new Date()), () => "the abandoned run to be reconciled");
+    await advance(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE, f.tick);
+    await bounded(createHeartbeatAgentStatus(state.db).reconcileStrandedAgentStatuses(() => new Set(),
+      { companyId: f.companyId, agentId: stranded.agentId }), () => "the stranded agent status to be reconciled");
+    await advance(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE, f.tick);
+    const [abandonedAgent, strandedAgent] = await Promise.all([abandoned.agentId, stranded.agentId].map(id =>
+      state.db.select({ status: agents.status }).from(agents).where(eq(agents.id, id)).then(rows => rows[0]?.status)));
+    const backlog = new Set([...abandoned.tasks, ...stranded.tasks]);
+    const checks = f.events.filter(event => event.name === "check");
+    const result = { backlog: backlog.size, abandonedAgent, strandedAgent,
+      backlogChecks: checks.filter(event => backlog.has(String(event.fields.issueId))).length,
+      runTaskChecks: checks.filter(event => event.fields.issueId === abandoned.runTask).length,
+      byWake: byWake(f.events), statements: state.meter.read().statements - before.statements };
+    console.info(`agent-settle census: ${JSON.stringify(result)}`);
+    expect(abandonedAgent).not.toBe("running");
+    expect(strandedAgent).not.toBe("running");
+    expect(result.backlogChecks).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  it("still checks an abandoned run's task promptly when the run is reconciled", async () => {
+    const f = await boot();
+    const abandoned = await bounded(settlingAgent(f, "Abandoned worker", true), () => "the abandoned agent to be seeded");
+    await advance(MINUTE, f.tick);
+    const reconciledAt = Date.now();
+    await bounded(reconcileAbandonedExecutionControl(state.db, new Date()), () => "the abandoned run to be reconciled");
+    await advance(2 * MINUTE, f.tick);
+    const [checked] = checksOf(f.events, abandoned.runTask!, reconciledAt);
+    expect(checked, "the abandoned run's task was not checked after reconciliation").toBeDefined();
+    expect(checked!.at - reconciledAt).toBeLessThanOrEqual(MINUTE);
+  }, TEST_TIMEOUT_MS);
 
   it("does not re-check settled tasks for company hints, reloads or server replacements", async () => {
     const f = await boot();

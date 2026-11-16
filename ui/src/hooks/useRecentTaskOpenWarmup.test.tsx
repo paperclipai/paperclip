@@ -78,6 +78,18 @@ afterEach(() => {
 });
 
 describe("useRecentTaskOpenWarmup", () => {
+  it("warms tasks added to Recents after the initial preload", async () => {
+    render({ tasks: tasks(2) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+
+    render({ tasks: [tasks(3)[2]!, ...tasks(2)] });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(chatBootstrap.mock.calls[1]![1]).toEqual(["id-2"]);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-2"), "core"])).toMatchObject({ id: "id-2" });
+  });
+
   it("reads the ten most recent tasks in one request once the page settles, and seeds them", async () => {
     render({ tasks: tasks(12) });
     expect(chatBootstrap).not.toHaveBeenCalled();
@@ -86,10 +98,43 @@ describe("useRecentTaskOpenWarmup", () => {
     expect(chatBootstrap.mock.calls[0]![0]).toBe("company-1");
     expect(chatBootstrap.mock.calls[0]![1]).toEqual(tasks(10).map((task) => task.id));
     expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-3"), "core"])).toMatchObject({ id: "id-3" });
-    // Reordering or re-rendering Recents never starts a second request.
-    render({ tasks: [...tasks(12)].reverse() });
+    render({ tasks: [...tasks(10)].reverse() });
     await settle();
     expect(chatBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("warms only tasks that move into the ten top rows", async () => {
+    render({ tasks: tasks(12) });
+    await settle();
+    render({ tasks: [...tasks(12)].reverse() });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(chatBootstrap.mock.calls[1]![1]).toEqual(["id-11", "id-10"]);
+  });
+
+  it("does not consume a preload when rows change before the page settles", async () => {
+    let finish!: (value: string) => void;
+    void queryClient.fetchQuery({ queryKey: ["page-read"], queryFn: () => new Promise<string>((resolve) => { finish = resolve; }) });
+    render({ tasks: tasks(2) });
+    render({ tasks: [tasks(3)[2]!, ...tasks(2)] });
+    await settle();
+    expect(chatBootstrap).not.toHaveBeenCalled();
+    await act(async () => { finish("done"); });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+    expect(chatBootstrap.mock.calls[0]![1]).toEqual(["id-2", "id-0", "id-1"]);
+  });
+
+  it("allows a failed preload to retry on the next visit", async () => {
+    chatBootstrap.mockRejectedValueOnce(new Error("offline"));
+    render({ tasks: tasks(1) });
+    await settle();
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-0"), "core"])).toMatchObject({ id: "id-0" });
   });
 
   it("warms the task-detail code only when Recents has a task", async () => {
