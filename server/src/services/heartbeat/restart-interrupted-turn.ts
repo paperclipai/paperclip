@@ -83,7 +83,7 @@ async function recordUnknownTurnOutcome(db: Db, run: { companyId: string; id: st
         ...(typeof runnerExit.runnerLifecycle === "string" ? { runnerLifecycle: runnerExit.runnerLifecycle } : {}) } } });
 }
 
-/** Automatic continuation is requested at most once per chain of runs. */
+/** Automatic continuation is requested at most once per chain of runs, plus once for each deploy that interrupts a continuation. */
 export const RESTART_RETRY_KEY_PREFIX = "restart-interrupted-turn:";
 
 const MAX_RETRY_CHAIN = 32;
@@ -106,6 +106,19 @@ async function chainUsedAutomaticRetry(db: Db, run: { companyId: string; id: str
       .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, current.retryOfRunId)));
   }
   return visited.size >= MAX_RETRY_CHAIN;
+}
+
+const RESTART_CLAIM_DISPOSITIONS = ["reattach_remote_runner", "reattach_existing_runner", "resume_dead_runner",
+  "bootstrap_incomplete"];
+
+async function lostControllerToRestart(db: Db, run: { companyId: string; id: string }) {
+  const [evidence] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.eventType, "native.recovery.transition"),
+    sql`(${heartbeatRunEvents.payload}->>'restartKind' = 'graceful' or (${heartbeatRunEvents.payload}->>'trigger' is null
+      and ${heartbeatRunEvents.payload}->>'runnerDisposition' in (${sql.join(RESTART_CLAIM_DISPOSITIONS.map(kind => sql`${kind}`), sql`, `)})))`,
+  )).limit(1);
+  return evidence !== undefined;
 }
 
 type PrepareChatRetry = NonNullable<Parameters<typeof requestTaskRetry>[0]["prepareChatRetry"]>;
@@ -188,15 +201,17 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     if (!wake || reason === "task_retry" || !run.responsibleUserId
       || !(owedRedelivery || await hasProvenNoProviderTurn(db, run, runnerExit)))
       return { requested: false, reason: "not_user_request" };
-    if (owedRedelivery && await chainUsedAutomaticRetry(db, run)) return { requested: false, reason: "automatic_retry_used" };
+    if (owedRedelivery && await chainUsedAutomaticRetry(db, run) && !await lostControllerToRestart(db, run))
+      return { requested: false, reason: "automatic_retry_used" };
     actorId = run.responsibleUserId;
   } else if (reason === "task_retry") {
-    // A Retry this hook already requested gets no second automatic attempt.
+    // A Retry this hook already requested gets no second automatic attempt unless a deploy interrupted it.
     const retryId = typeof context.taskRetryRequestId === "string" ? context.taskRetryRequestId : null;
     const [receipt] = retryId ? await db.select({ key: agentWakeupRequests.idempotencyKey }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), sql`${agentWakeupRequests.id}::text = ${retryId}`)) : [];
     if (!receipt) return { requested: false, reason: "retry_source_missing" };
-    if (receipt.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`)) return { requested: false, reason: "automatic_retry_used" };
+    if (receipt.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`) && !await lostControllerToRestart(db, run))
+      return { requested: false, reason: "automatic_retry_used" };
   } else if (isUserCommentContinuationReason(reason)) {
     const commentId = typeof context.wakeCommentId === "string" ? context.wakeCommentId
       : typeof wake!.payload?.commentId === "string" ? wake!.payload.commentId : null;

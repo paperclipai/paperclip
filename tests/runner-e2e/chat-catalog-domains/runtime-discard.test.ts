@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
+import { contactDetails, contactSectionLines, documentContactRemoved, gradeDiscard, promptCarries, replyLinkHrefs } from "./runtime-discard.js";
 function valid() {
   const neighbour = { position: 0, comment: { id: "font", body: "Use a readable font.", authorUserId: "human", authorAgentId: null } };
   return { scenarioId: "steering.discard-queued-message", origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
@@ -12,7 +12,10 @@ function valid() {
     queryLinkedTask: true, targetPendingAfterReply: true, consumedLabelSaved: true,
     consumedBeforeCancellation: true, consumedStillReadable: true, lateDiscardStatus: 409, latePhaseAttributed: true,
     lateReply: "The later request was already consumed. I sent new direction to remove that section; its original history remains intact.",
-    cancelDirectionRunBound: true, finalQueueEmpty: true, finalPlanWithoutContact: true, initialRevisionRetained: true } };
+    cancelDirectionRunBound: true, finalQueueEmpty: true, finalPlanWithoutContact: true, initialRevisionRetained: true,
+    workerRunId: "initial", secondContactId: "second-contact", consumerRunId: "contact", firstDeliveryRunCount: 3, continuationConsumerCount: 1, continuationInputBound: true,
+    queuedFollowUps: [{ id: "font", updatedAt: "2026-11-13T04:01:28.647Z" }, { id: "second-contact", updatedAt: "2026-11-13T04:03:45.909Z" }],
+    workerCommentReceipts: { reads: {} as Record<string, string>, cited: [] as string[] } } };
 }
 it("accepts genuine pending discard and distinct consumed-input cancellation as new direction", () => expect(gradeDiscard(valid()).passed).toBe(true));
 it("accepts natural human-control and subsequent consumed-input guidance", () => { const o = valid(); o.state.queryReply = "That waiting message is yours. Open its queue menu and remove it with Discard."; o.state.lateReply = "Morgan processed the second request before you cancelled it. A follow-up now asks for the contact section to be removed; the delivered input stays in history."; expect(gradeDiscard(o).passed).toBe(true); });
@@ -69,28 +72,86 @@ it("rejects an unbound later worker in the grade when its prompt lacks the direc
   const o = valid(); o.state.cancelDirectionRunBound = promptCarries(`{"body":${JSON.stringify("unrelated")}}`, "Remove the contact section.\nKeep fonts.");
   expect(gradeDiscard(o).passed).toBe(false);
 });
-const label = "78f7e3a6c6ec-1";
-const initialPlan = "# Website Plan (Initial)\n\n## Status\n\nInitial plan document created.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n";
-const consumedPlan = `# Website Plan\n\n## Human direction\n\n- Add a contact section to the saved website plan, labelled \`${label}\`.\n\n## Contact section (label: ${label})\n\n- **Purpose:** give visitors a clear way to reach the site owner.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n`;
-const revs = (finalBody: string, extraSave?: string) => [
-  { id: "r1", revisionNumber: 1, createdByRunId: "initial", body: initialPlan },
-  { id: "r2", revisionNumber: 2, createdByRunId: "consumer", body: consumedPlan },
-  ...(extraSave ? [{ id: "r3", revisionNumber: 3, createdByRunId: "consumer", body: extraSave }] : []),
-  { id: "final", revisionNumber: 4, createdByRunId: "final", body: finalBody },
-];
-it("full cohort 6: the labelled heading is gone and a superseded note may still name the label", () => {
-  const final = `# Website Plan\n\n## Human direction\n\n- No contact section is included; the earlier \`${label}\` contact-section request has been superseded.\n\n## Accessible font guidance (retained)\n\n- Readable base size.\n`;
-  expect(documentContactRemoved(revs(final), "final", "consumer", label)).toBe(true);
+const contact = contactDetails("108262186bce-1"), label = "108262186bce-1", details = [contact.name, contact.phone], markers = [label, ...details];
+const heading = "## Contact Section — `108262186bce-1`";
+const consumedPlan = [
+  "# Initial Website Plan", "", "Latest direction: add a contact section labelled `108262186bce-1`.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Contact — `108262186bce-1`** — contact form.", "", "---", "",
+  heading, "", `- Contact: ${contact.name}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message.", "- Use visible labels.", "", "---", "",
+  "## Accessibility Baseline", "", "- Use visible labels.", "",
+].join("\n");
+const finalPlan = [
+  "# Initial Website Plan", "", "Latest direction: remove the contact section (label `108262186bce-1`) from the plan.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "", "---", "",
+  "## Accessibility Baseline", "", "- Use visible labels.", "",
+].join("\n");
+it("collects only the contact section's distinctive whole lines", () => {
+  expect(contactSectionLines(consumedPlan, markers)).toEqual(["Latest direction: add a contact section labelled `108262186bce-1`.",
+    "4. **Contact — `108262186bce-1`** — contact form.", heading, `- Contact: ${contact.name}`, `- Phone: ${contact.phone}`, "- Form fields: Name, Email, Message."]);
 });
-it("fails while a heading still carries the label, kept or renamed", () => {
-  expect(documentContactRemoved(revs(consumedPlan), "final", "consumer", label)).toBe(false);
-  expect(documentContactRemoved(revs(consumedPlan.replace(`## Contact section (label: ${label})`, `### Reach us (${label})`)), "final", "consumer", label)).toBe(false);
+it("passes when shared lines remain and a note quotes the label inside a longer line", () => {
+  expect(finalPlan.includes("108262186bce-1")).toBe(true);
+  expect(documentContactRemoved(consumedPlan, finalPlan, label, details)).toBe(true);
 });
-it("compares against the plan from before the consuming run first saved the label, across its repeated saves", () => {
-  expect(documentContactRemoved(revs(initialPlan, `${consumedPlan}\n## Next steps\n\nConfirm contact details.\n`), "final", "consumer", label)).toBe(true);
-  expect(documentContactRemoved(revs(consumedPlan, `${consumedPlan}\n## Next steps\n\nConfirm contact details.\n`), "final", "consumer", label)).toBe(false);
+it("fails when only the contact name and phone are removed", () => {
+  const detailsOnly = consumedPlan.split("\n").filter(line => !line.includes(contact.name) && !line.includes(contact.phone)).join("\n");
+  expect(documentContactRemoved(consumedPlan, detailsOnly, label, details)).toBe(false);
 });
-it("fails when no labelled section was ever saved, so removal cannot be shown", () => {
-  const unlabelled = consumedPlan.replace(`## Contact section (label: ${label})`, "## Contact section");
-  expect(documentContactRemoved([...revs(initialPlan)].map(row => row.id === "r2" ? { ...row, body: unlabelled } : row), "final", "consumer", label)).toBe(false);
+it("fails when the final revision keeps the heading line or a contact detail line", () => {
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n${heading}\n`, label, details)).toBe(false);
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n  - Contact: ${contact.name}  \n`, label, details)).toBe(false);
 });
+it("fails when the contact name or phone survives in reformatted lines", () => {
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\n## Contact (${label})\nContact: ${contact.name}\nPhone: ${contact.phone}\n`, label, details)).toBe(false);
+  expect(documentContactRemoved(consumedPlan, `${finalPlan}\nAsk ${contact.name} for help.\n`, label, details)).toBe(false);
+});
+it("fails when the final revision is missing or the saved revision has no contact section", () => {
+  expect(documentContactRemoved(consumedPlan, undefined, label, details)).toBe(false);
+  expect(documentContactRemoved(finalPlan.replace(/`108262186bce-1`/g, ""), finalPlan, label, details)).toBe(false);
+});
+// Full cohort 14, abridged from the retained revisions (that setup had only the label as a marker).
+const consumed14 = [
+  "# Initial Website Plan", "", "Latest direction: add a contact section labelled `108262186bce-1`, keep the accessible-font requirement.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Contact — `108262186bce-1`** — accessible contact form with visible labels.", "5. **Legal / Policy** — privacy.", "",
+  "## Contact Section — `108262186bce-1`", "", "- **Purpose:** give visitors a clear, low-friction way to get in touch.",
+  "- **Form fields:** Name, Email, Message — each with a persistent visible `<label>`.", "",
+  "## Accessible Font Guidance (retained)", "", "- Minimum body size of **16px** (`1rem`).", "",
+  "## Open Questions", "", "- Which contact methods and routing should the `108262186bce-1` section use?", "",
+].join("\n");
+const final14 = [
+  "# Initial Website Plan", "", "Latest direction: remove the contact section (label `108262186bce-1`) from the plan; keep the rest of the plan unchanged.", "",
+  "## Proposed Structure", "", "1. **Home** — purpose statement.", "4. **Legal / Policy** — privacy.", "",
+  "## Accessible Font Guidance (retained)", "", "- Minimum body size of **16px** (`1rem`).", "",
+  "## Open Questions", "", "- Which pages and content are required at launch?", "",
+].join("\n");
+it("passes the retained cohort-14 plan", () => expect(documentContactRemoved(consumed14, final14, label, details)).toBe(true));
+it("derives the contact details, with an attempt-specific phone", () => {
+  expect(contact).toEqual({ name: "Harriet Quillfeather", phone: "+1-555-1861" });
+  expect(contactDetails("e972d9c1aa95-1").phone).not.toBe(contact.phone);
+});
+
+function citedInTurn() {
+  const o = valid(); o.runs = o.runs.filter(row => row.id !== "contact");
+  Object.assign(o.state, { consumerRunId: "initial", firstDeliveryRunCount: 2, continuationConsumerCount: 0, continuationInputBound: false, consumedBeforeCancellation: false });
+  o.state.workerCommentReceipts = { reads: { "second-contact": "2026-11-13T04:03:45.909Z", font: "2026-11-13T04:01:28.647Z" }, cited: ["font", "second-contact"] };
+  return o;
+}
+it("accepts the retained cohort-10 shape: the running turn read and cited both follow-ups, saved the contact label, and no continuation ran", () => expect(gradeDiscard(citedInTurn()).passed).toBe(true));
+it("accepts the later request handled in turn while the uncited font note reaches one continuation", () => {
+  const o = citedInTurn(); o.state.workerCommentReceipts.cited = ["second-contact"]; Object.assign(o.state, { firstDeliveryRunCount: 3, continuationConsumerCount: 1, continuationInputBound: true });
+  o.runs.splice(2, 0, { id: "font-consumer", status: "succeeded" }); expect(gradeDiscard(o).passed).toBe(true);
+});
+it.each([
+  ["reads the later request without citing it and starts no continuation", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.cited = ["font"]; }],
+  ["cites a request it never read", (o: ReturnType<typeof citedInTurn>) => { delete o.state.workerCommentReceipts.reads["second-contact"]; }],
+  ["cites the request but never saves the labelled contact section", (o: ReturnType<typeof citedInTurn>) => { o.state.consumedLabelSaved = false; }],
+  ["cites the request and still replays it in a continuation", (o: ReturnType<typeof citedInTurn>) => { Object.assign(o.state, { firstDeliveryRunCount: 3, continuationConsumerCount: 1 }); o.runs.splice(2, 0, { id: "replay", status: "succeeded" }); }],
+  ["handles both in turn and admits an extra later run", (o: ReturnType<typeof citedInTurn>) => { o.runs.push({ id: "extra", status: "succeeded" }); }],
+  ["cites the discarded request as handled", (o: ReturnType<typeof citedInTurn>) => { o.state.workerCommentReceipts.cited.push("pending-contact"); }],
+  ["credits the later request to a run other than the one that handled it", (o: ReturnType<typeof citedInTurn>) => { o.state.consumerRunId = "new-direction"; }],
+])("rejects a running turn that %s", (_label, mutate) => { const o = citedInTurn(); mutate(o); expect(gradeDiscard(o).passed).toBe(false); });
+it.each([
+  ["no continuation consumes the owed follow-ups", (o: ReturnType<typeof valid>) => { o.state.continuationConsumerCount = 0; }],
+  ["the continuation input lacks an owed follow-up", (o: ReturnType<typeof valid>) => { o.state.continuationInputBound = false; }],
+  ["the continuation never received the later request", (o: ReturnType<typeof valid>) => { o.state.consumedBeforeCancellation = false; }],
+])("rejects the continuation path when %s", (_label, mutate) => { const o = valid(); mutate(o); expect(gradeDiscard(o).passed).toBe(false); });

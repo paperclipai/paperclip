@@ -78,7 +78,74 @@ it("opens the existing create-agent dialog and persists a company-scoped chat pi
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Pin bob"]')!.click());
   expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:user-a")!)).toEqual(["agent-chat:company-a:bob"]);
   expect(container.querySelector('[aria-label="Unpin bob"]')?.getAttribute("aria-pressed")).toBe("true");
+  expect(contactOrder()).toEqual(["/chats/bob", "/chats/alice"]);
   expect(state.ensure).not.toHaveBeenCalled();
+});
+const pinStorageKey = "paperclip.coordinator.pinned-nav.v1:user-a";
+const contactOrder = () => [...container.querySelectorAll('nav[aria-label="Agent conversations"] a')].map(link => link.getAttribute("href"));
+
+it.each([false, true])("keeps the pin button mounted and focused when toggling a contact with pinned=%s", async pinned => {
+  if (pinned) localStorage.setItem(pinStorageKey, JSON.stringify(["agent-chat:company-a:bob"]));
+  await render();
+  const button = container.querySelector<HTMLButtonElement>(`[aria-label="${pinned ? "Unpin" : "Pin"} bob"]`)!;
+  await act(async () => { button.focus(); button.click(); });
+  expect(button.isConnected).toBe(true);
+  expect(document.activeElement).toBe(button);
+  expect(button.getAttribute("aria-label")).toBe(`${pinned ? "Pin" : "Unpin"} bob`);
+  expect(contactOrder()).toEqual(pinned ? ["/chats/alice", "/chats/bob"] : ["/chats/bob", "/chats/alice"]);
+});
+
+it("puts pins first in saved order ahead of active and recent chats, and restores recency when unpinned", async () => {
+  const carol = { ...roster[0], id: "carol", name: "carol", urlKey: "carol" };
+  client.setQueryData(queryKeys.agents.list("company-a"), [...roster, carol]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("alice"), chat("bob")]);
+  localStorage.setItem(pinStorageKey, JSON.stringify(["agent-chat:other-company:alice", "agent-chat:company-a:carol", "/artifacts", "agent-chat:company-a:bob", "agent-chat:company-a:missing"]));
+  await render();
+  expect(contactOrder()).toEqual(["/chats/carol", "/chats/bob", "/chats/alice"]);
+  expect(container.querySelector('[aria-label="Reorder pinned carol"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Reorder pinned alice"]')).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Unpin bob"]')!.click());
+  expect(contactOrder()).toEqual(["/chats/carol", "/chats/alice", "/chats/bob"]);
+  expect(JSON.parse(localStorage.getItem(pinStorageKey)!)).toContain("agent-chat:other-company:alice");
+});
+
+it("reorders filtered pins with the keyboard and saves their order without moving hidden pins", async () => {
+  const agents = ["alice", "bob", "carol", "dave"].map(id => ({ ...roster[0], id, name: id, urlKey: id, title: id === "alice" || id === "carol" ? "Designer" : "Engineer" }));
+  client.setQueryData(queryKeys.agents.list("company-a"), agents);
+  const saved = ["agent-chat:company-a:alice", "agent-chat:other-company:hidden", "agent-chat:company-a:bob", "/artifacts", "agent-chat:company-a:carol"];
+  localStorage.setItem(pinStorageKey, JSON.stringify(saved));
+  await render();
+  await act(async () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search chats"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Designer");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const rows = [...container.querySelectorAll(".agent-contact-pin-row")];
+    const top = Math.max(0, rows.indexOf(this)) * 80;
+    return { x: 0, y: top, top, bottom: top + 80, left: 0, right: 240, width: 240, height: 80, toJSON() {} };
+  });
+  const key = async (target: Element, code: string) => {
+    await act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { code, key: code === "Space" ? " " : code, bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+  };
+  try {
+    const handle = container.querySelector<HTMLButtonElement>('[aria-label="Reorder pinned alice"]');
+    expect(handle).not.toBeNull();
+    handle!.focus();
+    await key(handle!, "Space");
+    await key(handle!, "ArrowDown");
+    await key(handle!, "Space");
+    expect(contactOrder()).toEqual(["/chats/carol", "/chats/alice"]);
+    expect(JSON.parse(localStorage.getItem(pinStorageKey)!)).toEqual([saved[4], ...saved.slice(1, 4), saved[0]]);
+    expect(state.navigate).not.toHaveBeenCalled();
+    expect(state.ensure).not.toHaveBeenCalled();
+    await act(async () => root.unmount()); root = createRoot(container);
+    await render();
+    expect(contactOrder()).toEqual(["/chats/carol", "/chats/bob", "/chats/alice", "/chats/dave"]);
+  } finally { rect.mockRestore(); }
 });
 it("replaces contacts when the company changes", async () => {
   await render();
@@ -132,7 +199,7 @@ it("passes numeric unread counts to contacts and updates them from the account c
 
 it("reuses chat indexes for 500 agents across unchanged parent renders and refreshes changed counts", async () => {
   const agents = Array.from({ length: 500 }, (_, index) => ({ ...roster[0], id: `agent-${index}`, name: `Agent ${index}`, urlKey: `agent-${index}` }));
-  const savedPins = JSON.stringify(agents.map(agent => `agent-chat:company-a:${agent.id}`));
+  const savedPins = JSON.stringify(agents.map(agent => `agent-chat:company-a:${agent.id}`).reverse());
   localStorage.setItem("paperclip.coordinator.pinned-nav.v1:user-a", savedPins);
   const originalParse = JSON.parse;
   let pinParses = 0;
@@ -150,6 +217,7 @@ it("reuses chat indexes for 500 agents across unchanged parent renders and refre
     expect(first.existingChatAgentIds).toHaveLength(500);
     expect(first.unreadAgentIds).toHaveLength(500);
     expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
+    expect(contactOrder()[0]).toBe("/chats/agent-499");
     await render();
     const unchanged = sidebarInputs.at(-1)!;
     expect(unchanged.existingChatAgentIds).toBe(first.existingChatAgentIds);

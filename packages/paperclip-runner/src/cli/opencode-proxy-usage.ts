@@ -132,3 +132,17 @@ export class OpenCodeProxyUsageLedger {
     this.#messagesByTurn.clear();
   }
 }
+
+export function openCodeProxyUpstreamUsage(
+  value: unknown,
+): { upstreamProvider?: string; providerRequestId?: string } {
+  const usage = record(value);
+  const field = (name: string) => {
+    const entry = usage[name];
+    return typeof entry === "string" && entry.length > 0 && entry.length <= 240 ? entry : undefined;
+  };
+  const upstreamProvider = field("upstreamProvider");
+  if (!upstreamProvider) return {};
+  const providerRequestId = field("providerRequestId");
+  return { upstreamProvider, ...(providerRequestId ? { providerRequestId } : {}) };
+}

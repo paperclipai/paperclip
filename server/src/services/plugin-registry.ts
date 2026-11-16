@@ -32,6 +32,8 @@ import type {
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { TERMINAL_WORKSPACE_PLUGIN_HINT } from "./terminal-workspace-work.js";
+import { announcePluginManifestChange } from "./plugin-manifest-revision.js";
 
 function sameBundledPluginRegistration(existing: typeof plugins.$inferSelect, packageName: string, manifest: PaperclipPluginManifestV1): boolean {
   return existing.pluginKey === manifest.id && existing.packageName === packageName && existing.version === manifest.version && isDeepStrictEqual(existing.manifestJson, manifest);
@@ -92,7 +94,7 @@ export function pluginRegistryService(db: Db) {
   async function writeWorkspaceProviderChange<T>(reconsiderWorkspaces: boolean, write: (database: Db) => Promise<T>): Promise<T> {
     return db.transaction(async tx => {
       await notifyExternalObjectRefresh(tx);
-      if (reconsiderWorkspaces) await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces);
+      if (reconsiderWorkspaces) await notifyDeliveryWork(tx, DELIVERY_QUEUES.terminalWorkspaces, TERMINAL_WORKSPACE_PLUGIN_HINT);
       return write(tx as unknown as Db);
     });
   }
@@ -179,7 +181,8 @@ export function pluginRegistryService(db: Db) {
           })
           .where(eq(plugins.id, existing.id))
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null)
+          .finally(announcePluginManifestChange);
       }
 
       const installOrder = await nextInstallOrder();
@@ -201,6 +204,7 @@ export function pluginRegistryService(db: Db) {
         const rows = await (options.idempotent
           ? insertion.onConflictDoNothing({ target: plugins.pluginKey })
           : insertion).returning();
+        announcePluginManifestChange();
         if (rows[0]) return rows[0];
         const concurrent = await getByKey(manifest.id);
         if (concurrent && concurrent.status !== "uninstalled" && sameBundledPluginRegistration(concurrent, input.packageName, manifest)) return concurrent;
@@ -255,7 +259,7 @@ export function pluginRegistryService(db: Db) {
         .set(setClause)
         .where(eq(plugins.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null));
+        .then((rows) => rows[0] ?? null)).finally(announcePluginManifestChange);
     },
 
     // ----- Status ---------------------------------------------------------
@@ -333,7 +337,7 @@ export function pluginRegistryService(db: Db) {
           .where(eq(plugins.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-      });
+      }).finally(announcePluginManifestChange);
     },
 
     // ----- Config ---------------------------------------------------------
@@ -517,7 +521,7 @@ export function pluginRegistryService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (plugin.manifestJson.workspaceProvider && existing?.enabled === false && input.enabled === true) {
-          await notifyDeliveryWork(db, DELIVERY_QUEUES.terminalWorkspaces);
+          await notifyDeliveryWork(db, DELIVERY_QUEUES.terminalWorkspaces, TERMINAL_WORKSPACE_PLUGIN_HINT);
         }
 
         if (existing) {

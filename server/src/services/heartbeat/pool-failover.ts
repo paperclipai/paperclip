@@ -76,6 +76,35 @@ export async function hasCompanyPoolAffinity(db: Db, run: Run, taskKey: string):
   return false;
 }
 
+async function failedPoolCredentialHashes(db: Db, run: Run, taskKey: string, poolId: string): Promise<string[] | null> {
+  const hashes: string[] = [], seen = new Set<string>();
+  let current = run;
+  for (let depth = 0; depth < 100; depth++) {
+    if (seen.has(current.id)) return null;
+    seen.add(current.id);
+    const context = parseObject(current.contextSnapshot), kind = poolFailureKind(current);
+    const selection = parseObject(context.aiRouterSelection);
+    if (!kind || context.aiRouterTaskKey !== taskKey || selection.poolId !== poolId) return null;
+    const [receipt] = await db.select().from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
+      eq(heartbeatRunEvents.runId, current.id), isNull(heartbeatRunEvents.sourceInstanceId),
+      eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`),
+      eq(heartbeatRunEvents.sourceEventId, `ai-connection-${kind}-attributed:${current.id}`)));
+    const proof = parseObject(receipt?.payload);
+    if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
+        !isDeepStrictEqual(proof.selection, selection)) return null;
+    if (kind === "quota" && typeof proof.quotaIdentityHash === "string") hashes.push(proof.quotaIdentityHash);
+    const sourceRunId = parseObject(context.aiPoolFailover).sourceRunId;
+    if (!sourceRunId) return hashes;
+    if (sourceRunId !== current.retryOfRunId) return null;
+    const [previous] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceRunId as string),
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId)));
+    if (!previous || previous.scopeKind !== run.scopeKind || previous.issueId !== run.issueId) return null;
+    current = previous;
+  }
+  return null;
+}
+
 /** The retry owner holds the issue and source run locks and creates the successor
  * in this transaction. This switches conversation context, never tool requests. */
 export async function switchFailedPoolPin(db: Db, input: {
@@ -114,10 +143,12 @@ export async function switchFailedPoolPin(db: Db, input: {
     if (run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") &&
         !legacyPoolAccountEvidenceMatches(kind, selection.binding.provider, proof.providerEvidence)) return null;
   }
+  const attemptedCredentialHashes = taskQuotaEvidence ? await failedPoolCredentialHashes(db, run, taskKey, selection.poolId) : [];
+  if (!attemptedCredentialHashes) return null;
   const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
   return aiConnectionRouterService(db).transitionQuotaPin({ companyId: run.companyId, poolId: selection.poolId,
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
-    adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
+    adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], attemptedCredentialHashes, failureKind: kind,
     sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
     taskQuotaEvidence, allowCoolingSelection: true });
 }
@@ -170,10 +201,12 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
     if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
-    const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
+    const attemptedCredentialHashes = taskQuotaEvidence ? await failedPoolCredentialHashes(db, run, taskKey, selection.poolId) : [];
+  if (!attemptedCredentialHashes) return null;
+  const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
     const next = await aiConnectionRouterService(tx as unknown as Db).transitionQuotaPin({ companyId: run.companyId,
       poolId: selection.poolId, agentId: run.agentId, taskKey, expectedSelection: pin.selection, userId,
-      adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], failureKind: kind,
+      adapterType: executionAgent.adapterType, taskless: run.scopeKind === "company" && Boolean(agent.runtimeConfig.harnessPool), attemptedMemberIds: [], attemptedCredentialHashes, failureKind: kind,
       sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
     if (next.kind !== "selected") return;
     const updated = { ...context, aiRouterSelection: next.selection,

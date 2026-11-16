@@ -21,7 +21,7 @@ describe("managed-config-capabilities.json", () => {
   it("keeps the published contract", () => {
     expect(JSON.parse(readFileSync(capabilitiesFile, "utf8"))).toEqual({
       schemaVersion: 1,
-      capabilities: ["pluginEnvironments"],
+      capabilities: ["pluginEnvironments", "pluginEnvironmentRunnerLifecycleMode"],
     });
   });
 });

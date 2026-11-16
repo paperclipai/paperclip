@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ChatRun } from "./chat-flow.js";
 
-interface Row { id: string; companyId?: string; issueId?: string; authorAgentId?: string | null; createdByRunId?: string | null; name?: string; action?: string; entityType?: string; entityId?: string; agentId?: string | null; actorType?: string; actorId?: string; runId?: string | null }
+interface Row { id: string; companyId?: string; issueId?: string; body?: string | null; authorAgentId?: string | null; createdByRunId?: string | null; name?: string; action?: string; entityType?: string; entityId?: string; agentId?: string | null; actorType?: string; actorId?: string; runId?: string | null }
 export interface RenderedConversationLink {
   threadTestId: "task-chat-thread" | "thread-root"; href: string; source: "reply" | "project-created-card"; conversationId: string; anchorCommentId: string;
   commentId?: string; resourceId?: string; cardLabel?: string; createdByRunId?: string;
@@ -41,6 +41,36 @@ export function unresolvedLinkTarget(href: string): boolean {
   let decoded = href;
   try { decoded = decodeURIComponent(href); } catch { /* keep the raw target */ }
   return /[<>{}]/.test(decoded);
+}
+/** First path segments the board app routes, as declared in ui/src/App.tsx. A company-prefixed page is
+ * /<prefix>/<root>/...; the server serves its API only at /api. */
+export const APP_ROUTE_ROOTS: readonly string[] = ["activity", "agents", "approvals", "apps", "artifacts", "assistant-connections", "audit", "auth",
+  "board-chat", "board-claim", "budgets", "cases", "chat-identity", "chats", "cli-auth", "companies", "company", "costs", "dashboard", "decisions",
+  "design-guide", "dev", "dot-connect", "execution-workspaces", "goals", "inbox", "instance", "invite", "issues", "mcp-connect", "mcp-device",
+  "oauth-handoff", "onboarding", "org", "plugins", "projects", "routines", "runs", "search", "settings", "skills", "status", "status-cards", "tasks",
+  "tests", "timeline", "tools", "u", "ux-lab", "workspaces"];
+export type UnservedLinkReason = "protocol-relative" | "not-a-served-route";
+/** Why a rendered same-origin link opens nothing the product serves, or undefined when it does. `savedTargets` are the
+ * Markdown targets of the saved reply that rendered it: the board repairs `//PREFIX/...` to `/PREFIX/...`, but the saved
+ * reply is also what notifications, chat channels and the API deliver, where a protocol-relative target leaves the app. */
+export function unservedLinkReason(href: string, origin: string, savedTargets: readonly string[] = []): UnservedLinkReason | undefined {
+  if (href.trim().startsWith("//") || !savedTargets.includes(href) && savedTargets.some(target => target.startsWith("//") && target.slice(1) === href)) return "protocol-relative";
+  let url: URL;
+  try { url = new URL(href, origin); } catch { return "not-a-served-route"; }
+  if (url.origin !== new URL(origin).origin) return undefined;
+  const parts = url.pathname.split("/").filter(Boolean).map(part => part.toLowerCase());
+  if (!parts.length || parts[0] === "api" || APP_ROUTE_ROOTS.includes(parts[0]!)) return undefined;
+  return parts.length === 1 || APP_ROUTE_ROOTS.includes(parts[1]!) ? undefined : "not-a-served-route";
+}
+/** Split rendered links into those that open a served app page or API route and those that do not. */
+export function partitionServedConversationLinks(rows: readonly RenderedConversationLink[], input: Pick<ConversationLinkInput, "origin" | "comments">) {
+  const links: RenderedConversationLink[] = [], rejected: Array<RenderedConversationLink & { reason: UnservedLinkReason }> = [];
+  for (const row of rows) {
+    const body = row.commentId ? input.comments.find(comment => comment.id === row.commentId)?.body : undefined;
+    const reason = unservedLinkReason(row.href, input.origin, body ? markdownLinkTargets(body) : []);
+    if (reason) rejected.push({ ...row, reason }); else links.push(row);
+  }
+  return { links, rejected };
 }
 export function conversationLinkBindings(input: ConversationLinkInput) {
   const comments = input.comments.filter(row => row.companyId === input.companyId && row.issueId === input.sourceId);
@@ -227,17 +257,20 @@ export function readConversationLinkDiagnostics(input: Pick<ReturnType<typeof co
         replyAnchorCounts: Object.fromEntries(input.replies.map(id => [id, root.querySelector(`[id="comment-${id}"]`)?.querySelectorAll("a[href]").length ?? 0])) };
     }) };
 }
-export async function collectConversationLinksWithDiagnostics(page: Page, input: ConversationLinkInput): Promise<{ links: RenderedConversationLink[]; diagnostics?: ConversationLinkDiagnostics }> {
+export async function collectConversationLinksWithDiagnostics(page: Page, input: ConversationLinkInput): Promise<{ links: RenderedConversationLink[];
+  rejected?: Array<RenderedConversationLink & { reason: UnservedLinkReason }>; diagnostics?: ConversationLinkDiagnostics }> {
   const bindings = conversationLinkBindings(input);
   const render = await waitForLatestConversationReplyRender(page, bindings);
-  const links = await page.evaluate(readConversationDomLinks, bindings);
-  if (links.length || !bindings.replies.length) return { links };
+  const { links, rejected } = partitionServedConversationLinks(await page.evaluate(readConversationDomLinks, bindings), input);
+  if (rejected.length) console.info(`[chat-rendered-links] links that open no served route: ${JSON.stringify(rejected.map(row => ({ href: row.href, reason: row.reason })))}`);
+  const kept = rejected.length ? { rejected } : {};
+  if (links.length || !bindings.replies.length) return { links, ...kept };
   let diagnostics: ConversationLinkDiagnostics;
   try { diagnostics = { render, ...await page.evaluate(readConversationLinkDiagnostics, { anchors: bindings.anchors, replies: bindings.replies }) }; }
   catch { diagnostics = { render, expectedReplyIds: bindings.replies, savedCommentCount: bindings.anchors.length, threads: [] }; }
   // Logged so an empty capture says whether the thread was closed, another conversation, or the reply had no anchors yet.
   console.info(`[chat-rendered-links] no rendered reply links: ${JSON.stringify(diagnostics)}`);
-  return { links, diagnostics };
+  return { links, ...kept, diagnostics };
 }
 export function conversationLinkLocator(page: Page, link: RenderedConversationLink): Locator {
   const thread = page.getByTestId(link.threadTestId).filter({ has: page.locator(`[id=${JSON.stringify(`comment-${link.anchorCommentId}`)}]`) });

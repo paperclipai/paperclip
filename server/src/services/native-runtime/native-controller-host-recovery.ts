@@ -28,9 +28,10 @@ export async function requestNativeControllerStopConfirmation(tx: Db, coordinato
     evidence: { runId: coordinator.runId, controller: { bootId: coordinator.controllerBootId, pid: coordinator.controllerPid,
       hostHash: coordinator.controllerHostHash,
       processStartedAt: coordinator.controllerProcessStartedAt?.toISOString() ?? null } },
-    nextAction: "Paperclip cannot verify that this run's previous server stopped from the current host. "
-      + "Confirm that the previous server process has stopped (for example, its "
-      + "container was replaced), then recovery checks the saved run. Controller confirmation does not confirm that its provider or tools stopped.",
+    // Optional faster path: without a confirmation, the run ends after a
+    // bounded wait and the task continues in a fresh, isolated run.
+    nextAction: "The server running this task restarted. Paperclip continues the task in a fresh run shortly. "
+      + "Confirming that the previous server stopped is optional and only makes that faster.",
   }).onConflictDoNothing();
 }
 

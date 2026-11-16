@@ -270,6 +270,89 @@ next_canary_version() {
   next_prerelease_version canary "$stable_version" "$@"
 }
 
+canary_source_position() {
+  local repo_root="$1"
+  if [ "$(git -C "$repo_root" rev-parse --is-shallow-repository)" = "true" ]; then
+    return 1
+  fi
+  git -C "$repo_root" rev-list --count HEAD
+}
+
+next_canary_version_from_source() {
+  local repo_root="$1"
+  local allow_registry_fallback="$2"
+  local stable_version="$3"
+  local run_attempt="$4"
+  shift 4
+  local position
+
+  if ! [[ "$run_attempt" =~ ^[1-9][0-9]?$ ]]; then
+    release_fail "canary numbering needs a run attempt from 1 to 99, got '${run_attempt}'."
+  fi
+  if ! position="$(canary_source_position "$repo_root")"; then
+    if [ "$allow_registry_fallback" = true ]; then
+      release_warn "shallow checkout: canary number falls back to the next registry number."
+      next_prerelease_version canary "$stable_version" "$@"
+      printf '\n'
+      return 0
+    fi
+    release_fail "canary numbering needs the full master history; this checkout is shallow."
+  fi
+  local candidate=$((position * 100 + run_attempt - 1))
+  local range_end=$((position * 100 + 99))
+  local published
+  published="$(node -e '
+    const [file, stable, low, high] = process.argv.slice(1);
+    let cache = {};
+    try { cache = JSON.parse(require("node:fs").readFileSync(file, "utf8")); } catch {}
+    const pattern = new RegExp(`^${stable.replace(/\./g, "\\.")}-canary\\.(\\d+)$`);
+    const numbers = new Set();
+    for (const versions of Object.values(cache)) for (const version of Array.isArray(versions) ? versions : []) {
+      const number = Number(pattern.exec(version)?.[1]);
+      if (number >= Number(low) && number <= Number(high)) numbers.add(number);
+    }
+    process.stdout.write([...numbers].join(" "));
+  ' "${RELEASE_PACKAGE_VERSIONS_FILE:-}" "$stable_version" "$candidate" "$range_end")"
+  while [[ " $published " == *" $candidate "* ]]; do
+    candidate=$((candidate + 1))
+  done
+  [ "$candidate" -le "$range_end" ] || release_fail "every canary number for master position ${position} is already published."
+  printf '%s-canary.%s\n' "$stable_version" "$candidate"
+}
+
+require_canary_number_from_master_commit() {
+  local version="$1"
+  local source_sha="$2"
+  local master_ref="${3:-origin/master}"
+  local number="${version##*-canary.}"
+  local position
+
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$source_sha" "$master_ref" \
+    || release_fail "${source_sha} is not on ${master_ref}"
+  position="$(canary_source_position "$REPO_ROOT")" || release_fail "canary confirmation needs the full master history; this checkout is shallow."
+  [ "$((number / 100))" = "$position" ] \
+    || release_fail "${version} was not numbered from ${source_sha} (master position ${position})"
+  release_info "  ✓ ${version} was numbered from ${source_sha} (master position ${position})"
+}
+
+push_release_tag_at() {
+  local remote="$1"
+  local tag_name="$2"
+  local source_sha="$3"
+  local existing_sha
+
+  existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}^{}" | awk '{print $1}')"
+  [ -n "$existing_sha" ] || existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}" | awk '{print $1}')"
+  if [ -n "$existing_sha" ]; then
+    [ "$existing_sha" = "$source_sha" ] || release_fail "tag ${tag_name} already exists on ${existing_sha}, not ${source_sha}"
+    release_info "  ✓ ${tag_name} already points at ${source_sha}"
+    return 0
+  fi
+  git -C "$REPO_ROOT" tag "$tag_name" "$source_sha"
+  git -C "$REPO_ROOT" push "$remote" "refs/tags/${tag_name}"
+  release_info "  ✓ Pushed ${tag_name} at ${source_sha}"
+}
+
 release_notes_file() {
   printf '%s/releases/v%s.md\n' "$REPO_ROOT" "$1"
 }
@@ -540,6 +623,12 @@ wait_for_release_registry_state() {
 require_clean_worktree() {
   if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
     release_fail "working tree is not clean. Commit, stash, or remove changes before releasing."
+  fi
+}
+
+require_runner_lockfile_current() {
+  if ! node "$REPO_ROOT/scripts/check-release-runner-lockfile.mjs"; then
+    release_fail "a beta or stable release needs a pnpm-lock.yaml that matches the Runner's manifests at HEAD."
   fi
 }
 

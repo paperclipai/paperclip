@@ -11,6 +11,7 @@ import {
   PRP_COMPLETION_TOOL_DESCRIPTION,
 } from "./completion-result.js";
 import { codexSemanticToolSpecs } from "../drivers/codex/codex-driver-values.js";
+import { toolInputVariantError } from "./tool-input-variants.js";
 
 const baseResult = {
   schema: "paperclip.run_result.v1",
@@ -71,7 +72,7 @@ describe("provider-neutral completion result schema", () => {
       { ...report, reportedWorkDisposition: "done" },
       { ...report, continuation: { ...report.continuation, kind: "retry" } },
       { ...report, continuation: { ...report.continuation, idempotencyKey: "" } },
-    ]) expect(bridge(invalid)).toBe(false);
+    ]) expect(bridge(invalid) && toolInputVariantError("paperclip_finish", invalid) === null).toBe(false);
     expect(bridge(baseResult)).toBe(true);
   });
 
@@ -179,7 +180,10 @@ describe("provider-neutral completion result schema", () => {
     };
     const providerValidate = new Ajv2020({ allErrors: true, strict: false })
       .compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
-    expect(providerValidate(response)).toBe(false);
+    // The advertised root stays a plain object; runner bridges apply the
+    // yielded-only continuation rule, and canonical validation repeats it.
+    expect(providerValidate(response)).toBe(true);
+    expect(toolInputVariantError("paperclip_finish", response)).toContain("continuation is only for reportedWorkDisposition: \"yielded\"");
     expect(validate(response)).toBe(false);
   });
 
@@ -200,7 +204,7 @@ describe("provider-neutral completion result schema", () => {
     // The live Codex code-mode renderer reduced a conditional-only root allOf
     // to `args: unknown`. Keep this tool object-shaped for provider discovery.
     expect(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.type).toBe("object");
-    expect(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA).not.toHaveProperty("allOf");
+    for (const keyword of ["allOf", "if", "then", "else"]) expect(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA).not.toHaveProperty(keyword);
     expect(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.required).toEqual([
       "reportedWorkDisposition", "summary", "completionClaim", "evidence", "verification",
     ]);

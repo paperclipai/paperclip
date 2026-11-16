@@ -43,7 +43,7 @@ import {
 } from "@paperclipai/shared";
 import { HttpError, conflict, forbidden, notFound } from "../errors.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
@@ -316,7 +316,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     source: Awaited<ReturnType<typeof scope>>,
     requestFetch = fetchImpl,
   ) {
-    const token = await githubBotRepositoryToken(
+    const github = await githubBotRepositoryClient(
       db,
       source.endpoint.companyId,
       source.endpoint.id,
@@ -330,7 +330,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         path: string,
         options?: Parameters<typeof githubBotRequest>[3],
       ) =>
-        githubBotRequest<T>(requestFetch, token, `${prefix}${path}`, options),
+        github<T>(`${prefix}${path}`, options),
     };
   }
   async function reviewForHead(

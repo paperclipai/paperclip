@@ -1960,6 +1960,11 @@ describe("rebindNativeSessionCheckpoint", () => {
       retainedFingerprint:
         "sha256:b64efcd063a575925aa95dbd2a20953386eaa760f05b0e0e73b4ae04a97679b0",
     },
+    {
+      contract: "direct assigned gateway",
+      retainedFingerprint:
+        "sha256:c46f05862e87525db392ebf3157d50c424d6e7010e5640680d0ec5075723d7f5",
+    },
   ])(
     "refreshes retained $contract without changing the Paperclip task or prior history",
     ({ contract, retainedFingerprint }) => {
@@ -2036,6 +2041,14 @@ describe("rebindNativeSessionCheckpoint", () => {
     expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: shortenedCatalog, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
     expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: legacy, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
     expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: current, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).not.toBeNull();
+  });
+
+  it.each([
+    ["codex", "sha256:07b116cd7f04b0c9a53b87818a910be32682d5df6181c2019cb1ba8e0077be99"],
+    ["opencode", "sha256:310dd0367d7157669e9fbf4c41698372a9977ef94183330317167fe07a8987cb"],
+  ] as const)("keeps a remote %s checkpoint that already relayed its assigned gateway", (providerKind, retainedFingerprint) => {
+    expect(nativeToolContractFingerprintForTarget("remote", providerKind)).toBe(retainedFingerprint);
+    expect(nativeToolContractFingerprintForTarget("local", providerKind)).not.toBe(retainedFingerprint);
   });
 
   it("binds the provider tool catalog to the local or remote execution target", () => {

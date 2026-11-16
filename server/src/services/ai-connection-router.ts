@@ -581,6 +581,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
   async function transitionQuotaPin(input: {
     companyId: string; poolId: string; agentId: string; taskKey: string;
     taskQuotaEvidence?: boolean;
+    attemptedCredentialHashes?: string[];
     expectedSelection: AiConnectionRouterSelection; userId: string | null; adapterType: string; taskless?: boolean;
     attemptedMemberIds: string[];
     failureKind?: "quota" | "auth" | "runner";
@@ -683,7 +684,9 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           adapterType: effective.adapterType, binding: member.binding, model: effective.config.model,
           runnerProvider: effective.config.provider, acpxAgent: effective.config.acpxAgent });
         const identity = await quotaIdentity(authorized, input.companyId, db, true);
-        if (!identity || identity !== memberIdentities.get(member.id) || (input.taskQuotaEvidence && identity === legacySourceIdentity)) continue;
+        if (!identity || identity !== memberIdentities.get(member.id) ||
+            input.attemptedCredentialHashes?.includes(createHash("sha256").update(identity).digest("hex")) ||
+            (input.taskQuotaEvidence && identity === legacySourceIdentity)) continue;
         const cooldown = await accountCooldown(input.companyId, member.binding.connectionId, identity, row.pool.config.kind === "harness_pool" && (input.environmentId !== undefined || input.expectedSelection.runnerScope) ? { adapterType: effective.adapterType, config: effective.config, scope: { environmentId: input.environmentId ?? input.expectedSelection.runnerScope?.environmentId ?? null } } : undefined);
         if (cooldown) {
           if (input.failureKind === "auth" && (!failedAuthIdentity || identity === failedAuthIdentity)) continue;
