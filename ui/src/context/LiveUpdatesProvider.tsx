@@ -1884,6 +1884,14 @@ function invalidateActivityQueries(
         queryKey: queryKeys.heartbeats(companyId, entityId),
       });
     }
+    if (action === "agent.departments_set") {
+      queryClient.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
+    }
+    return;
+  }
+
+  if (entityType === "department") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
     return;
   }
 

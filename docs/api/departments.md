@@ -17,7 +17,7 @@ An agent can belong to at most 20 departments.
 GET /api/companies/{companyId}/departments
 ```
 
-Returns each department with `id`, `companyId`, `name`, and `agentIds`.
+Returns each department with `id`, `companyId`, `name`, and `agentIds`. `agentIds` on every department response includes only agents the caller is allowed to read.
 
 ## Create a department
 

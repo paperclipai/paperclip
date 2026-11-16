@@ -1,14 +1,16 @@
 import { eq } from "drizzle-orm";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { agents, departments, type Db } from "@paperclipai/db";
 import {
   createDepartmentSchema,
   setAgentDepartmentsSchema,
   updateDepartmentSchema,
+  type Department,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { logActivity } from "../services/activity-log.js";
+import { authorizationService } from "../services/authorization.js";
 import { departmentService } from "../services/departments.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -22,6 +24,27 @@ async function companyIdForDepartment(db: Db, id: string): Promise<string | null
   return row?.companyId ?? null;
 }
 
+async function presentDepartments(db: Db, req: Request, companyId: string, rows: Department[]): Promise<Department[]> {
+  const agentIds = [...new Set(rows.flatMap((row) => row.agentIds))];
+  if (agentIds.length === 0) return rows;
+  const access = authorizationService(db);
+  const decisions = await Promise.all(agentIds.map((agentId) => access.decide({
+    actor: req.actor,
+    action: "agent:read",
+    resource: { type: "agent", companyId, agentId },
+  })));
+  const allowed = new Set(agentIds.filter((_, index) => decisions[index]?.allowed));
+  return rows.map((row) => ({
+    ...row,
+    agentIds: row.agentIds.filter((agentId) => allowed.has(agentId)),
+  }));
+}
+
+async function presentDepartment(db: Db, req: Request, companyId: string, row: Department): Promise<Department> {
+  const [presented] = await presentDepartments(db, req, companyId, [row]);
+  return presented ?? row;
+}
+
 export function departmentRoutes(db: Db) {
   const router = Router();
   const svc = departmentService(db);
@@ -29,7 +52,7 @@ export function departmentRoutes(db: Db) {
   router.get("/companies/:companyId/departments", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.list(companyId));
+    res.json(await presentDepartments(db, req, companyId, await svc.list(companyId)));
   });
 
   router.post("/companies/:companyId/departments", validate(createDepartmentSchema), async (req, res) => {
@@ -52,7 +75,7 @@ export function departmentRoutes(db: Db) {
         details: { name: department.name },
       });
     }
-    res.status(created ? 201 : 200).json(department);
+    res.status(created ? 201 : 200).json(await presentDepartment(db, req, companyId, department));
   });
 
   router.patch("/departments/:id", validate(updateDepartmentSchema), async (req, res) => {
@@ -79,7 +102,7 @@ export function departmentRoutes(db: Db) {
       entityId: department.id,
       details: { name: department.name },
     });
-    res.json(department);
+    res.json(await presentDepartment(db, req, companyId, department));
   });
 
   router.delete("/departments/:id", async (req, res) => {
@@ -106,7 +129,7 @@ export function departmentRoutes(db: Db) {
       entityId: removed.id,
       details: { name: removed.name },
     });
-    res.json(removed);
+    res.json(await presentDepartment(db, req, companyId, removed));
   });
 
   router.put("/agents/:id/departments", validate(setAgentDepartmentsSchema), async (req, res) => {
@@ -136,7 +159,7 @@ export function departmentRoutes(db: Db) {
       entityId: agent.id,
       details: { departmentIds: memberships.map((row) => row.id) },
     });
-    res.json(memberships);
+    res.json(await presentDepartments(db, req, agent.companyId, memberships));
   });
 
   return router;
