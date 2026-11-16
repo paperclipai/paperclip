@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
+import { providerTurnStartBefore } from "../live/provider-turn-tool-order.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
@@ -634,6 +635,89 @@ it("excludes streamed output from checkpoints even when the live window is full"
     await core.stop();
     await core.drainPendingConnectionProcessing();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function turnEvent(sourceSeq: number, eventType: string, payload: Record<string, unknown>, priority = 0): Record<string, unknown> {
+  const envelope = semanticInputEvent(sourceSeq);
+  Object.assign(envelope.payload as Record<string, unknown>, { sourceEventId: `turn-event-${sourceSeq}`, eventType, priority, payload });
+  return envelope;
+}
+
+function storedTurnEvent(sourceSeq: number, eventType: string, payload: Record<string, unknown>, priority: 0 | 1 | 2 = 0) {
+  return { sourceSeq, sourceEventId: `turn-event-${sourceSeq}`, eventType, priority,
+    envelope: turnEvent(sourceSeq, eventType, payload, priority), deliveryCount: 1, logicalEffectCount: 1 as const };
+}
+
+const providerStart = (turnId: string) => ({ provider: "acpx", providerTurnId: turnId, status: "inProgress",
+  turn: { id: turnId, status: "inProgress" }, origin: "provider" });
+const failedTurn = (turnId: string) => ({ provider: "acpx", providerTurnId: turnId, status: "failed" });
+
+async function commitThroughFullWindow(prefix: ReturnType<typeof storedTurnEvent>[], sent: Array<[string, Record<string, unknown>]>) {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-provider-turn-window-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  core.store.state.committedEvents = [...prefix, ...Array.from({ length: 4096 - prefix.length }, (_, index) =>
+    storedTurnEvent(prefix.length + index + 1, "item.delta", { text: "streaming output" }, 2))];
+  core.store.state.ackedSourceSeq = 4096;
+  (core.store as WritableCoreStore).save();
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    for (const [index, [eventType, payload]] of sent.entries()) {
+      sendSecure(client, turnEvent(4097 + index, eventType, payload));
+      expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 4097 + index } });
+    }
+    client.socket.destroy();
+    return core.store.state.committedEvents.map(event => ({ ...event }));
+  } finally {
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+it("finds a provider turn's start across ordinary events the full window removed", async () => {
+  const window = await commitThroughFullWindow([storedTurnEvent(1, "turn.started", providerStart("provider-a"))],
+    [["item.completed", { provider: "acpx", itemId: "message-a", kind: "agentMessage", status: "completed", text: "Done." }]]);
+  expect(window.map(event => event.sourceSeq).slice(0, 3)).toEqual([1, 3, 4]);
+  expect(providerTurnStartBefore(window, 4097)?.turnId).toBe("provider-a");
+});
+
+it("finds no provider turn start once the window removed that turn's terminal for a later startless one", async () => {
+  const window = await commitThroughFullWindow(
+    [storedTurnEvent(1, "turn.started", providerStart("provider-a")), storedTurnEvent(2, "turn.failed", failedTurn("provider-a"))],
+    [["harness.diagnostic", {}], ["turn.failed", failedTurn("controller-b")], ["harness.diagnostic", {}]]);
+  expect(window.map(event => event.sourceSeq).slice(0, 2)).toEqual([1, 5]);
+  expect(window.slice(-3).map(event => event.eventType)).toEqual(["harness.diagnostic", "turn.failed", "harness.diagnostic"]);
+  for (const sourceSeq of [4097, 4098, 4099]) expect(providerTurnStartBefore(window, sourceSeq)).toBeNull();
+});
+
+it("finds a provider turn's start in a restored checkpoint that dropped the turn's streamed deltas", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-provider-turn-checkpoint-"));
+  const options = { stateDirectory: resolve(root, "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  core.store.state.committedEvents = [storedTurnEvent(1, "turn.started", providerStart("provider-a")),
+    storedTurnEvent(2, "item.delta", { text: "streaming output" }, 2), storedTurnEvent(3, "item.delta", { text: "streaming output" }, 2),
+    storedTurnEvent(4, "item.completed", { provider: "acpx", itemId: "message-a", kind: "agentMessage", status: "completed", text: "Done." }, 1)];
+  core.store.state.ackedSourceSeq = 4;
+  (core.store as WritableCoreStore).save();
+  const snapshots: DurablePrpCheckpoint[] = [];
+  core.setCheckpointPersistence(async saved => { snapshots.push(saved); });
+  const restoredRoot = mkdtempSync(resolve(tmpdir(), "runner-provider-turn-restored-"));
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    core.queueCommand("session.snapshot", {}, "provider-turn-checkpoint");
+    await core.flushCheckpoint();
+    decodeDurablePrpCheckpoint(snapshots.at(-1)!.records).restoreSessionDirectory(restoredRoot);
+    restored = new DurablePrpControlPlane({ ...options, stateDirectory: resolve(restoredRoot, "control-plane") });
+    const window = restored.store.state.committedEvents;
+    expect(window.map(event => event.sourceSeq)).toEqual([1, 4]);
+    expect(providerTurnStartBefore(window, 4)?.turnId).toBe("provider-a");
+  } finally {
+    await restored?.stop();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(restoredRoot, { recursive: true, force: true });
   }
 });
 

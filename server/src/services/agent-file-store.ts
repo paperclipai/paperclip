@@ -16,7 +16,7 @@ import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-in
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
-import { agentFileProjectionCurrent, durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, type PreparedAgentFileObjects } from "./agent-file-durability.js";
+import { agentFileProjectionCurrent, durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, withAgentFilesRestoredBeforeLock, type PreparedAgentFileObjects } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -195,7 +195,7 @@ export function agentFileStore(db: Db) {
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
     fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, onRollback: (restore: () => Promise<void>) => void) => Promise<T>, texts: string[] = [],
     prepared?: PreparedAgentFileObjects) {
-    return db.transaction(async tx => {
+    return withAgentFilesRestoredBeforeLock(() => db.transaction(async tx => {
       if (write) await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
         operation: "configure", targetAgentId: agentId, lockAgentIds: texts.flatMap(extractAgentMentionIds), lock: "update" });
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
@@ -212,7 +212,7 @@ export function agentFileStore(db: Db) {
         await restore?.();
         throw error;
       }
-    });
+    }));
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {
     const origin = currentPluginInteractionOrigin();

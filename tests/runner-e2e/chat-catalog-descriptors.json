@@ -235,7 +235,7 @@
       "chat-catalog-domains/internal-routine-audit.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v6",
+    "oracleVersion": "paperclip.chat-catalog.internal.routine-audit.v7",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "minimumRunCount": 2,
@@ -685,7 +685,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/agents.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime-hiring.v3",
+    "oracleVersion": "paperclip.chat-catalog.runtime-hiring.v4",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
@@ -1259,7 +1259,7 @@
       "chat-catalog-domains/api-read-receipts.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v5",
+    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v6",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 600000,
@@ -3452,7 +3452,7 @@
       "chat-catalog-domains/identity-auth.ts",
       "../../packages/shared/src/validators/issue.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.decision-search.v2",
+    "oracleVersion": "paperclip.chat-catalog.decision-search.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -3668,7 +3668,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/navigation-preferences.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity-profile.v3",
+    "oracleVersion": "paperclip.chat-catalog.identity-profile.v4",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -5193,7 +5193,7 @@
       "../../ui/src/pages/CompanySkills.tsx",
       "../../ui/src/lib/company-skill-routes.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v9",
+    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v10",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
@@ -5337,7 +5337,7 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/skills.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-studio.v4",
+    "oracleVersion": "paperclip.chat-catalog.skill-studio.v5",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,

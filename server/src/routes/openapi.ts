@@ -1642,6 +1642,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "GET /api/instance/server-metrics",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
@@ -6487,6 +6488,7 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
+  description: "A retry run's retriedBy says in plain words who started it: a person who pressed Retry (named), or Paperclip's automatic recovery. It is null for a run that is not a retry. Use it rather than inferring the starter from invocationSource or triggerDetail.",
   request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -10388,6 +10390,17 @@ registry.registerPath({
   summary: "Trigger a database backup",
   description: "Instance admins only: agent credentials receive 403, and cloud-managed instances run backups for you. Automatic gzip-compressed backups run about hourly by default; instance admins set how long they are kept in the Backup retention section of the company-prefixed /company/settings page. The web UI has no control that creates or restores a backup. For a backup now, an instance admin calls this endpoint, or an operator with shell access to the server runs `paperclipai db:backup` (add --json for metadata). The result names a gzip-compressed SQL file (backupFile) on the server host and its size. Paperclip has no restore endpoint or command: to check a backup, an operator restores the file with psql into a separate, empty PostgreSQL database, never over the live one, and then checks the restored data.",
   responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Instance server metrics ──────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/server-metrics",
+  tags: ["instance"],
+  summary: "Get this server process's load metrics",
+  description: "Instance admins only: agent credentials and company members receive 403. Returns numbers for the one server process that answers: CPU, event-loop utilization and delay, statements per second, run event lateness and agent API pre-handler p99, missed lease renewals and dedicated database connection use, over about the last minute (windowMs). It returns 404 unless the operator set PAPERCLIP_SERVER_METRICS=true.",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── LLM text endpoints ───────────────────────────────────────────────────────

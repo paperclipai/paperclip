@@ -4,6 +4,7 @@ import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
+import { withAgentFilesRestoredBeforeLock } from "./agent-file-durability.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "./agent-file-durability.js";
 import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import {
@@ -237,28 +238,28 @@ export function agentInstructionRevisionService(db: Db) {
     target: InstructionTarget,
     actor: AuthorizationActor,
   ): Promise<AgentInstructionSnapshot | null> {
-    return db.transaction(async (tx) => {
+    return withAgentFilesRestoredBeforeLock(() => db.transaction(async (tx) => {
       const state = await lockTarget(tx, target, actor);
       await authorizeRead(tx, actor, target);
       const row = await currentFile(tx, target, state);
       return row ? snapshot(await withSaveRecord(tx, row)) : null;
-    });
+    }));
   }
   /** Trusted orchestration read for the already authorized run target. This
    * never seeds or writes, and is not exposed through HTTP or model tools. */
   async function readCommittedForRuntime(target: InstructionTarget): Promise<AgentInstructionSnapshot | null> {
-    return db.transaction(async (tx) => {
+    return withAgentFilesRestoredBeforeLock(() => db.transaction(async (tx) => {
       const state = await lockTarget(tx, target);
       const current = await currentFile(tx, target, state);
       return current ? snapshot(current) : null;
-    });
+    }));
   }
   /** Rebuild disk from the current committed head under the same lock as commits. Safe after restart. */
   async function materializeCurrent(target: InstructionTarget): Promise<void> {
-    await db.transaction(async (tx) => {
+    await withAgentFilesRestoredBeforeLock(() => db.transaction(async (tx) => {
       const state = await lockTarget(tx, target);
       await adoptAgentFiles(tx, state.agent);
-    });
+    }));
   }
   async function commitInternal(
     input:

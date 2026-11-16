@@ -177,7 +177,7 @@ export type AssignedWorkFacts = {
   /** A saved-work recovery the recovery queue still owes this task: the
    * task's saved files must be recovered before any run can start. */
   savedWorkRecovery?: SavedWorkRecoveryFact | null;
-  agent: { status: string; invokable: boolean } | null;
+  agent: { status: string; invokable: boolean; updatedAt?: Date } | null;
   companyPaused: boolean;
   pauseHold: boolean;
   budgetStop: boolean;
@@ -385,6 +385,8 @@ export const CONTINUATION_REVIEW_MESSAGE =
   "Returned to review automatically after an interruption. Nothing needed you, so the review picks up where it stopped.";
 export const CONTINUATION_REFUSED_MESSAGE =
   "Paperclip tried to continue this task automatically, but it could not start yet. It will try again shortly.";
+export const CONTINUATION_REFUSED_AGAIN_MESSAGE =
+  "Paperclip still could not start this task. It will keep trying, less often each time, and right away when something on the task changes.";
 
 /** Plain-language activity text for an admitted continuation. No codes, no ids. */
 export function continuationActivityMessage(reason: ViolationReason): string {

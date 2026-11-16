@@ -858,14 +858,15 @@ function ConfirmationCard({
   const setReason = (value: string) => updateDraft({ reason: value });
   const [actionError, setActionError] = useState<string | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
+  const isPlanConfirmation =
+    interaction.payload.target?.type === "issue_document" &&
+    interaction.payload.target.key === "plan";
   const collectsRejectReason = Boolean(
+    isPlanConfirmation ||
     interaction.payload.rejectRequiresReason ||
     interaction.payload.allowDeclineReason ||
     interaction.payload.declineReasonPlaceholder,
   );
-  const isPlanConfirmation =
-    interaction.payload.target?.type === "issue_document" &&
-    interaction.payload.target.key === "plan";
   useEffect(() => {
     if (!draftKey) return;
     const legacyReason = loadStructuredDraft(draftKey, "");

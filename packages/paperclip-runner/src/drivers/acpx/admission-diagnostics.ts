@@ -10,6 +10,7 @@ export const ACPX_ADMISSION_CODES = {
   tool_bridge: "ACPX_ADMISSION_TOOL_BRIDGE",
   runtime: "ACPX_ADMISSION_RUNTIME",
   identity: "ACPX_ADMISSION_IDENTITY",
+  instructions: "ACPX_ADMISSION_INSTRUCTIONS",
 } as const;
 
 const failures = new WeakMap<Error, keyof typeof ACPX_ADMISSION_CODES>();
@@ -17,6 +18,12 @@ const failures = new WeakMap<Error, keyof typeof ACPX_ADMISSION_CODES>();
 /** Preserve the original error and cleanup semantics, including cancellation. */
 export function recordAcpxAdmissionFailure(error: unknown, stage: keyof typeof ACPX_ADMISSION_CODES): unknown {
   if (error instanceof Error && !failures.has(error)) failures.set(error, stage);
+  return error;
+}
+
+export function acpxInstructionsAdmissionError(message: string): Error {
+  const error = new Error(message);
+  failures.set(error, "instructions");
   return error;
 }
 

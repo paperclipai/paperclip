@@ -100,6 +100,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
   return {
     findInvokableAgent: vi.fn(async () => AGENT),
     isCompletedOnboardingHandoffWake: vi.fn(async () => false),
+    skipAlreadyReportedChatWake: vi.fn(async () => false),
     findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
@@ -114,7 +115,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false, includesPersonComment: false })),
     isWatcherCommentDuringFinishingRun: vi.fn(async () => false),
     owedInteractionAnswer: vi.fn(async (): Promise<"deliver" | "blocked" | null> => null),
     isCompletedDelegationMention: vi.fn(async () => false),
@@ -148,6 +149,25 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([true, false])("settles an already-reported chat wake without a run (%s)", async reported => {
+    const completion = wakeCandidate({ id: "completion-wake", reason: "chat_task_completed", wakeReason: "chat_task_completed" });
+    const queue = [completion];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      skipAlreadyReportedChatWake: vi.fn(async () => reported),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction), recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(transaction.skipAlreadyReportedChatWake).toHaveBeenCalledWith(expect.objectContaining({ issueId: ISSUE.id, wake: completion }));
+    if (reported) {
+      expect(result.outcome.kind).not.toBe("promoted");
+      expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    } else {
+      expect(result.outcome.kind).toBe("promoted");
+    }
+  });
   it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
     const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
     const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
@@ -661,7 +681,7 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self", includesPersonComment: false })),
       isWatcherCommentDuringFinishingRun: vi.fn(async () => scenario === "done_watcher_during_run"),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
