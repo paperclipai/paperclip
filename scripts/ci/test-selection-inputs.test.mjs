@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseSync } from "oxc-parser";
 import { repositoryFileInputs } from "./repository-file-inputs.mjs";
-import { selectProjectTests, sourceDependencies } from "./vitest-selection-graph.mjs";
+import { reviewedSetup, selectProjectTests, sourceDependencies } from "./vitest-selection-graph.mjs";
 import { dependencyFingerprint, dependencyReviews } from "./reviewed-test-dependencies.mjs";
 
 const file = "/repo/ui/src/contract.test.ts";
@@ -29,6 +30,19 @@ test("data properties and erased types are not global loaders or mock bypasses",
     'import {vi} from "vitest"; vi.importActual("./input");',
     'const result = (fetch("https://example.invalid") as unknown);',
   ]) assert.ok(sourceDependencies(file, source).reasons.length, source);
+});
+
+test("reviewed setup pins stay matched to the current file contents", () => {
+  // A reviewed-setup entry disables the opaque-dependency guard only while its
+  // sha256 matches the file. A stale pin (e.g. after an edit like #21768 adding
+  // a dynamic import to setup-supertest.ts) makes qualify_test_selection throw
+  // "Opaque setup dependency" on every run. Recompute each pin from source.
+  assert.ok(reviewedSetup.size > 0, "The reviewed-setup registry must not be empty");
+  for (const [relativePath, review] of reviewedSetup) {
+    const actual = createHash("sha256").update(readFileSync(relativePath)).digest("hex");
+    assert.equal(review.hash, actual,
+      `Stale reviewed-setup pin for ${relativePath}; re-review the file and update its hash (and external list).`);
+  }
 });
 
 test("reviewed SQL builders exclude drivers and revoke approval when imported source changes", t => {

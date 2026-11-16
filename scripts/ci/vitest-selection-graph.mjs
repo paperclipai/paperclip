@@ -26,7 +26,7 @@ const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "
 // not reads of arbitrary repository inputs. Pin contents, not just paths: any
 // edit disables this exception until its effects are reviewed again. Continue
 // following local imports even for these files; helper changes affect all tests.
-const reviewedSetup = new Map([
+export const reviewedSetup = new Map([
   ["server/src/__tests__/setup-supertest.ts", {
     hash: "15a53631d5015910d4a3e9506158f9e4bd8269ac340afb52d94089da77fc3ced",
     external: ["supertest/lib/test.js", "../services/instance-settings-cache.js"],
