@@ -987,6 +987,14 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("keeps self-contained chat turns on the supplied wake fast path", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Keep chat turns context-efficient");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("without calling task-context, task-history");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("read that exact document once");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("do not inspect attachments");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("one non-mutating probe per named system");
+  });
+
   it("tells chat to name records the way the person sees them instead of raw IDs, internal codes, tool names or server paths", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("give the specific reason returned by the platform, in plain words");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Write replies for the person, not for the API.");

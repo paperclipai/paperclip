@@ -2520,6 +2520,38 @@ describe("TaskChatComposer", () => {
     expect(onAdd.mock.calls[1][4]).not.toBe(onAdd.mock.calls[0][4]);
   });
 
+  it("offers an accessible new-session action that sends the existing /new command", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" />);
+
+    const newSession = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "New session",
+    )!;
+    expect(newSession.getAttribute("title")).toBe(
+      "Start fresh context here, preserving conversation history",
+    );
+
+    await act(async () => newSession.click());
+
+    expect(onAdd).toHaveBeenCalledWith(
+      "/new",
+      undefined,
+      undefined,
+      undefined,
+      expect.any(String),
+    );
+  });
+
+  it("does not show the new-session action outside agent conversations", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
+
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "New session",
+      ),
+    ).toBeUndefined();
+  });
+
   it("shows model controls only in Coordinator chat and submits the choice without reassignment", async () => {
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     const catalog = vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([{ id: "gpt-6-astra", label: "GPT-6 Astra" }]);
