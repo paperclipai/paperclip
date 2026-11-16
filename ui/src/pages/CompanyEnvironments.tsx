@@ -58,6 +58,7 @@ import {
 } from "@/components/SecretBindingPicker";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { DESKTOP_NOTIFICATION_NAVIGATE_EVENT } from "@/lib/desktop-notifications";
 import { useToast } from "@/context/ToastContext";
 import { environmentDisplayLabel, isPlatformManagedEnvironment } from "@/lib/managed-sandbox-environment";
 import { queryKeys } from "@/lib/queryKeys";
@@ -1760,8 +1761,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     );
   }
 
-  // The form page is routed, so leaving it (tab close, reload, or an in-app
-  // link) silently drops the draft. Intercept both exits while dirty.
+  // The form page is routed, so leaving it (tab close, reload, an in-app
+  // link, or a desktop notification click) silently drops the draft.
+  // Intercept every exit while dirty.
   useEffect(() => {
     if (!environmentHasUnsavedChanges) return;
 
@@ -1803,10 +1805,17 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       event.stopPropagation();
     }
 
+    function handleNotificationNavigate(event: Event) {
+      if (window.confirm(DISCARD_ENVIRONMENT_CHANGES_MESSAGE)) return;
+      event.preventDefault();
+    }
+
     window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener(DESKTOP_NOTIFICATION_NAVIGATE_EVENT, handleNotificationNavigate);
     document.addEventListener("click", handleDocumentClick, true);
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener(DESKTOP_NOTIFICATION_NAVIGATE_EVENT, handleNotificationNavigate);
       document.removeEventListener("click", handleDocumentClick, true);
     };
   }, [environmentHasUnsavedChanges]);

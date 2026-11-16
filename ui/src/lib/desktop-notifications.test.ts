@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  DESKTOP_NOTIFICATION_NAVIGATE_EVENT,
   bindDesktopNotificationNavigation,
   DESKTOP_NOTIFICATION_ICON,
   DESKTOP_NOTIFICATION_STORAGE_KEY,
@@ -249,6 +250,31 @@ describe("desktop notifications", () => {
     expect(instance?.close).toHaveBeenCalledTimes(1);
     expect(focus).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith("/PAP/agents/ada/runs/run-1");
+  });
+
+  it("stays on the page when a listener cancels the notification navigation", () => {
+    const api = createNotificationApi("granted");
+    const navigate = vi.fn();
+    const fakeWindow = new EventTarget();
+    fakeWindow.addEventListener(DESKTOP_NOTIFICATION_NAVIGATE_EVENT, (event) => event.preventDefault());
+    vi.stubGlobal("window", fakeWindow);
+    try {
+      presentDesktopNotification({
+        title: "Ada run failed",
+        tag: "run-status:run-1:failed",
+        href: "/agents/ada/runs/run-1",
+      }, {
+        notification: api.FakeNotification as unknown as DesktopNotificationEnvironment["notification"],
+        isSecureContext: true,
+        focus: vi.fn(),
+        navigate,
+        companyPrefix: "PAP",
+      });
+      api.instances[0]?.onclick?.call(api.instances[0] as unknown as Notification, new Event("click"));
+      expect(navigate).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("uses the bound company prefix when the presenter does not receive one", () => {

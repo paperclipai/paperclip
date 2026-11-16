@@ -42,6 +42,13 @@ export type DesktopNotificationEnvironment = {
   companyPrefix?: string | null;
 };
 
+/**
+ * Dispatched on window, cancelable, before a notification click navigates in
+ * the app. A page holding unsaved work cancels it to keep the user in place,
+ * since this in-app navigation fires neither a link click nor beforeunload.
+ */
+export const DESKTOP_NOTIFICATION_NAVIGATE_EVENT = "paperclip:desktop-notification-navigate";
+
 let navigateTo: ((href: string) => void) | null = null;
 let boundCompanyPrefix: string | null = null;
 
@@ -223,6 +230,12 @@ export function presentDesktopNotification(
       } catch {}
       if (!href) return;
       try {
+        if (
+          typeof window !== "undefined" &&
+          !window.dispatchEvent(new CustomEvent(DESKTOP_NOTIFICATION_NAVIGATE_EVENT, { cancelable: true, detail: { href } }))
+        ) {
+          return;
+        }
         (env.navigate ?? navigateTo)?.(href);
       } catch {}
     };

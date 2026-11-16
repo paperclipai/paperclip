@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { ApiError } from "@/api/client";
+import { DESKTOP_NOTIFICATION_NAVIGATE_EVENT } from "@/lib/desktop-notifications";
 import { tailscaleApi } from "@/api/tailscale";
 
 vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ source: "local_implicit", isInstanceAdmin: false }) } }));
@@ -1030,6 +1031,15 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(getEnvironmentFormPage()).not.toBeNull();
     link.remove();
+
+    confirmSpy.mockClear();
+    const notificationNavigate = new CustomEvent(DESKTOP_NOTIFICATION_NAVIGATE_EVENT, {
+      cancelable: true,
+      detail: { href: "/agents/ada/runs/run-1" },
+    });
+    window.dispatchEvent(notificationNavigate);
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved environment changes?");
+    expect(notificationNavigate.defaultPrevented).toBe(true);
   });
 
   it("shows image setup controls only for providers advertising setup and capture support", async () => {
