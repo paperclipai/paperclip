@@ -440,8 +440,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const requestedUuid = sql<string>`case when ${requestedIssueId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     then ${requestedIssueId}::uuid else null end`;
   const legacyIssue = sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const attempt = sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+    and coalesce(${heartbeatRuns.errorCode}, '') in ('recovery_no_longer_needed', 'issue_closed_before_start'))`;
   const candidate = (condition: ReturnType<typeof and>) => db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition))
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition, attempt))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   const candidates = unionAll(
     candidate(eq(heartbeatRuns.nativeIssueId, requestedUuid)),
