@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, watchFirstIdleCloseFailure } from "./warm-shutdown.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, waitBounded, warmShutdownMarkdown, watchFirstIdleCloseFailure } from "./warm-shutdown.js";
 
 const esc = String.fromCharCode(27);
 const clean = { environmentDeleted: true, environmentDeleteBlocked: null, remainingSandboxes: [] };
@@ -109,5 +109,12 @@ describe("clean warm shutdown check", () => {
     const check = gradeWarmShutdown({ cleanup: clean, serverLog: a1Log, sandboxCaptures: ["idle-close-failure-300f0d61"] });
     expect(check.sandboxCaptures).toEqual(["idle-close-failure-300f0d61"]);
     expect(warmShutdownMarkdown(check)).toContain("idle-close-failure-300f0d61");
+  });
+
+  it("waits for a pending capture only up to its bound", async () => {
+    expect(await waitBounded(() => null, 10)).toBe("none");
+    expect(await waitBounded(() => Promise.resolve(), 1_000)).toBe("settled");
+    expect(await waitBounded(() => Promise.reject(new Error("probe failed")), 1_000)).toBe("settled");
+    expect(await waitBounded(() => new Promise(() => undefined), 20)).toBe("timed_out");
   });
 });

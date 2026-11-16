@@ -6,7 +6,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
-import { gradeR5 } from "./grader.js";
+import { gradeR5, PREPARATION_LIMIT_MS } from "./grader.js";
+import { DEFAULT_UNIVERSAL_BOUNDS, gradeU1 } from "./universal.js";
 import { latestIso, localProcessAlive, noteLivenessEvent, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
@@ -452,6 +453,19 @@ describe("R5 live evidence", () => {
     const observed = slow.samples.map(sample => ({ ...sample, runs: sample.runs?.map(run =>
       run.id === slow.runId && run.status === "running" && sample.at < firstEventAt ? { ...run, preparing: true } : run) }));
     expect(gradeR5(record(observed)).verdict).toBe("pass");
+    expect(gradeU1(record(observed), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("pass");
+  });
+
+  it("R5 and U1 agree on a preparing run: a 6 and 7 minute restore passes both, silence past the preparation bound fails both", () => {
+    for (const quietMs of [360_000, 420_000]) {
+      expect(gradeR5(quietTurn({ preparing: true }, quietMs)).verdict).toBe("pass");
+      expect(gradeU1(quietTurn({ preparing: true }, quietMs), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("pass");
+    }
+    const pastBound = PREPARATION_LIMIT_MS + DEFAULT_UNIVERSAL_BOUNDS.orphanMs + 60_000;
+    expect(gradeR5(quietTurn({ preparing: true }, pastBound))).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^silent_dead_run r1/) });
+    expect(gradeU1(quietTurn({ preparing: true }, pastBound), DEFAULT_UNIVERSAL_BOUNDS)).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^no_owner_no_action/) });
+    expect(gradeU1(quietTurn({}, 420_000), DEFAULT_UNIVERSAL_BOUNDS).verdict).toBe("fail");
   });
 
   it("still fails a run silent past the preparation bound, and a started run silent past the stall bound", () => {

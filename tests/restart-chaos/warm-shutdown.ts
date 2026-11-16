@@ -136,6 +136,16 @@ export function watchFirstIdleCloseFailure(onFailure: (failure: { runId: string 
   };
 }
 
+export async function waitBounded(pending: () => Promise<unknown> | null, ms: number): Promise<"settled" | "timed_out" | "none"> {
+  const work = pending();
+  if (!work) return "none";
+  let timer: NodeJS.Timeout | undefined;
+  const outcome = await Promise.race([work.then(() => "settled" as const, () => "settled" as const),
+    new Promise<"timed_out">(resolve => { timer = setTimeout(() => resolve("timed_out"), ms); })]);
+  clearTimeout(timer);
+  return outcome;
+}
+
 export function warmShutdownMarkdown(check: WarmShutdownCheck): string {
   const out = ["## Clean warm shutdown (no leaked sandboxes)", "",
     `Verdict: ${check.verdict.toUpperCase()}. Environment deleted: ${check.environmentDeleted ?? "n/a"}; sandboxes left running: ${check.leakedSandboxes.length}; `
