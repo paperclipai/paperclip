@@ -34,7 +34,8 @@ export async function hasPendingNativeChildCompletion(db: Db, input: NativeChild
     eq(agentWakeupRequests.agentId, input.agentId),
     or(eq(agentWakeupRequests.reason, "issue_children_completed"),
       and(eq(agentWakeupRequests.reason, "issue_execution_deferred"),
-        sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'wakeReason' = 'issue_children_completed'`)),
+        sql`(${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'wakeReason' = 'issue_children_completed'
+          or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeReasons' @> '["issue_children_completed"]'::jsonb)`)),
     eq(agentWakeupRequests.requestedByActorType, "system"),
     or(eq(agentWakeupRequests.requestedByActorId, "native-status-committer"),
       sql`${agentWakeupRequests.requestedByActorId} like 'native-status-wake-dispatch:%'`),
