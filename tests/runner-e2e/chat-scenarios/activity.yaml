@@ -45,7 +45,8 @@ scenarios:
       - activity/routine-audit
       - routines/history
     context: >-
-      The daily routine was edited yesterday but did not successfully execute this morning.
+      The daily routine's instructions were edited shortly before this morning's scheduled run, and that run
+      did not successfully execute.
     query: >-
       Did the daily launch routine actually do anything this morning?
     expected_outcome: >-
@@ -61,7 +62,7 @@ scenarios:
       Walk me through how the launch work progressed this week.
     expected_outcome: >-
       The agent builds an ordered account from saved timeline and task events, including pauses
-      and failed attempts. It uses the requested timezone and distinguishes recorded facts from
+      and failed attempts. It respects any explicitly requested timezone and distinguishes recorded facts from
       interpretation. Links let the person inspect the major milestones without exposing hidden
       tasks.
   - id: activity.agent-feedback

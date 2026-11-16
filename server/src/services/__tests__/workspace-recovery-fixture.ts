@@ -15,6 +15,7 @@ import { environmentService } from "../environments.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../environment-runtime.js";
 import { readSystemRecovery, createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { adoptSystemRecovery } from "../system-recovery.js";
+import { recoverRetainedWorkspace } from "../workspace-recovery.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -115,7 +116,8 @@ export function useWorkspaceRecoveryFixture(executionTargets: Map<string, Adapte
   });
 }
 
-export async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy", reusable = false, ephemeral = false) {
+export async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy", reusable = false, ephemeral = false,
+  descriptorWorkspaceId?: string) {
   const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), actionId: string = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Workspace recovery", defaultResponsibleUserId: "board", issuePrefix: `R${companyId.slice(0, 6)}` });
   fixtureCompanyIds.add(companyId);
@@ -147,7 +149,7 @@ export async function seed(mode = "native", nativeDescriptor = true, resourceDis
     }) } };
   targets.set(lease.id, target);
   if (nativeDescriptor) {
-    const prepared = await prepareNativeWorkspaceSync({ db, companyId, workspaceId: issueId, workspaceLocalDir: host,
+    const prepared = await prepareNativeWorkspaceSync({ db, companyId, workspaceId: descriptorWorkspaceId ?? issueId, workspaceLocalDir: host,
       runId, lease: lease as EnvironmentLease, target, resourceDisposition });
     expect(prepared).not.toBeNull();
   } else {
@@ -395,8 +397,20 @@ export async function stoppedWorkspaceWorker(f: { runId: string }) {
   return { proof, stopProof, owner, deploymentWorker };
 }
 
-export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof environmentLeases.$inferSelect) => Promise<void>) {
-  const prior = await seed("native", true, "keep_running", true), source = await run(prior.runId);
+export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof environmentLeases.$inferSelect) => Promise<void>,
+  options: { firstOwnerInSharedWorkspace?: boolean } = {}) {
+  const sharedWorkspaceId = options.firstOwnerInSharedWorkspace ? randomUUID() : undefined;
+  const prior = await seed("native", true, "keep_running", true, false, sharedWorkspaceId), source = await run(prior.runId);
+  const descriptorWorkspaceId = sharedWorkspaceId ?? prior.issueId;
+  let executionWorkspaceId: string | null = null, taskId: string = prior.issueId;
+  if (sharedWorkspaceId) {
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: sharedWorkspaceId, companyId: prior.companyId,
+      mode: "isolated_workspace", strategyType: "test", name: "Shared task workspace" }).returning();
+    const [later] = await db.insert(issues).values({ companyId: prior.companyId, assigneeAgentId: source.agentId,
+      status: "blocked", title: "Later task in the same workspace" }).returning();
+    executionWorkspaceId = workspace.id; taskId = later.id;
+    await db.update(environmentLeases).set({ executionWorkspaceId }).where(eq(environmentLeases.id, prior.lease.id));
+  }
   let previousTarget = targets.get(prior.lease.id)!, previousLeaseId = prior.lease.id;
   let previousRunId: string = prior.runId;
   let lease = prior.lease, current = source;
@@ -409,17 +423,17 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
     await environmentService(db).releaseLease(previousLeaseId, "released", { cleanupStatus: "success" });
     const [released] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, previousLeaseId));
     [current] = await db.insert(heartbeatRuns).values({ companyId: prior.companyId, agentId: source.agentId,
-      issueId: prior.issueId, nativeIssueId: prior.issueId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
-      contextSnapshot: { issueId: prior.issueId } }).returning();
-    await db.insert(nativeRunFinalizations).values({ companyId: prior.companyId, issueId: prior.issueId, runId: current.id, phase: "terminal_failure" });
+      issueId: taskId, nativeIssueId: taskId, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
+      contextSnapshot: { issueId: taskId } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: prior.companyId, issueId: taskId, runId: current.id, phase: "terminal_failure" });
     const acquired = await environmentService(db).acquireLease({ companyId: prior.companyId, environmentId: prior.lease.environmentId!,
-      issueId: prior.issueId, heartbeatRunId: current.id, provider: "daytona", providerLeaseId: prior.providerLeaseId,
-      leasePolicy: "reuse_by_environment", replacesReusableLeaseId: previousLeaseId,
+      issueId: taskId, heartbeatRunId: current.id, provider: "daytona", providerLeaseId: prior.providerLeaseId,
+      executionWorkspaceId, leasePolicy: "reuse_by_environment", replacesReusableLeaseId: previousLeaseId,
       metadata: { ...released.metadata, sandboxLeaseAcquisition: { outcome: "resumed" } } });
     [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.id));
     const target = { ...previousTarget, leaseId: lease.id, sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId: prior.providerLeaseId } };
     targets.set(lease.id, target);
-    expect(await prepareNativeWorkspaceSync({ db, companyId: prior.companyId, workspaceId: prior.issueId,
+    expect(await prepareNativeWorkspaceSync({ db, companyId: prior.companyId, workspaceId: descriptorWorkspaceId,
       workspaceLocalDir: prior.host, runId: current.id, lease: lease as EnvironmentLease, target, resourceDisposition: "keep_running" })).not.toBeNull();
     leaseIds.push(lease.id); previousRunId = current.id; previousLeaseId = lease.id; previousTarget = target;
   }
@@ -434,8 +448,8 @@ export async function warmHandoffSource(hops = 1, beforeStop?: (lease: typeof en
   expect(stopping).not.toBeNull();
   expect(await settleStopOnlyCleanup(db, stopping!, { attemptId: String(stopping!.metadata!.pendingCleanupAttemptId),
     receipt: { providerLeaseId: prior.providerLeaseId, state: "stopped" } })).not.toBeNull();
-  return { ...prior, priorRunId: prior.runId, priorLeaseId: prior.lease.id, leaseIds, runId: current.id, lease, actionId: action.id,
-    input: { ...prior.input, runId: current.id, actionId: action.id } };
+  return { ...prior, issueId: taskId, priorRunId: prior.runId, priorLeaseId: prior.lease.id, firstOwnerIssueId: prior.issueId, executionWorkspaceId,
+    leaseIds, runId: current.id, lease, actionId: action.id, input: { ...prior.input, issueId: taskId, runId: current.id, actionId: action.id } };
 }
 
 export async function makeRetryDue(actionId: string) {
@@ -443,4 +457,13 @@ export async function makeRetryDue(actionId: string) {
   const state = readSystemRecovery(current.evidence)!;
   await db.update(issueRecoveryActions).set({ evidence: { ...current.evidence,
     systemRecovery: { ...state, nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, actionId));
+}
+
+/** The recovery worker's steps for every saved-work hold of one run (Retry can
+ * add one beside the board hold), without its post-recovery dispatch. */
+export async function recoverRunHolds(f: Parameters<typeof recoverRetainedWorkspace>[0]) {
+  const holds = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, f.companyId), sql`${issueRecoveryActions.evidence}->>'runId' = ${f.runId}`,
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`)).orderBy(issueRecoveryActions.createdAt);
+  for (const hold of holds) await recoverRetainedWorkspace({ ...f, actionId: hold.id });
 }

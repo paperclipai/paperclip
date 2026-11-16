@@ -143,7 +143,10 @@ function restoreCompactedEvent(chunk: string, source: unknown): unknown {
     const encoded = JSON.stringify(value), end = leading.length + omitted;
     if (end >= encoded.length || !encoded.startsWith(leading) || !tail.startsWith(encoded.slice(end))) continue;
     const restored = head + encoded.slice(leading.length, end) + tail;
-    if (compactRunLogChunk(restored) !== chunk) continue;
+    // Records written before invite tokens were redacted still hold the token;
+    // prove them with the compactor of that release.
+    if (![true, false].some(redactInvitations =>
+      compactRunLogChunk(restored, undefined, { redactInvitations }) === chunk)) continue;
     try {
       const envelope = JSON.parse(restored);
       if (envelope.type === "paperclip.prp.event" && matchesPublishedEvent(source, envelope.event))
@@ -365,14 +368,30 @@ export function createNativeRunLogExporter(input: {
       await input.flush();
     }
   }
+  let trailingReplayThrough = 0;
+  let trailingReplay: Promise<void> | null = null;
+  const serialized = (work: () => Promise<void>) => {
+    const next = queue.then(work);
+    queue = next.catch(() => undefined);
+    return next;
+  };
+  const replayLater = (through: number) => {
+    trailingReplayThrough = Math.max(trailingReplayThrough, through);
+    return trailingReplay ??= serialized(async () => {
+      trailingReplay = null;
+      await replay(trailingReplayThrough);
+    });
+  };
   return {
-    recover: () => replay(),
+    recover: () => serialized(() => replay()),
     async record(sourceCursor: number, chunk: string) {
       if (!Number.isSafeInteger(sourceCursor) || sourceCursor < 1)
         throw new Error("invalid_native_run_log_cursor");
       const bytes = Buffer.byteLength(chunk);
-      if (queuedRecords >= 32 || queuedBytes + bytes > MAX_RUN_LOG_RECORD_BYTES)
-        throw new Error("native_run_log_admission_capacity_exceeded");
+      if (queuedRecords >= 32 || queuedBytes + bytes > MAX_RUN_LOG_RECORD_BYTES) {
+        await replayLater(sourceCursor);
+        return;
+      }
       queuedRecords++;
       queuedBytes += bytes;
       const work = queue

@@ -133,7 +133,7 @@ Gaps: Provider fixtures do not qualify live provider setup or availability.
 
 API: `present` — `PUT /api/chat-endpoints/{endpointId}/github/configuration`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Sponsor and responsible-member selection is limited to self, unless the responsible user is a company owner/admin or instance admin; targets must be active non-viewer members of this company.
 Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
 Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.

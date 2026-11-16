@@ -62,7 +62,12 @@ export default defineConfig({
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
     screenshot: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "only-on-failure",
-    trace: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
+    // Keep DOM snapshots and network, but not the trace's own screencast: a
+    // long chat attempt with a live run indicator streamed thousands of JPEG
+    // frames (incompressible), pushing failure evidence past the 256 MB private
+    // allowance so no evidence survived. The retained failure video still
+    // records the visual timeline.
+    trace: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : { mode: "retain-on-failure", screenshots: false },
     // A developer-supplied system Chromium keeps the local smoke loop
     // installation-free; CI's managed browser retains failure video as usual.
     video: chromiumExecutable || process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
@@ -83,7 +88,11 @@ export default defineConfig({
     stderr: "pipe",
   },
   outputDir: path.join(privateDir, "playwright-output"),
-  reporter: [
+  reporter: process.env.PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT && process.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS === "v1" ? [
+    ["list"],
+    ["json", { outputFile: path.join(privateDir, "framework-report.json") }],
+    ["junit", { outputFile: path.join(privateDir, "junit.xml") }],
+  ] : [
     ["list"],
     ["blob", { outputDir: path.join(privateDir, "blob-report") }],
     ["junit", { outputFile: path.join(privateDir, "junit.xml") }],

@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -826,6 +827,10 @@ export function IssueAssigneePausedNotice({
   resuming?: boolean;
 }) {
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
+
+  // Lifecycle setup is shown by the queued turn and its inline connection card.
+  // Resume changes operator holds; it cannot complete verification.
+  if (!agent.pauseReason && ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return null;
 
   // A freshly created agent is stored as paused with pauseReason "setup" until
   // its setup finishes. That is not an operator pause, so say what is actually
@@ -5178,7 +5183,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -6225,8 +6230,8 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
-      const attempt = beginSubmission(clientRequestId);
+      clientRequestId ??= createUuid();
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
@@ -6921,7 +6926,9 @@ export function IssueChatThread({
                 mentions={mentions}
                 agentMap={agentMap}
                 hasActiveRun={!!hasActiveRun}
-                onStop={hasActiveRun ? onCancelRun : undefined}
+                // A run still waiting in line is stoppable too: Stop takes the
+                // task out of the agent's queue before it ever starts.
+                onStop={activeRunIds.size > 0 ? onCancelRun : undefined}
                 stopPending={stopPending}
                 stopScope={stopScope}
                 currentUserId={currentUserId}

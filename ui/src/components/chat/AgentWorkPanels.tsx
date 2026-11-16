@@ -4,7 +4,6 @@ import { ArrowUpDown, File, FileText, Image, Search, Video } from "lucide-react"
 import type { CompanyArtifact, Issue } from "@paperclipai/shared";
 import { artifactsApi } from "@/api/artifacts";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { StatusIcon } from "@/components/StatusIcon";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -22,6 +21,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /**
  * The agent-scoped side panels shown beside an agent chat: every task the
@@ -131,8 +131,7 @@ export function AgentTasksPanel({
   });
   const tasksView = useQueryView(tasksQuery);
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
   });
 
   const visible = useMemo(() => {

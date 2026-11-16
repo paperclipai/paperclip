@@ -1,13 +1,13 @@
 ---
 title: How Delegation Works
-summary: How the CEO breaks down goals into tasks and assigns them to agents
+summary: How the CEO assigns work when delegation is part of the requested scope
 ---
 
-Delegation is one of Paperclip's most powerful features. You set company goals, and the CEO agent automatically breaks them into tasks and assigns them to the right agents. This guide explains the full lifecycle from your perspective as the board operator.
+Paperclip supports delegation through task assignments and optional parent relationships. Work can stay on the current task. This guide describes the lifecycle when delegation is part of the requested work.
 
 ## The Delegation Lifecycle
 
-When you create a company goal, the CEO doesn't just acknowledge it — it builds a plan and mobilizes the team:
+For a goal whose approved scope includes delegation:
 
 ```
 You set a company goal
@@ -21,7 +21,7 @@ You set a company goal
   → You see results in the dashboard and activity log
 ```
 
-Each step is traceable. Every task links back to the goal through a parent hierarchy, so you can always see why work is happening.
+Tasks that use parent relationships can trace back to the goal through that hierarchy, so you can see why work is happening.
 
 ## What You Need to Do
 
@@ -40,16 +40,16 @@ Your role is strategic oversight, not task management. Here's what the delegatio
    - Is an agent paused or in an error state?
    - Is the CEO's budget exhausted (above 80%, it focuses on critical tasks only)?
 
-## What the CEO Does Automatically
+## What an Approved Delegation Can Include
 
-You do **not** need to tell the CEO to engage specific agents. After you approve its strategy, the CEO:
+When your request or approved plan assigns work to a team, the CEO can:
 
-- **Breaks goals into concrete tasks** with clear descriptions, priorities, and acceptance criteria
-- **Assigns tasks to the right agent** based on role and capabilities (e.g., engineering tasks go to the CTO or engineers, marketing tasks go to the CMO)
-- **Creates subtasks** when work needs to be decomposed further
-- **Hires new agents** when the team lacks capacity for a goal, with hire approvals available when enabled in company settings
-- **Monitors progress** on each heartbeat, checking task status and unblocking reports
-- **Escalates to you** when it encounters something it can't resolve — budget issues, blocked approvals, or strategic ambiguity
+- **Break goals into concrete tasks** with clear descriptions, priorities, and acceptance criteria
+- **Assign tasks to the right agent** based on role and capabilities (e.g., engineering tasks go to the CTO or engineers, marketing tasks go to the CMO)
+- **Use parent relationships** when included in the requested task structure
+- **Hire new agents** when the team lacks capacity for a goal, with hire approvals available when enabled in company settings
+- **Monitor progress** on each heartbeat, checking task status and unblocking reports
+- **Escalate to you** when it encounters something it can't resolve — budget issues, blocked approvals, or strategic ambiguity
 
 ## Common Delegation Patterns
 
@@ -79,7 +79,7 @@ CEO
       └── Content Writer
 ```
 
-The CEO assigns high-level tasks to the CTO and CMO. They break those into subtasks and assign them to their own reports. You only interact with the CEO — the rest happens automatically.
+The CEO assigns high-level tasks to the CTO and CMO. They break those into subtasks and assign them to their own reports. This is an optional structure, not a requirement for each request.
 
 ### Hire-on-Demand
 
@@ -106,11 +106,11 @@ If you've set a goal but nothing is happening, check these common causes:
 | **Budget** | If the CEO is above 80% of its monthly budget, it focuses only on critical tasks and may skip lower-priority delegation. |
 | **Goals** | If no company goals are set, the CEO has nothing to work from. Create a goal first. |
 | **Heartbeat** | Is the CEO's heartbeat enabled and running? Check the agent detail page for recent heartbeat history. |
-| **Agent instructions** | The CEO's delegation behavior is driven by its `AGENTS.md` instructions file. Open the CEO agent's detail page and verify that its instructions path is set and that the file includes delegation directives (subtask creation, hiring, assignment). If AGENTS.md is missing or doesn't mention delegation, the CEO won't know to break down goals and assign work. |
+| **Agent instructions** | Check that its `AGENTS.md` and the task's approved scope agree with the assignment you requested. A goal or plan approval alone does not require subtasks. |
 
 ### "Do I have to tell the CEO to engage engineering and marketing?"
 
-**No.** The CEO will delegate automatically after you approve its strategy. It knows the org chart and assigns tasks based on each agent's role and capabilities. You set the goal and approve the plan — the CEO handles task breakdown and assignment.
+Specify the assignments you want in your request or approved plan. The CEO can carry out that handoff; approving a strategy alone does not require task breakdown.
 
 ### "A task seems stuck"
 

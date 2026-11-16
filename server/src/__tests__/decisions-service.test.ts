@@ -413,6 +413,29 @@ describePg("decisionService", () => {
     expect((await db.select().from(issues).where(eq(issues.id, unreviewedChildId)))[0]?.status).toBe("todo");
   });
 
+  it.each(["canCommentOnOtherTasks", "canReceiveCommentsFromAgents"] as const)("rejects a cancellation reason when %s is revoked before the human decision", async permission => {
+    const peerId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(agents).values({ id: peerId, companyId, name: "Recipient", adapterType: "codex_local" });
+    await db.update(issues).set({ assigneeAgentId: peerId }).where(eq(issues.id, targetIssueId));
+    await db.insert(issues).values({ id: childId, companyId, title: "Child", status: "todo", parentId: targetIssueId });
+    const created = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Cancel?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "cancel_issue_tree", targetIssueId,
+        staleness: "strict", reasonComment: "Agent-authored cancellation reason" }] }],
+    });
+    await db.update(agents).set({ permissions: { interactions: { [permission]: false } } })
+      .where(eq(agents.id, permission === "canCommentOnOtherTasks" ? agentId : peerId));
+
+    const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+
+    expect(result.executions[0]).toMatchObject({ status: "failed",
+      result: { message: expect.stringContaining(permission) } });
+    expect(await db.select({ status: issues.status }).from(issues).where(inArray(issues.id, [targetIssueId, childId])))
+      .toEqual([{ status: "todo" }, { status: "todo" }]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
+  });
+
   it("bounds cyclic issue traversal for snapshots and cancel-tree execution", async () => {
     const childId = randomUUID();
     await db.insert(issues).values({ id: childId, companyId, title: "Cycle child", status: "todo", priority: "medium",

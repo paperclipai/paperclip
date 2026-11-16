@@ -223,6 +223,10 @@ fi
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
 
+if [ "$channel" = "beta" ] || [ "$channel" = "stable" ]; then
+  require_runner_lockfile_current
+fi
+
 if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
   release_fail "stable release notes file is required at $NOTES_FILE before publishing stable."
 fi

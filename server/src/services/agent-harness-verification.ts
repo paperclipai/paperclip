@@ -1,3 +1,6 @@
+import { connectionIntentService } from "./connection-intents.js";
+import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
+import { logger } from "../middleware/logger.js";
 import { createHmac } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, companies, companySecrets, type Db } from "@paperclipai/db";
@@ -195,5 +198,13 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       return "complete";
     } finally { await target.release(status); }
   }
-  return { verify };
+  return { async verify(snapshot: LifecycleAgent) {
+    try { return await verify(snapshot); }
+    catch (error) {
+      if (readAiConnectionConfigurationFailure(error)) await connectionIntentService(db)
+        .requestForQueuedAgentSetup(snapshot.companyId, snapshot.id)
+        .catch(() => logger.warn({ agentId: snapshot.id }, "Could not attach queued agent setup connection request"));
+      throw error;
+    }
+  } };
 }

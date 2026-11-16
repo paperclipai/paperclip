@@ -607,8 +607,8 @@
     {
       "id": "skill:skills/paperclip/references/api-reference.md:621",
       "kind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md#L621:6-create-subtasks-and-delegate",
-      "heading": "6. Create subtasks and delegate.",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L621:6-task-creation-with-an-optional-parent-and-assignee",
+      "heading": "6. Task creation with an optional parent and assignee.",
       "primaryDisposition": "optional_agent_tool",
       "semanticOperation": "scoped_discovery",
       "expectedMockState": "operation_result"

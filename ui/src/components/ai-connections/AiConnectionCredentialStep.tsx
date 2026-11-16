@@ -1,3 +1,4 @@
+import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
@@ -28,6 +29,7 @@ type Props = {
   agentIds: string[];
   allAgents: boolean;
   environmentId?: string;
+  loginAgentId?: string;
   defaults?: ReactNode;
   disabled?: boolean;
   onComplete: (result: { connectionId: string; grantId: string; method: AiAuthMethod }) => void;
@@ -40,7 +42,7 @@ export function AiConnectionCredentialStep(props: Props) {
   return <SubscriptionConnectionStep {...props} />;
 }
 
-function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedMethod, connectionId, name: initialName, hideName, nameForMethod, ownership, agentIds, allAgents, environmentId: suppliedEnvironmentId, onComplete, onCancel, defaults, disabled }: Props) {
+function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedMethod, connectionId, name: initialName, hideName, nameForMethod, ownership, agentIds, allAgents, environmentId: suppliedEnvironmentId, loginAgentId, onComplete, onCancel, defaults, disabled }: Props) {
   const [name, setName] = useState(initialName);
   const [chosenEnvironment, setChosenEnvironment] = useState<string>();
   const client = useQueryClient();
@@ -69,9 +71,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     });
   } catch (error) { environmentError = describeError(error).body; }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
-    env.status === "active" && (env.driver === "local" || (provider !== "google" && env.driver === "sandbox" &&
-    typeof env.config.provider === "string" &&
-    caps.data?.sandboxProviders?.[env.config.provider]?.supportsLoginPty === true)),
+    env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported"))),
   );
   // Signing in may use a different environment from later agent execution.
   // Prefer a supported login environment without changing any agent routing.
@@ -80,8 +80,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     environmentId = loginEnvironments[0]?.id ?? null;
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
-  const sandboxProvider = typeof environment?.config.provider === "string" ? environment.config.provider : "";
-  const canLogin = environment?.driver === "sandbox" && caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
+  const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported");
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || views.some((view) => view.kind === "reconnecting");
   const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };
@@ -100,6 +99,8 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       adapterType={provider === "google" ? "antigravity_runtime" : provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local"}
       environmentId={environmentId}
       canLogin={canLogin}
+      requiresAgent={environment?.driver === "plugin"}
+      agentId={environmentId === (suppliedEnvironmentId ?? settings.data?.defaultEnvironmentId) ? loginAgentId : undefined}
       localEnvironment={environment?.driver === "local"}
       onBack={onCancel}
       onConnected={() => {}}

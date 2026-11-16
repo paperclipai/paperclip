@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
 
 const SCHEMA = "paperclip.kimi.instructions.v1";
 const MAX_BYTES = 32 * 1024;
 
 export function kimiInstructionBinding(content: string) {
   if (typeof content !== "string" || content.includes("\0") || Buffer.from(content).toString("utf8") !== content || Buffer.byteLength(content) > MAX_BYTES) {
-    throw new Error("Kimi Code instructions exceed their bounded size or contain NUL");
+    throw acpxInstructionsAdmissionError("Kimi Code instructions exceed their bounded size or contain NUL");
   }
   const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
   const byteLength = Buffer.byteLength(content);

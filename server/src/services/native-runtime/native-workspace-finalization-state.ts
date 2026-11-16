@@ -1,8 +1,10 @@
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { executionStartedEventPredicate } from "../pre-dispatch-execution-evidence.js";
 import { and, eq, exists, sql } from "drizzle-orm";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { abandonedWorkspaceFilesHeldOnLease } from "../remote-workspace-abandoned-files-hold.js";
 import { matchPreparedRemoteWorkspaceSource, preparedRemoteWorkspaceSource, type WorkspaceSourceLease } from "../remote-workspace-lifecycle.js";
 
 /** File-only recovery for setup that never reached native admission. The live
@@ -62,6 +64,10 @@ function nativeWorkspaceRunProjection() {
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
       'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}', 'bridgeRevision', ${input}#>'{provider,bridgeRevision}'))`,
     controllerBootId: heartbeatRuns.controllerBootId,
+    cancelledBeforeRunnerLaunch: sql<boolean>`${heartbeatRuns.status} = 'cancelled'
+      and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+      and not exists (select 1 from ${heartbeatRunEvents} where ${and(eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId),
+        eq(heartbeatRunEvents.runId, heartbeatRuns.id), executionStartedEventPredicate())})`,
     contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
     remoteReference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'`,
   };
@@ -70,24 +76,30 @@ function nativeWorkspaceRunProjection() {
 function nativeWorkspaceSourcePending(run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "runtimeMode" | "driverKind"> & {
     reference: unknown; executionScope: Record<string, unknown>; observedRemoteWorkspace: boolean;
+    cancelledBeforeRunnerLaunch: boolean;
   }, lease: WorkspaceSourceLease) {
   if (run.runtimeMode !== "native") return false;
   if (run.observedRemoteWorkspace) return true;
+  if (run.cancelledBeforeRunnerLaunch) return false;
   if (nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id
     && reference.providerLeaseId === lease.providerLeaseId;
 }
 
-export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
-  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease,
+  options: { destructive?: boolean } = {}): Promise<boolean> {
+  if (!lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+  const held = () => options.destructive === false ? Promise.resolve(false) : abandonedWorkspaceFilesHeldOnLease(db, lease);
+  if (!lease.heartbeatRunId) return await held();
   const [run] = await db.select(nativeWorkspaceRunProjection()).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
   if (run?.observedRemoteWorkspace) return true;
   if (await preparedRemoteWorkspaceSource(db, lease)) return true;
-  return Boolean(run && nativeWorkspaceSourcePending(run, lease));
+  if (run && nativeWorkspaceSourcePending(run, lease)) return true;
+  return await held();
 }
 
 export async function nativeWorkspaceExportPendingForResource(db: Db, lease: WorkspaceSourceLease, resumingRunId: string | null) {
