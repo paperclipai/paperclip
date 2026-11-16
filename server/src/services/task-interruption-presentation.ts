@@ -22,7 +22,7 @@ import { logger } from "../middleware/logger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
-import { isAcknowledgedLegacyUserStop, isQueuedDependencyWait } from "./run-cancellation.js";
+import { isAcknowledgedLegacyUserStop, isQueuedDependencyWait, runStopPresentationJson } from "./run-cancellation.js";
 import { heldRetryOffersRetry } from "./task-retry-eligibility.js";
 import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
@@ -509,14 +509,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       setupFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'setupCommandFailure' is null
         and ${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.retryOfRunId} is not null
         then ${heartbeatRuns.retryOfRunId} else ${heartbeatRuns.id} end`,
-      resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
-        'cancellation', jsonb_build_object(
-          'source', left(${heartbeatRuns.resultJson}->'cancellation'->>'source', 32),
-          'expected', ${heartbeatRuns.resultJson}->'cancellation'->'expected',
-          'initiator', jsonb_build_object('type', left(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', 32)),
-          'reason', left(${heartbeatRuns.resultJson}->'cancellation'->>'reason', 512),
-          'recordedAt', left(${heartbeatRuns.resultJson}->'cancellation'->>'recordedAt', 64)),
-        'executionCancellation', jsonb_build_object('state', ${heartbeatRuns.resultJson}->'executionCancellation'->'state'),
+      resultJson: sql<Record<string, unknown>>`${runStopPresentationJson(heartbeatRuns.resultJson)} || jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'stopReason', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'stopReason'`, 80)},
         'timeoutSource', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'timeoutSource'`, 80)},
         'timeoutFired', coalesce(${heartbeatRuns.resultJson}->'timeoutFired' = 'true'::jsonb, false),

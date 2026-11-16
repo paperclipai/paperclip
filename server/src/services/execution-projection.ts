@@ -23,7 +23,7 @@ import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
-import { isAcknowledgedLegacyUserStop } from "./run-cancellation.js";
+import { isAcknowledgedLegacyUserStop, runStopPresentationJson } from "./run-cancellation.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const ANOTHER_ROUTINE_TASK = "another task in this routine";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
@@ -52,14 +52,7 @@ const executionRunColumns = {
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait',
     'executionRetryAccounting', ${heartbeatRuns.contextSnapshot}->'executionRetryAccounting')`,
-  resultJson: sql<Record<string, unknown>>`jsonb_build_object(
-    'cancellation', jsonb_build_object(
-      'source', left(${heartbeatRuns.resultJson}->'cancellation'->>'source', 32),
-      'expected', ${heartbeatRuns.resultJson}->'cancellation'->'expected',
-      'initiator', jsonb_build_object('type', left(${heartbeatRuns.resultJson}->'cancellation'->'initiator'->>'type', 32)),
-      'reason', left(${heartbeatRuns.resultJson}->'cancellation'->>'reason', 512),
-      'recordedAt', left(${heartbeatRuns.resultJson}->'cancellation'->>'recordedAt', 64)),
-    'executionCancellation', jsonb_build_object('state', ${heartbeatRuns.resultJson}->'executionCancellation'->'state'),
+  resultJson: sql<Record<string, unknown>>`${runStopPresentationJson(heartbeatRuns.resultJson)} || jsonb_build_object(
     'finalizationPhase', ${heartbeatRuns.resultJson}->'finalizationPhase',
     'finalizationReasonCode', ${heartbeatRuns.resultJson}->'finalizationReasonCode')`,
 };

@@ -15,6 +15,7 @@ import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns,
   heartbeatRunEvents,
+  environmentLeases,
   issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
@@ -35,6 +36,7 @@ import { errorHandler } from "../middleware/index.ts";
 import { issueService } from "../services/issues.ts";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../adapters/index.ts";
 import { HttpError } from "../errors.ts";
+import { settleCancelledLegacyPreparation } from "../services/legacy-execution-recovery.ts";
 
 const gates = vi.hoisted(() => new Map<string, (() => void) | null>());
 const preparation = vi.hoisted(() => ({
@@ -137,7 +139,7 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
         memberships: [{ companyId, membershipRole: "admin", status: "active" }], isInstanceAdmin: false };
       next();
     });
-    app.use("/api", agentRoutes(db));
+    app.use("/api", agentRoutes(db, {}));
     app.use("/api", issueRoutes(db));
     app.use(errorHandler);
     let entered = false;
@@ -156,7 +158,7 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       const settled = await request(app).get(`/api/heartbeat-runs/${run.id}`);
       expect(settled.status).toBe(200);
-      expect(settled.body.resultJson.executionCancellation).toMatchObject({ state: "acknowledged", acknowledgedAt: expect.any(String) });
+      expect(settled.body.resultJson.executionCancellation).toMatchObject({ state: "acknowledged", proof: "preparation_settled", acknowledgedAt: expect.any(String) });
       expect(executedIssueIds()).not.toContain(issue.id);
       expect((await executionProjectionsForRuns(db, companyId, [run.id])).get(run.id)).toMatchObject({
         phase: "completed", label: "Stopped", cause: null,
@@ -191,6 +193,30 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
       expect((await heartbeat.getRun(run.id))?.status).toBe("cancelled");
     } finally { release(); }
   }, 60_000);
+
+  it("keeps Stop unconfirmed while a retained local lease has not been released", async () => {
+    const { companyId, agentId } = await seed();
+    const [issue] = await db.insert(issues).values({ companyId, assigneeAgentId: agentId, title: "Retained preparation", status: "in_progress" }).returning();
+    const requestedAt = new Date().toISOString();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+      status: "cancelled", runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(), errorCode: "cancelled",
+      contextSnapshot: { issueId: issue.id }, resultJson: {
+        cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "responsible-user" }, reason: "Stop", recordedAt: requestedAt },
+        executionCancellation: { state: "requested", requestedAt },
+      } }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId: issue.id, heartbeatRunId: run.id,
+      provider: "local", status: "active" }).returning();
+    expect(await settleCancelledLegacyPreparation(db, { run, providerDispatchStarted: false })).toBeNull();
+    expect((await heartbeat.getRun(run.id))?.resultJson?.executionCancellation).toEqual({ state: "requested", requestedAt });
+    expect((await executionProjectionsForRuns(db, companyId, [run.id])).get(run.id)?.phase).toBe("failed");
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, lease.id));
+    const settled = await settleCancelledLegacyPreparation(db, { run, providerDispatchStarted: false });
+    expect(settled?.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", proof: "preparation_settled", requestedAt });
+    expect((await executionProjectionsForRuns(db, companyId, [run.id])).get(run.id)).toMatchObject({ phase: "completed", label: "Stopped" });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "resolved", canRetry: false });
+  });
 
   it.each(["todo", "in_progress"] as const)("takes a %s task out of line in one Stop and still promotes the agent's next task", async (waitingStatus) => {
     const { companyId, agentId } = await seed();

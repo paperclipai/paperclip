@@ -300,6 +300,9 @@ that provider work never started. A terminal run status alone is not this proof.
 The task page shows a confirmed operator Stop as Stopped and accepts a new message
 through normal admission. Stop does not automatically restart the task. Recovery
 holds, approvals, budget limits and uncertain termination keep their own gates.
+The receipt's `preparation_settled` proof identifies that evidence path. Both page
+projections read the same bounded evidence and require that proof; an acknowledged
+receipt from a different path does not clear the preparation failure notice.
 
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and

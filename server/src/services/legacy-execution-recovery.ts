@@ -509,7 +509,7 @@ export async function settleCancelledLegacyPreparation(
       // The preparation owner has unwound and every execution reference agrees.
       // Confirm Stop without waiting for a provider that was never started.
       executionCancellation: { ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
-        state: "acknowledged", acknowledgedAt: now.toISOString() },
+        state: "acknowledged", proof: "preparation_settled", acknowledgedAt: now.toISOString() },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     // The automatic disposition may already have closed the incident with
     // replay blocked, and moved the task to blocked. Correct both verdicts.

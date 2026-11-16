@@ -312,12 +312,12 @@ describe("intentional legacy Stop presentation", () => {
   it("clears the failed-attempt notice only after the requested Stop is acknowledged", () => {
     const stopped = { ...run, runtimeMode: "legacy" as const, status: "cancelled", finishedAt: new Date(), resultJson: {
       cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() },
-      executionCancellation: { state: "acknowledged" },
+      executionCancellation: { state: "acknowledged", proof: "preparation_settled" },
     } };
     const input = { run: stopped, agent, paused: false, approval: false };
     expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "resolved", canRetry: false });
     expect(projectTaskInterruption(issue, { ...input, run: { ...stopped, resultJson: { ...stopped.resultJson,
-      executionCancellation: { state: "requested" } } } }).state).not.toBe("resolved");
+      executionCancellation: { state: "requested" } } } })).toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
     expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
   });
