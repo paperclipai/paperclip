@@ -176,6 +176,27 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
   });
 
+  it("keeps the agent's routines unassigned and pauses active ones when deleting the agent", async () => {
+    const { agentId, companyId } = await seedFixture();
+    const activeRoutineId = randomUUID();
+    const archivedRoutineId = randomUUID();
+
+    await db.insert(routines).values([
+      { id: activeRoutineId, companyId, title: "Daily brief", assigneeAgentId: agentId, status: "active" },
+      { id: archivedRoutineId, companyId, title: "Old report", assigneeAgentId: agentId, status: "archived" },
+    ]);
+
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, agentId));
+    const removed = await agentService(db).remove(agentId);
+
+    expect(removed?.id).toBe(agentId);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    const [activeRoutine] = await db.select().from(routines).where(eq(routines.id, activeRoutineId));
+    const [archivedRoutine] = await db.select().from(routines).where(eq(routines.id, archivedRoutineId));
+    expect(activeRoutine).toMatchObject({ assigneeAgentId: null, status: "paused" });
+    expect(archivedRoutine).toMatchObject({ assigneeAgentId: null, status: "archived" });
+  });
+
   it("removes issue read states and activity rows before deleting the company", async () => {
     const { companyId, issueId, runId } = await seedFixture();
     const documentId = randomUUID();
