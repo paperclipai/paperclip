@@ -32,12 +32,15 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore, credenti
       if (previous?.status === "removed") throw conflict("This registration was removed. Continue the selected manual setup.");
       let activeRegistration = previous;
       if (previous?.appId && isProvisionedSlackSetup(current.endpoint.setup.slackSetupMethod)) {
-        await ensureSlackManifestScopesCurrent(db, {
-          endpointId,
-          companyId: current.endpoint.companyId,
-          agentName: current.agentName,
-          app: current.endpoint.setup.slackApp,
-          setup: current.endpoint.setup,
+        await db.transaction(async (tx) => {
+          await lease.assertOwned(tx);
+          await ensureSlackManifestScopesCurrent(tx, {
+            endpointId,
+            companyId: current.endpoint.companyId,
+            agentName: current.agentName,
+            app: current.endpoint.setup.slackApp,
+            setup: current.endpoint.setup,
+          });
         });
         activeRegistration = (await registration(endpointId)) ?? previous;
       }

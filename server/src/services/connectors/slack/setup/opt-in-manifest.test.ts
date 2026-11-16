@@ -525,6 +525,71 @@ describe("Slack opt-in manifest machinery", () => {
       expect(updatedRow!.errorCode).toBeNull();
     });
 
+    it("aborts manifest scope refresh and rolls back when lease is lost during create", async () => {
+      const f = await fixture();
+      const webhookUrl = `https://paperclip.example/api/chat-webhooks/${f.endpoint.publicId}/slack`;
+      // Old manifest lacking im:write
+      const oldManifest = buildSlackAppManifest({
+        app: f.endpoint.setup.slackApp!,
+        agentName: "Maya",
+        webhookUrl,
+      });
+      (oldManifest as any).oauth_config.scopes.bot = ["chat:write", "commands"];
+      const originalHash = slackInstallManifestHash(oldManifest);
+      await db!.update(chatEndpoints).set({
+        setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackSetupMethod}', '"automatic"'::jsonb)`,
+      }).where(eq(chatEndpoints.id, f.endpoint.id));
+      await db!.update(chatSlackRegistrations).set({
+        manifest: oldManifest,
+        manifestHash: originalHash,
+        status: "configured",
+        errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      const { createCustomerOwnedSetup } = await import("./customer-owned.js");
+      const { createSlackRegistrationStore } = await import("./registration.js");
+
+      const store = createSlackRegistrationStore(db!, {
+        publicOrigin: () => "https://paperclip.example",
+        webhookOrigin: () => "https://paperclip.example",
+        withLock: async (_endpointId, work) =>
+          work({
+            assertOwned: async () => {
+              throw new Error("lease lost");
+            },
+          } as any),
+        runtimeSigningSecret: async () => "signing-secret",
+        runtimeBotToken: async () => "xoxb-bot",
+        canWelcome: async () => true,
+        linkInstaller: async () => undefined,
+        configure: async () => undefined,
+        fetch: vi.fn() as any,
+      });
+
+      const credentials = {
+        accessToken: async () => "xoxe-access-token",
+      } as any;
+
+      const setup = createCustomerOwnedSetup(store, credentials);
+      const actor = { userId: "user-1", sessionId: null, bypassPermissionCheck: true };
+
+      await expect(
+        setup.create(f.endpoint.id, actor, {
+          requestId: randomUUID(),
+          credentials: { configurationToken: "xoxe-test-token" },
+        }),
+      ).rejects.toThrow("lease lost");
+
+      const [row] = await db!
+        .select()
+        .from(chatSlackRegistrations)
+        .where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      const botScopes = (row!.manifest as any).oauth_config.scopes.bot;
+      expect(botScopes).not.toContain("im:write");
+      expect(row!.errorCode).toBeNull();
+      expect(row!.manifestHash).toBe(originalHash);
+    });
+
     it("preserves legacy manifest opt-in scopes when refreshing an untouched legacy install lacking im:write", async () => {
       const f = await fixture();
       // Untouched legacy install: neither opt-in field present
