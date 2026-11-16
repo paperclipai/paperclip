@@ -10280,8 +10280,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (method === "conversations.members" && args.channel === "GNOUSER") return Response.json({ ok: true, members: ["UOTHER"] });
       return fetched(input, init);
     });
-    await expect(executeSlackTool(db, binding, "slack_channels", {}, directoryFetch as typeof fetch)).resolves.toMatchObject({ channels: [{ id: "COTHER" }], nextCursor: "directory-next" });
-    await expect(executeSlackTool(db, binding, "slack_channels", { cursor: "directory-next" }, directoryFetch as typeof fetch)).resolves.toMatchObject({ channels: [{ id: "COTHER" }], nextCursor: "directory-next" });
+    await expect(executeSlackTool(db, binding, "slack_channels", {}, directoryFetch as typeof fetch)).resolves.toMatchObject({
+      channels: [{ id: "DREQUESTER", direct: true }, { id: "GPRIVATE", private: true }, { id: "COTHER" }],
+      nextCursor: "directory-next",
+    });
+    await expect(executeSlackTool(db, binding, "slack_channels", { cursor: "directory-next" }, directoryFetch as typeof fetch)).resolves.toMatchObject({
+      channels: [{ id: "DREQUESTER", direct: true }, { id: "GPRIVATE", private: true }, { id: "COTHER" }],
+      nextCursor: "directory-next",
+    });
     const usersConversationsCalls = directoryFetch.mock.calls.filter(call => String(call[0]).endsWith("/users.conversations"));
     expect(usersConversationsCalls).toHaveLength(2);
     expect(Object.fromEntries(new URLSearchParams(String(usersConversationsCalls[0][1]?.body ?? "")))).toMatchObject({
@@ -10315,7 +10321,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       matches: [{ user: "UUNLINKED", ts: "7000.1" }],
       inspected: [{ channel: "COTHER", count: 1, nextCursor: "older", hasMore: true }],
     });
-    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, fetched as typeof fetch)).rejects.toThrow("in a DM");
+    await expect(executeSlackTool(db, binding, "slack_history", { channel: "GPRIVATE" }, fetched as typeof fetch)).resolves.toMatchObject({
+      sourceTrust: "untrusted",
+      nextCursor: "older",
+      hasMore: true,
+    });
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "slack-tools-integration-signing-secret");
     onTestFinished(() => vi.unstubAllEnvs());
     const originalFetch = globalThis.fetch;

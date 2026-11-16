@@ -31,7 +31,7 @@ import {
 } from "./slack-client.js";
 import {
   authorizeSlackChannel,
-  recordSlackReadBoundary,
+  recordSlackPrivateRead,
 } from "./slack-access.js";
 import {
   assertSlackToolEnabledForSetup,
@@ -219,7 +219,7 @@ export async function executeSlackTool(
   };
   const readable = async (id: string) => {
     const channel = await authorizeSlackChannel(authority, api, id, dmOptions);
-    await recordSlackReadBoundary(db, authority, channel);
+    await recordSlackPrivateRead(db, authority, channel);
     return channel;
   };
   if (name === "slack_channels") {
@@ -239,23 +239,6 @@ export async function executeSlackTool(
           String(channel.id),
           dmOptions,
         );
-        if (
-          authorized.is_private === true ||
-          authorized.is_mpim === true ||
-          authorized.is_im === true
-        ) {
-          if (
-            authority.conversation &&
-            !authority.conversation.isDirectMessage &&
-            authorized.id !==
-              authority.conversation.externalConversationId.replace(
-                /^slack:/,
-                "",
-              )
-          )
-            continue;
-          await recordSlackReadBoundary(db, authority, authorized);
-        }
         channels.push({
           id: authorized.id,
           name: authorized.name,

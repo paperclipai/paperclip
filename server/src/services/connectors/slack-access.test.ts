@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   authorizeSlackChannel,
   authorizeSlackWrite,
-  recordSlackReadBoundary,
-  slackPublicationAllowed,
+  recordSlackPrivateRead,
 } from "./slack-access.js";
 import { slackClient } from "./slack-client.js";
 import type { SlackTaskAuthority } from "./slack-authority.js";
@@ -128,18 +127,15 @@ describe("Slack access and publication boundaries", () => {
           }),
         ).rejects.toThrow("not an active member");
     });
-    it("keeps the private-research rule: private content goes only to its source or the requester's DM", async () => {
+    it("allows writes to authorized other-user DMs regardless of prior private reads", async () => {
       const options = { allowOtherUserDm: true };
       const readPrivate = fakeDb([{ payload: { channelId: "G2", requesterId: "U1" } }]);
-      // Nothing private was read: a DM with another person is fine.
       expect(
         await authorizeSlackWrite(fakeDb([]), authority, dmApi("UOTHER"), "D9", options),
       ).toMatchObject({ user: "UOTHER" });
-      // Private research read in this task cannot be sent to someone else's DM...
-      await expect(
-        authorizeSlackWrite(readPrivate, authority, dmApi("UOTHER"), "D9", options),
-      ).rejects.toThrow("Private research");
-      // ...but still can be sent to the requester's own DM.
+      expect(
+        await authorizeSlackWrite(readPrivate, authority, dmApi("UOTHER"), "D9", options),
+      ).toMatchObject({ user: "UOTHER" });
       expect(
         await authorizeSlackWrite(readPrivate, authority, dmApi("U1"), "D9", options),
       ).toMatchObject({ user: "U1" });
@@ -187,60 +183,49 @@ describe("Slack access and publication boundaries", () => {
       "must belong",
     );
   });
-  it("rejects cross-private research in a public origin before recording or returning source data", async () => {
-    await expect(
-      recordSlackReadBoundary(fakeDb([]), authority, {
-        id: "G2",
-        is_private: true,
+  it("records private channel reads for audit without throwing on cross-channel access", async () => {
+    const inserted: unknown[] = [];
+    const db = {
+      insert: () => ({
+        values: (val: unknown) => {
+          inserted.push(val);
+          return {
+            onConflictDoNothing: async () => {},
+          };
+        },
       }),
-    ).rejects.toThrow("in a DM");
-  });
-  it("private-source restrictions cover automatic messages and uploads alike", async () => {
-    const db = fakeDb([
-      {
-        payload: { channelId: "G2", requesterId: "U1", allowedDmChannel: "D1" },
+    } as unknown as Db;
+    await recordSlackPrivateRead(db, authority, {
+      id: "G2",
+      is_private: true,
+    });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({
+      kind: "slack_private_source",
+      providerActionId: `slack-private:${authority.issueId}:G2:${authority.slackUserId}`,
+      payload: {
+        channelId: "G2",
+        requesterId: authority.slackUserId,
       },
-    ]);
-    expect(
-      await slackPublicationAllowed(
-        db,
-        "company",
-        "endpoint",
-        "task",
-        "C1",
-        null,
-      ),
-    ).toBe(false);
-    expect(
-      await slackPublicationAllowed(
-        db,
-        "company",
-        "endpoint",
-        "task",
-        "G2",
-        null,
-      ),
-    ).toBe(true);
-    expect(
-      await slackPublicationAllowed(
-        db,
-        "company",
-        "endpoint",
-        "task",
-        "D1",
-        null,
-      ),
-    ).toBe(true);
-    expect(
-      await slackPublicationAllowed(
-        db,
-        "company",
-        "endpoint",
-        "task",
-        "D2",
-        "UOTHER",
-      ),
-    ).toBe(false);
+    });
+  });
+  it("does not record public channel reads for audit", async () => {
+    const inserted: unknown[] = [];
+    const db = {
+      insert: () => ({
+        values: (val: unknown) => {
+          inserted.push(val);
+          return {
+            onConflictDoNothing: async () => {},
+          };
+        },
+      }),
+    } as unknown as Db;
+    await recordSlackPrivateRead(db, authority, {
+      id: "C1",
+      is_private: false,
+    });
+    expect(inserted).toHaveLength(0);
   });
 });
 describe("Slack contracts and transport", () => {
