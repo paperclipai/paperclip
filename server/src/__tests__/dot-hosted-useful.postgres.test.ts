@@ -70,8 +70,8 @@ vi.mock("@paperclipai/db",async importOriginal=>{
   createDb:(...args:Parameters<typeof actual.createDb>)=>{
    const db=attach(actual.createDb(...args));attach(actual.livenessDb(db));attach(actual.checkpointDb(db));attach(actual.fileStorageDb(db));return db;
   },
-  withDedicatedDbConnection:async<T>(db:ReturnType<typeof actual.createDb>,action:(dedicated:ReturnType<typeof actual.createDb>)=>Promise<T>)=>
-   actual.withDedicatedDbConnection(db,async dedicated=>{attach(dedicated);databaseObservation.dedicatedOpen++;try{return await action(dedicated);}finally{databaseObservation.dedicatedOpen--;}}),
+  withDedicatedDbConnection:async<T>(db:ReturnType<typeof actual.createDb>,action:(dedicated:ReturnType<typeof actual.createDb>)=>Promise<T>,options?:Parameters<typeof actual.withDedicatedDbConnection>[2])=>
+   actual.withDedicatedDbConnection(db,async dedicated=>{attach(dedicated);databaseObservation.dedicatedOpen++;try{return await action(dedicated);}finally{databaseObservation.dedicatedOpen--;}},options),
   createOwnedDatabaseListener:(db:ReturnType<typeof actual.createDb>)=>{
    const listener=actual.createOwnedDatabaseListener(db);databaseObservation.listenersOpen++;let closed=false;
    return{listen:listener.listen,async close(){await listener.close();if(!closed){closed=true;databaseObservation.listenersOpen--;}}};

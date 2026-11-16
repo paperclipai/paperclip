@@ -29,8 +29,8 @@ export async function installDotChildPorts(input: {
   const createDb:(...args:Parameters<typeof actual.createDb>)=>ReturnType<typeof actual.createDb>=(...args)=>{
     const db=attach(actual.createDb(...args));attach(actual.livenessDb(db));attach(actual.checkpointDb(db));attach(actual.fileStorageDb(db));return db;};
   mock.module("@paperclipai/db",{namedExports:{...actual,createDb,
-    withDedicatedDbConnection:async<T>(db:ReturnType<typeof actual.createDb>,action:(db:ReturnType<typeof actual.createDb>)=>Promise<T>)=>
-      actual.withDedicatedDbConnection(db,async dedicated=>{attach(dedicated);database.dedicated++;try{return await action(dedicated);}finally{database.dedicated--;}}),
+    withDedicatedDbConnection:async<T>(db:ReturnType<typeof actual.createDb>,action:(db:ReturnType<typeof actual.createDb>)=>Promise<T>,options?:Parameters<typeof actual.withDedicatedDbConnection>[2])=>
+      actual.withDedicatedDbConnection(db,async dedicated=>{attach(dedicated);database.dedicated++;try{return await action(dedicated);}finally{database.dedicated--;}},options),
     createOwnedDatabaseListener:(db:ReturnType<typeof actual.createDb>)=>{const listener=actual.createOwnedDatabaseListener(db);database.listeners++;let closed=false;
       return{listen:listener.listen,async close(){await listener.close();if(!closed){closed=true;database.listeners--;}}};},
   }});

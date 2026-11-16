@@ -15,10 +15,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import express, { type Request } from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { budgetPolicies, costEvents, grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
+import { budgetPolicies, costEvents, grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
   heartbeatRuns, mcpOauthGrants, issueAttachments, activityLog, agentWakeupRequests, issueComments, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, mcpEventSubscriptions, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
@@ -41,6 +42,8 @@ import { setupRunnerPrpWebSocketServer } from "../realtime/runner-prp-ws.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { resolveHeartbeatNativeRuntimeMode, resolveNativeRuntimeMode } from "../services/native-runtime/runtime-mode.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 import { consumeDotHistoryReceipt, publishActiveDotComment } from "../services/dot-assignment-follow-up.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
@@ -63,7 +66,7 @@ describe("durable Dot Runner integration", () => {
     if (!prebuiltRunner) execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
-    db = createDb(externalUrl ?? temporary.connectionString);
+    db = createDb(externalUrl ?? temporary.connectionString, externalUrl ? { maxConnections: 4 } : undefined);
     root = await mkdtemp(join(tmpdir(), "paperclip-dot-state-"));
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY", prebuiltRunner ?? join(runnerRoot, "runner/target/release", process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd"));
@@ -79,6 +82,7 @@ describe("durable Dot Runner integration", () => {
   afterAll(async () => {
     try {
       await db?.$client.end({ timeout: 1 });
+      if (externalUrl) await closeRegisteredClients(externalUrl, { scope: "database" });
       await temporary?.cleanup();
     } finally {
       try {
@@ -124,7 +128,8 @@ describe("durable Dot Runner integration", () => {
     })).toMatchObject({ kind: "native", profile: { backend: "openai_dot_mcp" } });
   });
 
-  async function fixture(options: { cloudOrigin?: string; provider?: "openai_dot" | "grok_bot" } = {}) {
+  async function fixture(options: { cloudOrigin?: string; provider?: "openai_dot" | "grok_bot" } = {}, database: ReturnType<typeof createDb> = db) {
+    const db = database;
     const provider = options.provider ?? "openai_dot";
     if (provider === "grok_bot") await instanceSettingsService(db).updateExperimental({ enableGrokBot: true, enableNativeRunner: true });
     const userId = randomUUID();
@@ -397,6 +402,161 @@ describe("durable Dot Runner integration", () => {
       await expect(f.broker.requestTurn(f.principal, "After revoke", randomUUID())).rejects.toThrow();
     } finally { await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, holding.run.id)); }
   });
+
+  it("keeps board and Dot admission transaction-local with a two-connection pool", async () => {
+    const databaseUrl = externalUrl ?? temporary.connectionString;
+    const applicationName = `dot-admission-pool2-${randomUUID()}`;
+    const owned = createDb(databaseUrl, { maxConnections: 2, statementTimeoutMs: 1500, applicationName });
+    expect(owned.$client.options.max).toBe(2);
+    const dialect = new PgDialect();
+    const actors: Promise<unknown>[] = [], transactionErrors: unknown[] = [], cleanupErrors: unknown[] = [];
+    let primary: unknown, f: Awaited<ReturnType<typeof fixture>> | undefined;
+    let heartbeat: ReturnType<typeof heartbeatService> | undefined;
+    let transactionObserver: { mockRestore(): void } | undefined;
+    const priorDebug = owned.$client.options.debug;
+    let releaseFirst!: () => void;
+    const released = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let firstHeld!: () => void, firstFailed!: (error: unknown) => void;
+    const held = new Promise<void>((resolve, reject) => { firstHeld = resolve; firstFailed = reject; });
+    let firstTransaction: typeof owned | undefined, firstBackend = 0, firstCaptured = false;
+    let issueLockCalls = 0;
+    const issueLockConnections = new Set<number>();
+    let blocked: { pid: number; backendBirth: string; blockedByFirst: boolean; active: boolean } | undefined;
+    let actorResults: PromiseSettledResult<unknown>[] = [];
+    // Normal task-drain policy retains admission but refuses dispatch. No holding
+    // run/offer is seeded, and no Native executor or provider is needed here.
+    startTaskDrain();
+    try {
+      f = await fixture({}, owned);
+      await owned.update(companies).set({ defaultResponsibleUserId: f.userId }).where(eq(companies.id, f.company.id));
+      await owned.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, f.agent.id));
+      const issue = await issueService(owned).create(f.company.id, {
+        title: "Real board and Dot pool-two admission", status: "todo", assigneeAgentId: f.agent.id,
+        responsibleUserId: f.userId, trustExplicitResponsibleUserId: true, createdByUserId: f.userId,
+      });
+      heartbeat = heartbeatService(owned);
+      dotRunnerBroker(owned, { heartbeat });
+      const issueLock = (text: string, parameters: readonly unknown[]) =>
+        /\bfrom\s+"?issues"?\b/i.test(text) && /\bfor\s+update\b/i.test(text) && parameters.includes(issue.id);
+      owned.$client.options.debug = (connection, query, parameters, types) => {
+        if (typeof priorDebug === "function") priorDebug(connection, query, parameters, types);
+        if (issueLock(query, parameters)) { issueLockCalls++; issueLockConnections.add(connection); }
+      };
+      const transaction = owned.transaction.bind(owned);
+      const observedTransaction: typeof owned.transaction = (action, config) => transaction(async tx => {
+        const execute = tx.execute.bind(tx);
+        tx.execute = ((query: Parameters<typeof tx.execute>[0]) => {
+          const compiled = typeof query === "string" ? { sql: query, params: [] } : dialect.sqlToQuery(query.getSQL());
+          const result = execute(query);
+          if (firstCaptured || !issueLock(compiled.sql, compiled.params)) return result;
+          firstCaptured = true;
+          // The real statement must have acquired the row before the barrier.
+          return result.then(async value => {
+            const [backend] = await execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+            firstBackend = backend!.pid;
+            firstTransaction = tx as unknown as typeof owned;
+            firstHeld();
+            await released;
+            return value;
+          });
+        }) as typeof tx.execute;
+        try { return await action(tx); }
+        catch (error) { transactionErrors.push(error); throw error; }
+      }, config);
+      transactionObserver = vi.spyOn(owned, "transaction").mockImplementation(observedTransaction);
+      const board = Promise.resolve(queueIssueAssignmentWakeup({ heartbeat, issue,
+        reason: "issue_assigned", mutation: "create", contextSource: "issue.create",
+        requestedByActorType: "user", requestedByActorId: f.userId, requestedByActorCompanyId: f.company.id,
+        rethrowOnError: true,
+      }));
+      actors.push(board);
+      void board.then(() => { if (!firstTransaction) firstFailed(new Error("Board admission did not acquire its real issue lock")); }, firstFailed);
+      await held;
+      const requestId = randomUUID();
+      const dot = f.broker.requestWork(f.principal, issue.id, requestId);
+      actors.push(dot);
+      // Attach both rejection owners before the real server timeout can fire.
+      const joined = Promise.allSettled(actors);
+      try {
+        await vi.waitFor(() => {
+          expect(issueLockCalls).toBe(2);
+          expect(issueLockConnections.size).toBe(2);
+        }, { timeout: 1000, interval: 5 });
+        // Reuse the already-held transaction/connection: no observer pool or
+        // third checkout can make the escaped-root-Db path succeed accidentally.
+        await vi.waitFor(async () => {
+          const rows = await firstTransaction!.execute(sql`
+            select pid, backend_start::text as "backendBirth",
+              ${firstBackend} = any(pg_blocking_pids(pid)) as "blockedByFirst",
+              state = 'active' as active
+            from pg_stat_activity
+            where datname = current_database() and application_name = ${applicationName}
+              and pid <> pg_backend_pid() and ${firstBackend} = any(pg_blocking_pids(pid))
+            limit 2
+          `) as unknown as Array<{ pid: number; backendBirth: string; blockedByFirst: boolean; active: boolean }>;
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({ blockedByFirst: true, active: true });
+          blocked = rows[0];
+        }, { timeout: 1000, interval: 5 });
+      } finally { releaseFirst(); }
+      actorResults = await joined;
+      const rejected = actorResults.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      const sqlState = (error: unknown): string | undefined => {
+        for (let depth = 0; depth < 8 && error && typeof error === "object"; depth++) {
+          if ("code" in error && typeof error.code === "string") return error.code;
+          error = "cause" in error ? error.cause : undefined;
+        }
+        return undefined;
+      };
+      console.info(JSON.stringify({ kind: "dot_pool2_real_admission_frontier", poolMax: owned.$client.options.max,
+        issueLockCalls, distinctIssueLockConnections: issueLockConnections.size, firstBackend, blocked,
+        actorStatuses: actorResults.map(result => result.status), sqlStates: transactionErrors.map(sqlState) }));
+      if (rejected.length) throw new AggregateError([...new Set([...transactionErrors, ...rejected])], "Real board/Dot admission failed");
+      expect(actorResults.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+      expect(actorResults[0]!.status === "fulfilled" && actorResults[0]!.value).toBeTruthy();
+      const result = await dot;
+      const key = `dot-work:${f.snapshot.bindingId}:${f.snapshot.bindingGeneration}:${requestId}`;
+      const receipts = await owned.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, f.company.id), eq(agentWakeupRequests.agentId, f.agent.id),
+        eq(agentWakeupRequests.idempotencyKey, key)));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]!.payload).toMatchObject({ issueId: issue.id });
+      const runs = await owned.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+      expect(runs.length).toBeGreaterThan(0);
+      expect(runs.every(run => run.status === "queued" && run.startedAt === null && run.responsibleUserId === f!.userId)).toBe(true);
+      const [current] = await owned.select().from(issues).where(eq(issues.id, issue.id));
+      expect(current).toMatchObject({ companyId: f.company.id, assigneeAgentId: f.agent.id, responsibleUserId: f.userId });
+      // Queue admission is lazy: only dispatch claims the issue execution pointer.
+      expect(current!.executionRunId).toBeNull();
+      expect(result.runId).toBeTruthy();
+      expect(receipts[0]!.runId).toBe(result.runId);
+      const receiptRun = runs.find(run => run.id === result.runId);
+      expect(receiptRun).toMatchObject({ companyId: f.company.id, agentId: f.agent.id,
+        status: "queued", startedAt: null, responsibleUserId: f.userId,
+        contextSnapshot: expect.objectContaining({ issueId: issue.id }) });
+      expect(await f.broker.requestWork(f.principal, issue.id, requestId)).toEqual(result);
+      expect(await owned.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(1);
+      expect((await owned.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).map(run => run.id).sort())
+        .toEqual(runs.map(run => run.id).sort());
+      expect(await owned.select({ id: dotRunnerAssignments.id }).from(dotRunnerAssignments).where(eq(dotRunnerAssignments.agentId, f.agent.id))).toHaveLength(0);
+    } catch (error) { primary = error; }
+    finally {
+      releaseFirst();
+      const late = await Promise.allSettled(actors);
+      const rejected = late.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      const cleanup = async (action: () => unknown | Promise<unknown>) => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+      await cleanup(async () => { if (f && heartbeat) await heartbeat.stopInvocationsForAgents([f.agent.id], "Owned pool-two admission regression cleanup"); });
+      await cleanup(async () => { await heartbeat?.drainActiveRunExecutions(); });
+      await cleanup(async () => { if (f) await f.events.unsubscribe(f.principal, f.subscription); });
+      await cleanup(async () => { await f?.events.stop(); });
+      transactionObserver?.mockRestore();
+      owned.$client.options.debug = priorDebug;
+      await cleanup(() => owned.$client.end({ timeout: 1 }));
+      stopTaskDrain();
+      const errors = [...new Set([...(primary ? [primary] : []), ...transactionErrors, ...rejected, ...cleanupErrors])];
+      if (errors.length) throw new AggregateError(errors, "Pool-two admission original and cleanup failures");
+    }
+  }, 30000);
 
   it("keeps competing Dot assignments queued and replays durable work requests", async () => {
     const f = await fixture();
