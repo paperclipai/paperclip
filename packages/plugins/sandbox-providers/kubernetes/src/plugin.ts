@@ -877,8 +877,13 @@ const plugin = definePlugin({
       // this the adapter's runtime env (e.g. XDG_CONFIG_HOME pointing at the shipped
       // OpenCode config, plus helper settings like small_model/provider routing) never
       // reaches the harness, which falls back to its in-image HOME config -> wrong or
-      // partial behaviour.
-      const execCommand = wrapCommandWithEnv(baseExecCommand, params.env);
+      // partial behaviour. Env values travel on stdin, never in the exec request URI
+      // (see wrapCommandWithEnv).
+      const wrapped = wrapCommandWithEnv(
+        baseExecCommand,
+        params.env,
+        typeof params.stdin === "string" ? params.stdin : undefined,
+      );
 
       // Remaining share of the caller's budget after the readiness wait (floor
       // of 5s so an exec attempt is still made when readiness consumed most of
@@ -895,8 +900,8 @@ const plugin = definePlugin({
           namespace,
           podName,
           "agent",
-          execCommand,
-          typeof params.stdin === "string" ? params.stdin : undefined,
+          wrapped.command,
+          wrapped.stdin,
           remainingTimeoutMs,
         );
       } catch (err) {
