@@ -347,6 +347,9 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          // Lock the complete agent set before any receiver mirror mutation. Stop
+          // fencing visits batches and can mutate the mirror inside each batch.
+          await tx.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id)).orderBy(agents.id).for("update");
           await prepareMuseReceiverAuthorityMutation(tx,{companyId:id});
           if(willReactivate)await notifyMuseContactVerification(tx,{companyId:id});
           // A resumed company's tasks become eligible again without any task row changing.
@@ -512,6 +515,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const wasAlreadyArchived = existing.status === "archived";
 
         if (!wasAlreadyArchived) {
+          // The separate archive entry shares update()'s agent-before-mirror order.
+          await tx.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id)).orderBy(agents.id).for("update");
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
