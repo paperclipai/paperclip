@@ -182,6 +182,25 @@ describe("ordinary task interruption", () => {
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
     expect(retry).toHaveBeenCalledOnce();
   });
+  it("names a missing GitHub connection with one Connect GitHub step and a secondary Retry", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "connect_github", githubAccess: "github_auth_required" });
+    expect(container.textContent).toContain("Couldn’t get this project’s repository from GitHub. Connect your GitHub account, then retry. Your message is saved.");
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    const connect = container.querySelector<HTMLAnchorElement>('[data-testid="task-execution-connect-github"]');
+    expect(connect?.textContent).toBe("Connect GitHub");
+    expect(connect?.getAttribute("href")).toBe("/apps/connect?source=github");
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-execution-retry"]')!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "connect_github", githubAccess: "github_auth_required" }, { canRetry: false });
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector('[data-testid="task-execution-connect-github"]')).not.toBeNull();
+  });
+  it("names a GitHub repository the connection cannot reach", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "connect_github", githubAccess: "github_repo_not_accessible" });
+    expect(container.textContent).toContain("Your GitHub account can’t reach this repository. Check the repository and its access in the GitHub connection, then retry.");
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    expect(container.querySelector('[data-testid="task-execution-connect-github"]')?.getAttribute("href")).toBe("/apps/connect?source=github");
+  });
   it("shows why an accepted Retry is waiting and keeps another attempt available", async () => {
     const retryWait = { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." };
     await render({ ...failed, retryWait });

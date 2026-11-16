@@ -26,6 +26,7 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
+import { isSystemOwnedFailureCode } from "../continuation-cause.js";
 import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
@@ -1129,6 +1130,32 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["auth_failed", "github_auth_required"],
+    ["repository_not_found", "github_repo_not_accessible"],
+  ] as const)("names a clone that GitHub refused with git=%s as %s and does not retry it", async (git, errorCode) => {
+    const f = await fixture();
+    const error = new RemoteWorkspaceOperationError(
+      `remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone git=${git} exit=128 program=git`);
+    await f.completion.failRunSetup(f.setup(error));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(isSystemOwnedFailureCode(failed.errorCode)).toBe(false);
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new RemoteWorkspaceOperationError("remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone git=network exit=128 program=git"),
+    new RemoteWorkspaceOperationError("remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=fetch git=auth_failed exit=128 program=git"),
+    new Error("remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone git=auth_failed exit=128 program=git"),
+  ])("keeps another or untrusted workspace failure a generic setup failure: %s", async error => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(error));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed" });
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {

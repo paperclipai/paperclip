@@ -404,6 +404,9 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "failed", canRetry: false,
       retryWait: { reason: "cleanup_quarantined", message: NATIVE_CLEANUP_SETTLING_MESSAGE } };
   }
+  if (run.status === "failed" && (run.errorCode === "github_auth_required" || run.errorCode === "github_repo_not_accessible"))
+    return { ...base, responsibility: "user", state: "waiting_for_user", canRetry: true, userAction: "connect_github",
+      githubAccess: run.errorCode };
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
 }
 
