@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
+import { createNativeCredentialStore } from "./native-runtime/native-credential-store.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs/promises")>(),
@@ -28,6 +29,18 @@ describe.skipIf(process.platform !== "win32")("native Windows subscription crede
   it("reads a regular credential without POSIX uid or mode assumptions", async () => {
     const home = await credentialHome();
     expect(await readLocalAiCredentialFile(path.join(home, ".credentials.json"))).toBe("owned credential");
+  });
+  it("preserves ENOENT for a missing file in a checked directory", async () => {
+    const home = await credentialHome();
+    await expect(readLocalAiCredentialFile(path.join(home, "missing"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each(["codex", "grok"] as const)("reads the saved %s refresh handoff only when auth.json is absent", async provider => {
+    const home = await credentialHome();
+    const store = createNativeCredentialStore({ provider, localHome: home });
+    await writeFile(path.join(home, "auth-refresh.json"), "saved refresh credential");
+    expect(await store.read()).toBe("saved refresh credential");
+    await link(path.join(home, ".credentials.json"), path.join(home, "auth.json"));
+    await expect(store.read()).rejects.toThrow("Invalid Windows credential file");
   });
   it("rejects a junction at the login directory", async () => {
     const home = await credentialHome(), junction = path.join(root!, "junction");

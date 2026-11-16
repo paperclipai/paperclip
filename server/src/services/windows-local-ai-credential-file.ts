@@ -48,6 +48,8 @@ public static class PaperclipCredentialReader {
                 SafeFileHandle handle = Open(current, directory ? 0x80u : 0x80000000u,
                     1u, IntPtr.Zero, 3u, 0x02200000u, IntPtr.Zero);
                 handles.Add(handle);
+                if (handle.IsInvalid && !directory && Marshal.GetLastWin32Error() == 2)
+                    throw new FileNotFoundException();
                 FileInfo info;
                 if (handle.IsInvalid || Inspect(handle, out info) == 0 ||
                     (info.Attributes & 0x400u) != 0 ||
@@ -75,7 +77,15 @@ public static class PaperclipCredentialReader {
 }
 '@
 $credentialPath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($credentialPath64))
-[Console]::Out.Write([Convert]::ToBase64String([PaperclipCredentialReader]::Read($credentialPath, $credentialLimit)))
+try {
+    [Console]::Out.Write([Convert]::ToBase64String([PaperclipCredentialReader]::Read($credentialPath, $credentialLimit)))
+} catch {
+    if ($_.Exception.GetBaseException() -is [IO.FileNotFoundException]) {
+        [Console]::Out.Write('PAPERCLIP_CREDENTIAL_NOT_FOUND')
+        exit 2
+    }
+    exit 1
+}
 `;
 
 export async function readWindowsLocalAiCredentialFile(filename: string, maxBytes: number): Promise<string> {
@@ -93,8 +103,12 @@ export async function readWindowsLocalAiCredentialFile(filename: string, maxByte
     const bytes = Buffer.from(stdout, "base64");
     if (bytes.length > maxBytes) throw new Error("Invalid size");
     return bytes.toString("utf8");
-  } catch {
+  } catch (error) {
     // Child errors include stdout/stderr. Never propagate credential contents.
+    const child = error as { code?: unknown; stdout?: unknown } | null;
+    if (child?.code === 2 && child.stdout === "PAPERCLIP_CREDENTIAL_NOT_FOUND") {
+      throw Object.assign(new Error("Credential file not found"), { code: "ENOENT" });
+    }
     throw new Error("Invalid Windows credential file");
   }
 }
