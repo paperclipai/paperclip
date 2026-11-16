@@ -2202,6 +2202,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
+      // A user-owned local_fs directory has no delivery surface: there is
+      // nothing to merge because git never tracked it. The reaper treats that
+      // as "nothing to deliver" and archives on the issue-tree terminality
+      // check alone (#13874). A runtime-created directory whose checkout lost
+      // its .git is an anomaly and stays blocked, and inherited repoUrl or
+      // baseRef says nothing about either case.
+      nothingToDeliver:
+        workspace.providerType === "local_fs"
+        && git !== null
+        && !git.repoRoot
+        && !git.createdByRuntime,
     };
   }
 
@@ -4141,6 +4152,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (
           assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
+          && !assessment.nothingToDeliver
         ) {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
