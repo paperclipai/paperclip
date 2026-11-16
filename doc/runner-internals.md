@@ -40,7 +40,8 @@ scripts are disabled. The published server declares the same pinned dependency
 as the source Runner package.
 
 Custom connection models receive `limit.context` and `limit.output` in the
-generated OpenCode config. A supplied `modelLimit` takes priority. Current
+generated OpenCode config. Callers can supply known windows through
+`OpenCodeServerDriverOptions.modelLimit`; this value takes priority. Current
 connection metadata has no model window values, so the driver uses a documented
 fallback of 96,000 context tokens and 16,000 output tokens. OpenRouter keeps its
 catalog limits. The nonzero connection limit enables OpenCode's built-in
