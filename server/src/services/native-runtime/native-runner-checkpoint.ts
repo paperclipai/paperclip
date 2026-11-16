@@ -128,9 +128,12 @@ export async function validateNativeRunnerCheckpointOwner(
   }
 }
 
-function parkedSuccessorWaitingForOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+async function parkedSuccessorWaitingForOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const ownProcessStart = () => notExists(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, owner.companyId), eq(heartbeatRunEvents.runId, successorRunId),
+    isNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES]))));
   const resumeClaim = sql`${nativeRunFinalizations.recoveryHistory}->-1`;
-  return tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+  const locked = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId)).where(and(
       eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId),
       eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.attempt, 0),
@@ -154,10 +157,11 @@ function parkedSuccessorWaitingForOwner(tx: CheckpointTransaction, owner: Native
         where source.id = ${owner.runId} and source.company_id = ${owner.companyId})`,
       notExists(tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, successorRunId)))),
-      notExists(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-        eq(heartbeatRunEvents.companyId, owner.companyId), eq(heartbeatRunEvents.runId, successorRunId),
-        isNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES])))),
+      ownProcessStart(),
     )).for("share", { of: [nativeRunFinalizations, heartbeatRuns] });
+  if (!locked.length) return [];
+  const [unstarted] = await tx.execute<{ unstarted: boolean }>(sql`select ${ownProcessStart()} as unstarted`);
+  return unstarted?.unstarted ? locked : [];
 }
 
 export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner, newWork: boolean) {

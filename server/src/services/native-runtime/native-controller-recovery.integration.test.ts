@@ -844,6 +844,39 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
+  it("refuses the outgoing server's save that waited on the re-claimed follow-up's uncommitted process start", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      let release!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      let started!: () => void;
+      const startWritten = new Promise<void>(resolve => { started = resolve; });
+      const start = db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED,
+          stream: "system", level: "info", message: "Native execution requested." });
+        started();
+        await released;
+      });
+      await startWritten;
+      const fence = db.transaction(async tx => assertNativeRunnerCheckpointOwner(tx, fixture.owner, false));
+      void fence.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+        expect(blocked.count).toBeGreaterThan(0);
+      }, { timeout: 1_500, interval: 20 });
+      release();
+      await start;
+      await expect(fence).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
   it.each(["own-process", "own-process-event", "own-checkpoint", "other-owner-boot", "other-owner-run", "claim-expired"] as const)(
     "refuses the outgoing server's idle checkpoint when the re-claimed follow-up is no longer waiting on it: %s", async scenario => {
       registerControllerInstanceDb(db);
