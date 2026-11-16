@@ -199,8 +199,14 @@ also grades "no leaked sandboxes / clean warm shutdown" (`warm-shutdown.ts`). It
 the wave when the environment delete stayed blocked, when a wave sandbox is still
 running after cleanup, or when the server log shows a warm session that did not close
 on environment delete or controller shutdown. Idle closes that needed a forced Runner
-stop, or whose sandbox was already destroyed, are counted but do not fail. The result
-is in `<wave>/warm-shutdown.json` and in the wave's `SUMMARY.md`.
+stop, or whose sandbox was already destroyed, are counted but do not fail. Both counts
+are distinct (run, reason) failures, not log lines: the harness's environment-delete
+retries re-log the same failed close every few seconds (one session logged 27 times in
+w-20261116T001158-s7106). Each failure keeps its line count. On a Daytona warm wave, the
+first idle-close failure in the server output triggers one sandbox capture
+(`daytona-runner/idle-close-failure-<run>/`: processes, Runner state and logs), listed
+under `sandboxCaptures`. The result is in `<wave>/warm-shutdown.json` and in the wave's
+`SUMMARY.md`.
 
 ## Hosted mode (`--hosted-base-url`, `--hosted-allow`)
 
@@ -411,7 +417,7 @@ part of U3 is checked only in waves run with this harness.
   temporary instance is deleted.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
-- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time. While a provider turn is active and no tool runs, one model request is outstanding: R5 allows up to 10 minutes of quiet before it counts a dead run. A slow OpenRouter request took 303.6 s in w-20261115T044649-s7106/t028, and common provider clients time out a request at 10 minutes.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time. While a provider turn is active and no tool runs, one model request is outstanding: R5 allows up to 10 minutes of quiet before it counts a dead run. A slow OpenRouter request took 303.6 s in w-20261115T044649-s7106/t028, and common provider clients time out a request at 10 minutes. A run with no run event yet (`preparing`: its events read back empty) is still acquiring or preparing its environment, because "run started" is written only after that. R5 allows it 10 minutes too: in w-20261116T001158-s7106/t010 a Daytona restore of an archived sandbox took 251 s, including one 90 s plugin call timeout, and the Daytona provider bounds each start or restore at 5 minutes by default, so 10 minutes covers one timed-out restore and its retry. U1 uses the same bound (`PREPARATION_LIMIT_MS`) before it stops counting a preparing run as the task's owner.
 - The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
 - `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.

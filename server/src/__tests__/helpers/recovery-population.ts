@@ -15,9 +15,11 @@ export type RecoveryPopulation = {
 
 export async function seedRecoveryPopulation(db: Db, companyId: string, counts: {
   agents: number; inReview: number; inProgress?: number; todo?: number; recoveryActions?: number; terminated?: number;
+  /** False keeps every agent from starting a run, for suites that fake timers. */
+  wakeOnDemand?: boolean;
 }): Promise<RecoveryPopulation> {
   const config = { adapterType: "process", adapterConfig: { command: process.execPath, args: ["-e", "0"], cwd: process.cwd() },
-    runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: true } }, role: "engineer" };
+    runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: counts.wakeOnDemand ?? true } }, role: "engineer" };
   const [ceo] = await db.insert(agents).values({ ...config, companyId, name: "Chief", status: "idle" }).returning({ id: agents.id });
   const managers = await db.insert(agents).values(Array.from({ length: 6 }, (_, index) => ({ ...config, companyId,
     name: `Manager ${index}`, status: "idle", reportsTo: ceo!.id }))).returning({ id: agents.id });
