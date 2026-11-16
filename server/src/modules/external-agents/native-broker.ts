@@ -42,6 +42,10 @@ function isFutureAssignmentTime(value:unknown):boolean {
   const deadline=value instanceof Date?value.getTime():typeof value==="string"?Date.parse(value):NaN;
   return Number.isFinite(deadline)&&deadline>Date.now();
 }
+function isInFlightToolRejection(outcome:Record<string,unknown>|null):boolean {
+  const error=outcome?.error&&typeof outcome.error==="object"?outcome.error as Record<string,unknown>:null;
+  return outcome?.status==="rejected"&&error?.code==="tool_calls_in_flight"&&error.retryable===true;
+}
 /** Private shared broker. Its callers supply an identity adapter once, then
  * invoke whole domain operations; they cannot assemble lifecycle primitives. */
 export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:Identity<S>) {
@@ -145,7 +149,12 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
         await identity.assertSubjectCredential(tx,subject);
       }
       const [old]=await tx.execute<Receipt>(sql`select ${receiptColumns} from ${operationTable} where assignment_id=${id}::uuid and request_id=${command.requestId}::uuid`);
-      if(old){if(old.digest!==command.digest||old.continuationReceiptId!==(proof?.continuationReceiptId??null))throw conflict("requestId was reused with different arguments.");return old;}
+      if(old){
+        if(old.digest!==command.digest||old.continuationReceiptId!==(proof?.continuationReceiptId??null))throw conflict("requestId was reused with different arguments.");
+        if(!isInFlightToolRejection(old.outcome))return old;
+        const [retried]=await tx.execute<Receipt>(sql`update ${operationTable} set status='reserved',outcome=null,source_event_id=null,updated_at=now() where id=${old.id}::uuid returning ${receiptColumns}`);
+        if(!retried)throw conflict("Operation retry failed.");return retried;
+      }
       const [count]=await tx.execute<{count:number}>(sql`select count(*)::int as count from ${operationTable} where assignment_id=${id}::uuid`);if(count&&count.count>=4000)throw conflict("Assignment operation limit reached.");
       if(provider==="muse") {
         if(command.action!=="accept"&&!a.claimedAt)throw conflict("Claim the assignment before running operations.");
