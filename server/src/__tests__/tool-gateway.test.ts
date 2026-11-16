@@ -1984,6 +1984,38 @@ rl.on("line", (line) => {
     ]));
   });
 
+  it("gives the agent's own connection canonical tool names when role catalogs collide", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    await db.update(agents).set({ metadata: { role_slug: "scout-agent" } }).where(eq(agents.id, agent.id));
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+
+    // Синк личностей создаёт по подключению на агента с именем, оканчивающимся
+    // на «-<role_slug>»; чужие подключения с теми же инструментами коллезят
+    // имена — каноническими должны становиться инструменты своего подключения.
+    const own = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "soulance-os-soulance-scout-agent",
+      toolName: "kv_set",
+    });
+    const foreign = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "soulance-os-soulance-other-agent",
+      toolName: "kv_set",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    const tools = (await gateway.listToolsForSession(session.token))
+      .filter((tool) => tool.providerType === "mcp_remote_http");
+    const ownTool = tools.find((tool) => tool.connectionId === own.connection.id);
+    const foreignTool = tools.find((tool) => tool.connectionId === foreign.connection.id);
+    expect(ownTool?.name).toBe("kv_set");
+    expect(ownTool?.upstreamToolName).toBe("kv_set");
+    expect(foreignTool?.name).toMatch(new RegExp(`^mcp\\.kv-demo-${foreign.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`));
+  });
+
   it.each([
     ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
     ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
