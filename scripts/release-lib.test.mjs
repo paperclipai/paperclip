@@ -528,10 +528,15 @@ test("a release install is retried while its tarball lags the metadata", () => {
   assert.equal(installRetryFixture({}).run(60).attempts, 1);
 });
 
-test("install retries stop at the deadline, including an install that hangs", () => {
+const hasTimeoutCommand = spawnSync("bash", ["-c", "command -v timeout"], { encoding: "utf8" }).status === 0;
+
+test("install retries stop at the deadline", () => {
   const exhausted = installRetryFixture({ failures: 1000 }).run(3, 1);
   assert.notEqual(exhausted.status, 0);
   assert.ok(exhausted.seconds < 8, `took ${exhausted.seconds}s`);
+});
+
+test("an install that hangs is stopped at the deadline", { skip: !hasTimeoutCommand && "needs the timeout command (GNU coreutils)" }, () => {
   const hung = installRetryFixture({ hangSeconds: 120 }).run(3, 1);
   assert.notEqual(hung.status, 0);
   assert.ok(hung.seconds < 20, `a hung install outlived the deadline: ${hung.seconds}s`);
