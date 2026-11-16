@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectToolRoutes } from "../routes/project-tools.js";
 import { projectToolDefinitions } from "../services/project-tools.js";
 
@@ -29,6 +29,8 @@ const app = express()
 const post = (method: string, params?: unknown) =>
   request(app).post("/mcp/project-tools").send({ jsonrpc: "2.0", id: 7, method, params });
 
+beforeEach(() => vi.clearAllMocks());
+
 describe("project tools MCP error handling", () => {
   it("answers tools/list with the discovered tools", async () => {
     const response = await post("tools/list");
@@ -36,12 +38,13 @@ describe("project tools MCP error handling", () => {
     expect(response.body.result.tools.length).toBeGreaterThan(0);
   });
 
-  it("returns a JSON-RPC error instead of HTTP 500 when tool definitions cannot be built", async () => {
+  it.each(["tools/list", "tools/call"])("returns a JSON-RPC error instead of HTTP 500 when tool definitions cannot be built: %s", async (method) => {
     vi.mocked(projectToolDefinitions).mockImplementationOnce(() => {
       throw new TypeError("Cannot read properties of undefined (reading 'push')");
     });
-    const response = await post("tools/list");
+    const response = await post(method, method === "tools/call" ? { name: "list_projects", arguments: {} } : undefined);
     expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ jsonrpc: "2.0", id: 7 });
     expect(response.body.error).toMatchObject({ code: -32603, message: expect.stringContaining("push") });
     expect(response.body.result).toBeUndefined();
   });
