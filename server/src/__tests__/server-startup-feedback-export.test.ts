@@ -18,7 +18,7 @@ import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/id
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup, expirePendingInteractionsOnClosedIssues } from "../services/index.js";
 
-import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
+import { companies, runDatabaseBackup, verifyLiveSchema, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { onNativeWorkspaceFinalizationRelease, releaseNativeWorkspaceFinalization } from "../services/native-workspace-finalization-notifications.js";
@@ -855,6 +855,35 @@ describe("startServer feedback export wiring", () => {
       expect(cloudRuntimeStartupMocks.initialize).not.toHaveBeenCalled();
       expect(cloudRuntimeStartupMocks.telemetry).not.toHaveBeenCalled();
       expect(createAppMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("refuses to start — before building the app — when the boot-time schema-drift gate finds missing code-expected objects", async () => {
+    // Journal reports upToDate (default mock), but the live schema is missing a
+    // code-expected column and a whole table: the AGE-759 blind spot the gate closes.
+    vi.mocked(verifyLiveSchema).mockResolvedValueOnce({
+      status: "drift",
+      checkedTables: 5,
+      missingTables: ["announcement_dismissals"],
+      missingColumns: [{ table: "companies", column: "description" }],
+    });
+    await expect(startServer()).rejects.toThrow(/schema_drift/);
+    // It must stop before serving traffic that would 500 at request time.
+    expect(createAppMock).not.toHaveBeenCalled();
+  });
+
+  it("starts despite schema drift when PAPERCLIP_ALLOW_SCHEMA_DRIFT=true (emergency override)", async () => {
+    vi.stubEnv("PAPERCLIP_ALLOW_SCHEMA_DRIFT", "true");
+    vi.mocked(verifyLiveSchema).mockResolvedValueOnce({
+      status: "drift",
+      checkedTables: 5,
+      missingTables: [],
+      missingColumns: [{ table: "companies", column: "description" }],
+    });
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      // The override lets startup proceed to app construction instead of failing fast.
+      expect(createAppMock).toHaveBeenCalled();
     } finally { vi.unstubAllEnvs(); }
   });
 
