@@ -323,6 +323,29 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   // Controlled phase boundary in the existing real transport: park only the
   // first signed safety GET after the real authenticated idle-hold POST replies.
   // No response is synthesized; release forwards the original request unchanged.
+  type IdleSleepEnvelope={status:number;errorCode:string;jsonObject:boolean;requestPurposeIdle:boolean;
+    ownerUUID:boolean;expiryISO:boolean;expiryFutureKnown:boolean;expiryFuture:boolean;
+    drainingPresence:boolean;drainingTrue:boolean};
+  const idleSleepWire:{post:IdleSleepEnvelope|null;sleep:IdleSleepEnvelope|null}={post:null,sleep:null};
+  const safeIdleSleepEnvelope=(status:number,received:unknown,requestPurposeIdle=false,
+    expiryFuture?:boolean):IdleSleepEnvelope=>{
+    const result:IdleSleepEnvelope={status,errorCode:"UNKNOWN",jsonObject:false,requestPurposeIdle,
+      ownerUUID:false,expiryISO:false,expiryFutureKnown:expiryFuture!==undefined,expiryFuture:expiryFuture===true,
+      drainingPresence:false,drainingTrue:false};
+    try{
+      if(!received||typeof received!=="object"||Array.isArray(received))return result;
+      const value=received as Record<string,unknown>;result.jsonObject=true;
+      const code=typeof value.error==="string"?value.error:value.code;
+      if(["csrf_origin_mismatch","authentication_required","authorization_required","admin_access_required",
+        "sleep_not_allowed","sleep_deployment_pending","stack_operation_locked","assertion_replay",
+        "forbidden","conflict","invalid_request","internal_error","temporarily_unavailable"].includes(code as string))result.errorCode=code as string;
+      result.ownerUUID=z.string().uuid().safeParse(value.ownerId).success;
+      result.expiryISO=z.string().datetime().safeParse(value.expiresAt).success;
+      result.drainingPresence=Object.prototype.hasOwnProperty.call(value,"draining");
+      result.drainingTrue=value.draining===true;
+    }catch{/* Passive classification never changes the original response or failure. */}
+    return result;
+  };
   let idleSleepReadBoundary:{postResponses:number;postValidated:boolean;ownerId?:string;
     safetyRequests:number;parked:boolean;forwarded:number;released:Promise<void>;release:()=>void}|undefined;
   const mapped:typeof fetch=async(input,init)=>{
@@ -354,15 +377,21 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
           const status=res.statusCode!;
           if(boundary&&signedDrain&&original.method==="POST"){
             boundary.postResponses++;
+            const capturePost=idleSleepWire.post===null;
+            if(capturePost)idleSleepWire.post=safeIdleSleepEnvelope(status,undefined);
             // Observe only an actual successful normal route response. Its
             // middleware has authenticated the signature and its audit committed.
             // Do not re-verify here: that would consume the real replay nonce.
             try{
               const idleRequest=z.object({purpose:z.literal("idle")}).safeParse(JSON.parse(body?.toString("utf8")??"null"));
-              const hold=z.object({draining:z.literal(true),ownerId:z.string().uuid(),expiresAt:z.string().datetime()}).safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-              if(status===200&&idleRequest.success&&hold.success&&Date.parse(hold.data.expiresAt)>Date.now()){
+              if(capturePost)idleSleepWire.post=safeIdleSleepEnvelope(status,undefined,idleRequest.success);
+              const received=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              const hold=z.object({ownerId:z.string().uuid(),expiresAt:z.string().datetime()}).safeParse(received);
+              let expiryFuture:boolean|undefined;
+              if(status===200&&idleRequest.success&&hold.success&&(expiryFuture=Date.parse(hold.data.expiresAt)>Date.now())){
                 boundary.ownerId=hold.data.ownerId;boundary.postValidated=true;
               }
+              if(capturePost)idleSleepWire.post=safeIdleSleepEnvelope(status,received,idleRequest.success,expiryFuture);
             }catch{/* Invalid real replies remain unchanged and cannot arm the boundary. */}
           }
           if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));resolve(new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders}));});
@@ -1044,7 +1073,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         try{
           const outcome=await sleepOutcome;
           if(!outcome.ok)throw outcome.error;
-          response=outcome.response;expect(response.status).toBe(200);
+          response=outcome.response;
+          if(idleSleepWire.sleep===null)idleSleepWire.sleep=safeIdleSleepEnvelope(response.status,response.body);
+          expect(response.status,JSON.stringify(idleSleepWire)).toBe(200);
           expect(firstIdleBoundary.postResponses).toBe(1);expect(firstIdleBoundary.safetyRequests).toBe(2);
           expect(firstIdleBoundary.forwarded).toBe(2);
         }catch(error){failures.push(error);}
@@ -1207,7 +1238,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
     if(tokenDiagnostic){
       if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
-      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,publicReadGate,lastPublicReadGate,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
+      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",idleSleepWire,callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,publicReadGate,lastPublicReadGate,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
     }
     if(!errors.length&&casePassed&&home)removeTestHome(home);
     if(errors.length)throw new AggregateError(errors,"Principal normal App owned cleanup failed");
