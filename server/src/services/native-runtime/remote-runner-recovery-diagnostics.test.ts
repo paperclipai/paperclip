@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS,
   REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, boundRemoteRunnerExitEvidence, describeExitedRemoteRunnerReason,
-  readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError,
+  readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 
 function shellExit(script: string, args: string[]) {
@@ -35,7 +35,7 @@ describe("remote recovery diagnostic shell receipts", () => {
   it.each([
     { fingerprint: "linux:abcd-1234:100", code: 45 },
     { fingerprint: "linux:abcd-1234:101", code: 47 },
-    { fingerprint: "", code: 44 },
+    { fingerprint: "", code: 48 },
   ])("requires the saved generation before accepting a zombie receipt (%j)", async ({ fingerprint, code }) => {
     const root = await mkdtemp(join(tmpdir(), "remote-probe-zombie-"));
     const marker = join(root, "marker");
@@ -50,6 +50,30 @@ describe("remote recovery diagnostic shell receipts", () => {
         .replaceAll('"/proc/" + pid + "/stat"', JSON.stringify(join(root, "stat")))
         .replaceAll('"/proc/sys/kernel/random/boot_id"', JSON.stringify(join(root, "boot_id")));
       expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), fingerprint])).toBe(code);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { cmdline: ["paperclip-runnerd", "--runner-id", "runner"], code: 0 },
+    { cmdline: ["paperclip-runnerd", "--state-dir", "/state"], code: 48 },
+    { cmdline: [""], code: 48 },
+  ])("reports a live process without its runner id apart from a changed marker (%j)", async ({ cmdline, code }) => {
+    const root = await mkdtemp(join(tmpdir(), "remote-probe-runner-id-"));
+    const marker = join(root, "marker");
+    try {
+      await writeFile(marker, `nonce\n${process.pid}\n2026-11-16T00:28:42.758Z\nrunner\n`);
+      await writeFile(join(root, "cmdline"), cmdline.join("\0"));
+      await writeFile(join(root, "stat"), `${process.pid} (runnerd) ${["S", ...Array(18).fill("0"), 100].join(" ")}\n`);
+      await writeFile(join(root, "boot_id"), "abcd-1234\n");
+      const script = REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT
+        .replaceAll('"/proc/" + pid + "/cmdline"', JSON.stringify(join(root, "cmdline")))
+        .replaceAll('"/proc/" + pid + "/stat"', JSON.stringify(join(root, "stat")))
+        .replaceAll('"/proc/sys/kernel/random/boot_id"', JSON.stringify(join(root, "boot_id")));
+      expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), "linux:abcd-1234:100"])).toBe(code);
+      expect(remoteRecoveryProbeReason("process_verification", 48, false)).toBe("process_runner_id_missing");
+      await writeFile(marker, `nonce\n${process.pid}\n2026-11-16T00:28:42.758Z\nother-runner\n`);
+      expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), "linux:abcd-1234:100"])).toBe(44);
+      expect(remoteRecoveryProbeReason("process_verification", 44, false)).toBe("process_identity_changed");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

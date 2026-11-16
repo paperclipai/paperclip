@@ -293,6 +293,17 @@ export async function terminalizeLegacyExecution(input: {
       )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1).for("update");
       const decision = existing?.evidence.executionReconciliation as Record<string, unknown> | undefined;
       if (hasRequiredWorkspaceRecovery(existing?.evidence) && decision?.runId === run.id) return updated;
+      // The stranded sweep revisits this terminal run every pass. The hold
+      // already records this exact no-replay decision, or a fresh continuation
+      // already took it over: rewriting it would only churn its timestamps and
+      // reset a coalesced continuation's delivery state.
+      const recorded = existing?.evidence.automaticRecovery as Record<string, unknown> | undefined;
+      const continuation = existing?.evidence.freshContinuation as Record<string, unknown> | undefined;
+      if (existing && (continuation?.sourceRunId === run.id || (existing.status === "resolved"
+        && recorded?.runId === run.id && recorded.replay === "blocked"
+        && existing.evidence.workspaceRestoreFailure === updated.resultJson!.workspaceRestoreFailure
+        && JSON.stringify(existing.evidence.workspaceRestoreRecovery) === JSON.stringify(updated.resultJson!.workspaceRestoreRecovery))))
+        return updated;
       const now = new Date();
       const evidence = {
         ...existing?.evidence,
@@ -470,8 +481,11 @@ export async function settleCancelledLegacyPreparation(
   return db.transaction(async tx => {
     const [task] = await tx.select().from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
+    // The dispatch gate writes this marker under the same run lock before
+    // calling the adapter. A prior owner's local flag cannot disprove handoff.
     const [run] = await tx.select().from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId),
+        sql`${heartbeatRuns.usageJson}#>'{budgetDispatch,handedOffAt}' is null`)).for("update");
     const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
     // Only a requested Stop qualifies, and only while it is still classified as
     // an unknown outcome: existing wait or bootstrap receipts already decide it.
@@ -493,8 +507,16 @@ export async function settleCancelledLegacyPreparation(
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease))) return null;
     const now = new Date();
+    const cancellation = readRunCancellation(run.resultJson);
+    const operatorStop = cancellation?.source === "operator" && cancellation.initiator.type === "user";
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+      // The preparation owner has unwound and every execution reference agrees.
+      // Confirm the user's Stop; system cancellations keep their delivery path.
+      ...(operatorStop ? { executionCancellation: {
+        ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
+        state: "acknowledged", proof: "preparation_settled", acknowledgedAt: now.toISOString(),
+      } } : {}),
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     // The automatic disposition may already have closed the incident with
     // replay blocked, and moved the task to blocked. Correct both verdicts.
@@ -520,9 +542,12 @@ export async function settleCancelledLegacyPreparation(
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
       resolvedAt: now, updatedAt: now,
-      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
-        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
-        else ${issueRecoveryActions.evidence} end`,
+      // A verified operator Stop no longer needs a recovery notice. System
+      // cancellations still use this metadata to deliver pending saved input.
+      evidence: operatorStop ? sql`${issueRecoveryActions.evidence} - 'automaticRecovery'`
+        : sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+          then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
+          else ${issueRecoveryActions.evidence} end`,
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });

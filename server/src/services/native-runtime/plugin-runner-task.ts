@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
-import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
+import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
@@ -50,6 +50,7 @@ export function createPluginRunnerTaskOwner(input: {
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
   resumeLaunchInputsVersion?: 1;
+  launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
@@ -143,7 +144,9 @@ export function createPluginRunnerTaskOwner(input: {
     if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
       throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
+    const preparationDigest = input.launchDigestVersion === 1 ? runnerLaunchPreparationDigest(requirements) : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
+      ...(preparationDigest ? { preparationDigest, runDigest: runnerLaunchRunDigest(preparationDigest, requirements) } : {}),
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
       ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
@@ -155,7 +158,7 @@ export function createPluginRunnerTaskOwner(input: {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
-    if (launched || !result.projectAuthCheckAtSubmit) await checkProjectAuth(result.launch.configurationId);
+    if (!result.projectAuthChecked && (launched || !result.projectAuthCheckAtSubmit)) await checkProjectAuth(result.launch.configurationId);
     preparedLaunchId = result.launch.configurationId;
     preparedIdentity = requirements.identity;
     return result.launch;

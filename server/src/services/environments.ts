@@ -1778,7 +1778,7 @@ export function environmentService(db: Db) {
             (options?.cleanupStatus !== undefined && previous.cleanupStatus !== options.cleanupStatus) ||
             (status !== "retained" && !previous.releasedAt))) {
           await notifyChatInboundWakeNotices(tx, {
-            companyId: previous.companyId, issueId: previous.issueId ?? undefined,
+            companyId: previous.companyId, issueId: previous.issueId ?? undefined, runId: previous.heartbeatRunId,
           });
         }
         if (previous.heartbeatRunId && ["active", "pending_cleanup"].includes(previous.status)
@@ -1789,7 +1789,8 @@ export function environmentService(db: Db) {
           // Messages saved behind a finished run wait for its cleanup to
           // settle. Reconsider them through normal deferred admission.
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
-          await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId });
+          await promoteDeferredWorkIntents(tx, { companyId: previous.companyId, trigger: "lock_released", issueId: previous.issueId,
+            runId: previous.heartbeatRunId });
         }
         if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
           await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
@@ -1932,7 +1933,7 @@ export function environmentService(db: Db) {
           await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
           await promoteDeferredWorkIntents(tx, { companyId: run.companyId, trigger: "lock_released",
-            issueId: run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId) ? run.issueId : null });
+            issueId: run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId) ? run.issueId : null, runId: heartbeatRunId });
         }
         return tx.update(environmentLeases)
         .set({
