@@ -112,22 +112,33 @@ async function withOwnedChildren(root, action) {
 test("atomically publishes while the previous executable is running", { skip: process.platform === "win32", timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-test-"));
   const destination = path.join(root, "paperclip-runnerd");
-  await withOwnedChildren(root, async start => {
-    await stageRunnerBinary("/bin/sleep", destination);
-    const previous = await stat(destination);
-    const old = start(destination, ["30"], "sleep");
-    await old.spawned;
-    await stageRunnerBinary("/bin/sleep", destination);
-    const published = await stat(destination);
-    assert.notEqual(published.ino, previous.ino);
-    assert.equal(published.mode & 0o777, 0o755);
-    assert.equal(old.child.exitCode, null);
-    assert.equal(old.child.signalCode, null);
-    assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
-    const next = start(destination, ["0"], "sleep");
-    await next.spawned; await next.closed;
-    assert.equal(next.child.exitCode, 0);
-  });
+  // A long-running fixture whose behavior does not depend on the staged file's name.
+  // Staging copies the source and publishes it under a new basename; a coreutils binary
+  // copied that way fails on uutils multicall builds (Ubuntu 26.04 ships Rust coreutils),
+  // which resolve the applet from the executable's own basename, not argv0. A shebang
+  // sleeper runs /bin/sh and defers to the real `sleep`, so its name is irrelevant. Kept
+  // outside `root` so the staging-cleanup assertion still sees only the destination.
+  const fixtures = await mkdtemp(path.join(tmpdir(), "runnerd-stage-fixtures-"));
+  const sleeper = path.join(fixtures, "sleeper");
+  await writeFile(sleeper, '#!/bin/sh\nexec sleep "$@"\n', { mode: 0o755 });
+  try {
+    await withOwnedChildren(root, async start => {
+      await stageRunnerBinary(sleeper, destination);
+      const previous = await stat(destination);
+      const old = start(destination, ["30"]);
+      await old.spawned;
+      await stageRunnerBinary(sleeper, destination);
+      const published = await stat(destination);
+      assert.notEqual(published.ino, previous.ino);
+      assert.equal(published.mode & 0o777, 0o755);
+      assert.equal(old.child.exitCode, null);
+      assert.equal(old.child.signalCode, null);
+      assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
+      const next = start(destination, ["0"]);
+      await next.spawned; await next.closed;
+      assert.equal(next.child.exitCode, 0);
+    });
+  } finally { await rm(fixtures, { recursive: true, force: true }); }
 });
 
 test("a source rebuild selects fresh dev bytes while preserving release binaries and their manifest", { skip: process.platform === "win32", timeout: 15_000 }, async () => {
@@ -152,7 +163,13 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(built), { recursive: true });
     await copyHostFixture("/bin/sh", built);
     const previousBuild = path.join(root, "previous-build");
-    await copyHostFixture("/bin/sleep", previousBuild);
+    // The staged host daemon must be a real host-arch executable (resolvePackagedRunnerBinary
+    // inspects its binary format), yet it is published under the `paperclip-runnerd` basename.
+    // A copied coreutils binary is rejected by uutils multicall builds (Ubuntu 26.04 ships Rust
+    // coreutils) because they resolve the applet from the file's own basename, not argv0. Use a
+    // shell binary, which runs regardless of its name: `bash -c "sleep ..."` blocks the same way.
+    // bash also differs in bytes from the /bin/sh `built` fixture, preserving the fresh-bytes check.
+    await copyHostFixture("/bin/bash", previousBuild);
     await stageRunnerBinary(previousBuild, hostTarget);
     await stageRunnerBinary(built, path.join(binaryRoot, "paperclip-runnerd"));
     const platforms = {}, releaseBytes = new Map();
@@ -178,7 +195,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     const manifestPath = path.join(binaryRoot, "release-manifest.json");
     const manifest = JSON.stringify({ schema: "paperclip.runner.release-binaries.v1", sourceRevision: "a".repeat(40), platforms });
     await writeFile(manifestPath, manifest);
-    const old = start(hostTarget, ["30"], "sleep");
+    const old = start(hostTarget, ["-c", "sleep 30"]);
     await old.spawned;
     const requirement = { repoRoot: root, nativeRunnerRequired: true };
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), true);
