@@ -179,18 +179,40 @@ function startChunk(queryClient: QueryClient, companyId: string, wanted: readonl
  * does not need to preload the same task again every 30 seconds.
  */
 export const CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS = 5 * 60_000;
-const backgroundPreloadedAt = new Map<string, number>();
+/**
+ * When each task was last preloaded in the background, per cache and per
+ * account: another account (after a sign-out) starts with an empty cache and
+ * must preload its own tasks.
+ */
+let backgroundPreloadedAt = new WeakMap<QueryClient, Map<string, number>>();
 
-function preloadedInBackgroundRecently(refs: readonly string[], now: number) {
+function backgroundKey(queryClient: QueryClient, ref: string) {
+  return `${sessionAccount(queryClient) ?? ""}:${refKey(ref)}`;
+}
+
+function backgroundPreloads(queryClient: QueryClient) {
+  let preloads = backgroundPreloadedAt.get(queryClient);
+  if (!preloads) backgroundPreloadedAt.set(queryClient, preloads = new Map());
+  return preloads;
+}
+
+function preloadedInBackgroundRecently(queryClient: QueryClient, refs: readonly string[], now: number) {
+  const preloads = backgroundPreloads(queryClient);
   return refs.some((ref) => {
-    const at = backgroundPreloadedAt.get(refKey(ref));
+    const at = preloads.get(backgroundKey(queryClient, ref));
     return at !== undefined && now - at < CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS;
   });
 }
 
-function rememberBackgroundPreload(refs: readonly string[], now: number) {
-  for (const [key, at] of backgroundPreloadedAt) if (now - at >= CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS) backgroundPreloadedAt.delete(key);
-  for (const ref of refs) backgroundPreloadedAt.set(refKey(ref), now);
+function rememberBackgroundPreload(queryClient: QueryClient, refs: readonly string[], now: number) {
+  const preloads = backgroundPreloads(queryClient);
+  for (const [key, at] of preloads) if (now - at >= CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS) preloads.delete(key);
+  for (const ref of refs) preloads.set(backgroundKey(queryClient, ref), now);
+}
+
+function forgetBackgroundPreload(queryClient: QueryClient, refs: readonly string[]) {
+  const preloads = backgroundPreloads(queryClient);
+  for (const ref of refs) preloads.delete(backgroundKey(queryClient, ref));
 }
 
 /** A task to preload: a ref, or its id with the identifier it may also be cached under. */
@@ -221,19 +243,19 @@ export async function loadIssueChatBootstraps(
     if (!refs.length || wanted.has(refKey(refs[0]!))) continue;
     if (refs.some((ref) => currentEntry(queryClient, ref, now))) continue;
     if (hasFreshIssueChatFirstFrame(queryClient, refs, now)) continue;
-    if (options.background && preloadedInBackgroundRecently(refs, now)) continue;
+    if (options.background && preloadedInBackgroundRecently(queryClient, refs, now)) continue;
     wanted.set(refKey(refs[0]!), { ref: refs[0]!, refs });
   }
   const ordered = [...wanted.values()];
   for (let start = 0; start < ordered.length; start += ISSUE_CHAT_BOOTSTRAP_MAX_IDS) {
     if (options.signal?.aborted) return;
     const chunk = ordered.slice(start, start + ISSUE_CHAT_BOOTSTRAP_MAX_IDS);
-    if (options.background) rememberBackgroundPreload(chunk.flatMap((target) => target.refs), Date.now());
+    if (options.background) rememberBackgroundPreload(queryClient, chunk.flatMap((target) => target.refs), Date.now());
     await startChunk(queryClient, companyId, chunk);
     // A failed or partial answer leaves those tasks cold: the next preload may retry them.
     if (options.background) {
       for (const target of chunk) {
-        if (!hasFreshIssueChatFirstFrame(queryClient, target.refs)) for (const ref of target.refs) backgroundPreloadedAt.delete(refKey(ref));
+        if (!hasFreshIssueChatFirstFrame(queryClient, target.refs)) forgetBackgroundPreload(queryClient, target.refs);
       }
     }
   }
@@ -392,7 +414,7 @@ export function sameIds(a: readonly string[], b: readonly string[]) {
 /** Test seam. */
 export function resetIssueChatBootstrapsForTest() {
   entries.clear();
-  backgroundPreloadedAt.clear();
+  backgroundPreloadedAt = new WeakMap();
   pendingOwners.clear();
   stopWatchingSession?.();
   stopWatchingSession = null;

@@ -221,6 +221,22 @@ describe("useRecentTaskOpenWarmup", () => {
     expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-1"), "core"])).toMatchObject({ id: "id-1" });
   });
 
+  it("preloads the same task again for another account signed in within five minutes", async () => {
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    render({ tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+    // A sign-out clears the cached tasks; the next account opens the same task.
+    queryClient.clear();
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ userId: "user-2", tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-0"), "core"])).toMatchObject({ id: "id-0" });
+  });
+
   it("never seeds another company's tasks", async () => {
     render({ tasks: tasks(1) });
     await settle();
