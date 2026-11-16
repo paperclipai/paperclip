@@ -28,6 +28,7 @@ source_sha="$2"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-canary\.[0-9]+$ ]] || release_fail "not a canary version: $version"
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || release_fail "not a full commit SHA: $source_sha"
 [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$source_sha" ] || release_fail "checkout is not $source_sha"
+require_canary_number_from_master_commit "$version" "$source_sha"
 
 tag_name="$(canary_tag_name "$version")"
 PUBLISH_REMOTE="$(resolve_release_remote)"

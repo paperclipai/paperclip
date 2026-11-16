@@ -301,6 +301,21 @@ next_canary_version_from_source() {
   printf '%s-canary.%s\n' "$stable_version" "$((position * 100 + run_attempt - 1))"
 }
 
+require_canary_number_from_master_commit() {
+  local version="$1"
+  local source_sha="$2"
+  local master_ref="${3:-origin/master}"
+  local number="${version##*-canary.}"
+  local position
+
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$source_sha" "$master_ref" \
+    || release_fail "${source_sha} is not on ${master_ref}"
+  position="$(canary_source_position "$REPO_ROOT")" || release_fail "canary confirmation needs the full master history; this checkout is shallow."
+  [ "$((number / 100))" = "$position" ] \
+    || release_fail "${version} was not numbered from ${source_sha} (master position ${position})"
+  release_info "  ✓ ${version} was numbered from ${source_sha} (master position ${position})"
+}
+
 push_release_tag_at() {
   local remote="$1"
   local tag_name="$2"

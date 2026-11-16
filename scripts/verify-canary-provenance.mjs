@@ -81,7 +81,6 @@ export async function verifyCanaryProvenance({ packages, version, sourceSha, fet
     else if (result === "none") withoutProvenance.push(packageName);
     else problems.push(`${packageName}@${version}: provenance does not name ${RELEASE_WORKFLOW.path} on ${RELEASE_WORKFLOW.ref} at ${sourceSha}`);
   }
-  if (matched === 0 && problems.length === 0) problems.push(`${version}: no package has provenance from ${RELEASE_WORKFLOW.path} at ${sourceSha}`);
   return { problems, matched, withoutProvenance };
 }
 

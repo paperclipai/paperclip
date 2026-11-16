@@ -41,9 +41,9 @@ test("a package published through the transparency-log retry has no provenance, 
   assert.deepEqual(result, { problems: [], matched: 1, withoutProvenance: ["@paperclipai/shared"] });
 });
 
-test("no matching provenance at all, or any mismatch, is a problem", async () => {
-  const none = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha, sleep: noSleep, fetcher: registry({}) });
-  assert.match(none.problems[0], /no package has provenance/);
+test("packages that all took the retry report no match and no problem, and any mismatch is a problem", async () => {
+  const none = await verifyCanaryProvenance({ packages: ["@paperclipai/shared", "paperclipai"], version, sourceSha: sha, sleep: noSleep, fetcher: registry({}) });
+  assert.deepEqual(none, { problems: [], matched: 0, withoutProvenance: ["@paperclipai/shared", "paperclipai"] });
   const mixed = await verifyCanaryProvenance({ packages: ["@paperclipai/shared", "paperclipai"], version, sourceSha: sha, sleep: noSleep,
     fetcher: registry({ "@paperclipai/shared": respond(attestation()), paperclipai: respond(attestation({ name: "paperclipai", commit: "c".repeat(40) })) }) });
   assert.equal(mixed.problems.length, 1);

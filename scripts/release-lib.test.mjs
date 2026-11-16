@@ -472,3 +472,19 @@ test("a canary tag is pushed once, accepted again on the same commit, and refuse
   assert.throws(() => pushTag(parent), /already exists on [0-9a-f]{40}, not/);
   assert.equal(fixture.git(fixture.dir, "--git-dir", remote, "rev-parse", "canary/v2026.1116.0-canary.200").trim(), head);
 });
+
+test("a canary version is accepted only for the master commit whose position numbered it", () => {
+  const fixture = canaryNumberFixture({ commits: 25, publishedVersions: [] });
+  const head = fixture.git(fixture.repo, "rev-parse", "HEAD").trim();
+  fixture.git(fixture.repo, "update-ref", "refs/remotes/origin/master", head);
+  const confirm = (version, sha) => execFileSync("bash", ["-c", `REPO_ROOT="$1"; source "${repoRoot}/scripts/release-lib.sh"; require_canary_number_from_master_commit "$2" "$3"`, "confirm", fixture.repo, version, sha],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  assert.match(confirm("2026.1116.0-canary.2500", head), /numbered from .* \(master position 25\)/);
+  assert.match(confirm("2026.1116.0-canary.2503", head), /master position 25/);
+  assert.throws(() => confirm("2026.1116.0-canary.2600", head), /was not numbered from/);
+  assert.throws(() => confirm("2026.1116.0-canary.7", head), /was not numbered from/);
+  fixture.git(fixture.repo, "checkout", "-q", "-b", "side");
+  fixture.git(fixture.repo, "commit", "-q", "--allow-empty", "-m", "side");
+  const side = fixture.git(fixture.repo, "rev-parse", "HEAD").trim();
+  assert.throws(() => confirm("2026.1116.0-canary.2600", side), /is not on origin\/master/);
+});

@@ -106,7 +106,8 @@ Every push to `master` runs the canary path inside [`.github/workflows/release.y
 `canary-finalize.yml`, which runs [`scripts/confirm-canary-publication.sh`](../scripts/confirm-canary-publication.sh):
 
 - waits for each package version to become registry-visible
-- checks npm provenance ([`scripts/verify-canary-provenance.mjs`](../scripts/verify-canary-provenance.mjs)): at least one package must name `.github/workflows/release.yml` on `refs/heads/master` at the source commit, and any package whose provenance names something else fails the check, so a dispatch with invented inputs cannot create a tag. A package with no provenance at all is accepted: that is the supported retry after a duplicate transparency-log entry, and only the trusted release workflow can publish. Brief npm errors are retried.
+- requires the source commit to be on master and the canary number to come from it (`N / 100` equals the commit's master position), so a dispatch with invented inputs cannot tag another commit
+- checks npm provenance ([`scripts/verify-canary-provenance.mjs`](../scripts/verify-canary-provenance.mjs)): any package whose provenance names something other than `.github/workflows/release.yml` on `refs/heads/master` at the source commit fails the check. A package with no provenance is accepted, because that is the supported retry after a duplicate transparency-log entry, only the trusted release workflow can publish, and the number check above already ties the version to the commit. Brief npm errors are retried.
 - verifies that `canary` resolves to this version or a newer canary, and that published internal dependencies exist on npm
 - installs the exact `paperclipai@<version>` into a clean temporary prefix
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional

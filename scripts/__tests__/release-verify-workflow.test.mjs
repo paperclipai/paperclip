@@ -359,6 +359,7 @@ test("published canaries are confirmed, tagged and onboarding-smoked outside the
   assert.match(confirm, /if: github\.repository == 'paperclipai\/paperclip' && github\.repository_id == '1170821064' && github\.ref == 'refs\/heads\/master'/);
   assert.match(confirm, /permissions:\n\s+contents: write\n\s+actions: write/);
   assert.match(confirm, /run: \.\/scripts\/confirm-canary-publication\.sh "\$VERSION" "\$SOURCE_SHA"/);
+  assert.match(confirm, /ref: \$\{\{ steps\.inputs\.outputs\.source_sha \}\}\n\s+fetch-depth: 0/, "the master-position check needs full history");
   assert.match(confirm, /gh workflow run docker\.yml --ref "refs\/tags\/canary\/v\$VERSION"/);
   const [validation, afterValidation] = confirm.split("      - uses: actions/checkout@");
   assert.match(validation, /name: Validate inputs/);
