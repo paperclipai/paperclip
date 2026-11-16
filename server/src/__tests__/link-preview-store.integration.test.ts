@@ -19,6 +19,73 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     await context.db.insert(companies).values({ id: companyId, name: "Link cache", issuePrefix: companyId });
     return { companyId, userId: "alice" };
   }
+  it.each(["open", "negative"])("rechecks expired %s memory before calling the provider", async (initialState) => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    let now = 1_000;
+    const resolve = vi.fn(async () => ({ preview: initialState === "open" ? { ...preview, state: "open" as const } : null, maxAgeMs: 60_000 }));
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store, now: () => now });
+    await first.get(scope, url);
+    now = 62_000;
+    const other = createLinkPreviewService([{ key: "github", resolve: async () => ({ preview, maxAgeMs: 60_000 }) }], { store, now: () => now });
+    await other.get(scope, url);
+    resolve.mockRejectedValue(new Error("provider unavailable"));
+
+    expect((await first.get(scope, url)).preview).toEqual(preview);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    const saved = (await store.read(scope, [target])).get(url)!;
+    expect(saved.result.preview).toEqual(preview);
+    expect(saved.expiresAt).toBe(122_000);
+  });
+  it.each(["failure", "timeout"])("retains the newest stale stored preview on provider %s", async (failure) => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    let now = 1_000;
+    let requests = 0;
+    const resolve = async (_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: import("../services/link-previews.js").LinkPreviewScope, signal: AbortSignal) => {
+      if (++requests === 1) return { preview: { ...preview, state: "open" as const }, maxAgeMs: 60_000 };
+      if (failure === "failure") throw new Error("provider unavailable");
+      return new Promise<never>((_done, reject) => signal.addEventListener("abort", () => reject(new Error("timeout"))));
+    };
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store, now: () => now, timeoutMs: 100 });
+    await first.get(scope, url);
+    now = 62_000;
+    await store.write(scope, target, { result: { preview, maxAgeMs: 1_000 }, expiresAt: 63_000 }, now);
+    now = 64_000;
+    expect((await first.get(scope, url)).preview).toEqual(preview);
+    await vi.waitFor(async () => expect((await store.read(scope, [target])).get(url)?.expiresAt).toBe(124_000));
+    expect((await store.read(scope, [target])).get(url)?.result.preview).toEqual(preview);
+  });
+  it("compares check times rather than cache lifetimes when hydrating", async () => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    let now = 1_000;
+    await store.write(scope, target, { result: { preview: { ...preview, state: "open" }, maxAgeMs: 60_000 }, expiresAt: 61_000 }, now);
+    const service = createLinkPreviewService([{ key: "github", resolve: async () => ({ preview: null, maxAgeMs: 60_000 }) }], { store, now: () => now });
+    await service.cached(scope, [url]);
+    await store.write(scope, target, { result: { preview, maxAgeMs: 1_000 }, expiresAt: 4_000 }, 3_000);
+    now = 5_000;
+    expect((await service.cached(scope, [url])).results[url]).toEqual({ preview, maxAgeMs: 0 });
+  });
+  it("keeps a failed durable read's fallback local and accepts recovered stored status", async () => {
+    const scope = await fixture();
+    const store = createLinkPreviewStore(context.db);
+    const read = vi.fn(store.read);
+    let now = 1_000;
+    const resolve = vi.fn(async () => ({ preview: { ...preview, state: "open" as const }, maxAgeMs: 60_000 }));
+    const first = createLinkPreviewService([{ key: "github", resolve }], { store: { ...store, read }, now: () => now });
+    await first.get(scope, url);
+    now = 62_000;
+    await store.write(scope, target, { result: { preview, maxAgeMs: 60_000 }, expiresAt: 122_000 }, now);
+    now = 64_000;
+    read.mockRejectedValueOnce(new Error("temporary database outage"));
+    resolve.mockRejectedValueOnce(new Error("provider unavailable"));
+    expect((await first.get(scope, url)).preview?.state).toBe("open");
+    const saved = (await store.read(scope, [target])).get(url)!;
+    expect(saved.result.preview).toEqual(preview);
+    expect(saved.expiresAt).toBe(122_000);
+    expect((await first.cached(scope, [url])).results[url].preview).toEqual(preview);
+  });
   it.each(["missing", "failed"])("reads another replica's saved status after a %s batch read", async (initialRead) => {
     const scope = await fixture();
     const store = createLinkPreviewStore(context.db);

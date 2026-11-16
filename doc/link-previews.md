@@ -37,7 +37,12 @@ public-access checks, negative cache window and process concurrency bound remain
 Provider results are stored before the successful lookup response completes when
 the store is available within the shared five-second deadline. Stalled SQL keeps
 its concurrency slot until it settles; the deadline still releases the response.
-Database outages fall back to the optional process cache/provider path. Successful
+Expired process entries re-read durable storage before provider work. Both batch
+reads and lookup fallback use check time to retain the newest known status; a
+longer cache lifetime does not make an older status newer. When the durable read
+fails too, provider-failure backoff stays local, so it cannot overwrite a saved
+status that this process could not read. Database outages fall back to the
+optional process cache/provider path. Successful
 and unavailable results normally remain fresh for one minute; provider backoff
 can extend that window up to one hour. Expired records retain last known status
 for immediate display. An outage keeps that status and saves the negative

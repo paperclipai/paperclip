@@ -3,10 +3,10 @@ import { linkPreviews, type Db } from "@paperclipai/db";
 import type { LinkPreviewResult, LinkPreviewTarget } from "@paperclipai/shared";
 import type { LinkPreviewScope } from "./link-previews.js";
 
-export interface StoredLinkPreview { result: LinkPreviewResult; expiresAt: number }
+export interface StoredLinkPreview { result: LinkPreviewResult; expiresAt: number; checkedAt: number }
 export interface LinkPreviewStore {
   read(scope: LinkPreviewScope, targets: readonly LinkPreviewTarget[]): Promise<Map<string, StoredLinkPreview>>;
-  write(scope: LinkPreviewScope, target: LinkPreviewTarget, entry: StoredLinkPreview, checkedAt: number): Promise<void>;
+  write(scope: LinkPreviewScope, target: LinkPreviewTarget, entry: Omit<StoredLinkPreview, "checkedAt">, checkedAt: number): Promise<void>;
 }
 
 export function createLinkPreviewStore(db: Db): LinkPreviewStore {
@@ -28,7 +28,7 @@ export function createLinkPreviewStore(db: Db): LinkPreviewStore {
           author: typeof data.author === "string" ? data.author : null,
           updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : null,
         } : null;
-        return [[row.canonicalUrl, { result: { preview, maxAgeMs: 0 }, expiresAt: row.expiresAt.getTime() }] as const];
+        return [[row.canonicalUrl, { result: { preview, maxAgeMs: 0 }, expiresAt: row.expiresAt.getTime(), checkedAt: row.checkedAt.getTime() }] as const];
       }));
     },
     async write(scope, target, entry, checkedAt) {

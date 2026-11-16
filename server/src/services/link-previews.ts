@@ -15,7 +15,7 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
   store?: LinkPreviewStore; now?: () => number; timeoutMs?: number; maxEntries?: number; maxConcurrent?: number;
 } = {}) {
   const now = options.now ?? Date.now;
-  const cache = new Map<string, { result: LinkPreviewResult; expiresAt: number }>();
+  const cache = new Map<string, StoredLinkPreview>();
   const inFlight = new Map<string, Promise<LinkPreviewResult>>();
   let activeOperations = 0;
   const byKey = new Map(providers.map(provider => [provider.key, provider]));
@@ -27,6 +27,8 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
   }
   const keyOf = (scope: LinkPreviewScope, url: string) => JSON.stringify([scope.companyId, scope.userId, url]);
   const remaining = (entry: StoredLinkPreview) => ({ ...entry.result, maxAgeMs: Math.max(0, entry.expiresAt - now()) });
+  const newest = (memory: StoredLinkPreview | undefined, stored: StoredLinkPreview | undefined) =>
+    stored && (!memory || stored.checkedAt >= memory.checkedAt) ? stored : memory;
 
   return {
     async cached(scope: LinkPreviewScope, hrefs: readonly string[]) {
@@ -37,7 +39,7 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       for (const target of targets) {
         const key = keyOf(scope, target.canonicalUrl);
         const memory = cache.get(key);
-        const entry = memory && memory.expiresAt > now() ? memory : stored?.get(target.canonicalUrl) ?? memory;
+        const entry = newest(memory, stored?.get(target.canonicalUrl));
         if (entry) { remember(key, entry); results[target.canonicalUrl] = remaining(entry); }
         // A batch miss is not a provider result. A later lookup must still
         // check durable storage, which another replica may have populated.
@@ -64,17 +66,19 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       const checkedAt = now();
       let providerStarted = false;
       let storeWriteStarted = false;
+      let durableReadSucceeded = !options.store;
       let timeoutWrite: Promise<void> | undefined;
-      const fallback = (): LinkPreviewResult => ({ preview: cache.get(key)?.result.preview ?? previous?.result.preview ?? null, maxAgeMs: 60_000 });
+      const fallback = (): LinkPreviewResult => ({ preview: newest(previous, cache.get(key))?.result.preview ?? null, maxAgeMs: 60_000 });
       const deadline = new Promise<LinkPreviewResult>(resolve => {
         timer = setTimeout(() => {
           const current = cache.get(key);
           const result = current && current.expiresAt > now() ? remaining(current) : fallback();
-          const entry = { result, expiresAt: now() + result.maxAgeMs };
+          const entry = { result, expiresAt: now() + result.maxAgeMs,
+            checkedAt: durableReadSucceeded || storeWriteStarted ? checkedAt : previous?.checkedAt ?? 0 };
           remember(key, entry);
           // Publish timeout freshness without delaying the caller. The lookup
           // keeps its slot until both the provider and this write settle.
-          if (options.store && providerStarted && !storeWriteStarted) {
+          if (options.store && durableReadSucceeded && providerStarted && !storeWriteStarted) {
             timeoutWrite = Promise.resolve().then(() => options.store!.write(scope, target, entry, checkedAt)).catch(() => {});
           }
           controller.abort();
@@ -85,8 +89,13 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       // settlement. The caller's deadline does not release the resource budget.
       activeOperations++;
       const operation = Promise.resolve().then(async () => {
-        if (!previous && options.store) {
-          previous = (await options.store.read(scope, [target]).catch(() => new Map<string, StoredLinkPreview>())).get(target.canonicalUrl);
+        if (options.store) {
+          // Fresh memory returned above. Expired memory is only a fallback:
+          // another replica may have saved a newer result, even with a shorter TTL.
+          const stored = await options.store.read(scope, [target]).catch(() => null);
+          durableReadSucceeded = stored !== null;
+          previous = newest(newest(previous, cache.get(key)), stored?.get(target.canonicalUrl));
+          if (!controller.signal.aborted && previous) remember(key, previous);
         }
         if (controller.signal.aborted) return fallback();
         if (previous && previous.expiresAt > now()) { remember(key, previous); return remaining(previous); }
@@ -95,9 +104,12 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
         if (controller.signal.aborted) return fallback();
         const bounded = { ...result, maxAgeMs: Math.max(1_000, Math.min(result.maxAgeMs, 60 * 60_000)) };
         if (!bounded.preview && previous?.result.preview) bounded.preview = previous.result.preview;
-        const entry = { result: bounded, expiresAt: now() + bounded.maxAgeMs };
+        const entry = { result: bounded, expiresAt: now() + bounded.maxAgeMs,
+          checkedAt: durableReadSucceeded || result.preview ? checkedAt : previous?.checkedAt ?? 0 };
         remember(key, entry);
-        if (options.store) {
+        // A failed durable read cannot establish which saved status a provider
+        // failure would replace. Keep that backoff local until storage recovers.
+        if (options.store && (durableReadSucceeded || result.preview)) {
           storeWriteStarted = true;
           await options.store.write(scope, target, entry, checkedAt).catch(() => {});
         }
@@ -105,7 +117,7 @@ export function createLinkPreviewService(providers: readonly LinkPreviewProvider
       }).catch(fallback).finally(async () => { await timeoutWrite; activeOperations--; });
       const request = Promise.race([operation, deadline]).then(result => {
         const current = cache.get(key);
-        if (!current || current.expiresAt <= now()) remember(key, { result, expiresAt: now() + result.maxAgeMs });
+        if (!current || current.expiresAt <= now()) remember(key, { result, expiresAt: now() + result.maxAgeMs, checkedAt });
         return result;
       }).finally(() => {
         clearTimeout(timer!);
