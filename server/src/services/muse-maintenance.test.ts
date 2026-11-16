@@ -14,7 +14,7 @@ import { idleWorkSnapshot } from "./task-admission.js";
 
 const effects = vi.hoisted(() => ({
   verify: vi.fn(), endQualification: vi.fn(), revokeOAuthGrant: vi.fn(), reconcileTerminalAssignments: vi.fn(),
-  start: vi.fn(), stop: vi.fn(),
+  start: vi.fn(), stop: vi.fn(), flush: vi.fn(),
 }));
 vi.mock("./muse-runner-broker.js", () => ({ museRunnerBroker: () => effects }));
 vi.mock("./muse-receiver.js", () => ({ museReceiver: () => effects }));
@@ -41,6 +41,7 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
     enabled = true; draining = false; calls = []; errors = [];
     effects.stop.mockResolvedValue(undefined);
+    effects.flush.mockResolvedValue(undefined);
     effects.reconcileTerminalAssignments.mockResolvedValue(undefined);
     effects.revokeOAuthGrant.mockResolvedValue(undefined);
     effects.endQualification.mockImplementation(async ({ bindingId }) => {
@@ -342,7 +343,8 @@ describeDatabase("Muse commit and deadline maintenance", () => {
       const rows = await db.select().from(museAgentBindings);
       expect(rows.find(row => row.id === stable.id)?.cadenceEvidenceIncompleteAt).toBeNull();
       expect(rows.find(row => row.id === changed.id)).toMatchObject({ revision: changed.revision + 1,
-        verifiedReplyAt: null, cadenceEvidenceIncompleteAt: null });
+        verifiedReplyAt: null });
+      expect(rows.find(row => row.id === changed.id)?.cadenceEvidenceIncompleteAt).toBeInstanceOf(Date);
       expect(rows.find(row => row.id === uncovered.id)?.cadenceEvidenceIncompleteAt).toBeInstanceOf(Date);
       expect(await db.select().from(museCredentials).where(eq(museCredentials.bindingId, changed.id))).toEqual(credentialBefore);
       // Let the original remaining qualification deadlines expire normally;
@@ -423,6 +425,73 @@ describeDatabase("Muse commit and deadline maintenance", () => {
         [primaryFailure, ...cleanupFailures], "Muse nearer-deadline assertion and cleanup failed", { cause: primaryFailure });
       if (primaryFailed) throw primaryFailure;
       if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Muse nearer-deadline cleanup failed");
+    }
+  });
+
+  it("keeps original qualification history incomplete after expiry and revocation during startup Cloud recovery", async () => {
+    const at = new Date(Date.now() + 1000), original = await fixture(at);
+    const broker = externalAgents.museExternalAgents(db);
+    // Use the actual broker's deadline/revoke path: it retains qualificationId,
+    // increments revision and records deadlineEnforcedAt. Only receiver flush
+    // remains the existing controlled port; no provider/auth proof is claimed.
+    effects.endQualification.mockImplementation(input => broker.endQualification(input));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const recover = vi.spyOn(externalAgents, "recoverMuseReceiverContinuity").mockImplementation(async (_owner, signal) => {
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        gate.then(() => { signal.removeEventListener("abort", abort); resolve(); });
+      });
+      signal.throwIfAborted();
+      return new Map();
+    });
+    const starting = start(false, false);
+    void starting.catch(() => {});
+    let primaryFailed = false;
+    let primaryFailure: unknown;
+    try {
+      await vi.waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+      await starting;
+      expect(coordinator.nextWakeAt()).toBe(at.getTime());
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
+      await vi.waitFor(async () => {
+        const [row] = await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, original.id));
+        expect(row).toMatchObject({ qualificationId: original.qualificationId, generation: original.generation,
+          revision: original.revision + 1 });
+        expect(row.revokedAt).toBeInstanceOf(Date);
+        expect(row.deadlineEnforcedAt).toBeInstanceOf(Date);
+      });
+      // A qualification first created after the finite startup snapshot must
+      // not inherit the original qualification's missing-history mark.
+      const later = await fixture(new Date(Date.now() + 3_600_000));
+      release(); await settle();
+      const evidence = await broker.readQualificationEvidence(original.companyId, original.agentId,
+        original.id, original.qualificationId!);
+      expect(evidence).toMatchObject({ qualificationId: original.qualificationId,
+        authorityRevoked: true, cadenceEvidenceComplete: false, idleWindows: [] });
+      expect(evidence.stoppedAt).not.toBeNull();
+      expect(evidence.deadlineEnforcedAt).not.toBeNull();
+      const rows = await db.select().from(museAgentBindings);
+      expect(rows.find(row => row.id === original.id)?.cadenceEvidenceIncompleteAt).toBeInstanceOf(Date);
+      expect(rows.find(row => row.id === later.id)?.cadenceEvidenceIncompleteAt).toBeNull();
+      expect(errors).toEqual([]);
+    } catch (error) {
+      primaryFailed = true; primaryFailure = error;
+    } finally {
+      release();
+      const cleanupFailures: unknown[] = [];
+      const attempt = async (cleanup: () => unknown) => {
+        try { await cleanup(); } catch (error) { cleanupFailures.push(error); }
+      };
+      await attempt(() => starting);
+      await attempt(() => coordinator?.stop());
+      await attempt(() => stop?.());
+      await attempt(() => recover.mockRestore());
+      if (primaryFailed && cleanupFailures.length) throw new AggregateError(
+        [primaryFailure, ...cleanupFailures], "Muse qualification-history assertion and cleanup failed", { cause: primaryFailure });
+      if (primaryFailed) throw primaryFailure;
+      if (cleanupFailures.length) throw new AggregateError(cleanupFailures, "Muse qualification-history cleanup failed");
     }
   });
 
