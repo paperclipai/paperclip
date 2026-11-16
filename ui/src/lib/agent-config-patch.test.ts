@@ -73,6 +73,19 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("keeps a whole runtimeConfig edit together with heartbeat edits", () => {
+    const difficultyRouting = { enabled: true, tiers: { L3: { model: "claude-opus-4-6" } } };
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        heartbeat: { intervalSec: 600 },
+        runtime: { runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 }, difficultyRouting } },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({ heartbeat: { enabled: true, intervalSec: 600 }, difficultyRouting });
+  });
+
   it("replaces adapter config and drops env when the last env binding is cleared", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

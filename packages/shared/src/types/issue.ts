@@ -969,6 +969,7 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  difficultyRouting?: import("../difficulty-routing.js").IssueDifficultyRouting | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;

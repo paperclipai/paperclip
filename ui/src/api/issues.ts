@@ -1,4 +1,4 @@
-import type { SetIssueTitle } from "@paperclipai/shared";
+import type { DifficultyTier, IssueDifficultyRouting, SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
 import type { RunForIssue } from "./activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
@@ -424,6 +424,10 @@ export const issuesApi = {
     ),
   setTitle: (id: string, data: SetIssueTitle) =>
     api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
+  setDifficultyTier: (id: string, tier: DifficultyTier) =>
+    api.put<{ difficultyRouting: IssueDifficultyRouting }>(`/issues/${id}/difficulty-routing`, { tier }),
+  clearDifficultyTier: (id: string) =>
+    api.delete<{ difficultyRouting: null }>(`/issues/${id}/difficulty-routing`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => {

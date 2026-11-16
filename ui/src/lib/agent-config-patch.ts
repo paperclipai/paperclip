@@ -53,7 +53,7 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     Object.keys(overlay.heartbeat).length > 0
     || Object.keys(overlay.debug).length > 0
   ) {
-    const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+    const existingRc = (overlay.runtime.runtimeConfig ?? agent.runtimeConfig ?? {}) as Record<string, unknown>;
     const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
       ?? { ...existingRc };
 
@@ -76,7 +76,7 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
   }
 
   if (Object.keys(overlay.runtime).length > 0) {
-    Object.assign(patch, overlay.runtime);
+    Object.assign(patch, overlay.runtime, patch.runtimeConfig ? { runtimeConfig: patch.runtimeConfig } : {});
   }
 
   return patch;

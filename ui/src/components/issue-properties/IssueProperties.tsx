@@ -120,6 +120,8 @@ import {
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
 import { IssueContextUsageRow } from "./context-usage-row";
+import { IssueDifficultyRoutingRow } from "./IssueDifficultyRouting";
+import { agentUsesDifficultyRouting } from "../../lib/difficulty-routing";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -2418,6 +2420,10 @@ export function IssueProperties({
           >
             {assigneeOptionsContent}
           </PropertyPicker>
+        ) : null}
+
+        {issue.difficultyRouting || agentUsesDifficultyRouting(assignee?.runtimeConfig) ? (
+          <IssueDifficultyRoutingRow issueId={issue.id} routing={issue.difficultyRouting ?? null} inline={inline} />
         ) : null}
 
         {assigneeRuntimeStateLoading || (assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now())) ? (

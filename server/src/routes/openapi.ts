@@ -101,6 +101,7 @@ import {
   upsertIssueWatchdogSchema,
   runnerGoalActionRequestSchema,
   selectTaskWorkspaceSchema,
+  setIssueDifficultyTierSchema,
   prepareWorkspaceRepositorySchema,
   // Project
   createProjectSchema,
@@ -4671,6 +4672,26 @@ registry.registerPath({
   description: "Queues an authorized repository for the next normal admission. The response does not claim the repository is available in an already-running provider session.",
   request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(prepareWorkspaceRepositorySchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/difficulty-routing",
+  tags: ["issues"],
+  summary: "Choose the task's difficulty tier",
+  description: "Pins the L1, L2, or L3 tier that selects the assignee's model and effort on the next run. Applies only when the assignee has difficulty routing enabled.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(setIssueDifficultyTierSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/difficulty-routing",
+  tags: ["issues"],
+  summary: "Return the task to automatic difficulty routing",
+  description: "Clears the stored tier. The decision model rates the task again before the next run.",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

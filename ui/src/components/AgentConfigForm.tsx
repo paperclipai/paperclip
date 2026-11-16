@@ -101,6 +101,9 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { difficultyEffortConfigKey } from "@paperclipai/shared";
+import { readDifficultyRoutingDraft, runtimeConfigWithDifficultyRouting } from "../lib/difficulty-routing";
+import { AgentDifficultyRoutingFields } from "./AgentDifficultyRoutingFields";
 
 /* ---- Create mode values ---- */
 
@@ -1459,9 +1462,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? "variant"
           : harnessType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
-  const thinkingEffortOptions =
+  const thinkingEffortOptionsFor = (modelId: string) =>
     isCodexHarness
-      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+      ? codexReasoningEffortOptions(modelId, "Auto").map((option) => ({
           id: option.value,
           label: option.label,
         }))
@@ -1474,11 +1477,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
               : harnessType === "claude_local" || harnessType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
+                ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, modelId).map((id) => ({
                     id,
                     label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
                   }))]
                 : claudeThinkingEffortOptions;
+  const thinkingEffortOptions = thinkingEffortOptionsFor(currentModelId);
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : isCodexHarness || (adapterType === "paperclip_runner" && ["claude_local", "grok_local"].includes(harnessType))
@@ -1914,7 +1918,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
-              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              mark("runtime", "runtimeConfig", { ...runtimeConfig, ...(overlay.runtime.runtimeConfig as Record<string, unknown> | undefined), aiConnection: binding });
               if (accountBoundCatalog && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
             }} />}
 
@@ -2065,6 +2069,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       </p>
                     )}
                 </>
+              )}
+              {!isCreate && (
+                <AgentDifficultyRoutingFields
+                  value={readDifficultyRoutingDraft(((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig).difficultyRouting)}
+                  onChange={(next) => mark("runtime", "runtimeConfig", runtimeConfigWithDifficultyRouting(runtimeConfig, overlay.runtime.runtimeConfig as Record<string, unknown> | undefined, next))}
+                  models={models}
+                  agentModel={currentModelId}
+                  effortOptionsForModel={showThinkingEffort && difficultyEffortConfigKey(adapterType) ? thinkingEffortOptionsFor : null}
+                />
               )}
           </>)}
         </div>

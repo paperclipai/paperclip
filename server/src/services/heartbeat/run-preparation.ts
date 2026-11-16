@@ -2947,6 +2947,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        difficultyRouting: issues.difficultyRouting,
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
