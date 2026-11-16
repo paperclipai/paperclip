@@ -2567,7 +2567,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
 
     const connect = () => {
-      if (closed) return;
+      // The initial timer and a retry timer can both be pending (a tab hidden
+      // before the first connect), so only one of them may open a socket.
+      clearReconnect();
+      if (closed || socket) return;
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
       );

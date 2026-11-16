@@ -449,6 +449,22 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     expect(sockets[1].onmessage).toBeTypeOf("function");
   });
 
+  it("opens one socket when an opted-in tab is hidden before the first connect", async () => {
+    enableHiddenNotifications();
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      flushSync(() => {
+        root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><span>Visible task</span></LiveUpdatesProvider></QueryClientProvider>);
+      });
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].onmessage).toBeTypeOf("function");
+  });
+
   it("does not reconnect a hidden socket when desktop notifications are off", async () => {
     await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
     const visibility = vi.spyOn(document, "visibilityState", "get");
