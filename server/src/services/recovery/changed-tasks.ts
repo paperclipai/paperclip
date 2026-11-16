@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { issues } from "@paperclipai/db";
 
 /** Tasks whose own rows changed since `since`, for the backstop between full
@@ -8,8 +8,8 @@ import { issues } from "@paperclipai/db";
  * start flips the agent to running, which makes none of its other tasks
  * stranded. Every run start would otherwise re-check all of the agent's tasks
  * for two backstop windows. */
-export function changedTaskCondition(since: Date) {
-  const at = sql`${since.toISOString()}::timestamptz`;
+export function changedTaskCondition(since: Date | SQL) {
+  const at = since instanceof Date ? sql`${since.toISOString()}::timestamptz` : since;
   return sql`(${issues.updatedAt} >= ${at}
     or exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
       and (r.context_snapshot->>'issueId') = ${issues.id}::text and r.updated_at >= ${at})

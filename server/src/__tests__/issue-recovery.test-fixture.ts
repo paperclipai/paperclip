@@ -71,6 +71,12 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     cancellation = heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !draining);
     await Promise.all([worker.ready, dispatch.ready, cancellation.ready]);
   }
+  /** A replaced server process: the old workers stop and new ones start with
+   * no memory of earlier passes, sharing only the database. */
+  async function restart(options?: { backstopMs?: number; fullBackstopMs?: number }) {
+    await worker?.stop(); await dispatch?.stop(); await cancellation?.stop(); await coordinator?.stop();
+    await start(options);
+  }
   async function compete() {
     const other = heartbeatService(db);
     const competing = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
@@ -233,7 +239,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     return { ...f, settings, chat, message, replies, failures, resume };
   }
   return {
-    start, compete, fixture, completingProvider, settled, quiet, finish, completed, savedConversation,
+    start, restart, compete, fixture, completingProvider, settled, quiet, finish, completed, savedConversation,
     get db() { return db; },
     get meter() { return meter!; },
     get heartbeat() { return heartbeat; },
