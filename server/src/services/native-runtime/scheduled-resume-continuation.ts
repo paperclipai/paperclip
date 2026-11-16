@@ -22,6 +22,7 @@ export function sameRunResumeClaimEntry(input: {
       checkpointExists: detail.checkpointExists ?? null,
       successorRunId: detail.successorRunId ?? null,
       replacementDenied: detail.replacementDenied ?? null,
+      waitingForOwner: detail.waitingForOwner ?? null,
     },
   };
 }
