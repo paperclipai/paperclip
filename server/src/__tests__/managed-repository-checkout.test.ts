@@ -22,7 +22,7 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
-  it.each([false, true])("cancels a running clone and cleans staging (cached reference: %s)", async cached => {
+  it.each([{ cached: false, ignoresTermination: false }, { cached: true, ignoresTermination: false }, { cached: false, ignoresTermination: true }])("cancels a running clone and cleans staging (cached reference: $cached, ignores SIGTERM: $ignoresTermination)", async ({ cached, ignoresTermination }) => {
     const { root, target } = await fixture();
     const bin = path.join(root, "bin");
     const started = path.join(root, "clone-started.json");
@@ -31,7 +31,7 @@ describe("atomic managed repository publication", () => {
     await writeFile(path.join(bin, "git"), `#!${process.execPath}\n`
       + `const fs = require('node:fs');\n`
       + `fs.appendFileSync(${JSON.stringify(started)}, JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }) + '\\n');\n`
-      + `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(stopped)}, 'stopped'); process.exit(0); });\n`
+      + `process.on('SIGTERM', () => { if (${ignoresTermination}) return; setTimeout(() => { const staging = process.argv.at(-1); fs.mkdirSync(staging, { recursive: true }); fs.writeFileSync(require('node:path').join(staging, 'late-write'), 'late'); fs.writeFileSync(${JSON.stringify(stopped)}, 'stopped'); process.exit(0); }, 200); });\n`
       + `setTimeout(() => process.exit(1), 5000);\n`, { mode: 0o755 });
     vi.stubEnv("PATH", bin);
     const controller = new AbortController();
@@ -62,7 +62,8 @@ describe("atomic managed repository publication", () => {
         await expect(Promise.race([result, new Promise(resolve => { timer = setTimeout(() => resolve("abort deadline exceeded"), 1500); })])).resolves.toBe(reason);
       } finally { clearTimeout(timer); }
       expect(Date.now() - abortedAt).toBeLessThan(1500);
-      await vi.waitFor(async () => expect(await readFile(stopped, "utf8")).toBe("stopped"));
+      if (!ignoresTermination) expect(await readFile(stopped, "utf8")).toBe("stopped");
+      expect(() => process.kill(pid!, 0)).toThrow();
       expect((await readFile(started, "utf8")).trim().split("\n")).toHaveLength(1);
       expect(resolveGitAuth).toHaveBeenCalledTimes(1);
       expect(beforePublish).not.toHaveBeenCalled();

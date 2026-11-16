@@ -2,7 +2,7 @@ import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
 import { isGitMountBoundaryMessage } from "./git-mount-boundary-message.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, type ExecFileOptions } from "node:child_process";
 import { promisify } from "node:util";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -13,7 +13,31 @@ import { isWorkspaceGitScanError, WorkspaceGitScanError } from "./workspace-git-
 import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-preparation-timing.js";
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
 
-const execFile = promisify(execFileCallback);
+const execFileAsync = promisify(execFileCallback);
+async function execFile(file: string, args: string[], options: ExecFileOptions = {}) {
+  const result = execFileAsync(file, args, { ...options, encoding: "utf8" });
+  if (!options.signal) return result;
+  const child = result.child;
+  let settle: () => void;
+  const exited = new Promise<void>(resolve => { settle = resolve; });
+  const onExit = () => settle();
+  child.once("exit", onExit);
+  child.once("close", onExit);
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await result;
+  } catch (error) {
+    if (options.signal.aborted && child.pid && child.exitCode === null && child.signalCode === null) {
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 500);
+      await exited;
+    }
+    throw error;
+  } finally {
+    clearTimeout(killTimer);
+    child.removeListener("exit", onExit);
+    child.removeListener("close", onExit);
+  }
+}
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
 type ManagedRepositoryPreparationFailure = { code: string | number | null; timedOut: boolean };
