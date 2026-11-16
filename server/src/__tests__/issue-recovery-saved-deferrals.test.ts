@@ -197,9 +197,18 @@ describeIssueRecovery("saved task recovery passes and deferrals", () => {
     } finally { state.db.$client.options.debug = priorDebug; }
     const checks = behavior.checks.filter(check => check.id === target).length;
     const writes = statements.filter(query => /insert into issue_recovery_deferrals/i.test(query)).length;
-    console.info(`rolling-deferral census: ${JSON.stringify({ minutes: 20, checks, deferralWrites: writes })}`);
+    // The saved deadline still moves forward, so the row of a task that keeps
+    // deferring never looks stale to the prune (10 minutes past its deadline).
+    const [row] = await bounded(state.db.select({ dueAt: issueRecoveryDeferrals.dueAt }).from(issueRecoveryDeferrals)
+      .where(and(eq(issueRecoveryDeferrals.queue, "stranded-assignments"), eq(issueRecoveryDeferrals.issueId, target))),
+      () => "the deferral to be read");
+    const savedBehind = row ? Date.now() - row.dueAt.getTime() : null;
+    console.info(`rolling-deferral census: ${JSON.stringify({ minutes: 20, checks, deferralWrites: writes, savedBehindMs: savedBehind })}`);
     expect(checks).toBeGreaterThanOrEqual(30);
     expect(writes).toBeLessThanOrEqual(5);
+    expect(writes).toBeGreaterThan(1);
+    expect(savedBehind, "the saved deferral was not kept").not.toBeNull();
+    expect(savedBehind!).toBeLessThan(6 * MINUTE);
   }, TEST_TIMEOUT_MS);
 
   it("checks every task again after scheduling suppression, even with a recent saved full pass", async () => {
