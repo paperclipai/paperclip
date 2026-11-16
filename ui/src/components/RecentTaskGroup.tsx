@@ -93,17 +93,17 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
 
   if (!count || rail) return <>{children}</>;
   return <div ref={anchor} className="min-w-0">
-    <div className="relative">
-      <div className="pl-5">{children}</div>
+    <div className="flex min-w-0 items-center">
+      <div className="min-w-0 flex-1">{children}</div>
       <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} subtasks of ${task.title}`} aria-expanded={expanded} aria-controls={expanded ? contentId : undefined}
         onClick={() => { if (expanded) preview(); setExpanded(value => !value); }}
-        className="absolute left-0 top-1 flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring">
+        className="mr-2 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring">
         <ChevronRight aria-hidden="true" className={cn("size-3.5 transition-transform motion-reduce:transition-none", expanded && "rotate-90")} />
       </button>
     </div>
     {!expanded ? <button type="button" className={cn(controlClass, "ml-7")} onClick={() => setExpanded(true)}>
       {count} subtasks{task.unreadSubtaskCount ? ` · ${task.unreadSubtaskCount} unread` : ""}
-    </button> : <div id={contentId} className="ml-5 min-w-0 border-l border-border pl-1" role="group" aria-label={`Subtasks of ${task.title}`}>
+    </button> : <div id={contentId} className="ml-6 min-w-0 border-l border-border pl-1" role="group" aria-label={`Subtasks of ${task.title}`}>
       {(view.kind === "loading" || view.kind === "reconnecting") && <p role="status" className="px-3 py-1 text-xs text-muted-foreground">Loading subtasks…</p>}
       {displayed.map(child => <div key={child.id}>{childRow({ ...child, recordedAt: 0 })}</div>)}
       {pinned && childRow(pinned)}

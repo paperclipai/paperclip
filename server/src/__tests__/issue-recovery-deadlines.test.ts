@@ -240,6 +240,21 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     await state.db.update(agents).set({ status: "idle", updatedAt: new Date(heartbeatAt.getTime() + 1000) }).where(eq(agents.id, f.agentId));
     expect(await changed()).toEqual(tasks.map(row => row.id).sort());
   });
+  it("counts an agent's run start as no change to its other tasks, and a pause during the run as a change", async () => {
+    const f = await fixture();
+    const old = new Date(Date.now() - 60 * 60_000);
+    await state.db.update(agents).set({ lastHeartbeatAt: old, updatedAt: old }).where(eq(agents.id, f.agentId));
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 5 }, (_, index) => ({ companyId: f.companyId,
+      title: `Settled ${index}`, status: "in_review", assigneeAgentId: f.agentId, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    const since = new Date(Date.now() - 5 * 60_000);
+    const changed = async () => (await state.db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, f.companyId), changedTaskCondition(since)))).map(row => row.id).sort();
+    // The write of execution start in heartbeat.ts: a status flip with no heartbeat time.
+    await state.db.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual([]);
+    await state.db.update(agents).set({ status: "paused", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual(tasks.map(row => row.id).sort());
+  });
   it("resolves a run without a task to no tasks and a missing task to the whole company", async () => {
     const f = await fixture();
     const [taskless] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
@@ -426,10 +441,19 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       const [row] = await state.db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog.watchdog.id));
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
-    await completed(reviewId!);
+    const review = await completed(reviewId!);
     expect(failures).toEqual([]);
+    // Ordinary assignment recovery can win the wake reason while the watchdog
+    // wake coalesces into that run. Verify its mandate and one dispatch instead.
+    expect(review.contextSnapshot).toMatchObject({
+      watchdogId: watchdog.watchdog.id,
+      taskWatchdog: {
+        watchedIssueId: source.id,
+        stopFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      },
+    });
     expect(await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${reviewId}`))).toHaveLength(1);
     await finish(reviewId!);
     await taskWatchdogService(state.db).disableForIssue(f.companyId, source.id);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); await quiet();

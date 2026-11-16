@@ -36,7 +36,8 @@ export interface AppendControlPlaneEventOptions {
    */
   deferPostCommitObservers?: true;
   /**
-   * For an `item.delta` only, on a port with `pipelinesStreamingEvents`: the
+   * For an event type in the port's `pipelinedEventTypes` (only `item.delta`
+   * when the port does not name them), on a port with `pipelinesStreamingEvents`: the
    * caller does not wait for this receipt before its next append, so the port
    * may hold the delta briefly to commit it with later ones.
    */
@@ -95,6 +96,7 @@ export interface ControlPlanePort {
    * commits.
    */
   readonly pipelinesStreamingEvents?: boolean;
+  readonly pipelinedEventTypes?: ReadonlySet<PrpEvent["eventType"]>;
   /** Commits the queued streaming deltas now, without waiting for the batch timer. */
   flushStreamingEvents?(): void;
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];

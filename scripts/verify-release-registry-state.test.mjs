@@ -9,6 +9,7 @@ import {
   isPrereleaseVersion,
   verifyPackageRegistryProblems,
   verifyPackageRegistryState,
+  compareCanaryVersions,
 } from "./verify-release-registry-state.mjs";
 
 test("isCanaryVersion matches release canaries", () => {
@@ -398,4 +399,28 @@ test("fetchRegistryJson times out hung requests", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("a finalizing canary accepts a dist-tag that a newer canary already moved, and nothing older or foreign", () => {
+  const check = (canaryTag, allowNewerCanary, channel = "canary") => {
+    const packageDoc = { "dist-tags": { latest: "2026.1110.0", canary: canaryTag }, versions: { "2026.1116.0-canary.21800": {} } };
+    return verifyPackageRegistryProblems({
+      packageName: "@paperclipai/shared", packageDoc, packageDocsByName: new Map([["@paperclipai/shared", packageDoc]]),
+      channel, distTag: "canary", targetVersion: "2026.1116.0-canary.21800", allowCanaryLatest: false, allowNewerCanary,
+    }).map((problem) => problem.message);
+  };
+  assert.deepEqual(check("2026.1116.0-canary.21800", true), []);
+  assert.deepEqual(check("2026.1116.0-canary.21805", true), []);
+  assert.deepEqual(check("2026.1117.0-canary.21803", true), []);
+  assert.match(check("2026.1116.0-canary.21805", false)[0], /resolves to 2026\.1116\.0-canary\.21805, expected/);
+  assert.match(check("2026.1116.0-canary.21799", true)[0], /resolves to 2026\.1116\.0-canary\.21799, expected/);
+  assert.match(check("2026.1116.0-nightly.3", true)[0], /resolves to 2026\.1116\.0-nightly\.3, expected/);
+  assert.match(check(undefined, true)[0], /resolves to <missing>/);
+});
+
+test("canary versions compare by base version, then canary number", () => {
+  assert.equal(compareCanaryVersions("2026.1116.0-canary.9", "2026.1116.0-canary.21800"), -1);
+  assert.equal(compareCanaryVersions("2026.1117.0-canary.1", "2026.1116.0-canary.21800"), 1);
+  assert.equal(compareCanaryVersions("2026.1116.0-canary.7", "2026.1116.0-canary.7"), 0);
+  assert.equal(compareCanaryVersions("2026.1116.0-nightly.7", "2026.1116.0-canary.7"), null);
 });

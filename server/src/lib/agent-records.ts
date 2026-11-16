@@ -20,7 +20,7 @@ export function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
 
-const CONFIG_REVISION_FIELDS = [
+export const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
   "title",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "./client.js";
 import {
@@ -83,4 +84,18 @@ describe.skipIf(!support.supported)("shared PostgreSQL fixtures", () => {
     }
   }, 90_000);
 
+  it("hides NOTICE messages from new clients of a disposable database", async () => {
+    __setEmbeddedPostgresCtorProviderForTests(async () => { throw new Error("Must not start another PostgreSQL server"); });
+    const database = await startEmbeddedPostgresTestDatabase("ignored-");
+    databases.push(database);
+    const notices: unknown[] = [];
+    const sql = postgres(database.connectionString, { max: 1, onnotice: (notice) => notices.push(notice) });
+    try {
+      expect((await sql`SHOW client_min_messages`)[0]?.client_min_messages).toBe("warning");
+      await sql`CREATE TABLE quiet_parent (id integer PRIMARY KEY)`;
+      await sql`CREATE TABLE quiet_child (parent_id integer REFERENCES quiet_parent (id))`;
+      await sql`TRUNCATE quiet_parent CASCADE`;
+      expect(notices).toEqual([]);
+    } finally { await sql.end(); }
+  }, 90_000);
 });

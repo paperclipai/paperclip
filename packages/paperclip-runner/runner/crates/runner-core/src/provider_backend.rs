@@ -72,7 +72,7 @@ fn invalid_tool_call_result(
                 "message": error
                     .safe_provider_message()
                     .unwrap_or(GENERIC_INVALID_TOOL_CALL_MESSAGE),
-                "retryable": false,
+                "retryable": error.is_retryable(),
             },
         }),
         is_error: true,

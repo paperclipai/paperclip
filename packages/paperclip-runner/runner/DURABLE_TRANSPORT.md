@@ -8,6 +8,12 @@ agent or recovery of its persisted run. On a fresh launch or restart,
 - With `--listen-address 0.0.0.0 --listen-path /api/runner/v1/connect/<run-id>`,
   the Runner listens for Core. `--listen-port` defaults to `43127`.
 
+A dialing Runner waits `--reconnect-delay-ms` (default 250) between
+connection attempts and backs off after a failed one. A listening Runner
+checks for an incoming connection every 10 ms (or sooner, when that delay is
+smaller). It never redials, so a connection does not wait out the reconnect
+delay after a disconnect or an authority rotation.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
