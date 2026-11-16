@@ -11,7 +11,7 @@ import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
   budgetReservations, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
-  caseHandoffs, principalPermissionGrants, routines, type Db } from "@paperclipai/db";
+  caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { deleteAgentAdmissionHistory } from "../modules/execution-admission/index.js";
@@ -68,14 +68,8 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
     .update(issues)
     .set({ assigneeAgentId: null, createdByAgentId: null })
     .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
-  await tx
-    .update(routines)
-    .set({
-      assigneeAgentId: null,
-      status: sql`case when ${routines.status} = 'active' then 'paused' else ${routines.status} end`,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, id)));
+  const { routineService } = await import("./routines.js");
+  await routineService(tx).releaseDeletedAgentRoutines(tx, companyId, id);
   await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
   await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
   await tx.delete(activityLog).where(

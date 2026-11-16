@@ -2531,6 +2531,24 @@ export function routineService(
       return updatedRoutine ? { ...updatedRoutine, previousResponsibleUserId } : null;
     },
 
+    releaseDeletedAgentRoutines: async (executor: Db, companyId: string, agentId: string) => {
+      await notifyDeliveryWork(executor, DELIVERY_QUEUES.routineSchedules);
+      const released = await executor
+        .update(routines)
+        .set({
+          assigneeAgentId: null,
+          status: sql`case when ${routines.status} = 'active' then 'paused' else ${routines.status} end`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, agentId)))
+        .returning();
+      for (const routine of released) {
+        await appendRoutineRevision(executor, routine, { agentId: null, userId: null, runId: null }, {
+          changeSummary: "Default agent deleted",
+        });
+      }
+    },
+
     createTrigger: async (
       routineId: string,
       input: CreateRoutineTrigger,
