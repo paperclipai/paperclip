@@ -330,7 +330,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       workerEffort,
       mainVariant,
       workerVariant,
-      existing: env.GROK_CONFIG,
+      existing: env.GROK_CONFIG ?? process.env.GROK_CONFIG,
     });
     if (configOverlay) env.GROK_CONFIG = configOverlay;
 

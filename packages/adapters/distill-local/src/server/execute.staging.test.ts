@@ -63,6 +63,24 @@ describe("execute workspace staging", () => {
     expect(await fs.readdir(cwd)).toEqual([]);
   });
 
+  it("keeps host GROK_CONFIG keys when a worker model overlay is applied", async () => {
+    const host = process.env.GROK_CONFIG;
+    const seen = path.join(root, "grok-config.json");
+    process.env.GROK_CONFIG = JSON.stringify({ features: { web_fetch: true } });
+    try {
+      await writeFakeDistill(`printf '%s' "$GROK_CONFIG" > "${seen}"`);
+      const result = await execute(makeCtx({ workerModel: "glm-5.3" }));
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(await fs.readFile(seen, "utf8"))).toEqual({
+        features: { web_fetch: true },
+        models: { worker: "glm-5.3" },
+      });
+    } finally {
+      if (host === undefined) delete process.env.GROK_CONFIG;
+      else process.env.GROK_CONFIG = host;
+    }
+  });
+
   it("keeps files the agent creates under .claude while removing only what Paperclip staged", async () => {
     const source = await writeSkill("alpha");
     await writeFakeDistill('echo "keep" > "$PWD/.claude/settings.json"');
