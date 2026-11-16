@@ -49,6 +49,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { museRunnerBroker } from "../services/muse-runner-broker.js";
 import { museReceiver } from "../services/muse-receiver.js";
 import { deleteCompany } from "../services/company-deletion.js";
+import { mcpCompanyDeletion } from "../services/public-mcp/company-deletion.js";
 import * as museProjectionModule from "../modules/external-agents/muse-hosted-projection.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -1578,7 +1579,7 @@ describe("personal Muse control plane",()=>{
       if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse lock regression cleanup failed");
     }
   },30_000);
-  it("joins normal company deletion after a hosted contact holds its mirror transaction without a child-lock cycle",async()=>{
+  it("retains a hosted contact after normal company deletion rolls back its exact destructive transaction without a lock cycle",async()=>{
     const f=await fixture(false);
     await db.update(bindings).set({receiverContactAt:new Date()}).where(eq(bindings.id,f.binding.id));
     const actualSqlErrors:unknown[]=[],sqlStates:string[]=[];
@@ -1599,17 +1600,32 @@ describe("personal Muse control plane",()=>{
     expect(getCloudRuntimeIdentity()).toBeNull();
     expect(await receiver.signal(f.binding.id)).toEqual({version:1,signal:null});
     const reset=await applyActualManagedContactIdentity();
-    await db.insert(mcpClientMirrorState).values({id:"public",revision:0}).onConflictDoNothing();
-    let releaseFlush!:()=>void,deletionFinished!:()=>void;
-    const continueFlush=new Promise<void>(resolve=>{releaseFlush=resolve;});
+    // No native/provider resources exist in this fixture. Complete their empty
+    // host cleanup through the real lifecycle store/worker, never a status seed.
+    const hostPhases:string[]=[];
+    const lifecycle=startAgentLifecycle(db,{requiredPluginIds:async()=>[],runPlugin:async()=>{throw new Error("No plugin work in contact/deletion fixture");},runHost:async snapshot=>{
+      expect(snapshot.id).toBe(f.agent.id);expect(["terminating","cleaning_up"]).toContain(snapshot.lifecycleState);
+      hostPhases.push(snapshot.lifecycleState);return "complete";
+    }},()=>true);
+    const suffix=randomUUID().replaceAll("-",""),table=`muse_contact_delete_${suffix}`,constraint=`muse_contact_delete_fk_${suffix}`;
+    let tableCreated=false,releaseDeletion!:()=>void,deletionFinished!:()=>void;
+    const continueDeletion=new Promise<void>(resolve=>{releaseDeletion=resolve;});
     const afterDeletion=new Promise<void>(resolve=>{deletionFinished=resolve;});
-    let parked=false,flushPid:number|undefined,waitKind:string|undefined;
+    let destructiveTx:object|undefined,parked=false,deletionPid:number|undefined,waitKind:string|undefined;
+    const realParticipant=mcpCompanyDeletion.deleteCompanyData;
+    const participant=vi.spyOn(mcpCompanyDeletion,"deleteCompanyData").mockImplementation(async(tx,companyId)=>{
+      const result=await realParticipant(tx,companyId);
+      if(companyId===f.company.id)destructiveTx=tx;
+      return result;
+    });
     const realPrepare=museProjectionModule.prepareMuseReceiverAuthorityMutation;
     const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverAuthorityMutation").mockImplementation(async(tx,scope)=>{
       await realPrepare(tx,scope);
-      if(!parked&&scope?.companyId===f.company.id){
+      // The exact tx was tagged AFTER its normal MCP participant acquired736.
+      // This cannot mistake lifecycle termination's earlier mirror write.
+      if(!parked&&tx===destructiveTx&&scope?.companyId===f.company.id){
         const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);
-        flushPid=row.pid;parked=true;await continueFlush;
+        deletionPid=row.pid;parked=true;await continueDeletion;
       }
     });
     const automaticBroker=museRunnerBroker(owner),realAutomaticVerify=automaticBroker.verify;
@@ -1617,38 +1633,50 @@ describe("personal Muse control plane",()=>{
       await afterDeletion;return realAutomaticVerify(...args);
     });
     let flush:Promise<void>|undefined,deletion:ReturnType<typeof deleteCompany>|undefined,primary:unknown;
-    onTestFailed(()=>console.error("MUSE_CONTACT_DELETE_LOCK_FRONTIER "+JSON.stringify({sqlStates,waitKind,parked})));
+    onTestFailed(()=>console.error("MUSE_CONTACT_DESTRUCTIVE_DELETE_FRONTIER "+JSON.stringify({sqlStates,waitKind,parked,hostPhases})));
     try{
-      flush=receiver.flush();void flush.catch(()=>{});
-      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      await db.execute(sql`CREATE TABLE ${sql.identifier(table)} (company_id uuid NOT NULL, CONSTRAINT ${sql.identifier(constraint)} FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE RESTRICT)`);
+      tableCreated=true;await db.execute(sql`INSERT INTO ${sql.identifier(table)} (company_id) VALUES (${f.company.id})`);
       deletion=deleteCompany(db,f.company.id).catch(error=>{observe(error);throw error;}).finally(deletionFinished);
-      const joined=Promise.allSettled([flush,deletion]);
+      void deletion.catch(()=>{});
+      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      flush=receiver.flush();const joined=Promise.allSettled([flush,deletion]);
       await vi.waitFor(async()=>{
         const [waiter]=await db.execute<{kind:string}>(sql`select waiting.wait_event as kind from pg_stat_activity waiting
           where waiting.datname=current_database() and waiting.pid<>pg_backend_pid()
-            and ${flushPid!}=any(pg_blocking_pids(waiting.pid))`);
+            and ${deletionPid!}=any(pg_blocking_pids(waiting.pid))`);
         expect(waiter).toBeDefined();waitKind=waiter.kind;
       },{timeout:5_000});
-      releaseFlush();const outcomes=await joined;
-      const rejected=outcomes.filter(value=>value.status==="rejected");
-      if(actualSqlErrors.length||rejected.length)throw new AggregateError([...actualSqlErrors,...rejected.map(value=>value.reason)],"Muse contact/company deletion concurrency failed");
-      expect(outcomes).toEqual([expect.objectContaining({status:"fulfilled"}),expect.objectContaining({status:"fulfilled",value:expect.objectContaining({id:f.company.id})})]);
-      expect(sqlStates).toEqual([]);
-      expect(await db.select().from(companies).where(eq(companies.id,f.company.id))).toEqual([]);
-      expect(await db.select().from(agents).where(eq(agents.id,f.agent.id))).toEqual([]);
-      expect(await db.select().from(bindings).where(eq(bindings.id,f.binding.id))).toEqual([]);
-      // Successful contact committed before deletion's normal cascade. Absence
-      // after deletion is retirement, never claimed as retained contact evidence.
-      expect(await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id))).toEqual([]);
+      releaseDeletion();const [contactResult,deletionResult]=await joined;
+      let constraintFailure:unknown=deletionResult.status==="rejected"?deletionResult.reason:undefined;
+      let expectedConstraint=false;
+      for(let depth=0;depth<6&&constraintFailure&&typeof constraintFailure==="object";depth++){
+        if("code" in constraintFailure&&constraintFailure.code==="23503"
+          &&"constraint_name" in constraintFailure&&constraintFailure.constraint_name===constraint){expectedConstraint=true;break;}
+        constraintFailure="cause" in constraintFailure?constraintFailure.cause:undefined;
+      }
+      if(contactResult.status!=="fulfilled"||deletionResult.status!=="rejected"||!expectedConstraint||sqlStates.some(code=>code!=="23503"))throw new AggregateError([...actualSqlErrors,...[contactResult,deletionResult].filter(value=>value.status==="rejected").map(value=>value.reason)],"Muse contact/destructive deletion did not settle as required");
+      expect(deletionResult.reason).toMatchObject({cause:{code:"23503",constraint_name:constraint}});
+      expect(sqlStates).toEqual(["23503"]);expect(hostPhases).toEqual(["terminating","cleaning_up"]);
+      expect(await db.select().from(companies).where(eq(companies.id,f.company.id))).toHaveLength(1);
+      const [agent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
+      expect(agent).toMatchObject({status:"terminated",lifecycleState:"terminated"});
+      const [binding]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+      expect(binding).toMatchObject({id:f.binding.id,generation:f.binding.generation,challengeHash:null,verifiedReplyAt:null});
+      const contacts=await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
+      expect(contacts).toHaveLength(1);expect(contacts[0]).toMatchObject({contacts:1,incomplete:false,bindingGeneration:f.binding.generation});
+      expect(contacts[0].timestamps).toHaveLength(1);
+      expect(await db.select().from(mailbox).where(and(eq(mailbox.bindingId,f.binding.id),eq(mailbox.kind,"readiness_challenge")))).toEqual([]);
     }catch(error){primary=error;throw error;}
     finally{
-      releaseFlush();deletionFinished();
+      releaseDeletion();deletionFinished();
       await Promise.allSettled([...(flush?[flush]:[]),...(deletion?[deletion]:[])]);
-      prepare.mockRestore();automatic.mockRestore();
-      const cleanup=await Promise.allSettled([receiver.stop()]);
+      prepare.mockRestore();participant.mockRestore();automatic.mockRestore();
+      const cleanup=await Promise.allSettled([receiver.stop(),lifecycle.stop()]);
+      if(tableCreated){try{await db.execute(sql`DROP TABLE ${sql.identifier(table)}`);}catch(error){cleanup.push({status:"rejected",reason:error});}}
       try{await reset();}catch(error){cleanup.push({status:"rejected",reason:error});}
       const failed=cleanup.filter(value=>value.status==="rejected");
-      if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse deletion lock regression cleanup failed");
+      if(failed.length)throw new AggregateError([...(primary?[primary]:[]),...failed.map(value=>value.reason)],"Muse destructive deletion regression cleanup failed");
     }
   },30_000);
   it("managed late HTTP success after empty handoff already has durable contact before stop or reconstruction",async()=>{
