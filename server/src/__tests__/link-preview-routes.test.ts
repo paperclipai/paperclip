@@ -4,14 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { linkPreviewRoutes } from "../routes/link-previews.js";
 import { HttpError } from "../errors.js";
+import { createInviteRateLimiter, type InviteRateLimiter } from "../services/invite-rate-limit.js";
 
-function app(actor: express.Request["actor"]) {
+function app(actor: express.Request["actor"], limiter?: InviteRateLimiter) {
   const get = vi.fn(async () => ({ preview: null, maxAgeMs: 60_000 }));
   const cached = vi.fn(async () => ({ results: {} }));
   const server = express();
   server.use(express.json());
   server.use((req, _res, next) => { req.actor = actor; next(); });
-  server.use(linkPreviewRoutes(null as unknown as Db, { get, cached }));
+  server.use(linkPreviewRoutes(null as unknown as Db, { get, cached }, limiter));
   server.use((error: HttpError, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error.status ?? 500).json({ error: error.message });
   });
@@ -21,6 +22,26 @@ const board = { type: "board", source: "session", userId: "alice", companyIds: [
 const path = "/companies/company-a/link-preview";
 
 describe("link preview routes", () => {
+  it("limits lookups per viewer and company without blocking cached reads", async () => {
+    let now = 0;
+    const limiter = createInviteRateLimiter({ maxRequests: 2, windowMs: 1_000, now: () => now });
+    const actor = { ...board, userId: "alice", companyIds: ["company-a", "company-b"] };
+    const { server, get, cached } = app(actor, limiter);
+    const query = { url: "https://github.com/acme/web/pull/42" };
+    for (let n = 0; n < 2; n++) expect((await request(server).get(path).query(query)).status).toBe(200);
+    const limited = await request(server).get(path).query(query);
+    expect(limited.status).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("1");
+    expect(get).toHaveBeenCalledTimes(2);
+    expect((await request(server).get("/companies/company-a/link-previews/cached").query(query)).status).toBe(200);
+    expect(cached).toHaveBeenCalledTimes(1);
+    expect((await request(server).get("/companies/company-b/link-preview").query(query)).status).toBe(200);
+    actor.userId = "bob";
+    expect((await request(server).get(path).query(query)).status).toBe(200);
+    actor.userId = "alice";
+    now = 1_001;
+    expect((await request(server).get(path).query(query)).status).toBe(200);
+  });
   it("passes the authenticated viewer and disables shared HTTP caching", async () => {
     const { server, get } = app({ ...board, companyIds: [...board.companyIds] });
     const response = await request(server).get(path).query({ url: "https://github.com/acme/web/pull/42" });

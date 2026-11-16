@@ -19,6 +19,43 @@ describeEmbeddedPostgres("durable link preview cache", () => {
     await context.db.insert(companies).values({ id: companyId, name: "Link cache", issuePrefix: companyId });
     return { companyId, userId: "alice" };
   }
+  it("bounds retained rows across concurrent store instances and isolates their quotas", async () => {
+    const scope = await fixture();
+    const other = { ...scope, userId: "bob" };
+    const now = Date.now();
+    const seed = Array.from({ length: 1_000 }, (_, n) => ({
+      companyId: scope.companyId, viewerId: scope.userId, channel: "github", resourceKind: "pull_request",
+      canonicalUrl: url + n, status: null, metadata: {}, checkedAt: new Date(now - 1_000 + n), expiresAt: new Date(now + 60_000),
+    }));
+    await context.db.insert(linkPreviews).values([...seed, { ...seed[0], viewerId: other.userId }]);
+    const first = createLinkPreviewStore(context.db);
+    const second = createLinkPreviewStore(context.db);
+    await Promise.all(Array.from({ length: 8 }, (_, n) => (n % 2 ? first : second).write(scope,
+      recognizeLinkPreview(url + (1_000 + n))!, { result: { preview: null, maxAgeMs: 60_000 }, expiresAt: now + 60_000 }, now + n)));
+    const rows = await context.db.select().from(linkPreviews).where(sql`${linkPreviews.companyId} = ${scope.companyId}`);
+    expect(rows.filter(row => row.viewerId === scope.userId)).toHaveLength(1_000);
+    expect(rows.filter(row => row.viewerId === other.userId)).toHaveLength(1);
+    const saved = await first.read(scope, [recognizeLinkPreview(url + "0")!, recognizeLinkPreview(url + "1007")!]);
+    expect(saved.has(url + "0")).toBe(false);
+    expect(saved.has(url + "1007")).toBe(true);
+  });
+  it("removes long-expired rows on writes and preserves recent stale status", async () => {
+    const scope = await fixture();
+    const now = Date.now();
+    const expired = now - 31 * 24 * 60 * 60_000;
+    await context.db.insert(linkPreviews).values([
+      { companyId: scope.companyId, viewerId: scope.userId, channel: "github", resourceKind: "pull_request", canonicalUrl: url,
+        status: "merged", metadata: { title: preview.title }, checkedAt: new Date(expired - 60_000), expiresAt: new Date(expired) },
+      { companyId: scope.companyId, viewerId: scope.userId, channel: "github", resourceKind: "pull_request", canonicalUrl: url + "1",
+        status: "merged", metadata: { title: preview.title }, checkedAt: new Date(now - 120_000), expiresAt: new Date(now - 60_000) },
+    ]);
+    const store = createLinkPreviewStore(context.db);
+    await store.write(scope, recognizeLinkPreview(url + "2")!, { result: { preview: null, maxAgeMs: 60_000 }, expiresAt: now + 60_000 }, now);
+    const saved = await store.read(scope, [target, recognizeLinkPreview(url + "1")!, recognizeLinkPreview(url + "2")!]);
+    expect(saved.has(url)).toBe(false);
+    expect(saved.get(url + "1")?.result.preview?.state).toBe("merged");
+    expect(saved.has(url + "2")).toBe(true);
+  });
   it.each(["failure", "success", "timeout", "stale timeout"])("keeps another replica's concurrent hydration after provider %s", async (settlement) => {
     const scope = await fixture();
     const store = createLinkPreviewStore(context.db);

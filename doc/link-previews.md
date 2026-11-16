@@ -46,5 +46,20 @@ optional process cache/provider path. Successful
 and unavailable results normally remain fresh for one minute; provider backoff
 can extend that window up to one hour. Expired records retain last known status
 for immediate display. An outage keeps that status and saves the negative
-freshness window, so the page does not repeatedly retry. There is no deletion
-worker: one row per visited resource and viewer persists until company deletion.
+freshness window, so the page does not repeatedly retry.
+
+Each company/viewer scope retains at most 1,000 rows. A write removes rows beyond
+that limit, keeping the newest check times, and rows whose freshness expired more
+than 30 days before the write's check time. A transaction-scoped advisory lock
+serializes writes for that scope across replicas, so concurrent URL misses cannot
+exceed the cap. Cleanup makes no queries during page hydration and starts no
+background worker. Inactive scopes remain bounded and are cleaned on their next
+write; company deletion removes all their rows. Normal stale status remains
+available until it ages out or the scope reaches its quota. Negative results use
+the same cap and retention policy as known status.
+
+The single-link lookup route also limits each company/viewer to 600 requests per
+minute per server process, using the existing in-memory request limiter. Excess
+requests return 429 with Retry-After. Cached batch reads remain available during
+that backoff and do not allocate stored rows. The durable quota is enforced across
+replicas and remains effective when process-local request limits reset.
