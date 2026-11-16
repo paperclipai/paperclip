@@ -122,6 +122,9 @@ import {
   getPostgresDataDirectory,
   inspectMigrations,
   applyPendingMigrations,
+  assertNoSchemaDrift,
+  formatSchemaDriftReport,
+  SchemaDriftError,
   createEmbeddedPostgresLogBuffer,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
@@ -765,7 +768,7 @@ async function startServerWithDatabaseTeardown(
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
   await migrateCloudConfiguration(db as any);
   await initializeAdapterSettings(db as any);
-  
+
   await initializeCloudRuntimeConfig(db as any);
   let config = "deploymentMode" in startupConfig ? startupConfig : loadConfig();
   const deploymentListenUrl = assertEphemeralServerConfig(config);
@@ -795,6 +798,78 @@ async function startServerWithDatabaseTeardown(
   // awaited before it.
   if (deploymentListenUrl !== null) await assertEphemeralServerData(db as any);
   startupTimeline.mark("volume_free_data_gate");
+
+  // Deploy/boot schema-drift gate (AGE-764/AGE-771). The migration journal can
+  // claim a migration is applied (by content hash) while the column/table it
+  // introduced is actually missing from the live schema — this is the drift that
+  // caused the AGE-759 500s. The journal-based `ensureMigrations` above cannot
+  // see that, so here we verify the schema the application actually *serves from*
+  // (activeDatabaseConnectionString, which is config.databaseUrl in external
+  // mode — NOT necessarily the migration URL) against the drizzle table
+  // definitions and refuse to start on drift. This also fails loudly when the
+  // app is pointed at an unmigrated database (e.g. DATABASE_MIGRATION_URL and
+  // DATABASE_URL diverge) instead of 500ing later with "relation does not exist".
+  // Escape hatch for emergencies only. Accept both the clearer primary name and
+  // the PAPERCLIP_SCHEMA_DRIFT_ALLOW alias documented on the AGE-771 ticket.
+  const allowSchemaDrift =
+    process.env.PAPERCLIP_ALLOW_SCHEMA_DRIFT === "true" ||
+    process.env.PAPERCLIP_SCHEMA_DRIFT_ALLOW === "true";
+  // Check every distinct connection the process actually uses. The plugin
+  // subsystem's secondary connection (pluginMigrationDb) uses
+  // config.databaseMigrationUrl when set — a DIFFERENT database than the app's
+  // serving connection if DATABASE_MIGRATION_URL and DATABASE_URL diverge (e.g.
+  // different Neon branch/pooler endpoint). That split is the root cause of the
+  // AGE-759-era plugin-worker "relation does not exist" errors, so gate it too.
+  const driftTargets: Array<{ url: string; label: string }> = [
+    { url: activeDatabaseConnectionString, label: "serving database (DATABASE_URL)" },
+  ];
+  if (
+    config.databaseUrl &&
+    config.databaseMigrationUrl &&
+    config.databaseMigrationUrl !== activeDatabaseConnectionString
+  ) {
+    driftTargets.push({
+      url: config.databaseMigrationUrl,
+      label: "plugin/migration database (DATABASE_MIGRATION_URL)",
+    });
+    logger.warn(
+      "DATABASE_MIGRATION_URL differs from DATABASE_URL; the plugin subsystem reads a different database than the app. Verifying both for schema drift.",
+    );
+  }
+  for (const target of driftTargets) {
+    try {
+      const driftReport = await assertNoSchemaDrift(target.url);
+      logger.info(
+        { checkedTables: driftReport.checkedTables, target: target.label },
+        `Schema-drift gate passed for ${target.label}: live schema matches application schema`,
+      );
+    } catch (error) {
+      if (error instanceof SchemaDriftError) {
+        logger.error(
+          {
+            target: target.label,
+            missingTables: error.report.missingTables,
+            missingColumns: error.report.missingColumns,
+            checkedTables: error.report.checkedTables,
+          },
+          `Schema-drift gate FAILED for ${target.label}: live database is missing schema the application code expects.\n${formatSchemaDriftReport(error.report)}`,
+        );
+        if (!allowSchemaDrift) {
+          throw new Error(
+            `Refusing to start against a drifted schema (${target.label}). Run \`pnpm db:migrate\` to restore ` +
+              "the missing tables/columns, confirm DATABASE_URL and DATABASE_MIGRATION_URL point at the same " +
+              "database, or set PAPERCLIP_ALLOW_SCHEMA_DRIFT=true to override (unsafe).",
+          );
+        }
+        logger.warn(
+          `PAPERCLIP_ALLOW_SCHEMA_DRIFT=true set; continuing startup despite schema drift on ${target.label} (unsafe).`,
+        );
+      } else {
+        throw error;
+      }
+    }
+  }
+  startupTimeline.mark("schema_drift_gate");
 
   const isWarmStandby = await createCloudWarmStandby(db as any);
 

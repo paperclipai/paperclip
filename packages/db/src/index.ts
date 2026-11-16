@@ -36,6 +36,16 @@ export {
   type Db,
 } from "./client.js";
 export {
+  inspectSchemaDrift,
+  assertNoSchemaDrift,
+  collectExpectedSchema,
+  diffSchema,
+  formatSchemaDriftReport,
+  SchemaDriftError,
+  type SchemaDriftReport,
+  type SchemaDriftMissingColumn,
+} from "./schema-drift.js";
+export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
