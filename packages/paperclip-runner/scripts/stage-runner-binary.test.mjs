@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { stageBuiltRunnerBinary, stageRunnerBinary } from "./stage-runner-binary.mjs";
+import { main as buildRunnerBinary, RELEASE_ARTIFACTS_VARIABLE, stageReleaseHostBinary } from "./build-runner-binary.mjs";
 import { RELEASE_RUNNER_TARGETS, releaseRunnerTargets, releaseDaemonManifest, verifyReleaseRunnerMetadata } from "./stage-release-runner-binaries.mjs";
 import { paperclipRunnerBinaryNeedsBuild, resolveNativeRunnerDevBinary } from "../../../scripts/dev-runner-native-binary.mjs";
 import { resolvePackagedRunnerBinary } from "../src/live/runner-binary.ts";
@@ -85,8 +86,8 @@ test("release metadata rejects incompatible native, harness and protocol contrac
 
 async function withOwnedChildren(root, action) {
   const owned = [];
-  const start = (command, args) => {
-    const child = spawn(command, args, { env: { PATH: "/usr/bin:/bin" }, stdio: "ignore" });
+  const start = (command, args, argv0) => {
+    const child = spawn(command, args, { argv0, env: { PATH: "/usr/bin:/bin" }, stdio: "ignore" });
     // close follows both exit and spawn error. A failed second spawn must not
     // interrupt retirement of the first still-running executable.
     const closed = new Promise(resolve => child.once("close", resolve));
@@ -112,18 +113,18 @@ test("atomically publishes while the previous executable is running", { skip: pr
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-test-"));
   const destination = path.join(root, "paperclip-runnerd");
   await withOwnedChildren(root, async start => {
-    await stageRunnerBinary(process.execPath, destination);
+    await stageRunnerBinary("/bin/sleep", destination);
     const previous = await stat(destination);
-    const old = start(destination, ["-e", "setTimeout(function(){},30000)"]);
+    const old = start(destination, ["30"], "sleep");
     await old.spawned;
-    await stageRunnerBinary(process.execPath, destination);
+    await stageRunnerBinary("/bin/sleep", destination);
     const published = await stat(destination);
     assert.notEqual(published.ino, previous.ino);
     assert.equal(published.mode & 0o777, 0o755);
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
-    const next = start(destination, ["-e", ""]);
+    const next = start(destination, ["0"], "sleep");
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -149,14 +150,9 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(source), { recursive: true });
     await writeFile(source, "fn main() {}\n");
     await mkdir(path.dirname(built), { recursive: true });
-    await copyHostFixture(process.execPath, built);
-    // The dev and release fixtures must have distinct bytes (the rebuild
-    // assertion compares them), but both must run under any argv[0]: append a
-    // trailer to the dev copy. Trailing bytes are ignored by the ELF/Mach-O
-    // loaders, so the staged binary still executes as node.
-    await appendFile(built, "\n// paperclip-runner dev fixture\n");
+    await copyHostFixture("/bin/sh", built);
     const previousBuild = path.join(root, "previous-build");
-    await copyHostFixture(process.execPath, previousBuild);
+    await copyHostFixture("/bin/sleep", previousBuild);
     await stageRunnerBinary(previousBuild, hostTarget);
     await stageRunnerBinary(built, path.join(binaryRoot, "paperclip-runnerd"));
     const platforms = {}, releaseBytes = new Map();
@@ -182,7 +178,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     const manifestPath = path.join(binaryRoot, "release-manifest.json");
     const manifest = JSON.stringify({ schema: "paperclip.runner.release-binaries.v1", sourceRevision: "a".repeat(40), platforms });
     await writeFile(manifestPath, manifest);
-    const old = start(hostTarget, ["-e", "setTimeout(function(){},30000)"]);
+    const old = start(hostTarget, ["30"], "sleep");
     await old.spawned;
     const requirement = { repoRoot: root, nativeRunnerRequired: true };
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), true);
@@ -202,7 +198,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), false);
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
-    const next = start(selected.binary, ["-e", ""]);
+    const next = start(selected.binary, ["-c", "exit 0"]);
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -212,7 +208,7 @@ test("a second spawn error still retires the live old child and removes its fixt
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-spawn-failure-"));
   let old;
   await assert.rejects(withOwnedChildren(root, async start => {
-    old = start(process.execPath, ["-e", "setTimeout(function(){},30000)"]); await old.spawned;
+    old = start("/bin/sleep", ["30"]); await old.spawned;
     const failed = start(path.join(root, "missing-executable"), []);
     await failed.spawned;
   }), { code: "ENOENT" });
@@ -232,6 +228,63 @@ test("failed preparation preserves the published bytes and mode", async () => {
     assert.equal(after.ino, before.ino);
     assert.equal(after.mode, before.mode);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function writeReleaseDaemons(root, source) {
+  for (const target of RELEASE_RUNNER_TARGETS) {
+    await mkdir(path.join(root, target), { recursive: true });
+    const bytes = Buffer.alloc(64);
+    if (target.startsWith("linux-")) {
+      bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(target === "linux-x64" ? 62 : 183, 18);
+    } else { bytes.writeUInt32LE(0xfeedfacf); bytes.writeUInt32LE(target === "darwin-x64" ? 0x01000007 : 0x0100000c, 4); }
+    await writeFile(path.join(root, target, "paperclip-runnerd"), bytes);
+    await writeFile(path.join(root, target, "receipt.json"), JSON.stringify({ schema: "paperclip.runner.release-artifact.v1", sourceRevision: source,
+      target, sha256: "sha256:" + createHash("sha256").update(bytes).digest("hex"), buildMetadata: metadata }));
+  }
+}
+
+test("a release build stages the verified exact-source host daemon instead of compiling it", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "runner-release-host-"))), source = "a".repeat(40);
+  const artifacts = path.join(root, "artifacts"), packageRoot = path.join(root, "package");
+  const verifyMetadata = value => verifyReleaseRunnerMetadata(value, contract);
+  const staged = [];
+  const stage = async (from, to) => { staged.push([from, to]); await mkdir(path.dirname(to), { recursive: true }); await copyFile(from, to); };
+  try {
+    await writeReleaseDaemons(artifacts, source);
+    for (const target of RELEASE_RUNNER_TARGETS) {
+      const result = await stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target, stage });
+      assert.equal(result.target, target);
+      const bytes = await readFile(path.join(packageRoot, "dist", "bin", "paperclip-runnerd"));
+      assert.deepEqual(bytes, await readFile(path.join(artifacts, target, "paperclip-runnerd")));
+      assert.deepEqual(staged.at(-1), [path.join(artifacts, target, "paperclip-runnerd"), path.join(packageRoot, "dist", "bin", "paperclip-runnerd")]);
+    }
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: "b".repeat(40), packageRoot, verifyMetadata, target: "linux-x64", stage }),
+      /source, digest or architecture/);
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "win32-x64", stage }),
+      /No exact-source release daemon for win32-x64/);
+    await writeFile(path.join(artifacts, "linux-x64", "paperclip-runnerd"), Buffer.alloc(64, 1));
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "linux-x64", stage }),
+      /digest or architecture/);
+    assert.equal(staged.length, RELEASE_RUNNER_TARGETS.length, "rejected artifacts are never staged");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a build without release daemons still compiles the Runner binary", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "runner-local-build-")));
+  try {
+    const marker = path.join(root, "ran");
+    await writeFile(path.join(root, "build.cjs"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "yes");\n`);
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture", private: true, scripts: { "build:binary": "node build.cjs" } }));
+    const env = { ...process.env };
+    delete env[RELEASE_ARTIFACTS_VARIABLE];
+    const result = await buildRunnerBinary({ env, packageRoot: root, log: () => {} });
+    assert.deepEqual(result, { reused: false });
+    assert.equal(await readFile(marker, "utf8"), "yes");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

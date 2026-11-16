@@ -1,5 +1,6 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { notifyInstructionCopyStopEvidence } from "./instruction-collection-notifications.js";
+import { notifyInstructionCollection, notifyInstructionCopyStopEvidence, notifyInstructionCopyStopEvidenceForRuns } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
@@ -11,8 +12,8 @@ import os from "node:os";
 import { currentProcessSpaceHash, UNKNOWN_PROCESS_SPACE } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
 
-export const PROCESS_START_REQUESTED = "native.process_start_requested";
-export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
+import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-process-start-events.js";
+export { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED };
 /** Server-authored: the runner-state fence refused this run before it asked for
  * a runner, because a prior run's saved state could not be proven finished. */
 export const PRIOR_OWNER_FENCE_REFUSED = "native.prior_owner_fence_refused";
@@ -542,4 +543,92 @@ export async function discoverSettledNativeRunProcesses(db: Db, input: {
     after = candidates.length < limit ? null : candidates.at(-1)!.id;
   } while (after);
   return { released };
+}
+
+export const SHUTDOWN_SETTLED_PROCESS_RELEASE_LIMIT = 500;
+const SHUTDOWN_SETTLED_PROCESS_STATEMENT_TIMEOUT_MS = 2_000;
+
+const isoTimestamp = (column: string) =>
+  sql.raw(`to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
+
+function ownedSettledLocalProcessPredicate(processSpace: string) {
+  return sql`r.runtime_mode = 'native' and r.status in ('failed', 'cancelled', 'timed_out', 'interrupted')
+    and r.finished_at is not null and r.process_host_hash = ${processSpace}
+    and (r.process_pid is not null or r.process_group_id is not null)
+    and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
+      and f.phase not in ('committed', 'terminal_failure'))
+    and (coalesce(r.runner_profile_json->'sessionCheckpoint', 'null'::jsonb) <> 'null'::jsonb
+      or exists (select 1 from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
+        and e.event_type in (${providerEventTypes()})))
+    and not exists (select 1 from environment_leases l where l.company_id = r.company_id and l.heartbeat_run_id = r.id
+      and (l.provider is distinct from 'local' or l.released_at is null or l.status = 'pending_cleanup' or l.cleanup_status = 'failed'))
+    and coalesce((select identity.payload->>'targetKind' = 'local' and identity.payload->>'hostname' = ${os.hostname()}::text
+        and identity.payload ? 'processPid' and identity.payload->'processPid' = coalesce(to_jsonb(r.process_pid), 'null'::jsonb)
+        and identity.payload ? 'processGroupId' and identity.payload->'processGroupId' = coalesce(to_jsonb(r.process_group_id), 'null'::jsonb)
+        and case when r.process_started_at is not null
+          then identity.payload->>'processStartedAt' = ${isoTimestamp("r.process_started_at")}
+          else coalesce(r.process_pid > 1 and r.process_group_id = r.process_pid, false) end
+      from (select e.payload from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
+        and e.event_type = ${PROCESS_IDENTITY_RECORDED}::text and e.source_event_id is null order by e.seq desc limit 1) identity
+    ), false)`;
+}
+
+type OwnedSettledProcess = { id: string; companyId: string; agentId: string; processPid: number | null;
+  processGroupId: number | null; processStartedAt: string | null; processStartedAtIso: string | null };
+
+export type ShutdownSettledProcessRelease = { candidates: number; stillRunning: number; released: number };
+
+export async function releaseOwnedSettledNativeRunProcessesAtShutdown(db: Db, options: { limit?: number } = {}):
+  Promise<ShutdownSettledProcessRelease> {
+  const processSpace = currentProcessSpaceHash();
+  if (processSpace === UNKNOWN_PROCESS_SPACE) return { candidates: 0, stillRunning: 0, released: 0 };
+  const limit = Math.max(1, Math.min(options.limit ?? SHUTDOWN_SETTLED_PROCESS_RELEASE_LIMIT, SHUTDOWN_SETTLED_PROCESS_RELEASE_LIMIT));
+  const candidates = await db.execute(sql`select r.id, r.company_id as "companyId", r.agent_id as "agentId",
+      r.process_pid as "processPid", r.process_group_id as "processGroupId", r.process_started_at::text as "processStartedAt",
+      ${isoTimestamp("r.process_started_at")} as "processStartedAtIso"
+    from heartbeat_runs r where ${ownedSettledLocalProcessPredicate(processSpace)}
+    order by r.id limit ${limit}`) as unknown as OwnedSettledProcess[];
+  const stopped = candidates.filter(run => (!run.processPid || absent(run.processPid))
+    && (!run.processGroupId || absent(-run.processGroupId)));
+  if (stopped.length === 0) return { candidates: candidates.length, stillRunning: candidates.length, released: 0 };
+  const recorded = JSON.stringify(stopped.map(run => ({ id: run.id, pid: run.processPid, pgid: run.processGroupId,
+    started: run.processStartedAt, started_iso: run.processStartedAtIso })));
+  const released = await db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    await tx.execute(sql.raw(`set local statement_timeout = ${SHUTDOWN_SETTLED_PROCESS_STATEMENT_TIMEOUT_MS}`));
+    for (const run of stopped) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, JSON.stringify({ companyId: run.companyId, runId: run.id }));
+      await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
+      await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
+      await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+      await notifyDirectoryCleanup(tx, { companyId: run.companyId, runId: run.id });
+    }
+    for (const companyId of new Set(stopped.map(run => run.companyId))) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+    }
+    const rows = await tx.execute(sql`with stopped as (
+        select * from jsonb_to_recordset(${recorded}::jsonb) as stopped(id uuid, pid integer, pgid integer, started text, started_iso text)
+      ), released as (
+        update heartbeat_runs r set process_pid = null, process_group_id = null, process_started_at = null,
+          next_event_seq = r.next_event_seq + 1, updated_at = now()
+        from stopped
+        where r.id = stopped.id and r.process_pid is not distinct from stopped.pid
+          and r.process_group_id is not distinct from stopped.pgid
+          and r.process_started_at is not distinct from stopped.started::timestamptz
+          and ${ownedSettledLocalProcessPredicate(processSpace)}
+        returning r.company_id, r.id as run_id, r.agent_id, r.next_event_seq - 1 as seq,
+          stopped.pid, stopped.pgid, stopped.started_iso
+      )
+      insert into heartbeat_run_events (company_id, run_id, agent_id, seq, event_type, stream, level, message, payload)
+      select company_id, run_id, agent_id, seq, ${LOCAL_PROCESS_STOPPED}, 'system', 'info',
+        'The server that ran this local process verified it stopped before shutting down and cleared its identity.',
+        jsonb_build_object('processPid', pid, 'processGroupId', pgid, 'processStartedAt', started_iso)
+      from released
+      returning company_id as "companyId", run_id as "runId", agent_id as "agentId"`) as unknown as
+      Array<{ companyId: string; runId: string; agentId: string }>;
+    if (rows.length > 0) await notifyInstructionCopyStopEvidenceForRuns(tx, rows);
+    return rows;
+  });
+  for (const run of released) pendingSettledProcessReleases.delete(run.runId);
+  return { candidates: candidates.length, stillRunning: candidates.length - stopped.length, released: released.length };
 }

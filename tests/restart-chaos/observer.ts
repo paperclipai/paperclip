@@ -555,8 +555,10 @@ export class TaskObserver {
   private async runEvidence(run: RunSample): Promise<RunSample> {
     if (run.status !== "running") return run;
     const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null, openTools: 0, process: null };
+    let eventsRead = false;
     for (let page = 0; page < 3; page += 1) {
       const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
+      if (Array.isArray(events)) eventsRead = true;
       if (!events?.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
@@ -571,6 +573,7 @@ export class TaskObserver {
     }
     this.runEventCursors.set(run.id, cursor);
     return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]),
+      ...(eventsRead && cursor.seq === 0 ? { preparing: true } : {}),
       ...(cursor.openTools > 0 ? { toolInFlight: true } : {}),
       ...(cursor.turnActive ? { providerTurnActive: true } : {}),
       ...(cursor.process && this.processAlive(cursor.process.pid, cursor.process.startedAt) ? { processAlive: true } : {}) };
@@ -881,6 +884,7 @@ export class TaskObserver {
     if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
     const afterEnd = followUpAfterEndRange();
     if (afterEnd && this.plan.stagingMix?.followUpAfterMs != null) return (this.record.stagingMix?.afterEndFollowUps?.length ?? 0) < afterEnd.count;
+    if (this.plan.stagingMix?.followUpAfterMs != null && !this.record.stagingMix?.followUp) return true;
     return false;
   }
 

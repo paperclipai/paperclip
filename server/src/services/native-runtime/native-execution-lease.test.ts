@@ -3,6 +3,7 @@ import type { SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { startNativeSessionExecutionLeaseRenewal } from "./native-execution-lease.js";
+import { startServerMetrics, stopServerMetrics } from "../server-metrics.js";
 
 const dialect = new PgDialect();
 
@@ -133,6 +134,24 @@ describe("native execution renewal ownership", () => {
     await vi.advanceTimersByTimeAsync(120_000);
     expect(returning).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+  it("counts a renewal deadline that passes as a missed lease renewal for the server metrics", async () => {
+    const metrics = startServerMetrics();
+    try {
+      vi.useFakeTimers();
+      const { input, returning } = fixture();
+      let complete!: (value: { runId: string }[]) => void;
+      returning.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+      const guard = startNativeSessionExecutionLeaseRenewal(input);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(metrics.snapshot().leaseRenewalsMissed).toBe(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(metrics.snapshot().leaseRenewalsMissed).toBe(1);
+      complete([{ runId: "run" }]);
+      await expect(guard.stop()).rejects.toThrow("native_session_lease_renewal_deadline");
+    } finally {
+      stopServerMetrics(metrics);
+    }
   });
   it("hands preparation renewal to the same owner's executor at the next attempt", async () => {
     vi.useFakeTimers();

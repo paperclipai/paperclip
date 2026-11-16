@@ -13,7 +13,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { conflict, forbidden, HttpError } from "../errors.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { githubAutomaticAdmission } from "./chat-github-events.js";
-import { githubBotRepositoryToken, githubBotRequest } from "./chat-github-client.js";
+import { githubBotRepositoryClient } from "./chat-github-client.js";
 import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import type { GitHubAutomaticPolicyContext } from "./chat-github-review-policy.js";
@@ -276,9 +276,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
                   ["pending", "retry"].includes(fast.publicationState ?? ""))))) return;
         }
       }
-      const token = await githubBotRepositoryToken(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
+      const github = await githubBotRepositoryClient(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
       const prefix = `/repos/${source.repository.split("/").map(encodeURIComponent).join("/")}`;
-      const api: Api = { request: (path, options) => githubBotRequest(lease.fetch, token, `${prefix}${path}`, options) };
+      const api: Api = { request: (path, options) => github(`${prefix}${path}`, options) };
       if (onlyExisting && !(await findResponseComment(source, api))) {
         const existing = await stageResponse(db, source);
         await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled", result: { final: true, code: "run_already_answered" }, updatedAt: new Date() }).where(eq(chatActions.id, existing.id)); });
