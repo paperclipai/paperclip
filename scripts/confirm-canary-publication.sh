@@ -61,13 +61,4 @@ fi
 release_info "==> Installing paperclipai@${version} into a clean prefix..."
 verify_npm_installable "paperclipai@${version}" "$version" || release_fail "paperclipai@${version} did not install cleanly"
 
-existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$PUBLISH_REMOTE" "refs/tags/${tag_name}^{}" | awk '{print $1}')"
-[ -n "$existing_sha" ] || existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$PUBLISH_REMOTE" "refs/tags/${tag_name}" | awk '{print $1}')"
-if [ -n "$existing_sha" ]; then
-  [ "$existing_sha" = "$source_sha" ] || release_fail "tag ${tag_name} already exists on another commit"
-  release_info "  ✓ ${tag_name} already points at ${source_sha}"
-else
-  git -C "$REPO_ROOT" tag "$tag_name" "$source_sha"
-  git -C "$REPO_ROOT" push "$PUBLISH_REMOTE" "refs/tags/${tag_name}"
-  release_info "  ✓ Pushed ${tag_name} at ${source_sha}"
-fi
+push_release_tag_at "$PUBLISH_REMOTE" "$tag_name" "$source_sha"

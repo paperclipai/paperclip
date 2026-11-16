@@ -282,26 +282,41 @@ next_canary_version_from_source() {
   local repo_root="$1"
   local allow_registry_fallback="$2"
   local stable_version="$3"
-  shift 3
-  local registry_version
-  local registry_number
+  local run_attempt="$4"
+  shift 4
   local position
 
-  registry_version="$(next_prerelease_version canary "$stable_version" "$@")" || return 1
-  registry_number="${registry_version##*.}"
+  if ! [[ "$run_attempt" =~ ^[1-9][0-9]?$ ]]; then
+    release_fail "canary numbering needs a run attempt from 1 to 99, got '${run_attempt}'."
+  fi
   if ! position="$(canary_source_position "$repo_root")"; then
     if [ "$allow_registry_fallback" = true ]; then
-      release_warn "shallow checkout: canary number falls back to the next registry number ${registry_number}."
-      printf '%s\n' "$registry_version"
+      release_warn "shallow checkout: canary number falls back to the next registry number."
+      next_prerelease_version canary "$stable_version" "$@"
+      printf '\n'
       return 0
     fi
     release_fail "canary numbering needs the full master history; this checkout is shallow."
   fi
-  if [ "$position" -gt "$registry_number" ]; then
-    printf '%s-canary.%s\n' "$stable_version" "$position"
-  else
-    printf '%s\n' "$registry_version"
+  printf '%s-canary.%s\n' "$stable_version" "$((position * 100 + run_attempt - 1))"
+}
+
+push_release_tag_at() {
+  local remote="$1"
+  local tag_name="$2"
+  local source_sha="$3"
+  local existing_sha
+
+  existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}^{}" | awk '{print $1}')"
+  [ -n "$existing_sha" ] || existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}" | awk '{print $1}')"
+  if [ -n "$existing_sha" ]; then
+    [ "$existing_sha" = "$source_sha" ] || release_fail "tag ${tag_name} already exists on ${existing_sha}, not ${source_sha}"
+    release_info "  ✓ ${tag_name} already points at ${source_sha}"
+    return 0
   fi
+  git -C "$REPO_ROOT" tag "$tag_name" "$source_sha"
+  git -C "$REPO_ROOT" push "$remote" "refs/tags/${tag_name}"
+  release_info "  ✓ Pushed ${tag_name} at ${source_sha}"
 }
 
 release_notes_file() {

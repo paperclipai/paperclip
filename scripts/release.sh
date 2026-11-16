@@ -37,9 +37,11 @@ Notes:
   - Stable versions use YYYY.MDD.P, where M is the UTC month, DD is the
     zero-padded UTC day, and P is the same-day stable patch slot.
   - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
-    "canary" and create the git tag canary/vYYYY.MDD.P-canary.N. N is the
-    source commit's position on master (git rev-list --count HEAD), or the
-    next registry number when that is higher (a rerun of the same commit).
+    "canary" and create the git tag canary/vYYYY.MDD.P-canary.N. N is
+    100 x the source commit's position on master (git rev-list --count HEAD)
+    plus the run attempt minus 1 (GITHUB_RUN_ATTEMPT, default 1). Each commit
+    owns its own range, so neither a rerun nor an overlapping canary can take
+    another commit's number, and no registry lookup is involved.
   - --defer-registry-confirmation (published canary only) stops after npm
     accepts every publish. It skips the registry-visibility wait, the
     dist-tag check and the git tag; scripts/confirm-canary-publication.sh
@@ -190,7 +192,7 @@ DIST_TAG="latest"
 
 if [ "$channel" = "canary" ]; then
   require_on_master_branch
-  TARGET_PUBLISH_VERSION="$(next_canary_version_from_source "$REPO_ROOT" "$dry_run" "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
+  TARGET_PUBLISH_VERSION="$(next_canary_version_from_source "$REPO_ROOT" "$dry_run" "$TARGET_STABLE_VERSION" "${GITHUB_RUN_ATTEMPT:-1}" "${PUBLIC_PACKAGE_NAMES[@]}")"
   DIST_TAG="canary"
   tag_name="$(prerelease_tag_name canary "$TARGET_PUBLISH_VERSION")"
 elif [ "$channel" = "nightly" ]; then

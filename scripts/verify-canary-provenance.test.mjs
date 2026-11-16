@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { provenanceProblems, verifyCanaryProvenance } from "./verify-canary-provenance.mjs";
+import { packageProvenance, verifyCanaryProvenance } from "./verify-canary-provenance.mjs";
 
 const sha = "b".repeat(40);
-const version = "2026.1116.0-canary.21800";
+const version = "2026.1116.0-canary.2180000";
 
 function attestation({ name = "%40paperclipai/shared", commit = sha, path = ".github/workflows/release.yml", ref = "refs/heads/master",
   repository = "https://github.com/paperclipai/paperclip", predicateType = "https://slsa.dev/provenance/v1" } = {}) {
@@ -12,32 +12,62 @@ function attestation({ name = "%40paperclipai/shared", commit = sha, path = ".gi
   return { attestations: [{ predicateType, bundle: { dsseEnvelope: { payload: Buffer.from(JSON.stringify(statement)).toString("base64") } } }] };
 }
 
-const check = (doc, packageName = "@paperclipai/shared") => provenanceProblems(doc, { packageName, version, sourceSha: sha });
+const check = (doc, packageName = "@paperclipai/shared") => packageProvenance(doc, { packageName, version, sourceSha: sha });
+const respond = (body, status = 200) => new Response(JSON.stringify(body), { status });
+const noSleep = async () => {};
+const registry = (byPackage) => async (url) => {
+  const name = decodeURIComponent(new URL(url).pathname.split("/attestations/")[1]).replace(/@[^@]+$/, "");
+  const entry = byPackage[name];
+  return typeof entry === "function" ? entry() : entry ?? respond({}, 404);
+};
 
-test("provenance from master's release workflow at the source commit is accepted, scoped or not", () => {
-  assert.deepEqual(check(attestation()), []);
-  assert.deepEqual(check(attestation({ name: "paperclipai" }), "paperclipai"), []);
+test("provenance from master's release workflow at the source commit matches, scoped or not", () => {
+  assert.equal(check(attestation()), "match");
+  assert.equal(check(attestation({ name: "paperclipai" }), "paperclipai"), "match");
 });
 
-test("provenance from another commit, workflow, branch, repository or package is rejected", () => {
+test("provenance from another commit, workflow, branch, repository or package is a mismatch", () => {
   for (const overrides of [{ commit: "c".repeat(40) }, { path: ".github/workflows/pr.yml" }, { ref: "refs/heads/feature" },
     { repository: "https://github.com/someone/paperclip" }, { name: "%40paperclipai/server" }]) {
-    assert.equal(check(attestation(overrides)).length, 1, JSON.stringify(overrides));
+    assert.equal(check(attestation(overrides)), "mismatch", JSON.stringify(overrides));
   }
 });
 
-test("a package without SLSA provenance is rejected", () => {
-  assert.match(check({ attestations: [] })[0], /no SLSA provenance/);
-  assert.match(check(attestation({ predicateType: "https://github.com/npm/attestation/tree/main/specs/publish/v0.1" }))[0], /no SLSA provenance/);
+test("a package published through the transparency-log retry has no provenance, which is allowed beside a match", async () => {
+  assert.equal(check({ attestations: [] }), "none");
+  assert.equal(check(attestation({ predicateType: "https://github.com/npm/attestation/tree/main/specs/publish/v0.1" })), "none");
+  const result = await verifyCanaryProvenance({ packages: ["@paperclipai/shared", "paperclipai"], version, sourceSha: sha, sleep: noSleep,
+    fetcher: registry({ paperclipai: respond(attestation({ name: "paperclipai" })) }) });
+  assert.deepEqual(result, { problems: [], matched: 1, withoutProvenance: ["@paperclipai/shared"] });
 });
 
-test("inputs are validated before any request, and a missing attestation is a problem", async () => {
+test("no matching provenance at all, or any mismatch, is a problem", async () => {
+  const none = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha, sleep: noSleep, fetcher: registry({}) });
+  assert.match(none.problems[0], /no package has provenance/);
+  const mixed = await verifyCanaryProvenance({ packages: ["@paperclipai/shared", "paperclipai"], version, sourceSha: sha, sleep: noSleep,
+    fetcher: registry({ "@paperclipai/shared": respond(attestation()), paperclipai: respond(attestation({ name: "paperclipai", commit: "c".repeat(40) })) }) });
+  assert.equal(mixed.problems.length, 1);
+  assert.match(mixed.problems[0], /^paperclipai@.*provenance does not name/);
+});
+
+test("a brief npm failure is retried, and a lasting or permanent one is a problem", async () => {
+  let calls = 0;
+  const flaky = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha, sleep: noSleep,
+    fetcher: registry({ "@paperclipai/shared": () => (++calls < 3 ? respond({}, 503) : respond(attestation())) }) });
+  assert.deepEqual(flaky.problems, []);
+  assert.equal(calls, 3);
+  const lasting = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha, sleep: noSleep, attempts: 3,
+    fetcher: async () => { throw new Error("socket hang up"); } });
+  assert.match(lasting.problems[0], /attestations unavailable \(socket hang up\)/);
+  let forbidden = 0;
+  const permanent = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha, sleep: noSleep,
+    fetcher: async () => { forbidden += 1; return respond({}, 403); } });
+  assert.match(permanent.problems[0], /HTTP 403/);
+  assert.equal(forbidden, 1);
+});
+
+test("inputs are validated before any request", async () => {
   const fetcher = async () => { throw new Error("must not fetch"); };
   await assert.rejects(verifyCanaryProvenance({ packages: ["paperclipai"], version: "2026.1116.0-nightly.1", sourceSha: sha, fetcher }), /not a canary version/);
   await assert.rejects(verifyCanaryProvenance({ packages: ["paperclipai"], version, sourceSha: "abc", fetcher }), /not a full commit SHA/);
-  const requested = [];
-  const problems = await verifyCanaryProvenance({ packages: ["@paperclipai/shared"], version, sourceSha: sha,
-    fetcher: async (url) => { requested.push(url); return new Response("missing", { status: 404 }); } });
-  assert.deepEqual(requested, [`https://registry.npmjs.org/-/npm/v1/attestations/@paperclipai%2Fshared@${version}`]);
-  assert.match(problems[0], /attestations unavailable \(HTTP 404\)/);
 });
