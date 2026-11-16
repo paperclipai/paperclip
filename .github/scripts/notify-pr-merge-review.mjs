@@ -138,8 +138,14 @@ export async function notify(event, { read = api, list = pages, view = snapshot,
   const sha = run?.head_sha ?? event.check_run?.head_sha ?? event.sha;
   if (!shaPattern.test(sha)) return [];
   // Resolve forks through the commit API too: workflow_run.pull_requests can be empty.
-  const associated = run?.pull_requests?.length ? run.pull_requests
+  let associated = run?.pull_requests?.length ? run.pull_requests
     : list(`/repos/${repository}/commits/${sha}/pulls?per_page=100`);
+  if (!associated.length && run?.event === "pull_request" && run.head_repository?.owner?.login && run.head_branch) {
+    const query = new URLSearchParams({
+      state: "open", base: "master", head: `${run.head_repository.owner.login}:${run.head_branch}`, per_page: "100",
+    });
+    associated = list(`/repos/${repository}/pulls?${query}`);
+  }
   const required = read(`/repos/${repository}/rules/branches/master`)
     .filter((rule) => rule.type === "required_status_checks")
     .flatMap((rule) => rule.parameters.required_status_checks.map((check) => check.context));

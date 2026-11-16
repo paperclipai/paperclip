@@ -94,6 +94,23 @@ test("rejects closed, draft, wrong-base, and malformed candidates", () => {
     { headRefOid: "invalid" }, { baseRefOid: "invalid" }]) assert.equal(green(candidate(extra)), false);
 });
 
+test("finds the verified fork head by owner and branch when both association lists are empty", async () => {
+  const run = { status: "completed", event: "pull_request", head_sha: head, pull_requests: [],
+    head_branch: "fix/a&b", head_repository: { owner: { login: "contributor" } } };
+  const lookup = (endpoint) => {
+    if (endpoint.includes("/commits/")) return [];
+    if (endpoint.includes("/files?")) return files;
+    const { searchParams } = new URL(endpoint, "https://api.github.com");
+    assert.equal(searchParams.get("head"), "contributor:fix/a&b");
+    assert.equal(searchParams.get("base"), "master");
+    assert.equal(searchParams.get("state"), "open");
+    return [{ number: 42 }];
+  };
+  assert.deepEqual(await notify(event({ workflow_run: run }), deps({ list: lookup })), ["delivered"]);
+  assert.deepEqual(await notify(event({ workflow_run: run }), deps({ list: lookup,
+    view: () => candidate({ headRefOid: base }) })), []);
+});
+
 test("resolves fork PRs from the head commit when workflow payload has no PRs", async () => {
   const seen = [];
   const outcomes = await notify(event({ workflow_run: {
