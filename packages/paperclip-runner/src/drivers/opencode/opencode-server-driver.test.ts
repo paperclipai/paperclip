@@ -1186,6 +1186,7 @@ describe("OpenCodeServerDriver", () => {
       expect(config.small_model).toBe(`openrouter/${model}`);
       expect(Object.keys(config.provider)).toEqual(["openrouter"]);
       expect(Object.keys(config.provider.openrouter.models)).toEqual([model]);
+      expect(config.provider.openrouter.models[model]).not.toHaveProperty("limit");
       const { baseURL, apiKey } = config.provider.openrouter.options;
       expect(configText).not.toContain(key);
       const environmentText = await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8");

@@ -2810,7 +2810,7 @@ async function startRuntime(input: {
           models: {
             [providerModelId]: {
               name: providerModelId,
-              ...(providerProxy ? { limit: input.options.modelLimit ?? DEFAULT_CONNECTION_MODEL_LIMIT } : {}),
+              ...(modelProvider === "paperclip" ? { limit: input.options.modelLimit ?? DEFAULT_CONNECTION_MODEL_LIMIT } : {}),
               ...(modelProvider === "openrouter"
                 ? { variants: {
                     "paperclip-default": {},
