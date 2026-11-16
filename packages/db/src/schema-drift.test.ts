@@ -42,9 +42,10 @@ describe("collectExpectedSchema", () => {
     expect(expected.size).toBeGreaterThan(50);
     const companies = expected.get("companies");
     expect(companies).toBeDefined();
-    // These are the exact columns whose absence caused AGE-759.
-    expect(companies?.has("attachment_max_bytes")).toBe(true);
-    expect(companies?.has("brand_color")).toBe(true);
+    // Real companies columns from the drizzle schema; their absence from the
+    // live DB is exactly the AGE-759/AGE-764 drift pattern this gate catches.
+    expect(companies?.has("issue_prefix")).toBe(true);
+    expect(companies?.has("budget_monthly_cents")).toBe(true);
   });
 });
 
@@ -100,11 +101,12 @@ describeEmbeddedPostgres("inspectSchemaDrift (live database)", () => {
     const connectionString = await createTempDatabase();
     await applyPendingMigrations(connectionString);
 
-    // Simulate the AGE-759 drift: schema says companies.attachment_max_bytes
-    // exists and the journal is fully applied, but the live column is gone.
+    // Simulate the AGE-759 drift: the drizzle schema and the fully-applied
+    // migration journal both say companies.budget_monthly_cents exists, but the
+    // live column is gone.
     const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
     try {
-      await sql.unsafe('ALTER TABLE "companies" DROP COLUMN "attachment_max_bytes"');
+      await sql.unsafe('ALTER TABLE "companies" DROP COLUMN "budget_monthly_cents"');
     } finally {
       await sql.end();
     }
@@ -113,7 +115,7 @@ describeEmbeddedPostgres("inspectSchemaDrift (live database)", () => {
     expect(report.drifted).toBe(true);
     expect(report.missingColumns).toContainEqual({
       table: "companies",
-      column: "attachment_max_bytes",
+      column: "budget_monthly_cents",
     });
 
     await expect(assertNoSchemaDrift(connectionString)).rejects.toBeInstanceOf(SchemaDriftError);
