@@ -20,6 +20,7 @@ import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } 
 import { createServer, request as nodeRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { mkdtemp, mkdir, writeFile, access, readFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -551,6 +552,14 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
           "MCP_SLEEP_GUARD_LOG","MCP_SLEEP_GUARD_PG_PORTS","CLOUD_SUITE_ATTEST_LOG","CLOUD_SUITE_ENTRY_MANIFEST",
           "DATABASE_URL","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_CREDENTIAL_EXPIRATION","AWS_EC2_METADATA_DISABLED"].includes(key)))) as Record<string,string>;
       closedEnv.PAPERCLIP_DOT_CHILD_INPUT=inputFile;
+      // This local qualification is explicitly sleep-capable, with persistent owned backup storage.
+      closedEnv.PAPERCLIP_DB_BACKUP_ENABLED="true";
+      closedEnv.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED="1";
+      closedEnv.PAPERCLIP_DB_BACKUP_DIR=path.join(home,"database-backups");
+      const pgDumpPath=process.env.PAPERCLIP_PG_DUMP_PATH;
+      assert(pgDumpPath&&path.isAbsolute(pgDumpPath),"sleep qualification requires configured pg_dump");
+      await access(pgDumpPath,fsConstants.X_OK);
+      closedEnv.PAPERCLIP_PG_DUMP_PATH=pgDumpPath;
       physicalApp=await forkNormalDotApp({entry:new URL("./helpers/owned-linux/normal-app-child.ts",import.meta.url),
         nodeExecutable:process.execPath,normalTsxImport:new URL("../../node_modules/tsx/dist/loader.mjs",import.meta.url),
         cwd:process.cwd(),closedEnv,setupDeadline:activeCaseDeadline??setupDeadline,

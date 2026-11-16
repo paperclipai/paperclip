@@ -1,6 +1,14 @@
 // PRIVATE UNRUN extraction of the SAME v4 normal App owner graph.
 // Target: server/src/__tests__/helpers/owned-linux/normal-app-generation.ts
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { loadConfig } from "../../../config.js";
+import { logger } from "../../../middleware/logger.js";
+import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { createDatabaseBackupOwner } from "../../../services/database-backup-owner.js";
+import { registerDatabaseBackupWork } from "../../../services/database-backup-work.js";
+import { idleBackupWakeMarker } from "../../../services/idle-database-backup.js";
+import { markIdleStartupComplete } from "../../../services/idle-local-work.js";
 import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -32,6 +40,13 @@ export async function startNormalDotAppGeneration(input: {
   health: () => "ready"|"unavailable"|"wake-once-then-unavailable";
   consumedWakeHealth: () => void;
 }) {
+  // The persistent per-journey directory is shared by both real App boots.
+  // Refuse ambient/default host backup storage before allocating any owners.
+  const config=loadConfig();
+  assert.equal(config.databaseBackupEnabled,true,"qualification retains automatic backups");
+  assert.equal(process.env.PAPERCLIP_DB_BACKUP_DIR,path.join(input.home,"database-backups"));
+  assert.equal(config.databaseBackupDir,path.join(input.home,"database-backups"));
+  assert(process.env.PAPERCLIP_PG_DUMP_PATH&&path.isAbsolute(process.env.PAPERCLIP_PG_DUMP_PATH),"qualification requires an explicitly configured absolute pg_dump path");
   const errors: unknown[]=[]; let unexpectedDecisionWakes=0,sessionCalls=0;
   const nativeTrace:Array<{at:number;event:string;value?:number|boolean|null}>=[];let nativeTraceDropped=0;
   const nativeEventCounts={registered:0,run_enter:0,run_fulfilled:0,run_rejected:0,has_pending:0,settled:0,next_run_at:0};
@@ -43,6 +58,11 @@ export async function startNormalDotAppGeneration(input: {
   const healthStatuses:number[]=[];let healthOverflow=0;
   const linuxBootstrap=await prepareOwnedLinuxDistribution(input.linuxInput);
   const db=createDb(input.databaseUrl,{maxConnections:2,applicationName:"dot-principal-normal-app"});
+  const backupSettings=instanceSettingsService(db);
+  const runDatabaseBackup=createDatabaseBackupOwner({connectionString:input.databaseUrl,
+    backupDir:config.databaseBackupDir,getRetention:async()=>(await backupSettings.getGeneral()).backupRetention,logger});
+  const idleDatabaseBackupEnabled=config.databaseBackupEnabled&&process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED==="1";
+  let stopDatabaseBackups:(()=>Promise<void>)|undefined;
   const nativeSockets=new Set<Socket>();
   let dispatchWork:ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]>|undefined;
   let stopBudgetOwners:(()=>Promise<void>)|undefined;
@@ -75,6 +95,7 @@ export async function startNormalDotAppGeneration(input: {
         await attempt("execution_drain",()=>owner!.drainActiveRunExecutions());
       }
     }finally{
+      await attempt("database_backups_stop",()=>stopDatabaseBackups?.());
       await attempt("budget_stop",()=>stopBudgetOwners?.());
       await attempt("app_shutdown",()=>app?.locals.paperclipShutdown?.());
       await attempt("plugin_workers_stop",()=>linuxBootstrap.workerManager.stopAll());
@@ -102,6 +123,7 @@ export async function startNormalDotAppGeneration(input: {
     const storageService=getStorageService(); // Same normal configured owner used by Native durable restoration.
     app=await createApp(db,{...linuxBootstrap.appOptions,budgetResumeDelivery,uiMode:"none",serverPort:3100,
       storageService,
+      prepareIdleDatabaseBackup:idleDatabaseBackupEnabled?async()=>(await runDatabaseBackup("idle"))!==null:undefined,
       deploymentMode:"authenticated",deploymentExposure:"private",bindHost:"127.0.0.1",allowedHostnames:[new URL(input.origin).hostname],
       authPublicBaseUrl:input.origin,authReady:true,companyDeletionEnabled:false,cloudWarmStandby:standby,
       decisionServiceOptions:{wakeOriginAgent:async()=>{unexpectedDecisionWakes++;throw new Error("Unexpected Decision dependency in closed Dot journey");}},
@@ -179,6 +201,17 @@ export async function startNormalDotAppGeneration(input: {
       const accounting=registerCostAccountingWork(db,coordinator,normalOwner.reconcileCostAccounting);
       stopBudgetOwners=async()=>{try{await enforcement.stop();}finally{await accounting.stop();}};
       await enforcement.ready;await accounting.ready;
+      if(config.databaseBackupEnabled){
+        const backups=registerDatabaseBackupWork(coordinator,{intervalMs:config.databaseBackupIntervalMinutes*60*1000,
+          run:()=>runDatabaseBackup("scheduled")});
+        stopDatabaseBackups=()=>backups.stop();
+        await backups.ready;
+        // Match index: a retained wake checkpoint must settle before idle eligibility.
+        if(!standby()&&existsSync(idleBackupWakeMarker(config.databaseBackupDir)))await runDatabaseBackup("scheduled");
+      }
+      // All actually registered owners are ready and the real HTTP ingress is listening.
+      // Preserve the configured backup obligation; never substitute a sleep-friendly default.
+      markIdleStartupComplete({scheduledBackups:config.databaseBackupEnabled});
 
     return {origin,db,heartbeat:owner,workerManager:linuxBootstrap.workerManager,stop,
       snapshot:()=>({pid:process.pid,nativeRecovery:{gate:nativeGate,counts:{...nativeEventCounts},last32:[...nativeTrace],droppedEarlier:nativeTraceDropped},worker:idleWorkSnapshot(),taskDrain:owner!.getTaskDrainStatus(),nativeSockets:nativeSockets.size,
