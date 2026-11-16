@@ -1015,7 +1015,18 @@ export function createToolGatewayService(
       (connection.transport === "mcp_remote" && application.type === "mcp_http")
       || (connection.transport === "local_stdio" && application.type === "mcp_stdio")
     );
+    // Имя инструмента в каталоге агента — каноническое имя платформы (toolName):
+    // ровно тем словом его адресуют ТЗ шагов, паспорта и скиллы. Неймспейс-префикс
+    // подключения появляется только при коллизии — когда одно и то же имя отдают
+    // два подключения. Урок живого E2E 16.11: агент «терял» инструмент, когда имя
+    // каталога не совпадало байт-в-байт с именем из ТЗ. Каноническое имя в любом
+    // случае живёт в upstreamToolName, вызов резолвится по любому из двух.
+    const upstreamNameCounts = eligibleRows.reduce<Map<string, number>>((counts, { catalogEntry }) => {
+      counts.set(catalogEntry.toolName, (counts.get(catalogEntry.toolName) ?? 0) + 1);
+      return counts;
+    }, new Map());
     const baseNames = eligibleRows.map(({ catalogEntry, connection, application }) => {
+      if ((upstreamNameCounts.get(catalogEntry.toolName) ?? 0) < 2) return catalogEntry.toolName;
       const applicationKey = application.applicationKey ?? null;
       const connectionNamespace = `${slugSegment(applicationKey ?? connection.name ?? application.name, "mcp")}-${shortStableId(connection.id)}`;
       const toolSlug = slugSegment(catalogEntry.toolName, "tool");

@@ -420,7 +420,12 @@ rl.on("line", (line) => {
   return { application: application!, connection: connection!, catalogEntry: catalogEntry!, templateKey };
 }
 
-function expectedConnectedToolName(input: { applicationKey: string | null; connectionId: string; toolName: string }) {
+function expectedConnectedToolName(input: { applicationKey: string | null; connectionId: string; toolName: string; collision?: boolean }) {
+  // Каталог отдаёт каноническое имя платформы (toolName) — тем же словом, каким
+  // его адресует ТЗ. Неймспейс-префикс появляется только при коллизии имён между
+  // подключениями (flag collision); сплошное покрытие коллизии — тест
+  // «collision-safe» ниже (regex-ожидания).
+  if (!input.collision) return input.toolName;
   const applicationSegment = (input.applicationKey ?? "mcp")
     .trim()
     .toLowerCase()
@@ -1333,7 +1338,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const tools = await gateway.listToolsForSession(session.token);
     const connectedTool = tools.find((tool) => tool.providerType === "mcp_remote_http");
     expect(connectedTool).toMatchObject({
-      name: expect.stringMatching(/^mcp\.kv-demo-[0-9a-f]{8}:kv-set$/),
+      name: "kv_set",
       displayName: "Set KV value",
       providerType: "mcp_remote_http",
       risk: "write",
@@ -3180,6 +3185,7 @@ rl.on("line", (line) => {
           applicationKey: approvalTool.application.applicationKey,
           connectionId: approvalTool.connection.id,
           toolName: approvalTool.catalogEntry.toolName,
+          collision: true,
         }),
       ]);
       const approvalToolName = (await gateway.listToolsForSession(session.token))
@@ -3378,6 +3384,7 @@ rl.on("line", (line) => {
           applicationKey: rejectedTool.application.applicationKey,
           connectionId: rejectedTool.connection.id,
           toolName: rejectedTool.catalogEntry.toolName,
+          collision: true,
         }),
       ]);
       await db.insert(toolPolicies).values({
@@ -3432,6 +3439,7 @@ rl.on("line", (line) => {
           applicationKey: rateTool.application.applicationKey,
           connectionId: rateTool.connection.id,
           toolName: rateTool.catalogEntry.toolName,
+          collision: true,
         }),
       ]);
       await db.insert(toolPolicies).values({
