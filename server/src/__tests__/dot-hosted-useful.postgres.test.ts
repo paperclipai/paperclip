@@ -1043,6 +1043,16 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         expect(callbacks.length).toBeGreaterThanOrEqual(callbackCountBeforeRestart);
         if(!physicalApp)throw new Error("Second real child did not start");return physicalApp;
       },
+      withCommittedStatusDecision:async(issueId,followonRunId,finish)=>{
+        const committed=new Promise<CommittedStatus>(resolve=>{statusDecisionWaiter={companyId,issueId,runId:followonRunId,resolve};});
+        let timer:ReturnType<typeof setTimeout>|undefined;
+        try{
+          await childControl!.request({command:"observe-status-decision",issueId,runId:followonRunId},childDeadline());
+          await finish();
+          const remaining=caseStarted+90_000-performance.now();expect(remaining).toBeGreaterThan(0);
+          return await Promise.race([committed,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("No matching post-restart committed native status decision within the original case deadline")),remaining);})]);
+        }finally{clearTimeout(timer);statusDecisionWaiter=undefined;}
+      },
       createTask:async body=>{const response=await boardPost(`/api/companies/${companyId}/issues`).set("x-selected-operator",operatorId).send(body);return{status:response.status,body:response.body};},
       tool:async(name,args,ownedOrigin)=>{
         if(!ownedOrigin){const response=await tool(raw,name,args);return{status:response.status,body:response.body};}

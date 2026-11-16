@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as pause } from "node:timers/promises";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { dotRunnerAssignments, dotRunnerOperations, nativeRunResults, heartbeatRuns, completionContracts, issues, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { dotRunnerAssignments, dotRunnerOperations, nativeRunResults, heartbeatRuns, completionContracts, issues, workAssessments, statusDecisions, type Db } from "@paperclipai/db";
 import { documentService } from "../../../services/documents.js";
 import { externalOperationDigest } from "../../../vendor/paperclip-runner/index.js";
 import { createCommittedReplyLoss } from "./committed-reply-loss.js";
@@ -16,6 +16,10 @@ type Wire={status:number;body:{result?:{isError?:boolean;structuredContent?:{res
 export async function usefulAfterPhysicalRestart(input:{
   db:Db; companyId:string; agentId:string; first:Child;
   startSecond:()=>Promise<Child>;
+  // Existing one-shot child event is armed and acknowledged before finish.
+  withCommittedStatusDecision:(issueId:string,runId:string,finish:()=>Promise<void>)=>Promise<{
+    companyId:string;issueId:string;runId:string;decisionId:string;assessmentId:string;toStatus:string;
+  }>;
   // Original authorized normal board HTTP surface; no issue/outcome row writes.
   createTask:(body:{title:string;description:string;workMode:"standard";status:"todo";assigneeAgentId:string})=>Promise<{status:number;body:{id:string}}>;
   // Same unrevoked wrapped token, issuer/resource and original normal Cloud
@@ -96,15 +100,29 @@ export async function usefulAfterPhysicalRestart(input:{
     const result={reportedWorkDisposition:"completed",summary:"Saved fresh arithmetic report.",completionClaim:{contractRevision:specification.revision,
       objectiveSatisfied:true,criteria:specification.criteria.map(criterion=>({criterionId:criterion.id,status:"passed",evidenceRefs:[]})),remainingWork:[]},
       evidence:[],verification:[{commandOrCheck:"Read the persisted report: 31 + 11 = 42.",status:"pass"}]};
-    const finishToolId=randomUUID();
-    const finishedTool=await input.tool("paperclip_dot_tool",{assignmentId:assignment.id,requestId:finishToolId,name:"paperclip_finish",arguments:result});
-    assert.equal(finishedTool.status,200);assert.equal(finishedTool.body.result?.isError,false);
-    await until(()=>input.db.select().from(dotRunnerOperations).where(eq(dotRunnerOperations.requestId,finishToolId)),
-      rows=>rows.length===1&&rows[0].status==="completed",Math.min(input.caseDeadline,performance.now()+10000));
-    const finish=await input.tool("paperclip_dot_finish",{assignmentId:assignment.id,requestId:randomUUID(),result});
-    assert.equal(finish.status,200);assert.equal(finish.body.result?.isError,false);
-    const results=await until(()=>input.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId)),rows=>rows.length===1,
-      Math.min(input.caseDeadline,performance.now()+15000));assert.equal(results.length,1);
+    const committedStatus=await input.withCommittedStatusDecision(taskId,runId,async()=>{
+      const finishToolId=randomUUID();
+      const finishedTool=await input.tool("paperclip_dot_tool",{assignmentId:assignment.id,requestId:finishToolId,name:"paperclip_finish",arguments:result});
+      assert.equal(finishedTool.status,200);assert.equal(finishedTool.body.result?.isError,false);
+      await until(()=>input.db.select().from(dotRunnerOperations).where(eq(dotRunnerOperations.requestId,finishToolId)),
+        rows=>rows.length===1&&rows[0].status==="completed",Math.min(input.caseDeadline,performance.now()+10000));
+      const finish=await input.tool("paperclip_dot_finish",{assignmentId:assignment.id,requestId:randomUUID(),result});
+      assert.equal(finish.status,200);assert.equal(finish.body.result?.isError,false);
+    });
+    assert.equal(committedStatus.companyId,input.companyId);assert.equal(committedStatus.issueId,taskId);assert.equal(committedStatus.runId,runId);
+    // The commit event follows the normal transaction. Enrich the existing result
+    // read instead of polling accepted results as a proxy for task completion.
+    const committedRows=await input.db.select({result:nativeRunResults,assessment:workAssessments,decision:statusDecisions}).from(nativeRunResults)
+      .leftJoin(workAssessments,and(eq(workAssessments.id,committedStatus.assessmentId),eq(workAssessments.resultId,nativeRunResults.id)))
+      .leftJoin(statusDecisions,and(eq(statusDecisions.id,committedStatus.decisionId),eq(statusDecisions.assessmentId,workAssessments.id)))
+      .where(eq(nativeRunResults.runId,runId));
+    assert.equal(committedRows.length,1);const [{result:committedResult,assessment,decision}]=committedRows;
+    assert(assessment);assert(decision);
+    assert.equal(assessment.id,committedStatus.assessmentId);assert.equal(assessment.companyId,input.companyId);
+    assert.equal(assessment.issueId,taskId);assert.equal(assessment.runId,runId);assert.equal(assessment.resultId,committedResult.id);
+    assert.equal(decision.id,committedStatus.decisionId);assert.equal(decision.companyId,input.companyId);
+    assert.equal(decision.issueId,taskId);assert.equal(decision.runId,runId);assert.equal(decision.assessmentId,assessment.id);
+    assert.equal(decision.applicationState,"applied");assert.equal(decision.toStatus,committedStatus.toStatus);
     const [task]=await input.db.select().from(issues).where(eq(issues.id,taskId));assert.equal(task.status,"done");
     await input.assertPassiveQuiet(15000);
     return {second,firstIdentity,secondIdentity:{pid:second.pid,started:second.started,bootId:second.bootId},taskId,runId,
