@@ -504,10 +504,6 @@ function OnboardingWizardInner({
   // wizard drops the customer straight onto the first real question.
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
-  // Create organization is a new company. A draft left on the connect step
-  // still names the company that already exists, so Continue would skip the
-  // create, and the setup effect would call crypto.randomUUID before the step
-  // reset landed. Plain HTTP has no randomUUID, and the setup overlay dies.
   const freshOrganizationRequest = onboardingOpen
     && effectiveOnboardingOptions.initialStep === 1
     && existingCompanyId == null;
@@ -568,12 +564,12 @@ function OnboardingWizardInner({
     // one.
     (draft?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
-  const savedCopilotDraft = saved?.adapterType === "paperclip_runner" && saved?.onboardingCopilot === true;
+  const savedCopilotDraft = draft?.adapterType === "paperclip_runner" && draft?.onboardingCopilot === true;
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
     restoreOnboardingAdapterType(draft?.adapterType, draft?.runnerProvider, draft?.onboardingCopilot),
   );
-  const [runner, setRunner] = useState<AgentRunnerChoice>(() => savedCopilotDraft ? "auto" : saved?.runner === "legacy" || saved?.runner === "paperclip"
-    ? saved.runner : saved?.adapterType === "paperclip_runner" && (saved?.runnerProvider === undefined || ["codex", "claude", "acpx", "opencode", "pi"].includes(String(saved?.runnerProvider))) ? "paperclip" : "auto");
+  const [runner, setRunner] = useState<AgentRunnerChoice>(() => savedCopilotDraft ? "auto" : draft?.runner === "legacy" || draft?.runner === "paperclip"
+    ? draft.runner : draft?.adapterType === "paperclip_runner" && (draft?.runnerProvider === undefined || ["codex", "claude", "acpx", "opencode", "pi"].includes(String(draft?.runnerProvider))) ? "paperclip" : "auto");
   /**
    * Whether a model source has been chosen, as opposed to which one
    * `adapterType` happens to hold.
@@ -601,10 +597,10 @@ function OnboardingWizardInner({
   const [gatewayConnection, setGatewayConnection] = useState<{
     companyId: string; adapterType: string; binding: AiConnectionBinding;
   }>();
-  const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner" && !savedCopilotDraft;
-  const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
+  const savedNativeRunnerDraft = draft?.adapterType === "paperclip_runner" && !savedCopilotDraft;
+  const [cwd, setCwd] = useState((draft?.cwd as string) ?? "");
   const [model, setModel] = useState(
-    savedCopilotDraft || (savedNativeRunnerDraft && saved?.runnerProvider !== undefined && !["codex", "claude", "acpx", "opencode", "pi"].includes(String(saved.runnerProvider))) ? "" : (saved?.model as string) ?? "",
+    savedCopilotDraft || (savedNativeRunnerDraft && draft?.runnerProvider !== undefined && !["codex", "claude", "acpx", "opencode", "pi"].includes(String(draft.runnerProvider))) ? "" : (draft?.model as string) ?? "",
   );
   const [command, setCommand] = useState(
     draft?.adapterType === "paperclip_runner" ? "" : (draft?.command as string) ?? "",
@@ -855,12 +851,17 @@ function OnboardingWizardInner({
       setStep(initialStepRef.current);
       setEntryStep(initialStepRef.current);
     }
-    // A wizard that is already mounted still holds the draft's company. The
-    // useState initializers above only see a fresh request on the first mount.
     if (onboardingOpen && initialStepRef.current === 1 && !routeCompanyId && !resumesRouteDraft) {
       setCreatedCompanyId(null);
       setAgentName("");
       clearCompanyScopedState();
+      setAdapterType("claude_local");
+      setRunner("auto");
+      setModel("");
+      setCwd("");
+      setCommand("");
+      setArgs("");
+      setUrl("");
     }
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
@@ -1286,10 +1287,6 @@ function OnboardingWizardInner({
   const previousOpen = openingRequestRef.current;
   const openCompanyId = effectiveOnboardingOptions.companyId ?? null;
   const openIsNew = effectiveOnboardingOpen && !(previousOpen?.open && previousOpen.companyId === openCompanyId);
-  // The open effect resets the step in this same commit. `step` here is still
-  // the draft's, so preparing now would create an agent for the company the
-  // customer is leaving. createUuid does not throw, but the agent would still
-  // belong to the wrong company.
   skipStaleSetupRef.current = openIsNew
     && onboardingOpen
     && typeof effectiveOnboardingOptions.initialStep === "number"

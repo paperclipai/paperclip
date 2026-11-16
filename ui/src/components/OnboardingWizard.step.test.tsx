@@ -671,9 +671,6 @@ describe("OnboardingWizard — which step it lands on", () => {
         session: { id: "session-1", userId: "user-1" },
         user: { id: "user-1", name: "A", email: "a@example.com", image: null },
       });
-      // The agent page has already loaded this list. A cold cache hides the
-      // crash: the setup effect bails until the list arrives, and by then the
-      // open request has moved the step off 4.
       queryClient.setQueryData(queryKeys.adapters.all, [
         { type: "claude_local", source: "builtin", label: "Claude", disabled: false, loaded: true },
         { type: "codex_local", source: "builtin", label: "Codex", disabled: false, loaded: true },
@@ -687,6 +684,36 @@ describe("OnboardingWizard — which step it lands on", () => {
     afterEach(() => {
       restoreRandomUUID?.();
       restoreRandomUUID = null;
+    });
+
+    it("drops a saved Codex model when Create organization starts a new company", async () => {
+      window.localStorage.setItem("paperclip-onboarding-state", JSON.stringify({
+        ...draft,
+        adapterType: "codex_local",
+        runner: "paperclip",
+        model: "gpt-5.4",
+        cwd: "/tmp/old-company",
+        command: "codex",
+      }));
+      await render();
+      await settle();
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = { initialStep: 1 };
+      await rerender();
+      await settle();
+
+      const stored = JSON.parse(window.localStorage.getItem("paperclip-onboarding-state") ?? "{}") as {
+        adapterType?: string;
+        runner?: string;
+        model?: string;
+        cwd?: string;
+        command?: string;
+      };
+      expect(stored.adapterType).toBe("claude_local");
+      expect(stored.runner).toBe("auto");
+      expect(stored.model).toBe("");
+      expect(stored.cwd).toBe("");
+      expect(stored.command).toBe("");
     });
 
     it("opens the organization name step from Create organization while a connect-step draft is stored", async () => {

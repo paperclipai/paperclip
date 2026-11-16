@@ -19,11 +19,8 @@ function insecureRandomUuid(): `${string}-${string}-${string}-${string}-${string
   return uuidFromRandomBytes() as `${string}-${string}-${string}-${string}-${string}`;
 }
 
-/** Browser UUIDs also work on plain-HTTP LAN and tailnet previews. */
 export function createUuid(): string {
   const randomUUID = globalThis.crypto?.randomUUID;
-  // Skip the function installInsecureRandomUuid puts on crypto. That function
-  // is insecureRandomUuid. If it ever called randomUUID, this call would recurse.
   if (typeof randomUUID === "function" && randomUUID !== insecureRandomUuid) return randomUUID.call(globalThis.crypto);
   return uuidFromRandomBytes();
 }
