@@ -12,10 +12,13 @@ import { createHeartbeatRunCompletion, type HeartbeatRunCompletionDependencies }
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 // The Sentry report is an outbound boundary; the tests observe the decision handed to it.
-vi.mock("../run-failure-report.js", async importOriginal => {
-  const actual = await importOriginal<typeof import("../run-failure-report.js")>();
-  return { ...actual, reportRunFailure: vi.fn(async () => undefined) };
-});
+// Loading the real reporter inside its mock factory recursively loads completion
+// through recovery services before the reporter spy is installed.
+vi.mock("../run-failure-report.js", () => ({
+  reportRunFailure: vi.fn(async () => undefined),
+  isNewTerminalRunFailure: vi.fn(),
+  waitForPendingRunFailureReports: vi.fn(async () => undefined),
+}));
 
 type Dependencies = HeartbeatRunCompletionDependencies;
 function callbacks(db: Db) {
@@ -120,6 +123,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       }
       expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" });
       expect(write?.[3]).toMatchObject({ phase: "setup", reviewedChatRetry: "pending" });
+      expect(await f.deps.setRunStatusIfRunning.mock.results[0]!.value).toMatchObject({ updated: true });
       expect(reportRunFailure).toHaveBeenCalledOnce();
       expect(reportRunFailure).toHaveBeenCalledWith(db,
         expect.objectContaining({ id: f.run.id, status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" }),
