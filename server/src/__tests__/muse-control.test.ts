@@ -1507,14 +1507,16 @@ describe("personal Muse control plane",()=>{
       if("code"in current&&typeof current.code==="string"){sqlStates.push(current.code);sqlErrors.push(error);return;}
       current="cause"in current?current.cause:undefined;
     }};
-    const owner=new Proxy(db,{get(target,key,receiver){if(key!=="transaction")return Reflect.get(target,key,receiver);
+    let pairingPid:number|undefined,companyPid:number|undefined,parked=false,blocked=false;
+    const ownerFor=(actor:"pairing"|"company")=>new Proxy(db,{get(target,key,receiver){if(key!=="transaction")return Reflect.get(target,key,receiver);
       return async(...args:Parameters<typeof db.transaction>)=>{try{const [work,...options]=args;return await Reflect.apply(target.transaction,target,[async(tx:Parameters<typeof work>[0])=>{
-        await tx.execute(sql`set local statement_timeout='5s'`);return work(tx);
+        await tx.execute(sql`set local statement_timeout='5s'`);
+        if(actor==="company"){const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);companyPid=row.pid;}
+        return work(tx);
       },...options]);}catch(error){observe(error);throw error;}};
     }});
-    const broker=museRunnerBroker(owner,{publicOrigin:oauthOrigin,heartbeat:{wakeup:vi.fn().mockResolvedValue(null),cancelRun:vi.fn()}});
+    const broker=museRunnerBroker(ownerFor("pairing"),{publicOrigin:oauthOrigin,heartbeat:{wakeup:vi.fn().mockResolvedValue(null),cancelRun:vi.fn()}});
     let releasePairing!:()=>void;const continuePairing=new Promise<void>(resolve=>{releasePairing=resolve;});
-    let pairingPid:number|undefined,companyPid:number|undefined,parked=false,blocked=false;
     const realPrepare=museProjectionModule.prepareMuseReceiverMutation;
     let pairingTx:Parameters<typeof realPrepare>[0]|undefined;
     const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverMutation").mockImplementation(async tx=>{
@@ -1530,13 +1532,12 @@ describe("personal Muse control plane",()=>{
       pairing=broker.createPairing({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,replaceBindingId:binding.id,expectedRevision:binding.revision});
       void pairing.catch(()=>{});
       await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
-      company=mode==="archive"?companyService(owner).archive(f.company.id):companyService(owner).update(f.company.id,{status:mode});
+      company=mode==="archive"?companyService(ownerFor("company")).archive(f.company.id):companyService(ownerFor("company")).update(f.company.id,{status:mode});
       joined=Promise.allSettled([pairing,company]);
       await vi.waitFor(async()=>{
-        const [waiter]=await pairingTx!.execute<{pid:number}>(sql`select waiting.pid from pg_stat_activity waiting
-          where waiting.datname=current_database() and waiting.wait_event_type='Lock'
-            and ${pairingPid!}=any(pg_blocking_pids(waiting.pid))`);
-        expect(waiter).toBeDefined();companyPid=waiter.pid;blocked=true;
+        expect(companyPid).toBeDefined();
+        const [waiter]=await pairingTx!.execute<{blockers:number[]}>(sql`select pg_blocking_pids(${companyPid!}) as blockers`);
+        expect(waiter.blockers).toContain(pairingPid);blocked=true;
       },{timeout:5_000});
       releasePairing();const outcomes=await joined;outcomesObserved=true;
       const failures=outcomes.filter(outcome=>outcome.status==="rejected");
