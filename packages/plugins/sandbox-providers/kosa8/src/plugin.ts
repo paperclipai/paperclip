@@ -721,8 +721,10 @@ async function executeCommand(
     try {
       return await runInBackground(config, id, dir, cmd, env, input.timeoutMs);
     } catch (error) {
-      if (!activity.get(id)?.commands.has(dir)) await cleanupRun(config, id, dir);
-      if (!(isNotAvailable(error) && /background/i.test(formatErrorMessage(error)))) throw error;
+      if (!(isNotAvailable(error) && /background/i.test(formatErrorMessage(error)))) {
+        if (!activity.get(id)?.commands.has(dir)) await cleanupRun(config, id, dir);
+        throw error;
+      }
       cmd[6] = "1";
     }
   }

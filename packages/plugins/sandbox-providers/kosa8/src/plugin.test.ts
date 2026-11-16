@@ -381,6 +381,15 @@ describe("kosa8 sandbox provider plugin", () => {
     expect(result).toEqual({ exitCode: 0, timedOut: false, stdout: "fallback\n", stderr: "" });
   });
 
+  it("keeps uploaded inputs for the buffered fallback", async () => {
+    const lease = await acquire();
+    fake.override = (call) =>
+      call.body?.background ? json(501, { error: "not_available", message: "background commands are not available on this sandbox's host yet" }) : null;
+    const result = await execute(lease, { args: ["-c", "wc -c | tr -d ' '"], stdin: "y".repeat(200_000), timeoutMs: 120_000 });
+    expect(result).toEqual({ exitCode: 0, timedOut: false, stdout: "200000\n", stderr: "" });
+    expect(calls("POST", /\/exec$/).some((call) => (call.body?.env as string[] | undefined)?.[0]?.startsWith("PAPERCLIP_K8_CHUNK="))).toBe(true);
+  });
+
   it("retries a background start without timeout_s when the host cannot stop background commands", async () => {
     const lease = await acquire();
     fake.override = (call) =>
