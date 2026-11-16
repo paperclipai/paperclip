@@ -75,6 +75,7 @@ async function runTurn() {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", ENABLE_TOOL_SEARCH: "false" },
     credentialFenceFds: [42, 43] as const,
     activateCredentialFenceOwner: async () => undefined,
+    systemInstructions: "Report the probe output.",
     mcpServers: [],
     retainFailedAdmissionCleanup: vi.fn(),
   } as AcpxRuntimePortOpenOptions;
