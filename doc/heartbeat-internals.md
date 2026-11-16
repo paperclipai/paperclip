@@ -295,8 +295,11 @@ Keep cancellation policy changes separate from this extraction and execution.
 
 An operator Stop during preparation can settle before any adapter starts. The
 preparation owner records `executionCancellation.state = acknowledged` only after
-it unwinds and the retained process, session, event and lease evidence confirms
+it unwinds and the retained dispatch, process, session, event and lease evidence confirms
 that provider work never started. A terminal run status alone is not this proof.
+The locked run must have no `budgetDispatch.handedOffAt` marker. The dispatch gate
+writes that marker before adapter entry, so a missing invocation event or an old
+owner's local flag cannot prove that dispatch never occurred.
 The task page shows a confirmed operator Stop as Stopped and accepts a new message
 through normal admission. Stop does not automatically restart the task. Recovery
 holds, approvals, budget limits and uncertain termination keep their own gates.

@@ -236,6 +236,38 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
     expect(executedIssueIds()).not.toContain(issue.id);
   });
 
+  it.each(["2026-01-01T00:00:00.000Z", null])("retains the Stop hold after dispatch handoff without an invocation event: %s", async (handedOffAt) => {
+    const { companyId, agentId } = await seed();
+    const [issue] = await db.insert(issues).values({ companyId, assigneeAgentId: agentId,
+      title: "Dispatch handoff before adapter entry", status: "in_progress" }).returning();
+    const requestedAt = new Date().toISOString();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+      status: "cancelled", runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(), errorCode: "cancelled",
+      contextSnapshot: { issueId: issue.id }, runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: {
+        cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "responsible-user" },
+          reason: "Stop", recordedAt: requestedAt },
+        executionCancellation: { state: "requested", requestedAt },
+      } }).returning();
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: "active", ownerType: "system", returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${run.id}`,
+      nextAction: "Preserve this stopped execution until its outcome is known.", evidence: { runId: run.id } }).returning();
+    // The old owner has a stale snapshot. The replacement has passed the gate,
+    // but has not recorded adapter.invoke or a process identity yet.
+    await db.update(heartbeatRuns).set({ usageJson: { budgetDispatch: { handedOffAt } }, executionStage: "dispatching" })
+      .where(eq(heartbeatRuns.id, run.id));
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id))).toEqual([]);
+    expect(await settleCancelledLegacyPreparation(db, { run, providerDispatchStarted: false })).toBeNull();
+    const stopped = await heartbeat.getRun(run.id);
+    expect(stopped?.resultJson).toEqual(run.resultJson);
+    const [retained] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id));
+    expect(retained).toMatchObject({ status: "active", outcome: null, evidence: hold.evidence });
+    expect((await executionProjectionsForRuns(db, companyId, [run.id])).get(run.id)?.phase).not.toBe("completed");
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed" });
+    expect(executedIssueIds()).not.toContain(issue.id);
+  });
+
   it("preserves a system cancellation's recovery delivery when preparation settles", async () => {
     const { companyId, agentId } = await seed();
     const [issue] = await db.insert(issues).values({ companyId, assigneeAgentId: agentId,

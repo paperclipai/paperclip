@@ -481,8 +481,11 @@ export async function settleCancelledLegacyPreparation(
   return db.transaction(async tx => {
     const [task] = await tx.select().from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
+    // The dispatch gate writes this marker under the same run lock before
+    // calling the adapter. A prior owner's local flag cannot disprove handoff.
     const [run] = await tx.select().from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId),
+        sql`${heartbeatRuns.usageJson}#>'{budgetDispatch,handedOffAt}' is null`)).for("update");
     const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
     // Only a requested Stop qualifies, and only while it is still classified as
     // an unknown outcome: existing wait or bootstrap receipts already decide it.
