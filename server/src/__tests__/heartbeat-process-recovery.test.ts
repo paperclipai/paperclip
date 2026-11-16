@@ -10536,7 +10536,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(events[0]).toMatchObject({
       eventType: "lifecycle",
       stream: "system",
-      level: "warn",
+      level: "info",
       message: "run interrupted by board comment",
       payload: expect.objectContaining({
         issueId,

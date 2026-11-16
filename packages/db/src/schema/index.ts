@@ -290,3 +290,4 @@ export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionPr
 export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
+export { linkPreviews } from "./link_previews.js";

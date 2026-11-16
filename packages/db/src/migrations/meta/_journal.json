@@ -3414,8 +3414,15 @@
     {
       "idx": 489,
       "version": "7",
-      "when": 1794830984822,
-      "tag": "0489_glorious_gladiator",
+      "when": 1794841384470,
+      "tag": "0489_real_sage",
+      "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1794865664290,
+      "tag": "0490_early_zarda",
       "breakpoints": true
     }
   ]

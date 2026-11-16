@@ -8904,6 +8904,49 @@ describe("native startup restart detachment", () => {
     } finally { await newerDetach; issueService.mockRestore(); }
   });
 
+  it("keeps managed GitHub launchers for a provider that outlives its restart detach", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-github-detach-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = "restart-managed-github";
+    restarting.session.normalizedSessionId = "restart-managed-github-session";
+    let open!: () => void, started!: () => void;
+    const opening = new Promise<void>(resolve => { open = resolve; });
+    const admitted = new Promise<void>(resolve => { started = resolve; });
+    const stop = vi.fn(async (_options?: { preserveLaunchers?: boolean }) => undefined);
+    githubAccess.create.mockImplementationOnce(async () => ({ env: {}, ready: true, duplexRequested: false,
+      activate: vi.fn(() => vi.fn()), stop }));
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      started();
+      await opening;
+      await options.onSession({ detachControllerForRestart: async () => undefined });
+      await options.onSession(null);
+      throw new Error("detachment closed the old event stream");
+    });
+    const outcome = executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting,
+      runnerInstanceId: "runner", useRunnerd: true, managedGitHub: true }).catch(error => error);
+    let detaching: Promise<unknown> | undefined;
+    try {
+      await admitted;
+      detaching = detachNativeSessionsForRestart([restarting.binding.runId]);
+      open();
+      expect(await detaching).toMatchObject({ detachedRunIds: [restarting.binding.runId] });
+      expect(await outcome).toBeInstanceOf(NativeControllerDetachedForRestartError);
+      expect(githubAccess.create).toHaveBeenLastCalledWith(expect.objectContaining({
+        launcherKey: expect.stringContaining(restarting.binding.issueId),
+      }));
+      expect(stop).toHaveBeenCalledExactlyOnceWith({ preserveLaunchers: true });
+    } finally {
+      open();
+      await outcome;
+      await detaching;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses one admission deadline for the whole restart sweep", async () => {
     const inputs = ["first", "second"].map(label => {
       const input = structuredClone(execution);
@@ -18695,7 +18738,7 @@ describe("runnerd provider runtime wiring", () => {
       if (failure === "assigned") {
         expect(activate).toHaveBeenCalledWith(current.binding);
         expect(deactivate).toHaveBeenCalledOnce();
-        expect(stop).toHaveBeenCalledOnce();
+        expect(stop).toHaveBeenCalledExactlyOnceWith({ preserveLaunchers: false });
       }
     } finally {
       releaseGitHub();

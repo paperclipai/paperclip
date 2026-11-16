@@ -339,6 +339,23 @@ Forwarding callbacks preserve construction order for budget, retry, recovery,
 and queue services. Existing public helpers remain re-exported by `heartbeat.ts`.
 Keep cancellation policy changes separate from this extraction and execution.
 
+An operator Stop during preparation can settle before any adapter starts. The
+preparation owner records `executionCancellation.state = acknowledged` only after
+it unwinds and the retained dispatch, process, session, event and lease evidence confirms
+that provider work never started. A terminal run status alone is not this proof.
+The locked run must have no `budgetDispatch.handedOffAt` marker. The dispatch gate
+writes that marker before adapter entry, so a missing invocation event or an old
+owner's local flag cannot prove that dispatch never occurred.
+The task page shows a confirmed operator Stop as Stopped and accepts a new message
+through normal admission. Stop does not automatically restart the task. Recovery
+holds, approvals, budget limits and uncertain termination keep their own gates.
+The receipt's `preparation_settled` proof identifies that evidence path. Both page
+projections read the same bounded evidence and require that proof; an acknowledged
+receipt from a different path does not clear the preparation failure notice.
+Only a user's operator Stop gets this acknowledgement and clears an obsolete
+automatic-recovery marker. A system cancellation keeps its existing recovery
+delivery metadata, so saved comments and continuation intents still reach admission.
+
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
 session-goal recovery. `createHeartbeatScheduling` binds explicit dependencies
