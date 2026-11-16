@@ -46,6 +46,7 @@ import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } 
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
+import { difficultyRoutingRunEventMessage, resolveIssueDifficultyRouting, withDifficultyRoutingOverrides } from "./heartbeat/difficulty-routing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
@@ -2483,6 +2484,18 @@ export function heartbeatService(
               issueContext.assigneeAdapterOverrides,
             )
           : null;
+      const difficultyRouting = issueContext && !isConversation(issueContext)
+        ? await timePreparation("difficulty_routing", () => resolveIssueDifficultyRouting({
+            db, decide: decisionModelService(db, { budgetHooks }).decide, agent, runId: run.id, issue: issueContext!,
+          }))
+        : null;
+      if (difficultyRouting?.applied) {
+        issueAssigneeOverrides = withDifficultyRoutingOverrides(issueAssigneeOverrides, difficultyRouting.adapterConfig);
+        context.difficultyRouting = difficultyRouting.routing;
+        await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info", message: difficultyRoutingRunEventMessage(difficultyRouting.routing), payload: { ...difficultyRouting.routing, reused: difficultyRouting.reused } });
+      } else if (difficultyRouting && difficultyRouting.reason !== "disabled" && difficultyRouting.reason !== "not_assignee") {
+        await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info", message: "Difficulty routing skipped; using agent defaults", payload: { reason: difficultyRouting.reason, detail: difficultyRouting.detail ?? null } });
+      }
       const experimentalInstanceSettings =
         await timePreparation("instance_settings", () => instanceSettings.getExperimental());
       const isolatedWorkspacesEnabled =

@@ -5333,6 +5333,7 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  difficultyRouting: issues.difficultyRouting,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   monitorNextCheckAt: issues.monitorNextCheckAt,

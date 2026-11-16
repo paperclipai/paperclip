@@ -2923,6 +2923,7 @@ export * from "./connection-instructions.js";
 export * from "./customer-success.js";
 export type { GitHubAppOwner, GitHubAppRegistrationInput, GitHubAppCloudState, GitHubAppWizardState } from "./types/github-app-setup.js";
 export * from "./decision-models.js";
+export * from "./difficulty-routing.js";
 export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPreference } from "./primary-agent.js";
 
 export * from "./agent-avatar-upload.js";

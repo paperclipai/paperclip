@@ -8,7 +8,7 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
   | "run_identity" | "trust_preset" | "task_context"
   | "chat_retry_admission" | "workspace_selection" | "dependency_readiness" | "issue_checkout"
-  | "instance_settings" | "workspace_context" | "project_context" | "plan_wake_routing"
+  | "instance_settings" | "workspace_context" | "project_context" | "plan_wake_routing" | "difficulty_routing"
   | "routine_environment" | "responsible_user" | "execution_start"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
