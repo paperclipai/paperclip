@@ -48,6 +48,7 @@ import * as activityLogModule from "../services/activity-log.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { museRunnerBroker } from "../services/muse-runner-broker.js";
 import { museReceiver } from "../services/muse-receiver.js";
+import { companyService } from "../services/companies.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { mcpCompanyDeletion } from "../services/public-mcp/company-deletion.js";
 import * as museProjectionModule from "../modules/external-agents/muse-hosted-projection.js";
@@ -1494,6 +1495,72 @@ describe("personal Muse control plane",()=>{
     expect(getCloudRuntimeIdentity()?.canonicalOrigin).toBe(oauthOrigin);
     return async()=>{await db.delete(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"));resetCloudRuntimeIdentityForTests();};
   }
+  it.each(["paused", "archived", "archive"] as const)("serializes company %s and real Muse pairing without reversing agent and mirror locks",async(mode)=>{
+    const f=await fixture(true);
+    await db.update(agents).set({lifecycleState:"ready",lifecycleHolds:[],status:"idle"}).where(eq(agents.id,f.agent.id));
+    const runId=randomUUID();
+    await db.insert(heartbeatRuns).values({id:runId,companyId:f.company.id,agentId:f.agent.id,status:"running",runtimeMode:"native",driverKind:"muse_external",responsibleUserId:f.operatorId});
+    const [binding]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+    const reset=await applyActualManagedContactIdentity();
+    const sqlStates:string[]=[],sqlErrors:unknown[]=[];
+    const observe=(error:unknown)=>{let current=error;for(let depth=0;depth<6&&current&&typeof current==="object";depth++){
+      if("code"in current&&typeof current.code==="string"){sqlStates.push(current.code);sqlErrors.push(error);return;}
+      current="cause"in current?current.cause:undefined;
+    }};
+    const owner=new Proxy(db,{get(target,key,receiver){if(key!=="transaction")return Reflect.get(target,key,receiver);
+      return async(...args:Parameters<typeof db.transaction>)=>{try{const [work,...options]=args;return await Reflect.apply(target.transaction,target,[async(tx:Parameters<typeof work>[0])=>{
+        await tx.execute(sql`set local statement_timeout='5s'`);return work(tx);
+      },...options]);}catch(error){observe(error);throw error;}};
+    }});
+    const broker=museRunnerBroker(owner,{publicOrigin:oauthOrigin,heartbeat:{wakeup:vi.fn().mockResolvedValue(null),cancelRun:vi.fn()}});
+    let releasePairing!:()=>void;const continuePairing=new Promise<void>(resolve=>{releasePairing=resolve;});
+    let pairingPid:number|undefined,companyPid:number|undefined,parked=false,blocked=false;
+    const realPrepare=museProjectionModule.prepareMuseReceiverMutation;
+    let pairingTx:Parameters<typeof realPrepare>[0]|undefined;
+    const prepare=vi.spyOn(museProjectionModule,"prepareMuseReceiverMutation").mockImplementation(async tx=>{
+      if(!parked){pairingTx=tx;const [row]=await tx.execute<{pid:number}>(sql`select pg_backend_pid() as pid`);pairingPid=row.pid;parked=true;await continuePairing;}
+      return realPrepare(tx);
+    });
+    let pairing:ReturnType<typeof broker.createPairing>|undefined,company:Promise<unknown>|undefined;
+    let joined:Promise<PromiseSettledResult<unknown>[]>|undefined,primary:unknown,outcomesObserved=false;
+    onTestFailed(()=>console.error("MUSE_COMPANY_PAIRING_LOCK_FRONTIER "+JSON.stringify({mode,pairingPid,companyPid,parked,blocked,sqlStates})));
+    try{
+      // Real pairing owns the current agent/binding. Pause only before its first
+      // real mirror mutation, so the competing company owner can reach its lock.
+      pairing=broker.createPairing({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,replaceBindingId:binding.id,expectedRevision:binding.revision});
+      void pairing.catch(()=>{});
+      await vi.waitFor(()=>expect(parked).toBe(true),{timeout:5_000});
+      company=mode==="archive"?companyService(owner).archive(f.company.id):companyService(owner).update(f.company.id,{status:mode});
+      joined=Promise.allSettled([pairing,company]);
+      await vi.waitFor(async()=>{
+        const [waiter]=await pairingTx!.execute<{pid:number}>(sql`select waiting.pid from pg_stat_activity waiting
+          where waiting.datname=current_database() and waiting.wait_event_type='Lock'
+            and ${pairingPid!}=any(pg_blocking_pids(waiting.pid))`);
+        expect(waiter).toBeDefined();companyPid=waiter.pid;blocked=true;
+      },{timeout:5_000});
+      releasePairing();const outcomes=await joined;outcomesObserved=true;
+      const failures=outcomes.filter(outcome=>outcome.status==="rejected");
+      if(failures.length||sqlErrors.length)throw new AggregateError([...sqlErrors,...failures.map(outcome=>outcome.reason)],"Real company/Muse pairing concurrency failed");
+      expect(outcomes.map(outcome=>outcome.status)).toEqual(["fulfilled","fulfilled"]);expect(sqlStates).toEqual([]);
+      const paired=await pairing;
+      const [savedCompany]=await db.select().from(companies).where(eq(companies.id,f.company.id));
+      const [savedAgent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
+      const [retired]=await db.select().from(bindings).where(eq(bindings.id,binding.id));
+      const [successor]=await db.select().from(bindings).where(eq(bindings.id,paired.bindingId));
+      const expected=mode==="paused"?"paused":"archived";
+      expect(savedCompany.status).toBe(expected);expect(savedAgent.lifecycleState).toBe("pausing");
+      expect(savedAgent.lifecycleHolds).toContain(expected==="paused"?"company_paused":"company_archived");
+      expect(retired.revokedAt).not.toBeNull();expect(successor).toMatchObject({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,status:"pairing",generation:binding.generation+1});
+      await expect(f.identity.authenticate(f.credentials.accessToken)).rejects.toThrow();
+      expect(await db.select().from(assignments).where(eq(assignments.runId,runId))).toEqual([]);
+    }catch(error){primary=error;throw error;}
+    finally{
+      releasePairing();const outcomes=await Promise.allSettled([...(pairing?[pairing]:[]),...(company?[company]:[])]);
+      prepare.mockRestore();const extra:unknown[]=outcomesObserved?[]:outcomes.filter(outcome=>outcome.status==="rejected").map(outcome=>outcome.reason);
+      try{await reset();}catch(error){extra.push(error);}
+      if(extra.length)throw new AggregateError([...(primary?[primary]:[]),...extra],"Company/Muse lock regression original and cleanup failures");
+    }
+  },30_000);
   it("persists a hosted unverified contact concurrently with Verify without reversing binding and mirror locks",async()=>{
     const f=await fixture(false);
     // Controlled existing detection; no challenge or verified reply is seeded.
