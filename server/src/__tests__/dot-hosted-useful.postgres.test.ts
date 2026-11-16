@@ -181,7 +181,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const readinessStatuses:number[]=[];let readinessOverflow=0;
   let wakeEvidence:{sleepStatus:number;failedReadinessStatus:number;retryStatus:number;admissionDigest:string;grantId:string;bindingGeneration:number;healthStatuses:number[];overflow:number}|undefined;
 
-  type ObservedPhase="callback"|"token"|"device-first-select"|"device-retry-select"|"public-read";
+  type ObservedPhase="callback"|"token"|"device-first-select"|"device-retry-select"|"public-read"|"fresh-request-work";
   let observingPhase:ObservedPhase|undefined,tokenObservationOverflow=0,tokenObservationStart=0;
   let callbackHttp:{status:number;code:"temporarily_unavailable"|"invalid_grant"|"invalid_request"|"access_denied"|"unclassified";retryAfter30:boolean}|undefined;
   let observedMirrorStage:"unknown"|"pending"|"complete"="unknown";
@@ -189,17 +189,31 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const gateReads:Array<{phase:ObservedPhase;relativeMs:number;signalAlreadyAborted:boolean;kind:"pending"|"read"|"refused"|"timeout"|"aborted"|"original-rejection";load:"not-entered"|"pending"|"fulfilled"|"rejected";loadEnteredMs?:number;loadSettledMs?:number;readSettledMs?:number;ownerKnown?:boolean;ownerPresent?:boolean}>=[];
   const publicReadGate={attempts:0,calls:0,loadEntered:0,loadFulfilled:0,loadRejected:0,read:0,refused:0,timeout:0,aborted:0,rejected:0,ownerKnown:0,ownerPresent:0,ownerAbsent:0};
   let lastPublicReadGate:typeof gateReads[number]|undefined;
+  type FreshTransportSlot={starts:number;fulfilled:number;rejected:number;firstStartedMs?:number;lastSettledMs?:number;status?:number};
+  const freshTransportSlot=():FreshTransportSlot=>({starts:0,fulfilled:0,rejected:0});
+  const freshRequestFrontier={calls:0,state:"not-entered" as "not-entered"|"pending"|"fulfilled"|"rejected",
+    startedMs:0,settledMs:undefined as number|undefined,cleanupStartedMs:undefined as number|undefined,status:undefined as number|undefined,
+    gateReadsAtStart:0,gateOverflowAtStart:0,observerErrors:0,
+    gate:{calls:0,overflow:0,records:[] as Array<typeof gateReads[number]>},
+    transport:{principal:freshTransportSlot(),tenantMcp:freshTransportSlot()}};
+  const observeFresh=(update:()=>void)=>{try{update();}catch{freshRequestFrontier.observerErrors++;}};
+
   const observeGateOwner=(owner:GateReadOwner)=>{
     const originalRead=owner.read;
     owner.read=function<T>(this:GateReadOwner,stack:string,source:string,signal:AbortSignal,load:()=>Promise<T>):Promise<GateReadResult<T>>{
       const invoke=originalRead<T>;
       if(!observingPhase||stack!==stackId)return invoke.call(this,stack,source,signal,load);
-      const publicRead=observingPhase==="public-read";
+      const publicRead=observingPhase==="public-read",freshRead=observingPhase==="fresh-request-work";
       if(publicRead)publicReadGate.calls++;
-      else if(gateReads.length>=16){gateObservationOverflow++;return invoke.call(this,stack,source,signal,load);}
+      else if(freshRead){
+        freshRequestFrontier.gate.calls++;
+        if(freshRequestFrontier.gate.records.length>=4){freshRequestFrontier.gate.overflow++;return invoke.call(this,stack,source,signal,load);}
+      }else if(gateReads.length>=16){gateObservationOverflow++;return invoke.call(this,stack,source,signal,load);}
       const started=performance.now();
       const record:typeof gateReads[number]={phase:observingPhase,relativeMs:started-tokenObservationStart,signalAlreadyAborted:signal.aborted,kind:"pending",load:"not-entered"};
-      if(publicRead)lastPublicReadGate=record;else gateReads.push(record);
+      if(publicRead)lastPublicReadGate=record;
+      else if(freshRead)freshRequestFrontier.gate.records.push(record);
+      else gateReads.push(record);
       const observe=<V,>(promise:Promise<V>,fulfilled:(value:V)=>void,rejected:()=>void)=>{
         pendingGateObservers++;
         try{void promise.then(value=>{pendingGateObservers--;try{fulfilled(value);}catch{gateObserverFailures++;}},()=>{pendingGateObservers--;try{rejected();}catch{gateObserverFailures++;}});}catch{pendingGateObservers--;gateObserverFailures++;}
@@ -224,6 +238,12 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
               record.ownerPresent=actualOwner!==undefined&&actualOwner!==null;
               publicReadGate.ownerKnown++;if(record.ownerPresent)publicReadGate.ownerPresent++;else publicReadGate.ownerAbsent++;
             }
+          }
+        }else if(freshRead&&value.kind==="read"&&value.value&&typeof value.value==="object"){
+          record.ownerKnown=Object.hasOwn(value.value,"owner");
+          if(record.ownerKnown){
+            const actualOwner:unknown=Object.getOwnPropertyDescriptor(value.value,"owner")?.value;
+            record.ownerPresent=actualOwner!==undefined&&actualOwner!==null;
           }
         }
       },()=>{record.kind="original-rejection";record.readSettledMs=performance.now()-started;if(publicRead)publicReadGate.rejected++;});
@@ -382,11 +402,25 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     original.signal.throwIfAborted();
     if(safetyRead)safetyRead.forwarded++;
     const value=record({direction:"outbound",surface,path:pathKind(target.pathname),method:methodKind(original.method)});
+    // Fixed slots observe only this existing fresh call's principal/tenant-MCP transport.
+    // No request arguments, response body, credential, or raw URL is retained.
+    const freshSlot=observingPhase==="fresh-request-work"&&surface==="tenant"&&original.method==="POST"
+      ? target.pathname==="/mcp/runner/oauth/cloud-principal"?freshRequestFrontier.transport.principal
+        :target.pathname==="/mcp/runner"?freshRequestFrontier.transport.tenantMcp:undefined
+      :undefined;
+    if(freshSlot)observeFresh(()=>{freshSlot.starts++;freshSlot.firstStartedMs??=performance.now()-freshRequestFrontier.startedMs;});
+
     return new Promise<Response>((resolve,reject)=>{
-      const sent=nodeRequest(new URL(target.pathname+target.search,base),{method:original.method,headers:Object.fromEntries(headers),signal:original.signal},res=>{
+      const rejectOriginal=(error:unknown)=>{
+        if(freshSlot)observeFresh(()=>{freshSlot.rejected++;freshSlot.lastSettledMs=performance.now()-freshRequestFrontier.startedMs;});
+        reject(error);
+      };
+      let sent:ReturnType<typeof nodeRequest>;
+      try{sent=nodeRequest(new URL(target.pathname+target.search,base),{method:original.method,headers:Object.fromEntries(headers),signal:original.signal},res=>{
+        if(freshSlot)observeFresh(()=>{freshSlot.status=res.statusCode;});
         const chunks:Buffer[]=[];let length=0;
         res.on("data",(part:Buffer)=>{length+=part.length;if(length>1_048_576){res.destroy(new Error("Canonical mapped response exceeds transport bound"));return;}chunks.push(part);});
-        res.on("error",reject);res.on("end",()=>{value.status=res.statusCode;const responseHeaders=new Headers();for(const [name,header] of Object.entries(res.headers))if(header!==undefined)for(const item of Array.isArray(header)?header:[header])responseHeaders.append(name,item);
+        res.on("error",rejectOriginal);res.on("end",()=>{value.status=res.statusCode;const responseHeaders=new Headers();for(const [name,header] of Object.entries(res.headers))if(header!==undefined)for(const item of Array.isArray(header)?header:[header])responseHeaders.append(name,item);
           const status=res.statusCode!;
           if(boundary&&signedDrain&&original.method==="POST"){
             boundary.postResponses++;
@@ -433,9 +467,12 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
             }catch{/* Keep UNKNOWN classifications; never alter the response or failure. */}
             idleSleepWire.safetyReads.push(diagnostic);
           }
-          if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));resolve(new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders}));});
-      });
-      sent.on("error",error=>{const code="code" in error?error.code:undefined;value.error=code==="ECONNRESET"||code==="ECONNREFUSED"||code==="EPIPE"||code==="ABORT_ERR"||code==="ETIMEDOUT"?code:"other";reject(error);});sent.end(body);
+          if(surface==="tenant")observeDeviceWire(target.pathname,status,Buffer.concat(chunks));
+          const response=new Response([204,205,304].includes(status)?null:Buffer.concat(chunks),{status,headers:responseHeaders});
+          if(freshSlot)observeFresh(()=>{freshSlot.fulfilled++;freshSlot.lastSettledMs=performance.now()-freshRequestFrontier.startedMs;});
+          resolve(response);});
+      });}catch(error){rejectOriginal(error);return;}
+      sent.on("error",error=>{const code="code" in error?error.code:undefined;value.error=code==="ECONNRESET"||code==="ECONNREFUSED"||code==="EPIPE"||code==="ABORT_ERR"||code==="ETIMEDOUT"?code:"other";rejectOriginal(error);});sent.end(body);
     });
   };
 
@@ -1280,7 +1317,26 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       },
       createTask:async body=>{const response=await boardPost(`/api/companies/${companyId}/issues`).set("x-selected-operator",operatorId).send(body);return{status:response.status,body:response.body};},
       tool:async(name,args,ownedOrigin)=>{
-        if(!ownedOrigin){const response=await tool(raw,name,args);return{status:response.status,body:response.body};}
+        if(!ownedOrigin){
+          const fresh=name==="paperclip_dot_request_work";
+          const previousPhase=observingPhase,previousStart=tokenObservationStart;
+          if(fresh){
+            observeFresh(()=>{freshRequestFrontier.calls++;freshRequestFrontier.state="pending";
+              freshRequestFrontier.startedMs=performance.now();freshRequestFrontier.gateReadsAtStart=gateReads.length;
+              freshRequestFrontier.gateOverflowAtStart=gateObservationOverflow;});
+            observingPhase="fresh-request-work";tokenObservationStart=freshRequestFrontier.startedMs;
+          }
+          try{
+            const response=await tool(raw,name,args);
+            if(fresh)observeFresh(()=>{freshRequestFrontier.state="fulfilled";freshRequestFrontier.status=response.status;
+              freshRequestFrontier.settledMs=performance.now()-freshRequestFrontier.startedMs;});
+            return{status:response.status,body:response.body};
+          }catch(error){
+            if(fresh)observeFresh(()=>{freshRequestFrontier.state="rejected";
+              freshRequestFrontier.settledMs=performance.now()-freshRequestFrontier.startedMs;});
+            throw error;
+          }finally{if(fresh){observingPhase=previousPhase;tokenObservationStart=previousStart;}}
+        }
         const selected=new URL(ownedOrigin);expect(selected.protocol).toBe("http:");expect(selected.hostname).toBe("127.0.0.1");
         // Same actual wrapped credential, virtual tenant Host, protocol and RPC
         // body through the ONE owned lost-response proxy. No retry/new requestID.
@@ -1344,6 +1400,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     };
   },90_000);
   afterAll(async()=>{activeCaseDeadline=undefined;
+    const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
+    if(freshRequestFrontier.calls)observeFresh(()=>{freshRequestFrontier.cleanupStartedMs=performance.now()-freshRequestFrontier.startedMs;});
     const errors:unknown[]=[];
     releaseDeviceAckControl();deviceStage=undefined;observingPhase=undefined;
     try{
@@ -1364,12 +1422,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     try{restoreLinuxCA?.();}catch(error){errors.push(error);}
     restoreGateObservation?.();restoreOAuth?.();restoreEventFactory?.();setCloudRuntimeConfigSnapshot(null);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();vi.unstubAllEnvs();vi.unstubAllGlobals();
     process.stdout.write(JSON.stringify({scope:"credential-free actual principal fixture transport",records:transportRecords,overflow:transportOverflow})+"\n");
-    expect(unexpectedDecisionWakes).toBe(0);expect(physicalOwners.every(owner=>owner.child.exitCode===0)).toBe(true);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
-    const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
     if(tokenDiagnostic){
       if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
-      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",idleSleepWire,callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,publicReadGate,lastPublicReadGate,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
+      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",idleSleepWire,freshRequestFrontier,callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,publicReadGate,lastPublicReadGate,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
     }
+    expect(unexpectedDecisionWakes).toBe(0);expect(physicalOwners.every(owner=>owner.child.exitCode===0)).toBe(true);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
     if(!errors.length&&casePassed&&home)removeTestHome(home);
     if(errors.length)throw new AggregateError(errors,"Principal normal App owned cleanup failed");
   },30_000);
