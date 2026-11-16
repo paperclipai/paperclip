@@ -1,13 +1,12 @@
-import { NATIVE_POOL_FAILURE_CODES } from "./native-runtime/native-pool-failure.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
-import { inArray, and, or, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { obsoleteExecutionConversationHold, unresolvedExecutionDispositions } from "./execution-recovery-resolution.js";
 import { heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt } from "./fresh-continuation-fallback.js";
-import { hasPendingNativeReplacements, nativeReplacementPending, nativePoolAttributionPending, nextNativeOwnershipProofDeadlineAt } from "./native-runtime/native-safe-replacement.js";
+import { hasPendingNativeReplacements, nativeReplacementSchedule } from "./native-runtime/native-safe-replacement.js";
 import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-failed-run-owner-release.js";
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
@@ -92,16 +91,12 @@ export function executionControlSchedule(db: Db) {
       return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
-      const [legacy, quota] = await Promise.all([
+      const [legacy, native] = await Promise.all([
         hasPendingNativeReplacements(db),
-        db.select({ at: nativeRunFinalizations.nextAttemptAt }).from(heartbeatRuns)
-          .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-          .where(and(or(nativeReplacementPending(), nativePoolAttributionPending()), inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES),
-            sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') <> 'true'`)),
+        nativeReplacementSchedule(db),
       ]);
-      if (legacy || quota.some(row => row.at === null)) return retry();
-      const ownershipAt = await nextNativeOwnershipProofDeadlineAt(db);
-      return deadline([...quota.map(row => row.at), ...(ownershipAt === null ? [] : [new Date(ownershipAt)])]);
+      if (legacy || native.retry) return retry();
+      return deadline(native.at === null ? [] : [new Date(native.at)]);
     },
     async continuation() {
       const pending = and(

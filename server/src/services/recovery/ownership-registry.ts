@@ -897,7 +897,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         const stamp = runtimeControlOperationOwnerStamp(row.metadata);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
-    settle: settleRuntimeControlOperation,
+    settle: (db, record, context) => settleRuntimeControlOperation(db, record, context),
 
   }, versionLock(workspaceOperations)),
   ownerGoneAttestable({
