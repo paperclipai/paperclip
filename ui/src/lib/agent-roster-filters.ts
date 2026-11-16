@@ -2,6 +2,9 @@ import type { Agent, AiConnectionList } from "@paperclipai/shared";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { pendingAgentSetupDisplayAdapter } from "./agent-setup-choice";
 import { agentConnection, agentDefaultModel, bulkAgentHarness } from "./bulk-agent-settings";
+import { indexDepartmentMemberships, type DepartmentMembershipIndex } from "./department-membership";
+
+export { indexDepartmentMemberships, type DepartmentMembershipIndex };
 
 export const agentRosterFilterFields = ["model", "status", "harness", "connection"] as const;
 export type AgentRosterFilterField = (typeof agentRosterFilterFields)[number];
@@ -65,26 +68,29 @@ export function buildAgentRosterIndex(agents: readonly Agent[], accounts?: AiCon
 // filter. Unassigned is the absence of every membership, not a department row.
 export const AGENT_DEPARTMENT_UNASSIGNED = "__unassigned__";
 
+export function matchesDepartmentIndex(index: DepartmentMembershipIndex, agentId: string, departmentId: string): boolean {
+  if (!departmentId) return true;
+  if (departmentId === AGENT_DEPARTMENT_UNASSIGNED) return !index.assigned.has(agentId);
+  return index.membersByDepartment.get(departmentId)?.has(agentId) ?? false;
+}
+
+export function departmentNamesFromIndex(index: DepartmentMembershipIndex, agentId: string): string[] {
+  return [...(index.namesByAgent.get(agentId) ?? [])];
+}
+
 export function matchesDepartmentFilter(
   agentId: string,
   departmentId: string,
-  departments: readonly { id: string; agentIds: readonly string[] }[],
+  departments: readonly { id: string; name: string; agentIds: readonly string[] }[],
 ): boolean {
-  if (!departmentId) return true;
-  if (departmentId === AGENT_DEPARTMENT_UNASSIGNED) {
-    return !departments.some((department) => department.agentIds.includes(agentId));
-  }
-  return departments.some((department) => department.id === departmentId && department.agentIds.includes(agentId));
+  return matchesDepartmentIndex(indexDepartmentMemberships(departments), agentId, departmentId);
 }
 
 export function departmentNamesForAgent(
   agentId: string,
   departments: readonly { id: string; name: string; agentIds: readonly string[] }[],
 ): string[] {
-  return departments
-    .filter((department) => department.agentIds.includes(agentId))
-    .map((department) => department.name)
-    .sort((left, right) => left.localeCompare(right));
+  return departmentNamesFromIndex(indexDepartmentMemberships(departments), agentId);
 }
 
 export function matchesAgentRosterFilters(

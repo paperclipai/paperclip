@@ -124,21 +124,22 @@ export function departmentService(db: Db) {
       if (uniqueIds.length > AGENT_DEPARTMENT_MAX_MEMBERSHIPS) {
         throw badRequest(`An agent can belong to at most ${AGENT_DEPARTMENT_MAX_MEMBERSHIPS} departments`);
       }
-      const [agent] = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
-      if (!agent) throw notFound("Agent not found");
-      if (uniqueIds.length > 0) {
-        const found = await db
-          .select({ id: departments.id })
-          .from(departments)
-          .where(and(eq(departments.companyId, companyId), inArray(departments.id, uniqueIds)));
-        if (found.length !== uniqueIds.length) {
-          throw badRequest("Choose departments from this company");
-        }
-      }
       await db.transaction(async (tx) => {
+        const [agent] = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+          .for("update");
+        if (!agent) throw notFound("Agent not found");
+        if (uniqueIds.length > 0) {
+          const found = await tx
+            .select({ id: departments.id })
+            .from(departments)
+            .where(and(eq(departments.companyId, companyId), inArray(departments.id, uniqueIds)));
+          if (found.length !== uniqueIds.length) {
+            throw badRequest("Choose departments from this company");
+          }
+        }
         await tx.delete(agentDepartments).where(and(
           eq(agentDepartments.companyId, companyId),
           eq(agentDepartments.agentId, agentId),

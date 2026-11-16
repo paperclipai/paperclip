@@ -1,6 +1,6 @@
 import type { Agent, AiConnectionList } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { AGENT_DEPARTMENT_UNASSIGNED, buildAgentRosterIndex, departmentNamesForAgent, emptyAgentRosterFilters, matchesAgentRosterFilters, matchesDepartmentFilter } from "./agent-roster-filters";
+import { AGENT_DEPARTMENT_UNASSIGNED, buildAgentRosterIndex, departmentNamesForAgent, departmentNamesFromIndex, emptyAgentRosterFilters, indexDepartmentMemberships, matchesAgentRosterFilters, matchesDepartmentFilter, matchesDepartmentIndex } from "./agent-roster-filters";
 
 const connectionId = "11111111-1111-4111-8111-111111111111";
 const otherConnectionId = "22222222-2222-4222-8222-222222222222";
@@ -78,5 +78,27 @@ describe("department roster filter", () => {
     expect(matchesDepartmentFilter("visitor", AGENT_DEPARTMENT_UNASSIGNED, departments)).toBe(true);
     expect(matchesDepartmentFilter("visitor", "", departments)).toBe(true);
     expect(departmentNamesForAgent("shared", departments)).toEqual(["Accounting", "Paperclip"]);
+  });
+
+  it("reads each department membership once while labeling a large roster", () => {
+    let reads = 0;
+    const departments = Array.from({ length: 80 }, (_, departmentIndex) => ({
+      id: `dept-${departmentIndex}`,
+      name: `Department ${departmentIndex}`,
+      get agentIds() {
+        reads += 1;
+        if (reads > 80) throw new Error("Department memberships were scanned for each agent");
+        return [String(departmentIndex), String(departmentIndex + 80), String(400)];
+      },
+    }));
+    const index = indexDepartmentMemberships(departments);
+    expect(reads).toBe(80);
+    for (let agentIndex = 0; agentIndex < 400; agentIndex += 1) {
+      departmentNamesFromIndex(index, String(agentIndex));
+      matchesDepartmentIndex(index, String(agentIndex), agentIndex < 80 ? `dept-${agentIndex}` : AGENT_DEPARTMENT_UNASSIGNED);
+    }
+    expect(reads).toBe(80);
+    expect(departmentNamesFromIndex(index, "400")).toHaveLength(80);
+    expect(matchesDepartmentIndex(index, "visitor", AGENT_DEPARTMENT_UNASSIGNED)).toBe(true);
   });
 });
