@@ -9,6 +9,8 @@ import { createDatabaseBackupOwner } from "../../../services/database-backup-own
 import { registerDatabaseBackupWork } from "../../../services/database-backup-work.js";
 import { idleBackupWakeMarker } from "../../../services/idle-database-backup.js";
 import { markIdleStartupComplete } from "../../../services/idle-local-work.js";
+import { workspaceOperationService } from "../../../services/workspace-operations.js";
+import { readWorkspaceRuntimeIdleWork, reconcilePersistedRuntimeServicesOnStartup } from "../../../services/workspace-runtime.js";
 import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -26,7 +28,7 @@ import { initializeCloudRuntimeConfig } from "../../../services/cloud-runtime-co
 import { createCloudWarmStandby } from "../../../services/cloud-warm-standby.js";
 import { getCloudRuntimeIdentity, initializeCloudRuntimeIdentity, resetCloudRuntimeIdentityForTests, resetCloudControlReplayFenceForTests } from "../../../services/cloud-runtime-identity.js";
 import { getStorageService } from "../../../storage/index.js";
-import { isIdleTaskDrainActive, idleWorkSnapshot } from "../../../services/task-admission.js";
+import { isIdleTaskDrainActive, idleWorkSnapshot, trackIdleWork } from "../../../services/task-admission.js";
 import { registerNativeCancellationDelivery } from "../../../services/native-runtime/native-cancellation-delivery.js";
 import { registerNativeRuntimeResponseDelivery } from "../../../services/native-runtime/native-runtime-response-delivery.js";
 import { registerNativeCleanupReleaseWake } from "../../../services/native-runtime/native-cleanup-release-wake.js";
@@ -54,6 +56,7 @@ export async function startNormalDotAppGeneration(input: {
   let stopDatabaseBackups:(()=>Promise<void>)|undefined;
   const nativeSockets=new Set<Socket>();
   let dispatchWork:ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]>|undefined;
+  let stopNativeDeliveries:(()=>Promise<void>)|undefined;
   let stopBudgetOwners:(()=>Promise<void>)|undefined;
   let app:Awaited<ReturnType<typeof import("../../../app.js")["createApp"]>>|undefined;
   let owner:ReturnType<typeof heartbeatService>|undefined;
@@ -84,6 +87,7 @@ export async function startNormalDotAppGeneration(input: {
         await attempt("execution_drain",()=>owner!.drainActiveRunExecutions());
       }
     }finally{
+      await attempt("native_delivery_stop",()=>stopNativeDeliveries?.());
       await attempt("database_backups_stop",()=>stopDatabaseBackups?.());
       await attempt("budget_stop",()=>stopBudgetOwners?.());
       await attempt("app_shutdown",()=>app?.locals.paperclipShutdown?.());
@@ -148,6 +152,16 @@ export async function startNormalDotAppGeneration(input: {
     const origin=`http://127.0.0.1:${address.port}`;
     Object.assign(process.env,{PAPERCLIP_API_URL:origin,PAPERCLIP_RUNTIME_API_URL:origin,PAPERCLIP_LISTEN_HOST:"127.0.0.1",PAPERCLIP_LISTEN_PORT:String(address.port)});
     const coordinator:ReturnType<typeof createDeliveryWorkCoordinator>=app.locals.deliveryWork;assert(coordinator&&typeof coordinator.register==="function");
+    // Match the normal index startup owner, not a synthetic completion flag.
+    await workspaceOperationService(db).reconcileStaleRuntimeControlOperations();
+    const workspaceBefore=readWorkspaceRuntimeIdleWork();
+    const workspaceReconstruction=await trackIdleWork(reconcilePersistedRuntimeServicesOnStartup(db));
+    const workspaceAfter=readWorkspaceRuntimeIdleWork();
+    process.stdout.write(JSON.stringify({kind:"owned_normal_workspace_runtime_startup",before:workspaceBefore,after:workspaceAfter,
+      reconciled:workspaceReconstruction.reconciled,adopted:workspaceReconstruction.adopted,stopped:workspaceReconstruction.stopped,
+      backfilled:workspaceReconstruction.backfilled,restarted:workspaceReconstruction.restarted,
+      restartFailed:workspaceReconstruction.restartFailed,exposureReservationDriftCount:workspaceReconstruction.exposureReservationDrift.length})+"\n");
+    assert.notEqual(workspaceAfter,"unknown","normal workspace reconstruction must settle before earned idle startup readiness");
     const normalOwner=heartbeatService(db,{pluginWorkerManager:linuxBootstrap.workerManager});owner=normalOwner;
     const canRun=()=>{
       const taskDrain=isIdleTaskDrainActive(),warmStandby=taskDrain?null:standby();
@@ -169,7 +183,19 @@ export async function startNormalDotAppGeneration(input: {
       await normalOwner.registerActiveRunSilenceWork(coordinator,canRun).ready;
       await normalOwner.registerIssueStateRecoveryWork(coordinator,canRun).ready;
       dispatchWork=normalOwner.registerRunDispatchWork(coordinator,canRun);await dispatchWork.ready;
-      registerNativeCancellationDelivery(db,coordinator);registerNativeRuntimeResponseDelivery(db,coordinator);
+      const deliveryHandles:Array<ReturnType<typeof registerNativeCancellationDelivery>>=[];
+      // Install ownership before either registration can throw.
+      stopNativeDeliveries=async()=>{
+        const deliveryErrors:unknown[]=[];
+        for(const delivery of deliveryHandles){
+          try{await delivery.stop();}catch(error){deliveryErrors.push(error);}
+        }
+        if(deliveryErrors.length===1)throw deliveryErrors[0];
+        if(deliveryErrors.length>1)throw new AggregateError(deliveryErrors,"owned_native_delivery_stop_failed");
+      };
+      deliveryHandles.push(registerNativeCancellationDelivery(db,coordinator));
+      deliveryHandles.push(registerNativeRuntimeResponseDelivery(db,coordinator));
+      for(const delivery of deliveryHandles)await delivery.ready;
       const release=registerNativeCleanupReleaseWake(db,error=>{errors.push(error);});appServer.once("close",release);
       await normalOwner.registerDeferredReceiptWork(coordinator,canRun).ready;
       await normalOwner.registerScheduledRetryCancellationWork(coordinator,canRun).ready;
