@@ -157,15 +157,21 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         !["active", "verifying"].includes(row.endpoint.status) || !row.config.configuration.toolsEnabled ||
         !row.resource.enabled || row.resource.availability !== "available" || row.assignee !== row.endpoint.assignedAgentId)
       throw forbidden("GitHub request is no longer authorized");
+    const automatic = (row.delivery.normalizedEvent?.githubAutomatic ?? row.delivery.normalizedEvent?.githubIssue) as
+      { context: GitHubAutomaticEventContext } | undefined;
+    const automaticAdmission = automatic
+      ? await githubAutomaticAdmission(db, row.endpoint, automatic.context)
+      : null;
+    if (automatic && !automaticAdmission?.allowed)
+      throw forbidden("Automatic GitHub task authority changed");
     const access = await githubChatPrincipalAccess(db, row.endpoint, row.delivery.principalId);
-    if (!access?.allowed) throw forbidden("The initiating GitHub person is no longer authorized");
-    const actingUserId = access.userId ?? access.sponsorUserId ?? row.endpoint.sponsorUserId;
+    if (!access?.allowed && !automatic)
+      throw forbidden("The initiating GitHub person is no longer authorized");
+    const actingUserId = automatic
+      ? (automaticAdmission?.responsibleUserId ?? null)
+      : (access?.userId ?? access?.sponsorUserId ?? row.endpoint.sponsorUserId);
     if (!(await principalMayDirectAssignedAgent(db, row.endpoint, actingUserId)))
       throw forbidden("The initiating GitHub person is not authorized to direct this agent");
-    const automatic = (row.delivery.normalizedEvent.githubAutomatic ?? row.delivery.normalizedEvent.githubIssue) as
-      { context: GitHubAutomaticEventContext } | undefined;
-    if (automatic && !(await githubAutomaticAdmission(db, row.endpoint, automatic.context))?.allowed)
-      throw forbidden("Automatic GitHub task authority changed");
     const match = /^github:([^:]+):(?:issue:)?([1-9][0-9]*)(?::rc:([1-9][0-9]*))?$/.exec(row.conversation.externalThreadId);
     const repositoryId = String(row.resource.metadata.providerRepositoryId ?? "");
     if (!match || match[1]!.toLowerCase() !== row.resource.providerResourceId.toLowerCase() || !/^[1-9][0-9]*$/.test(repositoryId))

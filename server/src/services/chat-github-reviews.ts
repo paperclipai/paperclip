@@ -208,24 +208,25 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       throw forbidden(
         "This run has no active GitHub bot capability for its conversation",
       );
+    const automatic = (source.delivery.normalizedEvent?.githubAutomatic ?? source.delivery.normalizedEvent?.githubIssue) as
+      { context: GitHubAutomaticEventContext } | undefined;
+    const automaticAdmission = automatic
+      ? await githubAutomaticAdmission(db, source.endpoint, automatic.context)
+      : null;
+    if (automatic && !automaticAdmission?.allowed)
+      throw forbidden("Automatic GitHub task authority is no longer available");
     const access = await githubChatPrincipalAccess(
       db,
       source.endpoint,
       source.delivery.principalId,
     );
-    if (!access?.allowed)
+    if (!access?.allowed && !automatic)
       throw forbidden("The initiating GitHub person is no longer authorized");
-    const actingUserId = access.userId ?? access.sponsorUserId ?? source.endpoint.sponsorUserId;
+    const actingUserId = automatic
+      ? (automaticAdmission?.responsibleUserId ?? null)
+      : (access?.userId ?? access?.sponsorUserId ?? source.endpoint.sponsorUserId);
     if (!(await principalMayDirectAssignedAgent(db, source.endpoint, actingUserId)))
       throw forbidden("The initiating GitHub person is not authorized to direct this agent");
-    const automatic = (source.delivery.normalizedEvent.githubAutomatic ?? source.delivery.normalizedEvent.githubIssue) as
-      { context: GitHubAutomaticEventContext } | undefined;
-    if (
-      automatic &&
-      !(await githubAutomaticAdmission(db, source.endpoint, automatic.context))
-        ?.allowed
-    )
-      throw forbidden("Automatic GitHub task authority is no longer available");
     const repositoryId = String(
       source.resource.metadata?.providerRepositoryId ?? "",
     );

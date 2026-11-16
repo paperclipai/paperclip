@@ -2757,6 +2757,99 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
       await f.service.shutdown();
     });
+
+    it("automatic GitHub event against protected agent evaluates configured responsible user for review and response-comment tools", async () => {
+      const f = await reviewBotFixture();
+      await db.update(agents).set({
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).where(eq(agents.id, f.assignedAgentId));
+
+      const authorUserId = "author-no-grant-u";
+      const responsibleUserId = "responsible-has-grant-u";
+      const now = new Date();
+      await db.insert(authUsers).values([
+        { id: authorUserId, name: "Author", email: `${authorUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
+        { id: responsibleUserId, name: "Responsible", email: `${responsibleUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
+      ]);
+      await db.insert(companyMemberships).values([
+        { companyId: f.companyId, principalType: "user", principalId: authorUserId, status: "active", membershipRole: "member" },
+        { companyId: f.companyId, principalType: "user", principalId: responsibleUserId, status: "active", membershipRole: "member" },
+      ]);
+      await db.update(chatIdentityLinks).set({ paperclipUserId: authorUserId }).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id),
+        eq(chatIdentityLinks.principalId, f.principal.id),
+      ));
+
+      // Responsible user HAS tasks:assign, author has NO tasks:assign
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: responsibleUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: config.revision,
+        configuration: {
+          ...config.configuration,
+          memberAccess: "all_linked",
+          responsibleUserId,
+          defaults: { ...config.configuration.defaults, invocation: "linked_authors" },
+        },
+      }, "owner-user");
+
+      const deliveryId = randomUUID();
+      const payload = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 890, title: "Review automatic tools", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      };
+      const send = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+      }));
+      expect((await send()).status).toBeLessThan(300);
+      await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
+      await send();
+      await f.service.processPendingDeliveries();
+
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.issueId, review.issueId));
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: f.companyId, agentId: f.assignedAgentId, status: "running", runtimeMode: "native",
+        contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: conversation.issueId, provider: "github", providerMessageId: `pr-event:${deliveryId}`,
+        }),
+      }).returning();
+      const session = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: conversation.issueId, runId: run.id };
+
+      // Negative test: revoke responsible user's tasks:assign grant -> tools denied
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, f.companyId),
+        eq(principalPermissionGrants.principalId, responsibleUserId),
+        eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+      ));
+
+      const gateMessage = "The initiating GitHub person is not authorized to direct this agent";
+      await expect(githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "auto-tool-1" }))
+        .rejects.toMatchObject({ status: 403, message: gateMessage });
+      await expect(githubResponseCommentService(db, f.providerFetch).failRun({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: conversation.issueId, runId: run.id, body: "Run stopped",
+      })).rejects.toMatchObject({ status: 403, message: gateMessage });
+
+      // Positive test: responsible user grant restored (author still has NO grant) -> review tool succeeds
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: responsibleUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+      await githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "auto-tool-2" });
+      expect(f.responseComments.size).toBe(1);
+
+      await f.service.shutdown();
+    });
     it("reuses one main GitHub PR comment across review requests", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "first-review");
@@ -19167,6 +19260,106 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(companySecrets.companyId, fixture.companyId)),
     ).resolves.toHaveLength(0);
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+    await service.shutdown();
+  });
+
+  it("denies Discord root mention before creating thread when endpoint sponsor lacks assignment grant for protected agent", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredDiscordEndpoint(fixture);
+    // Protect the assigned agent
+    await db.update(agents).set({
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+    }).where(eq(agents.id, fixture.assignedAgentId));
+    await service.update(
+      endpoint.id,
+      { allowUnlinkedPeople: true, allowGroupChats: true },
+      "owner-user",
+    );
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+    await db.update(chatEndpointResources).set({ enabled: true, availability: "available" }).where(eq(chatEndpointResources.endpointId, endpoint.id));
+
+    const admitRootMention = callbacks.onDiscordRootMentionAdmission;
+    if (!admitRootMention) throw new Error("Expected onDiscordRootMentionAdmission callback");
+
+    const guildId = "1457808928258658549";
+    const channelId = "333333333333333333";
+    const externalUserId = "444444444444444999";
+    const rootMessageId1 = "555555555555555901";
+    const threadId1 = `discord:${guildId}:${channelId}:${rootMessageId1}`;
+
+    // Negative: sponsor (owner-user) lacks tasks:assign -> admission denied, no thread ensured
+    await expect(admitRootMention({
+      endpointId: endpoint.id,
+      guildId,
+      channelId,
+      messageId: rootMessageId1,
+      message: {
+        ...makeMessage({
+          id: rootMessageId1,
+          text: "@maya investigate root mention",
+          mentioned: true,
+          userId: externalUserId,
+        }),
+        threadId: threadId1,
+      } as Message,
+      threadId: threadId1,
+      userId: externalUserId,
+    })).resolves.toBe(false);
+
+    expect(
+      runtime.endpoints.get(endpoint.id)?.ensuredDiscordRootThreads,
+    ).toHaveLength(0);
+
+    const [filteredDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, `${threadId1}:${rootMessageId1}`),
+      ));
+    expect(filteredDelivery).toMatchObject({
+      state: "filtered",
+      redactedError: "Sender is not authorized to direct this agent",
+    });
+
+    // Positive: sponsor granted tasks:assign -> root thread is created
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: "owner-user",
+      permissionKey: "tasks:assign",
+      scope: null,
+    });
+
+    const rootMessageId2 = "555555555555555902";
+    const threadId2 = `discord:${guildId}:${channelId}:${rootMessageId2}`;
+    await expect(admitRootMention({
+      endpointId: endpoint.id,
+      guildId,
+      channelId,
+      messageId: rootMessageId2,
+      message: {
+        ...makeMessage({
+          id: rootMessageId2,
+          text: "@maya investigate root mention",
+          mentioned: true,
+          userId: externalUserId,
+        }),
+        threadId: threadId2,
+      } as Message,
+      threadId: threadId2,
+      userId: externalUserId,
+    })).resolves.toBe(false);
+
+    expect(
+      runtime.endpoints.get(endpoint.id)?.ensuredDiscordRootThreads,
+    ).toContainEqual({
+      channelId,
+      messageId: rootMessageId2,
+      content: "@maya investigate root mention",
+    });
+
     await service.shutdown();
   });
 
