@@ -2422,6 +2422,93 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db.update(chatEndpoints).set({ botUsername: "gonzo[bot]", status: "active" }).where(eq(chatEndpoints.id, peer.id));
       return peer;
     }
+    it("unauthorized GitHub guest is judged by the guest's sponsor, not the endpoint sponsor", async () => {
+      const fixture = await seedCompany();
+      const f = await configuredGitHubEndpoint(fixture, {}, true);
+      const endpoint = await f.service.get(f.endpoint.id);
+      // E is the endpoint sponsor (the creating user); S is the sponsor the
+      // GitHub configuration assigns to the guest. Both are active members.
+      const now = new Date();
+      const sponsorS = "sponsor-s-u";
+      await db.insert(authUsers).values({
+        id: sponsorS, name: "Sponsor S", email: "sponsor-s@example.test",
+        emailVerified: true, createdAt: now, updatedAt: now,
+      });
+      await db.insert(companyMemberships).values({
+        companyId: fixture.companyId, principalType: "user", principalId: sponsorS,
+        status: "active", membershipRole: "member",
+      });
+      await db.update(agents).set({
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).where(eq(agents.id, fixture.assignedAgentId));
+      await f.service.update(endpoint.id, { allowUnlinkedPeople: true, allowGroupChats: true }, "owner-user");
+      const management = githubChatManagementService(db, f.providerFetch);
+      const initial = await management.configuration(endpoint.id, "owner-user");
+      await management.saveConfiguration(endpoint.id, {
+        expectedRevision: initial.revision,
+        configuration: {
+          ...initial.configuration,
+          toolsEnabled: true,
+          people: [
+            ...initial.configuration.people,
+            { githubUserId: "901", login: "guest-901", kind: "guest", sponsorUserId: sponsorS, permissionProfile: "restricted" },
+          ],
+        },
+      }, "owner-user");
+      const send = (id: string) =>
+        deliverMessage({
+          callbacks: f.callbacks, endpointId: endpoint.id, provider: "github",
+          thread: makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:419" }).thread,
+          message: makeMessage({ id, text: `@${endpoint.botUsername} start this thread`, userId: "901", userName: "guest-901", mentioned: true }),
+          trigger: "mention",
+        });
+
+      // Negative: the endpoint sponsor E may direct the agent, but the guest's
+      // sponsor S may not. Admission resolves S through the GitHub
+      // configuration, so the message is filtered (TECH-8806).
+      await db.insert(principalPermissionGrants).values({
+        companyId: fixture.companyId, principalType: "user", principalId: "owner-user",
+        permissionKey: "tasks:assign", scope: null,
+      });
+      const actionsBefore = (await db.select({ id: chatActions.id }).from(chatActions).where(eq(chatActions.endpointId, endpoint.id))).length;
+      const writesBefore = f.responseWrites.length;
+      await send("8806.30");
+      const [delivery] = await db.select().from(chatDeliveries).where(and(
+        eq(chatDeliveries.endpointId, endpoint.id),
+        eq(chatDeliveries.providerEventId, "github:paperclipai/paperclip:issue:419:8806.30"),
+      ));
+      expect(delivery).toMatchObject({
+        state: "filtered",
+        redactedError: "Sender is not authorized to direct this agent",
+      });
+      // no task, comment, message link, run, outbound write, or link prompt
+      expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.companyId, fixture.companyId))).toHaveLength(0);
+      expect(await db.select().from(chatMessageLinks).where(eq(chatMessageLinks.endpointId, endpoint.id))).toHaveLength(0);
+      expect(f.wakeup).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(0);
+      expect(f.responseWrites).toHaveLength(writesBefore);
+      expect((await db.select({ id: chatActions.id }).from(chatActions).where(eq(chatActions.endpointId, endpoint.id))).length).toBe(actionsBefore);
+
+      // Positive: S may direct the agent while E may not. The same guest now
+      // starts the task, proving S (not the endpoint sponsor E) is evaluated.
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, fixture.companyId),
+        eq(principalPermissionGrants.principalId, "owner-user"),
+        eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+      ));
+      await db.insert(principalPermissionGrants).values({
+        companyId: fixture.companyId, principalType: "user", principalId: sponsorS,
+        permissionKey: "tasks:assign", scope: null,
+      });
+      await send("8806.31");
+      expect(f.wakeup).toHaveBeenCalledTimes(1);
+      const [task] = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+      expect(task).toMatchObject({ assigneeAgentId: fixture.assignedAgentId, responsibleUserId: sponsorS });
+      expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(1);
+
+      await f.service.shutdown();
+    });
     it("loads only the current configured instruction skills, never provider links or another company", async () => {
       const f = await reviewBotFixture();
       const other = await seedCompany();
@@ -2611,6 +2698,64 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )))[0];
       return { ...f, service, head, assessment, provider, action, inline, checks, writes };
     }
+    it("unauthorized initiating person cannot use GitHub review or response-comment tools after their grant is revoked", async () => {
+      const f = await reviewBotFixture();
+      // The task starts while the linked sender may direct the protected agent.
+      await db.update(agents).set({
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).where(eq(agents.id, f.assignedAgentId));
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: "owner-user",
+        permissionKey: "tasks:assign", scope: null,
+      });
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:417" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41701", text: `@${f.endpoint.botUsername} start this thread`, userId: "42", userName: "octocat", mentioned: true }) });
+      const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        status: "running", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: conversation.issueId, provider: "github", providerMessageId: "41701",
+        }) }).returning();
+      const session = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: conversation.issueId, runId: run.id };
+
+      // The sender's assignment grant is revoked while the run is active. Both
+      // direct GitHub tool consumers must re-check the per-agent gate
+      // (TECH-8806) instead of trusting the access snapshot from task start.
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, f.companyId),
+        eq(principalPermissionGrants.principalId, "owner-user"),
+        eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+      ));
+      const writesBefore = f.responseWrites.length;
+
+      const gateMessage = "The initiating GitHub person is not authorized to direct this agent";
+      await expect(githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "gate-reviews-1" }))
+        .rejects.toMatchObject({ status: 403, message: gateMessage });
+      await expect(githubResponseCommentService(db, f.providerFetch).failRun({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: conversation.issueId, runId: run.id, body: "Run stopped",
+      })).rejects.toMatchObject({ status: 403, message: gateMessage });
+      // Neither rejection posted anything to GitHub.
+      expect(f.responseWrites).toHaveLength(writesBefore);
+
+      // Control: restoring the grant reopens both tool paths. The review
+      // service publishes a working comment, and the response-comment
+      // machinery no longer denies the run's failure publication.
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: "owner-user",
+        permissionKey: "tasks:assign", scope: null,
+      });
+      await githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "gate-reviews-2" });
+      expect(f.responseComments.size).toBe(1);
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" })
+        .where(eq(heartbeatRuns.id, run.id));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, conversation.issueId));
+      const failureOutcome = await githubResponseCommentService(db, f.providerFetch).failRun({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: conversation.issueId, runId: run.id, body: "Run stopped",
+      }).then(() => "passed", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+      expect(failureOutcome).not.toBe(gateMessage);
+
+      await f.service.shutdown();
+    });
     it("reuses one main GitHub PR comment across review requests", async () => {
       const f = await publicationRetryFixture();
       await f.service.execute(f.session, "submit_review", f.assessment, "first-review");
@@ -10687,6 +10832,155 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await send("7600.2", "UNEVERLINKED");
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(1);
+    await service.shutdown();
+  });
+
+  it("unauthorized reply does not trigger an agent run", async () => {
+    const fixture = await seedCompany();
+    const outboundFetch = vi.fn(fakeSlackFetch());
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture, {
+      allowUnlinkedPeople: false,
+      fetch: outboundFetch as any,
+    });
+    await service.update(endpoint.id, { allowDirectMessages: true }, "owner-user");
+    await db.update(agents).set({
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+    }).where(eq(agents.id, fixture.assignedAgentId));
+
+    const restrictedUserId = "restricted-user-u";
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: restrictedUserId,
+      name: "Restricted U",
+      email: "restricted@example.test",
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: restrictedUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    // Grant tasks:assign_scope only for a different agent (fixture.replacementAgentId, not fixture.assignedAgentId)
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: restrictedUserId,
+      permissionKey: "tasks:assign_scope",
+      scope: { assigneeAgentId: fixture.replacementAgentId },
+    });
+
+    const [principalU] = await db.insert(chatExternalPrincipals).values({
+      companyId: fixture.companyId,
+      provider: "slack",
+      providerAccountId: "T-PAPERCLIP",
+      externalId: "U_RESTRICTED",
+    }).returning();
+    await db.insert(chatIdentityLinks).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      principalId: principalU.id,
+      paperclipUserId: restrictedUserId,
+      status: "linked",
+      confirmedAt: now,
+    });
+
+    // Control user: owner-user (unscoped tasks:assign)
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: "owner-user",
+      permissionKey: "tasks:assign",
+      scope: null,
+    });
+    const [principalOwner] = await db.insert(chatExternalPrincipals).values({
+      companyId: fixture.companyId,
+      provider: "slack",
+      providerAccountId: "T-PAPERCLIP",
+      externalId: "U_OWNER",
+    }).returning();
+    await db.insert(chatIdentityLinks).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      principalId: principalOwner.id,
+      paperclipUserId: "owner-user",
+      status: "linked",
+      confirmedAt: now,
+    });
+
+    const send = (id: string, userId: string, text = "Please do work") =>
+      deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: makeThread({ channelId: `D-${userId}`, id: `slack:D-${userId}:`, isDM: true }).thread,
+        message: makeMessage({ id, text, userId }),
+        trigger: "direct_message",
+      });
+
+    await send("8806.1", "U_RESTRICTED");
+
+    // Inbound message from U -> delivery state 'filtered' with the new reason
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.providerEventId, "slack:D-U_RESTRICTED::8806.1"),
+        ),
+      );
+    expect(delivery).toMatchObject({
+      state: "filtered",
+      redactedError: "Sender is not authorized to direct this agent",
+    });
+
+    // no issue/task
+    const createdIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    expect(createdIssues).toHaveLength(0);
+
+    // no chat_message_links row
+    const messageLinks = await db
+      .select()
+      .from(chatMessageLinks)
+      .where(eq(chatMessageLinks.endpointId, endpoint.id));
+    expect(messageLinks).toHaveLength(0);
+
+    // no comment
+    const createdComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.companyId, fixture.companyId));
+    expect(createdComments).toHaveLength(0);
+
+    // no agent run
+    expect(wakeup).not.toHaveBeenCalled();
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, fixture.companyId));
+    expect(runs).toHaveLength(0);
+
+    // no outbound Slack message
+    const outboundMessages = outboundFetch.mock.calls.filter(([url]) =>
+      String(url).endsWith("/chat.postMessage"),
+    );
+    expect(outboundMessages).toHaveLength(0);
+
+    // Control case: user with unscoped tasks:assign DOES create the task
+    await send("8806.2", "U_OWNER");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const controlIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    expect(controlIssues).toHaveLength(1);
+
     await service.shutdown();
   });
 
