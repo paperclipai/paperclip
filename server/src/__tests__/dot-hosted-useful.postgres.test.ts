@@ -128,6 +128,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const physicalOwners:Array<Awaited<ReturnType<typeof forkNormalDotApp>>>=[];
   const knownChildProcesses:Array<{child:import("node:child_process").ChildProcess;owner:ReturnType<typeof import("../../../tests/runner-e2e/process-tree-owner.js")["createProcessTreeOwner"]>}>=[];
   let physicalFollowon:Awaited<ReturnType<typeof usefulAfterPhysicalRestart>>|undefined;
+  // Overall fixture journey envelope; individual operation and quiet limits remain independent.
+  const journeyBudgetMs=150_000;
   let activeCaseDeadline:number|undefined,setupDeadline=0;
   let continuePreparedJourney:((caseStarted:number)=>Promise<void>)|undefined;
   const childDeadline=()=>Math.min(activeCaseDeadline??Infinity,performance.now()+15_000);
@@ -637,7 +639,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
           });
         },privateLog:(channel,bytes)=>{if(channel==="stdout")process.stdout.write(bytes);else process.stderr.write(bytes);}});
       physicalOwners.push(physicalApp);appLoopback=physicalApp.origin;appOwnerGenerations++;
-      await syncChildObservation();
+      const observed=await syncChildObservation();
+      if(appOwnerGenerations===2)expect(observed.owner.runtimeIdentity).toMatchObject({stackId,canonicalOrigin:origin});
     };
     await makeAppOwner();makePhysicalSecond=makeAppOwner;
     const caseStarted=setupDeadline-90_000;
@@ -982,7 +985,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const failedAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));
     expect(failedAssignments).toHaveLength(1);
     continuePreparedJourney=async(caseStarted:number)=>{
-    const retryUsefulDeadline=Math.min(caseStarted+90_000,performance.now()+originalRecoveryDueAt!-Date.now()+30_000);
+    const retryUsefulDeadline=Math.min(caseStarted+journeyBudgetMs,performance.now()+originalRecoveryDueAt!-Date.now()+30_000);
     let actualSuccessor:typeof heartbeatRuns.$inferSelect|undefined;
     const retryKey=randomUUID(),retryBody={idempotencyKey:retryKey,observedRunId:failedRunId};
     const unauthorizedRetry=await boardPost(`/api/issues/${task.id}/retry`).send(retryBody);expect(unauthorizedRetry.status).toBe(403);
@@ -1087,7 +1090,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         expect((await operation("paperclip_dot_tool",{name:"paperclip_finish",arguments:result})).receipt).toMatchObject({status:"completed",isError:false});
         await operation("paperclip_dot_finish",{result});
         await childControl!.request({command:"drain-run",runId},childDeadline()); // Execution drain is distinct from the committed domain decision.
-        const remaining=caseStarted+90_000-performance.now();expect(remaining).toBeGreaterThan(0);
+        const remaining=caseStarted+journeyBudgetMs-performance.now();expect(remaining).toBeGreaterThan(0);
         return await Promise.race([committed,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("No matching committed native status decision within the original case deadline")),remaining);})]);
       }finally{clearTimeout(timer);statusDecisionWaiter=undefined;}
     })();
@@ -1209,7 +1212,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     replaceAppForProviderWake=async()=>{
       expect(appOwnerGenerations).toBe(1);expect(cloudOwnerGenerations).toBe(1);
       const requestedHealth=healthAvailability;
-      await firstPhysicalApp.stop(Math.min(caseStarted+90_000,performance.now()+15_000));
+      await firstPhysicalApp.stop(Math.min(caseStarted+journeyBudgetMs,performance.now()+15_000));
       await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
       // Keep Cloud serving its current wake HTTP turn. Only the App is replaced here.
       await makePhysicalSecond();
@@ -1244,7 +1247,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     let resumedBefore:Awaited<ReturnType<typeof totalTenantSnapshot>>|undefined,resumedAfter:typeof resumedBefore;
     let resumedElapsed=0;
     physicalFollowon=await usefulAfterPhysicalRestart({get db(){return db;},companyId,agentId,first:firstPhysicalApp,get cloudLoopback(){return cloudLoopback;},
-      caseDeadline:caseStarted+90_000,
+      caseDeadline:caseStarted+journeyBudgetMs,
       startSecond:async()=>{
         // usefulAfterPhysicalRestart rejoins first.stop(), which is memoized.
         // The provider wake already stopped that owner and started generation2.
@@ -1271,7 +1274,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
         try{
           await childControl!.request({command:"observe-status-decision",issueId,runId:followonRunId},childDeadline());
           await finish();
-          const remaining=caseStarted+90_000-performance.now();expect(remaining).toBeGreaterThan(0);
+          const remaining=caseStarted+journeyBudgetMs-performance.now();expect(remaining).toBeGreaterThan(0);
           return await Promise.race([committed,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("No matching post-restart committed native status decision within the original case deadline")),remaining);})]);
         }finally{clearTimeout(timer);statusDecisionWaiter=undefined;}
       },
@@ -1372,8 +1375,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   },30_000);
 
   it("uses real hosted code/device OAuth, reverse subscription and genuine failed-task recovery before strict quiet/revoke",async()=>{
-    const caseStarted=performance.now();activeCaseDeadline=caseStarted+90_000;
+    const caseStarted=performance.now();activeCaseDeadline=caseStarted+journeyBudgetMs;
     expect(continuePreparedJourney).toBeTypeOf("function");
     await continuePreparedJourney!(caseStarted);
-  },90_000);
+  },journeyBudgetMs);
 });
