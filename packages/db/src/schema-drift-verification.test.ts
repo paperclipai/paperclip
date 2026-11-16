@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
+import { describe, expect, it } from "vitest";
 import {
-  applyPendingMigrations,
   formatSchemaDrift,
   inspectMigrations,
   verifyLiveSchema,
@@ -13,114 +12,86 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const cleanups: Array<() => Promise<void>> = [];
+// These tests exercise the boot-time schema-drift verifier that closes the
+// migration-gate journal-trust blind spot behind the AGE-759 outage. The drizzle
+// journal (`__drizzle_migrations`) only records *which migration files ran*, so a
+// prod journal whose lineage diverges from the committed files can report
+// `upToDate` while the recorded DDL is physically absent. Each drift case below
+// deliberately mutates the live DDL *without touching the journal*, mirroring
+// that real failure mode.
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const support = await getEmbeddedPostgresTestSupport();
+const describePostgres = support.supported ? describe : describe.skip;
 
-async function createMigratedDatabase(): Promise<string> {
-  const db = await startEmbeddedPostgresTestDatabase("paperclip-schema-drift-");
-  cleanups.push(db.cleanup);
-  await applyPendingMigrations(db.connectionString);
-  // Sanity: the journal-based gate considers this database fully migrated.
-  expect((await inspectMigrations(db.connectionString)).status).toBe("upToDate");
-  return db.connectionString;
-}
+describePostgres("boot-time schema-drift verification", () => {
+  it("reports ok (and ignores additive drift) when every code-expected object is present", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("schema-drift-ok-");
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // A freshly migrated database contains everything the drizzle schema
+      // defines, so the verifier must report no drift.
+      const clean = await verifyLiveSchema(database.connectionString);
+      expect(clean.status).toBe("ok");
+      if (clean.status !== "ok") throw new Error("unreachable");
+      expect(clean.checkedTables).toBeGreaterThan(0);
 
-async function withSql<T>(url: string, fn: (sql: ReturnType<typeof postgres>) => Promise<T>): Promise<T> {
-  const sql = postgres(url, { max: 1, onnotice: () => {} });
-  try {
-    return await fn(sql);
-  } finally {
-    await sql.end();
-  }
-}
+      // Additive drift is safe: an extra column on a known table and an extra
+      // table the code never selects against must NOT be reported as drift.
+      await sql`ALTER TABLE companies ADD COLUMN __age778_extra_column text`;
+      await sql`CREATE TABLE __age778_extra_table (id uuid PRIMARY KEY)`;
+      const additive = await verifyLiveSchema(database.connectionString);
+      expect(additive).toEqual({ status: "ok", checkedTables: clean.checkedTables });
+    } finally {
+      await sql.end();
+      await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-afterEach(async () => {
-  while (cleanups.length > 0) {
-    const cleanup = cleanups.pop();
-    if (cleanup) await cleanup();
-  }
-});
+  it("flags code-expected columns and tables that are physically absent despite an intact journal", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("schema-drift-missing-");
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // Drop a code-expected column (companies.description — the AGE-759 hot
+      // table) and a whole code-expected leaf table, WITHOUT removing their
+      // journal entries. This is exactly the journal-trust blind spot.
+      await sql`ALTER TABLE companies DROP COLUMN description`;
+      await sql`DROP TABLE announcement_dismissals CASCADE`;
 
-describeEmbeddedPostgres("verifyLiveSchema", () => {
-  it(
-    "reports ok when the live schema matches the drizzle schema",
-    async () => {
-      const url = await createMigratedDatabase();
-      const result = await verifyLiveSchema(url);
-      expect(result.status).toBe("ok");
-      if (result.status === "ok") {
-        expect(result.checkedTables).toBeGreaterThan(0);
-      }
-    },
-    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "detects a code-expected column that is physically absent even though the journal says up to date",
-    async () => {
-      const url = await createMigratedDatabase();
-      // Simulate the AGE-759 blind spot: journal lineage is intact, but a
-      // code-selected column is missing from the physical schema.
-      await withSql(url, (sql) => sql.unsafe('ALTER TABLE "companies" DROP COLUMN "pause_reason"'));
-
-      // The journal-based gate is still happy...
-      expect((await inspectMigrations(url)).status).toBe("upToDate");
-
-      // ...but the schema verifier catches the drift.
-      const result = await verifyLiveSchema(url);
-      expect(result.status).toBe("drift");
-      if (result.status === "drift") {
-        expect(result.missingTables).toEqual([]);
-        expect(result.missingColumns).toContainEqual({ table: "companies", column: "pause_reason" });
-      }
-    },
-    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "reports a whole table as missing (not its individual columns) when the table is absent",
-    async () => {
-      const url = await createMigratedDatabase();
-      // Renaming removes the expected table name without cascading FK drops that
-      // would perturb other tables; the renamed table shows up as an ignored extra.
-      await withSql(url, (sql) =>
-        sql.unsafe('ALTER TABLE "company_logos" RENAME TO "company_logos_renamed_for_test"'),
-      );
-
-      const result = await verifyLiveSchema(url);
-      expect(result.status).toBe("drift");
-      if (result.status === "drift") {
-        expect(result.missingTables).toContain("company_logos");
-        // The whole-table case must not also enumerate the table's columns.
-        expect(result.missingColumns.filter((c) => c.table === "company_logos")).toEqual([]);
-      }
-    },
-    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "ignores additive drift (extra tables/columns the code does not know about)",
-    async () => {
-      const url = await createMigratedDatabase();
-      await withSql(url, async (sql) => {
-        await sql.unsafe('ALTER TABLE "companies" ADD COLUMN "unknown_future_column" text');
-        await sql.unsafe('CREATE TABLE "unknown_future_table" (id serial primary key)');
+      // The migration gate is blind to this: the journal still says upToDate
+      // because the migration files are all recorded as applied.
+      expect(await inspectMigrations(database.connectionString)).toMatchObject({
+        status: "upToDate",
       });
 
-      const result = await verifyLiveSchema(url);
-      expect(result.status).toBe("ok");
-    },
-    EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  );
+      // The schema verifier catches the physical absence the gate missed.
+      const drift = await verifyLiveSchema(database.connectionString);
+      expect(drift.status).toBe("drift");
+      if (drift.status !== "drift") throw new Error("unreachable");
+      expect(drift.missingTables).toContain("announcement_dismissals");
+      expect(drift.missingColumns).toContainEqual({ table: "companies", column: "description" });
+      // A fully-absent table is reported once as a missing table, not as each of
+      // its columns.
+      expect(drift.missingColumns.some((c) => c.table === "announcement_dismissals")).toBe(false);
+
+      const summary = formatSchemaDrift(drift);
+      expect(summary).toContain("announcement_dismissals");
+      expect(summary).toContain("companies.description");
+    } finally {
+      await sql.end();
+      await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });
 
+// Pure-function coverage for the log/error summary — no database needed, so it
+// runs everywhere (including where embedded Postgres is unsupported) and pins
+// both the combined format and the branch that omits an empty section.
 describe("formatSchemaDrift", () => {
+  const base = { status: "drift", checkedTables: 10 } as const;
+
   it("summarizes missing tables and columns on one line", () => {
     const drift: Extract<SchemaVerificationResult, { status: "drift" }> = {
-      status: "drift",
-      checkedTables: 10,
+      ...base,
       missingTables: ["company_logos"],
       missingColumns: [{ table: "companies", column: "pause_reason" }],
     };
@@ -131,11 +102,19 @@ describe("formatSchemaDrift", () => {
 
   it("omits the empty section when only columns are missing", () => {
     const drift: Extract<SchemaVerificationResult, { status: "drift" }> = {
-      status: "drift",
-      checkedTables: 10,
+      ...base,
       missingTables: [],
       missingColumns: [{ table: "companies", column: "pause_reason" }],
     };
     expect(formatSchemaDrift(drift)).toBe("missing columns: companies.pause_reason");
+  });
+
+  it("omits the empty section when only tables are missing", () => {
+    const drift: Extract<SchemaVerificationResult, { status: "drift" }> = {
+      ...base,
+      missingTables: ["company_logos"],
+      missingColumns: [],
+    };
+    expect(formatSchemaDrift(drift)).toBe("missing tables: company_logos");
   });
 });
