@@ -72,7 +72,7 @@ async function runBuffered(cmd: string[], env: string[], timeoutS: number): Prom
       process.kill(-child.pid!, "SIGKILL");
     } catch {}
   }, timeoutS * 1000);
-  const exit = await new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+  const exit = await new Promise<number | null>((resolve) => child.on("close", (code, signal) => resolve(code ?? (signal === "SIGTERM" ? 143 : 137))));
   clearTimeout(timer);
   if (timedOut) return json(504, { error: "exec_timeout", message: `the command ran longer than its timeout_s of ${timeoutS} s` });
   return json(200, { exit, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
@@ -211,6 +211,11 @@ describe("kosa8 sandbox provider plugin", () => {
     fetchMock.mockClear();
     await hooks.onShutdown?.();
     fake.sandboxes.clear();
+    for (const exec of fake.execs.values()) {
+      try {
+        process.kill(-exec.child.pid!, "SIGKILL");
+      } catch {}
+    }
     fake.execs.clear();
     fake.calls.length = 0;
     fake.createState = "running";
@@ -450,6 +455,88 @@ describe("kosa8 sandbox provider plugin", () => {
     expect(receipt).toEqual({ providerLeaseId: id, state: "stopped" });
     expect([...fake.execs.values()][0]!.state).toBe("exited");
     await running.catch(() => undefined);
+  });
+
+  it("finishes the cancelled command and refuses new commands before the sandbox sleeps", async () => {
+    const reuse = { ...config, reuseLease: true };
+    const lease = await acquire({ reuseLease: true });
+    const id = lease.providerLeaseId!;
+    const running = execute(lease, { args: ["-c", "sleep 30"] });
+    await vi.waitFor(() => expect(calls("GET", /\/exec\/bg_/).length).toBeGreaterThan(0));
+    const release = hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id, cancelActiveWork: true });
+    await expect(execute(lease, { args: ["-c", "echo late"], timeoutMs: 20_000 })).rejects.toThrow(/is stopping/);
+    const receipt = await release;
+    const result = await running;
+    expect(receipt).toEqual({ providerLeaseId: id, state: "stopped" });
+    expect(result.timedOut).toBe(false);
+    const sleepIndex = fake.calls.findIndex((call) => call.route.endsWith("/sleep"));
+    expect(fake.calls.slice(sleepIndex + 1).filter((call) => call.route.endsWith("/exec"))).toEqual([]);
+    expect(fake.sandboxes.get(id)!.state).toBe("sleeping");
+  });
+
+  it("stops a buffered command on a cancelling release", async () => {
+    const reuse = { ...config, reuseLease: true };
+    const lease = await acquire({ reuseLease: true });
+    const id = lease.providerLeaseId!;
+    const running = execute(lease, { args: ["-c", "sleep 30"], timeoutMs: 60_000 });
+    await vi.waitFor(() => expect(calls("POST", /\/exec$/).length).toBeGreaterThan(1));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const started = Date.now();
+    const receipt = await hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id, cancelActiveWork: true });
+    expect(receipt).toEqual({ providerLeaseId: id, state: "stopped" });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect((await running).exitCode).not.toBe(0);
+  });
+
+  it("keeps a command tracked when its state is unknown, and stops it on release", async () => {
+    const reuse = { ...config, reuseLease: true };
+    const lease = await acquire({ reuseLease: true });
+    const id = lease.providerLeaseId!;
+    let failStatus = true;
+    fake.override = (call) =>
+      failStatus && call.method === "GET" && /\/exec\/bg_/.test(call.route) ? json(502, { error: "host_failed", message: "flaky" }) : null;
+    await expect(execute(lease, { args: ["-c", "sleep 30"] })).rejects.toThrow(/host_failed/);
+    failStatus = false;
+    const receipt = await hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id });
+    expect(receipt).toBeUndefined();
+    expect(calls("POST", /\/exec\/bg_[0-9a-f]+\/stop$/)).toHaveLength(1);
+    expect([...fake.execs.values()][0]!.state).toBe("exited");
+  });
+
+  it("reports a timed-out command that cannot be stopped", async () => {
+    const lease = await acquire();
+    fake.override = (call) => {
+      if (call.method === "GET" && /\/exec\/bg_/.test(call.route)) {
+        return json(200, { exec: { id: call.route.split("/").pop(), state: "running", exit: null } });
+      }
+      if (/\/stop$/.test(call.route)) return json(502, { error: "host_failed", message: "cannot stop" });
+      return null;
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const running = execute(lease, { args: ["-c", "sleep 30"] });
+      await vi.waitFor(() => expect(calls("GET", /\/exec\/bg_/).length).toBeGreaterThan(0));
+      vi.setSystemTime(Date.now() + 4_000_000);
+      await expect(running).rejects.toThrow(/could not be stopped/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes staged files when a later upload chunk fails", async () => {
+    const lease = await acquire();
+    let chunks = 0;
+    fake.override = (call) => {
+      const env = call.body?.env as string[] | undefined;
+      if (env?.[0]?.startsWith("PAPERCLIP_K8_CHUNK=") && ++chunks === 2) return json(502, { error: "host_failed", message: "upload broke" });
+      return null;
+    };
+    await expect(execute(lease, { args: ["-c", "cat >/dev/null"], stdin: "y".repeat(200_000), timeoutMs: 20_000 })).rejects.toThrow(/upload broke/);
+    fake.override = null;
+    const stage = calls("POST", /\/exec$/).find((call) => (call.body?.env as string[] | undefined)?.[0]?.startsWith("PAPERCLIP_K8_CHUNK="))!;
+    const runDir = (stage.body!.cmd as string[])[4]!;
+    const check = await execute(lease, { args: ["-c", 'test -e "$1" && echo left || echo gone', "check", runDir], timeoutMs: 20_000 });
+    expect(check.stdout).toBe("gone\n");
   });
 
   it("keeps the sandbox asleep for stop and stop_and_retain", async () => {

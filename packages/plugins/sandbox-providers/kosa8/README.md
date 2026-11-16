@@ -113,16 +113,24 @@ failure.
   A longer command runs as a kosa8 background command with `timeout_s`, and the
   plugin polls its state. Output larger than 600 KB is read back in chunks, so
   no output is lost. A timeout returns `timedOut: true`, and kosa8 ends the
-  process group of the command.
+  process group of the command (exit 143). On an older host that has no
+  `timeout_s` or no stop for background commands, the plugin ends the process
+  group itself. If the plugin cannot stop a command after a timeout, the
+  command fails with an error and the plugin keeps it in its list of active
+  commands.
 - A command on a sleeping sandbox wakes it.
 - A failed acquisition deletes its sandbox. If kosa8 cannot confirm the
   deletion, the plugin throws `PluginEnvironmentCreationCleanupError` with the
   sandbox ID, so the host records it and retries the teardown. The destroy hook
   checks that the sandbox's labels match before it deletes it.
 - Release deletes the sandbox and returns a receipt only after kosa8 no longer
-  lists it. With `reuseLease`, release puts the sandbox to sleep. A release that
-  cancels active work first stops the commands that the plugin started, then
-  puts the sandbox to sleep. If the sleep fails, the plugin deletes the sandbox.
+  lists it. With `reuseLease`, release puts the sandbox to sleep. Before a sleep,
+  the plugin refuses new commands on the sandbox, stops the commands that it
+  started, and waits until each command call ends. Then it puts the sandbox to
+  sleep, so no output read wakes the sandbox again. If the sleep fails, the
+  plugin deletes the sandbox.
+- If an upload of a large script or stdin fails, the plugin removes the
+  uploaded parts before it reports the error.
 - `onEnvironmentStopLease` and `stop_and_retain` put the sandbox to sleep and
   return a `stopped` receipt after kosa8 reports the `sleeping` state.
   `onEnvironmentInspectLease` reads the sandbox state and does not change it.

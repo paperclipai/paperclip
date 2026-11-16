@@ -121,6 +121,18 @@ describe.skipIf(!live)("kosa8 sandbox provider (live)", () => {
         timeoutMs: 30_000,
       });
       expect(check.stdout).toBe("kept\nticking\n");
+      const longRun = run(resumed, "sleep 300");
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      started = Date.now();
+      const cancelled = await hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id, cancelActiveWork: true });
+      console.log(`release that cancels active work: ${Date.now() - started} ms`);
+      expect(cancelled).toEqual({ providerLeaseId: id, state: "stopped" });
+      const ended = await longRun;
+      expect(ended.timedOut).toBe(false);
+      expect(ended.exitCode).not.toBe(0);
+      const again = await hooks.onEnvironmentResumeLease!({ ...base, config: reuse, providerLeaseId: id, leaseMetadata: lease.metadata });
+      const quiet = await run(again, 'pgrep -f "sleep [3]00" >/dev/null && echo running || echo stopped', { timeoutMs: 30_000 });
+      expect(quiet.stdout).toBe("stopped\n");
       const stopped = await hooks.onEnvironmentReleaseLease!({ ...base, config: reuse, providerLeaseId: id, resourceDisposition: "stop_and_retain" });
       expect(stopped).toEqual({ providerLeaseId: id, state: "stopped" });
     } finally {

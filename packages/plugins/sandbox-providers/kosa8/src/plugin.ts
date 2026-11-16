@@ -23,6 +23,14 @@ import type {
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
+import {
+  buildLoginShellScript,
+  COLLECT_SCRIPT,
+  KILL_SCRIPT,
+  READ_SCRIPT,
+  RUN_SCRIPT,
+  STAGE_SCRIPT,
+} from "./scripts.js";
 
 interface Kosa8DriverConfig {
   apiKey: string | null;
@@ -90,42 +98,22 @@ const STOPPED_STATES = new Set(["sleeping", "paused", "stopped"]);
 const GONE_STATES = new Set(["deleted", "host_removed"]);
 const EXPIRED_STATES = new Set(["deleted", "error", "host_removed"]);
 
-const COLLECT_SCRIPT = [
-  'd=$1; m=$2; c=x',
-  'if [ -f "$d/code" ]; then c=$(cat "$d/code"); fi',
-  'o=0; e=0',
-  'if [ -f "$d/out" ]; then o=$(wc -c <"$d/out"); fi',
-  'if [ -f "$d/err" ]; then e=$(wc -c <"$d/err"); fi',
-  'o=$((o+0)); e=$((e+0))',
-  'if [ $((o+e)) -gt "$m" ]; then echo "K8 big $c $o $e"; exit 0; fi',
-  'echo "K8 done $c $o $e"',
-  'if [ "$o" -gt 0 ]; then base64 <"$d/out" | tr -d "\\n"; fi; echo',
-  'if [ "$e" -gt 0 ]; then base64 <"$d/err" | tr -d "\\n"; fi; echo',
-  'rm -rf "$d"',
-].join("\n");
+interface SandboxActivity {
+  commands: Map<string, string | null>;
+  pending: Set<Promise<unknown>>;
+  closing: number;
+}
 
-const RUN_SCRIPT = [
-  'd=$1; umask 077; mkdir -p "$d" || exit 125; echo $$ >"$d/pid"',
-  'if [ -n "${PAPERCLIP_K8_SCRIPT+x}" ]; then printf %s "$PAPERCLIP_K8_SCRIPT" | base64 -d >"$d/script" || exit 125; fi',
-  'if [ -n "${PAPERCLIP_K8_STDIN+x}" ]; then printf %s "$PAPERCLIP_K8_STDIN" | base64 -d >"$d/stdin" || exit 125; fi',
-  'unset PAPERCLIP_K8_SCRIPT PAPERCLIP_K8_STDIN',
-  '[ -f "$d/script" ] || exit 125',
-  'i=/dev/null; if [ -f "$d/stdin" ]; then i=$d/stdin; fi',
-  'if [ -z "$2" ] || cd "$2" 2>"$d/err"; then sh "$d/script" <"$i" >"$d/out" 2>>"$d/err"; c=$?; else : >"$d/out"; c=1; fi',
-  'echo "$c" >"$d/code.tmp" && mv "$d/code.tmp" "$d/code"',
-  'if [ "$3" = 1 ]; then exec sh -c "$5" k8collect "$d" "$4"; fi',
-].join("\n");
+const activity = new Map<string, SandboxActivity>();
 
-const STAGE_SCRIPT = 'umask 077; mkdir -p "$1" && printf %s "$PAPERCLIP_K8_CHUNK" | base64 -d >>"$1/$2"';
-const KILL_SCRIPT = [
-  'p=$(cat "$1/pid" 2>/dev/null) || exit 0',
-  'kill -s TERM -- -"$p" 2>/dev/null || kill -s TERM "$p" 2>/dev/null',
-  '(sleep 5; kill -s KILL -- -"$p" 2>/dev/null || kill -s KILL "$p" 2>/dev/null) >/dev/null 2>&1 </dev/null &',
-  'exit 0',
-].join("\n");
-const READ_SCRIPT = 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"';
-
-const activeExecs = new Map<string, Map<string, string>>();
+function activityFor(id: string): SandboxActivity {
+  let state = activity.get(id);
+  if (!state) {
+    state = { commands: new Map(), pending: new Set(), closing: 0 };
+    activity.set(id, state);
+  }
+  return state;
+}
 
 export class Kosa8ApiError extends Error {
   constructor(
@@ -206,14 +194,6 @@ function apiUrlProblem(value: string): string | null {
 
 function accountFingerprint(config: Kosa8DriverConfig): string {
   return createHash("sha256").update(`${resolveApiUrl(config)}\n${resolveApiKey(config)}`).digest("hex");
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
-function isValidShellEnvKey(value: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 function formatErrorMessage(error: unknown): string {
@@ -394,7 +374,7 @@ async function destroySandbox(config: Kosa8DriverConfig, id: string): Promise<Pl
   } catch (error) {
     if (!isNotFound(error)) throw error;
   }
-  activeExecs.delete(id);
+  activity.delete(id);
   await confirmState(config, id, (sandbox) => sandbox === null || GONE_STATES.has(sandbox.state), "deleted");
   return { providerLeaseId: id, state: "destroyed" };
 }
@@ -413,36 +393,60 @@ async function sleepSandbox(config: Kosa8DriverConfig, id: string): Promise<Plug
   return { providerLeaseId: id, state: confirmed && confirmed.state === "sleeping" ? "stopped" : "destroyed" };
 }
 
-async function stopBackground(config: Kosa8DriverConfig, id: string, execId: string, dir: string): Promise<boolean> {
-  try {
-    await api(config, "POST", `${sandboxPath(id)}/exec/${execId}/stop`);
-    return true;
-  } catch (error) {
-    if (isNotFound(error)) return false;
-    if (!(error instanceof Kosa8ApiError && (error.status === 501 || error.code === "no_pid"))) throw error;
-  }
+async function killRun(config: Kosa8DriverConfig, id: string, dir: string): Promise<void> {
   const killed = await shellExec(config, id, KILL_SCRIPT, dir);
-  if (killed.exit !== 0) throw new Error(`Failed to stop command ${execId} on kosa8 sandbox ${id}: ${killed.stderr.trim()}`);
-  return true;
+  if (killed.exit !== 0) throw new Error(`Failed to stop a command on kosa8 sandbox ${id}: ${killed.stderr.trim()}`);
 }
 
-async function stopTrackedCommands(config: Kosa8DriverConfig, id: string): Promise<void> {
-  const execs = [...(activeExecs.get(id) ?? new Map<string, string>())];
-  await Promise.all(execs.map(async ([execId, dir]) => {
-    if (!(await stopBackground(config, id, execId, dir))) return;
-    const deadline = Date.now() + STATE_CONFIRM_TIMEOUT_MS;
-    for (;;) {
-      const status = await backgroundStatus(config, id, execId);
-      if (!status || status.state === "exited") return;
-      if (Date.now() >= deadline) throw new Error(`kosa8 did not confirm that command ${execId} ended.`);
-      await sleep(STATE_POLL_INTERVAL_MS);
+async function waitForExit(config: Kosa8DriverConfig, id: string, execId: string): Promise<void> {
+  const deadline = Date.now() + STATE_CONFIRM_TIMEOUT_MS;
+  for (;;) {
+    const status = await backgroundStatus(config, id, execId);
+    if (!status || status.state === "exited") return;
+    if (Date.now() >= deadline) throw new Error(`kosa8 did not confirm that command ${execId} ended on sandbox ${id}.`);
+    await sleep(STATE_POLL_INTERVAL_MS);
+  }
+}
+
+async function stopCommand(config: Kosa8DriverConfig, id: string, dir: string, execId: string | null): Promise<void> {
+  if (!execId) return await killRun(config, id, dir);
+  try {
+    await api(config, "POST", `${sandboxPath(id)}/exec/${execId}/stop`);
+    await waitForExit(config, id, execId);
+  } catch (error) {
+    if (!isNotFound(error)) {
+      if (!(error instanceof Kosa8ApiError && (error.status === 501 || error.code === "no_pid"))) throw error;
+      await killRun(config, id, dir);
+      await waitForExit(config, id, execId);
     }
-  }));
+  }
+  activity.get(id)?.commands.delete(dir);
+}
+
+async function quiesce(config: Kosa8DriverConfig, id: string): Promise<void> {
+  const state = activity.get(id);
+  if (!state) return;
+  await Promise.all([...state.commands].map(([dir, execId]) => stopCommand(config, id, dir, execId)));
+  if (state.pending.size === 0) return;
+  const settled = Promise.allSettled([...state.pending]).then(() => true);
+  const finished = await Promise.race([settled, sleep(STATE_CONFIRM_TIMEOUT_MS).then(() => false)]);
+  if (!finished) throw new Error(`Commands on kosa8 sandbox ${id} did not finish after they were stopped.`);
+}
+
+async function quiesceAndSleep(config: Kosa8DriverConfig, id: string): Promise<PluginEnvironmentTerminationReceipt> {
+  const state = activityFor(id);
+  state.closing += 1;
+  try {
+    await quiesce(config, id);
+    return await sleepSandbox(config, id);
+  } finally {
+    state.closing -= 1;
+  }
 }
 
 async function sleepOrDestroy(config: Kosa8DriverConfig, id: string): Promise<PluginEnvironmentTerminationReceipt | void> {
   try {
-    const receipt = await sleepSandbox(config, id);
+    const receipt = await quiesceAndSleep(config, id);
     if (receipt.state === "destroyed") return;
   } catch (error) {
     console.warn(`Failed to put kosa8 sandbox ${id} to sleep for reuse: ${formatErrorMessage(error)}. Deleting it instead.`);
@@ -495,26 +499,6 @@ async function checkFailedCreation(config: Kosa8DriverConfig, params: PluginEnvi
   if (!matches || (sandbox && Object.entries(cleanup.labels).some(([key, value]) => labels[key] !== value))) {
     throw new Error("The failed-creation cleanup does not match a kosa8 sandbox that this environment created.");
   }
-}
-
-function buildLoginShellScript(input: { command: string; args: string[]; env?: Record<string, string> }): string {
-  const env = input.env ?? {};
-  for (const key of Object.keys(env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid sandbox environment variable key: ${key}`);
-    }
-  }
-  const envArgs = Object.entries(env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const commandParts = [shellQuote(input.command), ...input.args.map(shellQuote)].join(" ");
-  const execLine = envArgs.length > 0 ? `exec env ${envArgs.join(" ")} ${commandParts}` : `exec ${commandParts}`;
-  return [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    execLine,
-  ].join("\n");
 }
 
 async function bufferedExec(
@@ -644,34 +628,70 @@ async function runInBackground(
   timeoutMs: number,
 ): Promise<PluginEnvironmentExecuteResult> {
   const timeoutS = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const startedAt = Date.now();
   const { exec: started, hostTimeout } = await startBackground(config, id, cmd, env, timeoutS);
-  const tracked = activeExecs.get(id) ?? new Map<string, string>();
-  tracked.set(started.id, dir);
-  activeExecs.set(id, tracked);
-  try {
-    const deadline = Date.now() + timeoutMs + (hostTimeout ? EXEC_GRACE_MS : 0);
-    let interval = EXEC_POLL_MIN_MS;
-    let status: Kosa8BackgroundExec | null = started;
-    while (status && status.state !== "exited") {
-      if (Date.now() >= deadline) {
-        await stopBackground(config, id, started.id, dir).catch(() => undefined);
-        await cleanupRun(config, id, dir);
-        return timedOutResult();
+  const tracked = activityFor(id).commands;
+  tracked.set(dir, started.id);
+  const deadline = Date.now() + timeoutMs + (hostTimeout ? EXEC_GRACE_MS : 0);
+  let interval = EXEC_POLL_MIN_MS;
+  let status: Kosa8BackgroundExec | null = started;
+  while (status && status.state !== "exited") {
+    if (Date.now() >= deadline) {
+      try {
+        await stopCommand(config, id, dir, started.id);
+      } catch (error) {
+        throw new Error(`kosa8 command ${started.id} timed out and could not be stopped: ${formatErrorMessage(error)}`);
       }
-      await sleep(interval);
-      interval = Math.min(interval * 2, EXEC_POLL_MAX_MS);
-      status = await backgroundStatus(config, id, started.id);
-    }
-    if (!status) throw new Error(`kosa8 lost the command ${started.id} on sandbox ${id}.`);
-    if (status.timed_out) {
       await cleanupRun(config, id, dir);
       return timedOutResult();
     }
-    const collected = await shellExec(config, id, COLLECT_SCRIPT, dir, String(COLLECT_LIMIT_BYTES));
-    return await parseCollected(config, id, dir, collected.stdout, status.exit);
-  } finally {
-    tracked.delete(started.id);
+    await sleep(interval);
+    interval = Math.min(interval * 2, EXEC_POLL_MAX_MS);
+    status = await backgroundStatus(config, id, started.id);
   }
+  if (!status) {
+    tracked.delete(dir);
+    throw new Error(`kosa8 lost the command ${started.id} on sandbox ${id}.`);
+  }
+  const ranOut = hostTimeout && Date.now() >= startedAt + timeoutS * 1000 && (status.exit === 143 || status.exit === 137);
+  tracked.delete(dir);
+  if (status.timed_out || ranOut) {
+    await cleanupRun(config, id, dir);
+    return timedOutResult();
+  }
+  const collected = await shellExec(config, id, COLLECT_SCRIPT, dir, String(COLLECT_LIMIT_BYTES));
+  return await parseCollected(config, id, dir, collected.stdout, status.exit);
+}
+
+async function runBuffered(
+  config: Kosa8DriverConfig,
+  id: string,
+  dir: string,
+  cmd: string[],
+  env: string[],
+  timeoutMs: number,
+): Promise<PluginEnvironmentExecuteResult> {
+  const tracked = activityFor(id).commands;
+  tracked.set(dir, null);
+  let answer: Kosa8ExecAnswer;
+  try {
+    answer = await bufferedExec(config, id, cmd, { env, timeoutS: Math.max(1, Math.ceil(timeoutMs / 1000)) });
+  } catch (error) {
+    if (!isExecTimeout(error)) throw error;
+    await cleanupRun(config, id, dir);
+    return timedOutResult(error);
+  } finally {
+    tracked.delete(dir);
+  }
+  if (answer.exit === 125) {
+    await cleanupRun(config, id, dir);
+    throw new Error(`kosa8 sandbox ${id} could not prepare the command: ${answer.stderr.trim()}`);
+  }
+  if (!answer.stdout.startsWith("K8 ") && (answer.exit === 143 || answer.exit === 137)) {
+    await cleanupRun(config, id, dir);
+    return { exitCode: answer.exit, timedOut: false, stdout: "", stderr: "The command was stopped.\n" };
+  }
+  return await parseCollected(config, id, dir, answer.stdout, answer.exit);
 }
 
 async function executeCommand(
@@ -686,8 +706,13 @@ async function executeCommand(
   if (input.stdin != null) inlineEnv.push(`PAPERCLIP_K8_STDIN=${toBase64(input.stdin)}`);
   let env = inlineEnv;
   if (JSON.stringify(inlineEnv).length > INLINE_BODY_LIMIT) {
-    await stageFile(config, id, dir, "script", input.script);
-    if (input.stdin != null) await stageFile(config, id, dir, "stdin", input.stdin);
+    try {
+      await stageFile(config, id, dir, "script", input.script);
+      if (input.stdin != null) await stageFile(config, id, dir, "stdin", input.stdin);
+    } catch (error) {
+      await cleanupRun(config, id, dir);
+      throw error;
+    }
     env = [];
   }
   const buffered = input.timeoutMs <= BUFFERED_LIMIT_S * 1000;
@@ -696,25 +721,12 @@ async function executeCommand(
     try {
       return await runInBackground(config, id, dir, cmd, env, input.timeoutMs);
     } catch (error) {
+      if (!activity.get(id)?.commands.has(dir)) await cleanupRun(config, id, dir);
       if (!(isNotAvailable(error) && /background/i.test(formatErrorMessage(error)))) throw error;
       cmd[6] = "1";
     }
   }
-  let answer: Kosa8ExecAnswer;
-  try {
-    answer = await bufferedExec(config, id, cmd, { env, timeoutS: Math.max(1, Math.ceil(input.timeoutMs / 1000)) });
-  } catch (error) {
-    if (isExecTimeout(error)) {
-      await cleanupRun(config, id, dir);
-      return timedOutResult(error);
-    }
-    throw error;
-  }
-  if (answer.exit === 125) {
-    await cleanupRun(config, id, dir);
-    throw new Error(`kosa8 sandbox ${id} could not prepare the command: ${answer.stderr.trim()}`);
-  }
-  return await parseCollected(config, id, dir, answer.stdout, answer.exit);
+  return await runBuffered(config, id, dir, cmd, env, input.timeoutMs);
 }
 
 function leaseMetadata(input: {
@@ -805,7 +817,7 @@ const plugin = definePlugin({
   },
 
   async onShutdown() {
-    activeExecs.clear();
+    activity.clear();
   },
 
   async onEnvironmentValidateConfig(params: PluginEnvironmentValidateConfigParams): Promise<PluginEnvironmentValidationResult> {
@@ -901,13 +913,10 @@ const plugin = definePlugin({
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
     if (params.resourceDisposition === "stop_and_retain") {
-      return await sleepSandbox(config, params.providerLeaseId);
+      return await quiesceAndSleep(config, params.providerLeaseId);
     }
     if (config.reuseLease) {
-      if (params.cancelActiveWork) {
-        await stopTrackedCommands(config, params.providerLeaseId);
-        return await sleepSandbox(config, params.providerLeaseId);
-      }
+      if (params.cancelActiveWork) return await quiesceAndSleep(config, params.providerLeaseId);
       return await sleepOrDestroy(config, params.providerLeaseId);
     }
     return await destroySandbox(config, params.providerLeaseId);
@@ -917,7 +926,7 @@ const plugin = definePlugin({
     if (!params.providerLeaseId) {
       throw new Error("No provider lease ID available to stop.");
     }
-    return await sleepSandbox(parseDriverConfig(params.config), params.providerLeaseId);
+    return await quiesceAndSleep(parseDriverConfig(params.config), params.providerLeaseId);
   },
 
   async onEnvironmentDestroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void> {
@@ -957,12 +966,17 @@ const plugin = definePlugin({
     const script = buildLoginShellScript({ command: params.command, args: params.args ?? [], env: params.env });
     const timeoutMs = params.timeoutMs != null && params.timeoutMs > 0 ? params.timeoutMs : config.timeoutMs;
     const cwd = params.cwd ?? parseOptionalString(params.lease.metadata?.remoteCwd);
-    return await executeCommand(config, sandboxId, {
-      script,
-      stdin: params.stdin ?? null,
-      cwd: cwd ?? null,
-      timeoutMs,
-    });
+    const state = activityFor(sandboxId);
+    if (state.closing > 0) {
+      throw new Error(`kosa8 sandbox ${sandboxId} is stopping, so the command did not start.`);
+    }
+    const work = executeCommand(config, sandboxId, { script, stdin: params.stdin ?? null, cwd: cwd ?? null, timeoutMs });
+    state.pending.add(work);
+    try {
+      return await work;
+    } finally {
+      state.pending.delete(work);
+    }
   },
 });
 
