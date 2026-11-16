@@ -25,7 +25,27 @@ export function shouldAcceptInbound(connection: TelegramConnection, message: Inb
   return message.text.trim().length > 0 || message.attachments.length > 0;
 }
 
-export function formatInboundComment(message: InboundDirectMessage, storedFiles: Array<Pick<InboundAttachment, "filename" | "mimeType" | "byteLength" | "kind">>): string {
+const dialogLocks = new Map<string, Promise<void>>();
+
+function withDialogLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = dialogLocks.get(key) ?? Promise.resolve();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate, () => gate);
+  dialogLocks.set(key, tail);
+  return previous.then(fn, fn).finally(() => {
+    release();
+    if (dialogLocks.get(key) === tail) dialogLocks.delete(key);
+  });
+}
+
+export function formatInboundComment(
+  message: InboundDirectMessage,
+  storedFiles: Array<Pick<InboundAttachment, "filename" | "mimeType" | "byteLength" | "kind">>,
+  attachmentIds: string[] = [],
+): string {
   const lines: string[] = [];
   const speaker = message.peerName || message.peerId;
   lines.push(`**${speaker}**`);
@@ -33,6 +53,9 @@ export function formatInboundComment(message: InboundDirectMessage, storedFiles:
   for (const file of storedFiles) {
     const kind = file.kind === "voice" ? "Voice message" : file.kind === "photo" ? "Photo" : file.kind === "video" ? "Video" : "Attachment";
     lines.push(`${kind}: ${file.filename} (${file.mimeType}, ${file.byteLength} bytes)`);
+  }
+  for (const attachmentId of attachmentIds) {
+    lines.push(`attachment:${attachmentId}`);
   }
   return lines.join("\n\n");
 }
@@ -72,16 +95,45 @@ export async function storeInboundFiles(
   return stored;
 }
 
+const CLOSED_DIALOG_STATUSES = new Set(["backlog", "done", "cancelled"]);
+
+async function attachInboundFiles(
+  ctx: PluginContext,
+  companyId: string,
+  issueId: string,
+  attachments: InboundAttachment[],
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const attachment of attachments) {
+    const created = await ctx.issues.createAttachment({
+      issueId,
+      companyId,
+      filename: attachment.filename,
+      contentType: attachment.mimeType,
+      contentBase64: Buffer.from(attachment.bytes).toString("base64"),
+    });
+    ids.push(created.id);
+  }
+  return ids;
+}
+
 export async function ingestInboundMessage(
   ctx: PluginContext,
   connection: TelegramConnection,
   message: InboundDirectMessage,
 ): Promise<Issue | null> {
   if (!shouldAcceptInbound(connection, message)) return null;
-
-  const storedFiles = await storeInboundFiles(ctx, connection.companyId, message.attachments);
-  const body = formatInboundComment(message, storedFiles);
   const originId = dialogOriginId(message.accountId, message.peerId);
+  return withDialogLock(`${connection.companyId}:${originId}`, () => ingestDialog(ctx, connection, message, originId));
+}
+
+async function ingestDialog(
+  ctx: PluginContext,
+  connection: TelegramConnection,
+  message: InboundDirectMessage,
+  originId: string,
+): Promise<Issue | null> {
+  const storedFiles = await storeInboundFiles(ctx, connection.companyId, message.attachments);
   const existing = await ctx.issues.list({
     companyId: connection.companyId,
     originKind: DIALOG_ORIGIN_KIND,
@@ -89,34 +141,40 @@ export async function ingestInboundMessage(
     limit: 1,
   });
   const current = existing[0];
+  let issue: Issue;
   if (current) {
+    const patch: { assigneeAgentId?: string; status?: Issue["status"] } = {};
     if (connection.assignedAgentId && current.assigneeAgentId !== connection.assignedAgentId) {
-      await ctx.issues.update(current.id, { assigneeAgentId: connection.assignedAgentId }, connection.companyId);
+      patch.assigneeAgentId = connection.assignedAgentId;
     }
-    await ctx.issues.createComment(current.id, body, connection.companyId);
-    if (connection.assignedAgentId) {
-      await ctx.issues.requestWakeup(current.id, connection.companyId, {
-        reason: "telegram-inbound",
-        contextSource: "plugin-pc-telegram",
-      });
-    }
-    return await ctx.issues.get(current.id, connection.companyId) ?? current;
+    if (CLOSED_DIALOG_STATUSES.has(current.status)) patch.status = "todo";
+    issue = Object.keys(patch).length > 0
+      ? await ctx.issues.update(current.id, patch, connection.companyId)
+      : current;
+  } else {
+    issue = await ctx.issues.create({
+      companyId: connection.companyId,
+      title: formatNewIssueTitle(message),
+      description: formatInboundComment(message, storedFiles),
+      status: "todo",
+      assigneeAgentId: connection.assignedAgentId ?? undefined,
+      originKind: DIALOG_ORIGIN_KIND,
+      originId,
+    });
   }
 
-  const created = await ctx.issues.create({
-    companyId: connection.companyId,
-    title: formatNewIssueTitle(message),
-    description: body,
-    status: "todo",
-    assigneeAgentId: connection.assignedAgentId ?? undefined,
-    originKind: DIALOG_ORIGIN_KIND,
-    originId,
-  });
+  const attachmentIds = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
+  const body = formatInboundComment(message, storedFiles, attachmentIds);
+  if (current) {
+    await ctx.issues.createComment(issue.id, body, connection.companyId);
+  } else if (body !== issue.description) {
+    issue = await ctx.issues.update(issue.id, { description: body }, connection.companyId);
+  }
   if (connection.assignedAgentId) {
-    await ctx.issues.requestWakeup(created.id, connection.companyId, {
+    await ctx.issues.requestWakeup(issue.id, connection.companyId, {
       reason: "telegram-inbound",
       contextSource: "plugin-pc-telegram",
     });
   }
-  return created;
+  return await ctx.issues.get(issue.id, connection.companyId) ?? issue;
 }

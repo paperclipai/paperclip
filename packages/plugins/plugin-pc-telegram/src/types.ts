@@ -23,6 +23,7 @@ export type TelegramConnection = {
   incomingMode: IncomingMode;
   paused: boolean;
   sessionSecretId: string;
+  sessionConfigPath?: string;
   live: boolean;
 };
 

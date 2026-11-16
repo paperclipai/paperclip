@@ -35,7 +35,6 @@ import { authorizeSendText } from "./send.js";
 import {
   deleteAccountSession,
   getAccountSession,
-  newSessionSecretId,
   putAccountSession,
   resolveTelegramAppCredentials,
 } from "./secrets.js";
@@ -57,6 +56,12 @@ type PendingLogin = {
   companyId: string;
   loginId: string;
   handle: QrLoginHandle;
+  status: LoginStatus;
+  cancelled: boolean;
+};
+
+type SettledLogin = {
+  companyId: string;
   status: LoginStatus;
 };
 
@@ -87,11 +92,19 @@ function requireCompanyId(value: unknown, fallback?: string | null): string {
   return companyId;
 }
 
+function assertConnectionManager(actor: { type?: string } | undefined): void {
+  if (actor?.type !== "user") {
+    throw new Error("Only a board user can change Telegram account access.");
+  }
+}
+
 export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const createClient = deps.createClient ?? createGramJsClientFactory();
   const liveByAccount = new Map<string, LiveTelegramAccount>();
   const pendingLogins = new Map<string, PendingLogin>();
+  const loginResults = new Map<string, SettledLogin>();
   let pluginContext: PluginContext | null = null;
+  let shuttingDown = false;
 
   const resolveCredentials: ResolveAppCredentials = async (companyId) => {
     if (deps.resolveAppCredentials) return deps.resolveAppCredentials(companyId);
@@ -106,7 +119,20 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   function emitLogin(companyId: string, status: LoginStatus) {
     const ctx = pluginContext;
     if (!ctx) return;
-    ctx.streams.emit(LOGIN_STREAM_CHANNEL, { companyId, status });
+    const channel = `${LOGIN_STREAM_CHANNEL}:${companyId}`;
+    ctx.streams.open(channel, companyId);
+    ctx.streams.emit(channel, { companyId, status });
+  }
+
+  function loginStillCurrent(pending: PendingLogin): boolean {
+    return !shuttingDown && !pending.cancelled && pendingLogins.get(pending.loginId) === pending;
+  }
+
+  function settleLogin(pending: PendingLogin, status: LoginStatus) {
+    pendingLogins.delete(pending.loginId);
+    loginResults.set(pending.loginId, { companyId: pending.companyId, status });
+    void pending.handle.abort().catch(() => undefined);
+    emitLogin(pending.companyId, status);
   }
 
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
@@ -150,7 +176,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     for (const connection of connections) {
       if (liveByAccount.has(connection.telegramUserId)) continue;
       if (!connection.sessionSecretId) continue;
-      const session = await getAccountSession(ctx, companyId, connection.sessionSecretId);
+      const session = await getAccountSession(
+        ctx,
+        companyId,
+        connection.sessionSecretId,
+        connection.sessionConfigPath || `plugin-secret.${connection.sessionSecretId}`,
+      );
       if (!session) continue;
       try {
         const credentials = await resolveCredentials(companyId);
@@ -188,7 +219,6 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       pluginContext = ctx;
       const log = wrapLogger(ctx);
       log.info("Telegram plugin setup");
-      await reconnectAll(ctx);
 
       ctx.data.register(DATA_OVERVIEW, async (params) => {
         const companyId = requireCompanyId(params.companyId);
@@ -206,12 +236,17 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         if (loginId) {
           const pending = pendingLogins.get(loginId);
           if (pending && pending.companyId === companyId) return pending.status;
+          const settled = loginResults.get(loginId);
+          if (settled && settled.companyId === companyId) return settled.status;
         }
         const pending = [...pendingLogins.values()].find((entry) => entry.companyId === companyId);
-        return pending?.status ?? idleLoginStatus();
+        if (pending) return pending.status;
+        const settled = [...loginResults.values()].reverse().find((entry) => entry.companyId === companyId);
+        return settled?.status ?? idleLoginStatus();
       });
 
       ctx.actions.register(ACTION_START_LOGIN, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const credentials = await resolveCredentials(companyId);
         const loginId = randomUUID();
@@ -228,6 +263,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             async abort() {},
           },
           status: reduceLogin(idleLoginStatus(), { type: "start", loginId }),
+          cancelled: false,
         };
         pendingLogins.set(loginId, pending);
         emitLogin(companyId, pending.status);
@@ -249,43 +285,57 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         pending.handle = handle;
         void handle.waitUntilSignedIn()
           .then(async (signedIn) => {
-            const secretId = newSessionSecretId();
-            await putAccountSession(ctx, companyId, secretId, signedIn.session);
+            if (!loginStillCurrent(pending)) return;
+            const stored = await putAccountSession(ctx, companyId, signedIn.session);
+            if (!loginStillCurrent(pending)) {
+              await deleteAccountSession(ctx, companyId, stored.secretId);
+              return;
+            }
             await upsertConnection(ctx, {
               companyId,
               account: signedIn.account,
-              sessionSecretId: secretId,
+              sessionSecretId: stored.secretId,
+              sessionConfigPath: stored.configPath,
             });
+            if (!loginStillCurrent(pending)) {
+              await deleteAccountSession(ctx, companyId, stored.secretId);
+              return;
+            }
             const live = await createClient.connectFromSession({
               companyId,
               credentials,
               session: signedIn.session,
               onInbound: handleInbound,
             });
+            if (!loginStillCurrent(pending)) {
+              await live.disconnect().catch(() => undefined);
+              await deleteAccountSession(ctx, companyId, stored.secretId);
+              return;
+            }
             await attachLiveSession(companyId, live);
-            pending.status = reduceLogin(pending.status, {
+            settleLogin(pending, reduceLogin(pending.status, {
               type: "connected",
               loginId,
               account: signedIn.account,
-            });
-            emitLogin(companyId, pending.status);
+            }));
             log.info("Telegram account connected", {
               companyId,
               telegramUserId: signedIn.account.telegramUserId,
             });
           })
           .catch((error: unknown) => {
-            pending.status = reduceLogin(pending.status, {
+            if (!loginStillCurrent(pending)) return;
+            settleLogin(pending, reduceLogin(pending.status, {
               type: "error",
               loginId,
               message: error instanceof Error ? error.message : "Telegram login failed.",
-            });
-            emitLogin(companyId, pending.status);
+            }));
           });
         return { loginId, status: pending.status };
       });
 
       ctx.actions.register(ACTION_SUBMIT_PASSWORD, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const loginId = readString(params.loginId);
         const password = typeof params.password === "string" ? params.password : "";
@@ -299,18 +349,22 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       });
 
       ctx.actions.register(ACTION_CANCEL_LOGIN, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const loginId = readString(params.loginId);
         const pending = pendingLogins.get(loginId);
         if (!pending || pending.companyId !== companyId) return { status: idleLoginStatus() };
+        pending.cancelled = true;
         await pending.handle.abort().catch(() => undefined);
         pendingLogins.delete(loginId);
         const status = reduceLogin(pending.status, { type: "cancel", loginId });
+        loginResults.set(loginId, { companyId, status });
         emitLogin(companyId, status);
         return { status };
       });
 
       ctx.actions.register(ACTION_UPDATE_CONNECTION, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const telegramUserId = readString(params.telegramUserId);
         const assignedAgentId = params.assignedAgentId === null
@@ -323,6 +377,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       });
 
       ctx.actions.register(ACTION_SET_PAUSED, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const telegramUserId = readString(params.telegramUserId);
         const paused = Boolean(params.paused);
@@ -331,6 +386,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       });
 
       ctx.actions.register(ACTION_DISCONNECT, async (params, actionCtx) => {
+        assertConnectionManager(actionCtx.actor);
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         const telegramUserId = readString(params.telegramUserId);
         const connection = await findConnection(ctx, companyId, telegramUserId, liveAccountIds());
@@ -351,6 +407,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             displayName: connection.displayName,
           },
           sessionSecretId: "",
+          sessionConfigPath: "",
           assignedAgentId: connection.assignedAgentId,
           paused: true,
         });
@@ -370,7 +427,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
               peerId: { type: "string" },
               issueId: { type: "string" },
             },
-            required: ["text"],
+            required: ["text", "issueId"],
           },
         },
         async (params, runCtx): Promise<ToolResult> => {
@@ -380,21 +437,18 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             peerId?: string;
             issueId?: string;
           };
+          if (!payload.issueId) return { error: "A Telegram task is required." };
           const connections = await listConnections(ctx, runCtx.companyId, liveAccountIds());
-          let issueOriginId: string | null = null;
-          if (payload.issueId) {
-            const issue = await ctx.issues.get(payload.issueId, runCtx.companyId);
-            if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND) {
-              return { error: "This issue is not a Telegram dialog." };
-            }
-            issueOriginId = issue.originId ?? null;
+          const issue = await ctx.issues.get(payload.issueId, runCtx.companyId);
+          if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND || !issue.originId) {
+            return { error: "This issue is not a Telegram dialog." };
           }
           const authorized = authorizeSendText(connections, {
             companyId: runCtx.companyId,
             agentId: runCtx.agentId,
             accountId: payload.accountId,
             peerId: payload.peerId,
-            issueOriginId,
+            issueOriginId: issue.originId,
             text: payload.text ?? "",
           });
           if (!authorized.ok) return { error: authorized.error };
@@ -412,6 +466,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           };
         },
       );
+
+      void reconnectAll(ctx).catch((error: unknown) => {
+        log.error("Failed to reconnect Telegram accounts", {
+          message: error instanceof Error ? error.message : "unknown error",
+        });
+      });
     },
 
     async onHealth(): Promise<PluginHealthDiagnostics> {
@@ -436,7 +496,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     },
 
     async onShutdown() {
+      shuttingDown = true;
       for (const pending of pendingLogins.values()) {
+        pending.cancelled = true;
         await pending.handle.abort().catch(() => undefined);
       }
       pendingLogins.clear();

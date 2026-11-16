@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { EnvSecretRefBinding, PluginContext } from "@paperclipai/plugin-sdk";
 import { SESSION_SECRET_NAMESPACE } from "./constants.js";
 import type { TelegramAppCredentials } from "./types.js";
@@ -48,39 +47,31 @@ export async function resolveTelegramAppCredentials(
   };
 }
 
-export function newSessionSecretId(): string {
-  return randomUUID();
-}
-
 export async function putAccountSession(
   ctx: PluginContext,
   companyId: string,
-  secretId: string,
   session: string,
-): Promise<void> {
+): Promise<{ secretId: string; configPath: string }> {
   if (!session) throw new Error("Refusing to persist an empty Telegram session.");
-  await ctx.state.set({
-    scopeKind: "company",
-    scopeId: companyId,
-    namespace: SESSION_SECRET_NAMESPACE,
-    stateKey: secretId,
-  }, { session });
+  return ctx.secrets.store({ companyId, value: session });
 }
 
 export async function getAccountSession(
   ctx: PluginContext,
   companyId: string,
   secretId: string,
+  configPath: string,
 ): Promise<string | null> {
-  const value = await ctx.state.get({
-    scopeKind: "company",
-    scopeId: companyId,
-    namespace: SESSION_SECRET_NAMESPACE,
-    stateKey: secretId,
-  });
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const session = (value as { session?: unknown }).session;
-  return typeof session === "string" && session.length > 0 ? session : null;
+  if (!secretId || !configPath) return null;
+  try {
+    const session = await ctx.secrets.resolve(
+      { type: "secret_ref", secretId, version: "latest" },
+      { companyId, configPath },
+    );
+    return typeof session === "string" && session.length > 0 ? session : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteAccountSession(
@@ -88,10 +79,13 @@ export async function deleteAccountSession(
   companyId: string,
   secretId: string,
 ): Promise<void> {
+  if (secretId) {
+    await ctx.secrets.discard({ companyId, secretId }).catch(() => undefined);
+  }
   await ctx.state.delete({
     scopeKind: "company",
     scopeId: companyId,
     namespace: SESSION_SECRET_NAMESPACE,
     stateKey: secretId,
-  });
+  }).catch(() => undefined);
 }

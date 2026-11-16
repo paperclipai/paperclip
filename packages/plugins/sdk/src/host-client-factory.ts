@@ -151,12 +151,18 @@ export interface HostServices {
     fetch(params: WorkerToHostMethods["http.fetch"][0]): Promise<WorkerToHostMethods["http.fetch"][1]>;
   };
 
-  /** Provides `secrets.resolve`. */
+  /** Provides `secrets.resolve`, `secrets.store`, and `secrets.discard`. */
   secrets: {
     resolve(
       params: WorkerToHostMethods["secrets.resolve"][0],
       context?: WorkerHostCallContext,
     ): Promise<string>;
+    store(
+      params: WorkerToHostMethods["secrets.store"][0],
+    ): Promise<WorkerToHostMethods["secrets.store"][1]>;
+    discard(
+      params: WorkerToHostMethods["secrets.discard"][0],
+    ): Promise<void>;
   };
 
   /** Provides `activity.log`. */
@@ -256,6 +262,7 @@ export interface HostServices {
     respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
     listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
     getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+    createAttachment(params: WorkerToHostMethods["issues.createAttachment"][0]): Promise<WorkerToHostMethods["issues.createAttachment"][1]>;
   };
 
   /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
@@ -420,6 +427,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
+  "secrets.store": "secrets.write",
+  "secrets.discard": "secrets.write",
 
   // Activity
   "activity.log": "activity.log.write",
@@ -484,6 +493,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.respondInteraction": "issue.interactions.respond",
   "issues.listAttachments": "issue.attachments.read",
   "issues.getAttachmentContent": "issue.attachments.read",
+  "issues.createAttachment": "issue.attachments.write",
 
   // Approvals
   "approvals.list": "approvals.read",
@@ -796,6 +806,14 @@ export function createHostClientHandlers(
       const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
       return services.secrets.resolve({ ...params, companyId }, context);
     }),
+    "secrets.store": gated("secrets.store", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.store", params, context);
+      return services.secrets.store({ ...params, companyId });
+    }),
+    "secrets.discard": gated("secrets.discard", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.discard", params, context);
+      await services.secrets.discard({ ...params, companyId });
+    }),
 
     // Activity
     "activity.log": gated("activity.log", async (params) => {
@@ -997,6 +1015,9 @@ export function createHostClientHandlers(
     }),
     "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
       return services.issues.getAttachmentContent(params);
+    }),
+    "issues.createAttachment": gated("issues.createAttachment", async (params) => {
+      return services.issues.createAttachment(params);
     }),
 
     // Approvals

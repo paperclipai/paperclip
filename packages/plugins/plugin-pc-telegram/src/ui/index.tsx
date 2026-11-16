@@ -4,6 +4,7 @@ import {
   StatusBadge,
   usePluginAction,
   usePluginData,
+  usePluginStream,
   type PluginCompanySettingsPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 
@@ -33,40 +34,42 @@ type LoginStatus =
 
 const layout: CSSProperties = {
   display: "grid",
-  gap: "16px",
-  maxWidth: "720px",
+  gap: "calc(var(--spacing) * 4)",
+  maxWidth: "calc(var(--spacing) * 180)",
+  fontFamily: "var(--font-sans)",
 };
 
 const card: CSSProperties = {
   border: "1px solid var(--border)",
-  borderRadius: "12px",
-  padding: "16px",
+  borderRadius: "var(--radius-md)",
+  padding: "calc(var(--spacing) * 4)",
   display: "grid",
-  gap: "12px",
+  gap: "calc(var(--spacing) * 3)",
   background: "var(--card, transparent)",
 };
 
 const row: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
-  gap: "8px",
+  gap: "calc(var(--spacing) * 2)",
   alignItems: "center",
 };
 
 const muted: CSSProperties = {
-  fontSize: "13px",
-  opacity: 0.75,
+  fontSize: "var(--text-sm)",
+  color: "var(--muted-foreground)",
   lineHeight: 1.45,
 };
 
 const button: CSSProperties = {
   appearance: "none",
   border: "1px solid var(--border)",
-  borderRadius: "999px",
+  borderRadius: "var(--radius-md)",
   background: "transparent",
-  color: "inherit",
-  padding: "6px 12px",
-  fontSize: "13px",
+  color: "var(--foreground)",
+  padding: "calc(var(--spacing) * 1.5) calc(var(--spacing) * 3)",
+  fontSize: "var(--text-sm)",
+  fontFamily: "var(--font-sans)",
   cursor: "pointer",
 };
 
@@ -80,10 +83,12 @@ const primaryButton: CSSProperties = {
 const input: CSSProperties = {
   width: "100%",
   border: "1px solid var(--border)",
-  borderRadius: "8px",
-  padding: "8px 10px",
+  borderRadius: "var(--radius-md)",
+  padding: "calc(var(--spacing) * 2) calc(var(--spacing) * 2.5)",
   background: "transparent",
-  color: "inherit",
+  color: "var(--foreground)",
+  fontFamily: "var(--font-sans)",
+  fontSize: "var(--text-sm)",
 };
 
 function errorMessage(error: unknown): string {
@@ -106,8 +111,16 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loginChannel = companyId ? `telegram-login:${companyId}` : "telegram-login:none";
+  const loginStream = usePluginStream<{ status?: LoginStatus }>(loginChannel, companyId ? { companyId } : undefined);
 
   const status = login.data ?? { state: "idle" as const };
+
+  useEffect(() => {
+    if (!loginStream.lastEvent) return;
+    login.refresh();
+    overview.refresh();
+  }, [loginStream.lastEvent]);
 
   useEffect(() => {
     if (status.state === "connected") {
@@ -164,7 +177,7 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   return (
     <section aria-label="Connect Telegram" style={layout}>
       <div>
-        <h2 style={{ margin: "0 0 6px", fontSize: "20px" }}>Telegram</h2>
+        <h2 style={{ margin: 0, marginBottom: "calc(var(--spacing) * 1.5)", fontSize: "var(--text-xl)", fontFamily: "var(--font-sans)" }}>Telegram</h2>
         <p style={muted}>
           Connect a personal Telegram account with QR login. Incoming direct messages become issues.
           Assign the answering agent on the connection; changing it does not require a new login.
@@ -179,10 +192,10 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
         {status.state === "error" ? <p role="alert">{status.message}</p> : null}
         {error ? <p role="alert">{error}</p> : null}
         {qrUrl ? (
-          <img src={qrUrl} alt="Telegram login QR code" width={220} height={220} />
+          <img src={qrUrl} alt="Telegram login QR code" width={220} height={220} style={{ width: "calc(var(--spacing) * 55)", height: "calc(var(--spacing) * 55)" }} />
         ) : null}
         {status.state === "password_required" ? (
-          <form onSubmit={onPassword} style={{ display: "grid", gap: "8px" }}>
+          <form onSubmit={onPassword} style={{ display: "grid", gap: "calc(var(--spacing) * 2)" }}>
             <label>
               Cloud password{hint ? ` (${hint})` : ""}
               <input
@@ -195,11 +208,11 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
               />
             </label>
             <div style={row}>
-              <button type="submit" style={primaryButton} disabled={busy || password.length === 0}>
-                Continue
-              </button>
               <button type="button" style={button} onClick={() => void onCancel()}>
                 Cancel
+              </button>
+              <button type="submit" style={primaryButton} disabled={busy || password.length === 0}>
+                Continue
               </button>
             </div>
           </form>
@@ -262,12 +275,21 @@ function ConnectionCard({
   connection: PublicConnection;
   onChange: (patch: { assignedAgentId?: string | null; paused?: boolean }) => Promise<void>;
 }) {
+  const [error, setError] = useState<string | null>(null);
   const assigneeValue = useMemo(
     () => (connection.assignedAgentId ? `agent:${connection.assignedAgentId}` : ""),
     [connection.assignedAgentId],
   );
+  async function apply(patch: { assignedAgentId?: string | null; paused?: boolean }) {
+    setError(null);
+    try {
+      await onChange(patch);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
   return (
-    <div style={{ ...card, padding: "12px" }}>
+    <div style={{ ...card, padding: "calc(var(--spacing) * 3)" }}>
       <div style={row}>
         <strong>{connection.displayName}</strong>
         {connection.username ? <span style={muted}>@{connection.username}</span> : null}
@@ -275,7 +297,7 @@ function ConnectionCard({
         {connection.paused ? <StatusBadge label="Paused" status="pending" /> : null}
       </div>
       <div style={muted}>Incoming mode: dialog = task</div>
-      <label style={{ display: "grid", gap: "6px" }}>
+      <label style={{ display: "grid", gap: "calc(var(--spacing) * 1.5)" }}>
         Answering agent
         <AssigneePicker
           companyId={companyId}
@@ -283,15 +305,16 @@ function ConnectionCard({
           includeUsers={false}
           noneLabel="No answering agent"
           onChange={(_value, selection) => {
-            void onChange({ assignedAgentId: selection.assigneeAgentId });
+            void apply({ assignedAgentId: selection.assigneeAgentId });
           }}
         />
       </label>
+      {error ? <p role="alert">{error}</p> : null}
       <div style={row}>
         <button
           type="button"
           style={button}
-          onClick={() => void onChange({ paused: !connection.paused })}
+          onClick={() => void apply({ paused: !connection.paused })}
         >
           {connection.paused ? "Resume inbound" : "Pause inbound"}
         </button>

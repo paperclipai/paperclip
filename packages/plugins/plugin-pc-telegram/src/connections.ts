@@ -1,7 +1,6 @@
 import type { PluginContext, PluginEntityRecord } from "@paperclipai/plugin-sdk";
 import {
   ACCOUNT_ENTITY_TYPE,
-  COMPANY_INDEX_STATE_KEY,
   DEFAULT_INCOMING_MODE,
 } from "./constants.js";
 import type { IncomingMode, PublicTelegramAccount, TelegramConnection, TelegramConnectionPatch } from "./types.js";
@@ -31,11 +30,12 @@ export function connectionFromEntity(entity: PluginEntityRecord, liveAccountIds:
     incomingMode: asIncomingMode(data.incomingMode),
     paused: asBoolean(data.paused, false),
     sessionSecretId: asString(data.sessionSecretId) ?? "",
+    sessionConfigPath: asString(data.sessionConfigPath) ?? "",
     live: liveAccountIds.has(telegramUserId),
   };
 }
 
-export function publicConnection(connection: TelegramConnection): Omit<TelegramConnection, "sessionSecretId"> & { hasSession: boolean } {
+export function publicConnection(connection: TelegramConnection): Omit<TelegramConnection, "sessionSecretId" | "sessionConfigPath"> & { hasSession: boolean } {
   return {
     companyId: connection.companyId,
     telegramUserId: connection.telegramUserId,
@@ -86,6 +86,7 @@ export async function upsertConnection(
     companyId: string;
     account: PublicTelegramAccount;
     sessionSecretId: string;
+    sessionConfigPath?: string;
     assignedAgentId?: string | null;
     incomingMode?: IncomingMode;
     paused?: boolean;
@@ -113,9 +114,9 @@ export async function upsertConnection(
       incomingMode,
       paused,
       sessionSecretId: input.sessionSecretId,
+      sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     },
   });
-  await rememberCompanyId(ctx, input.companyId);
   return {
     companyId: input.companyId,
     telegramUserId: input.account.telegramUserId,
@@ -125,6 +126,7 @@ export async function upsertConnection(
     incomingMode,
     paused,
     sessionSecretId: input.sessionSecretId,
+    sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     live: false,
   };
 }
@@ -146,33 +148,29 @@ export async function patchConnection(
       displayName: existing.displayName,
     },
     sessionSecretId: existing.sessionSecretId,
+    sessionConfigPath: existing.sessionConfigPath,
     assignedAgentId: patch.assignedAgentId === undefined ? existing.assignedAgentId : patch.assignedAgentId,
     incomingMode: patch.incomingMode ?? existing.incomingMode,
     paused: patch.paused ?? existing.paused,
   }).then((connection) => ({ ...connection, live: liveAccountIds.has(telegramUserId) }));
 }
 
-export async function rememberCompanyId(ctx: PluginContext, companyId: string): Promise<void> {
-  const current = await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: COMPANY_INDEX_STATE_KEY,
-  });
-  const ids = Array.isArray(current)
-    ? current.filter((value): value is string => typeof value === "string")
-    : [];
-  if (ids.includes(companyId)) return;
-  await ctx.state.set({
-    scopeKind: "instance",
-    stateKey: COMPANY_INDEX_STATE_KEY,
-  }, [...ids, companyId]);
-}
-
 export async function listKnownCompanyIds(ctx: PluginContext): Promise<string[]> {
-  const current = await ctx.state.get({
-    scopeKind: "instance",
-    stateKey: COMPANY_INDEX_STATE_KEY,
-  });
-  return Array.isArray(current)
-    ? current.filter((value): value is string => typeof value === "string" && value.length > 0)
-    : [];
+  const ids = new Set<string>();
+  const limit = 100;
+  let offset = 0;
+  for (;;) {
+    const records = await ctx.entities.list({
+      entityType: ACCOUNT_ENTITY_TYPE,
+      scopeKind: "company",
+      limit,
+      offset,
+    });
+    for (const record of records) {
+      if (record.scopeId) ids.add(record.scopeId);
+    }
+    if (records.length < limit) break;
+    offset += records.length;
+  }
+  return [...ids];
 }

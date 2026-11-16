@@ -69,6 +69,7 @@ describe("inbound issue mapping", () => {
       }],
     }));
     expect(issue?.description).toContain("Voice message: voice.ogg");
+    expect(issue?.description).toContain("attachment:");
     expect(issue?.description).not.toContain("AQIDBA==");
     expect(harness.getState({
       scopeKind: "company",
@@ -80,6 +81,34 @@ describe("inbound issue mapping", () => {
       mimeType: "audio/ogg",
       kind: "voice",
     });
+  });
+
+  it("reopens a completed dialog before waking the assigned agent", async () => {
+    const harness = createTestHarness({ manifest });
+    const first = await ingestInboundMessage(harness.ctx, connection, inboundMessage());
+    await harness.ctx.issues.update(first!.id, { status: "done" }, COMPANY_ID);
+    const second = await ingestInboundMessage(
+      harness.ctx,
+      connection,
+      inboundMessage({ messageId: "2", text: "Still here" }),
+    );
+    expect(second?.id).toBe(first?.id);
+    expect(second?.status).toBe("todo");
+  });
+
+  it("creates one dialog when two messages for the same chat arrive together", async () => {
+    const harness = createTestHarness({ manifest });
+    const [first, second] = await Promise.all([
+      ingestInboundMessage(harness.ctx, connection, inboundMessage({ messageId: "1", text: "One" })),
+      ingestInboundMessage(harness.ctx, connection, inboundMessage({ messageId: "2", text: "Two" })),
+    ]);
+    expect(second?.id).toBe(first?.id);
+    const issues = await harness.ctx.issues.list({
+      companyId: COMPANY_ID,
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "1001:2002",
+    });
+    expect(issues).toHaveLength(1);
   });
 
   it("skips paused, group, and outgoing messages", () => {

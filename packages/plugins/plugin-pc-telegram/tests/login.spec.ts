@@ -44,6 +44,9 @@ describe("login state machine", () => {
     const qr = qrImageDataUrl(url);
     expect(url.startsWith("tg://login?token=")).toBe(true);
     expect(qr.imageDataUrl.startsWith("data:image/svg+xml")).toBe(true);
-    expect(decodeURIComponent(qr.imageDataUrl)).not.toContain("tg://login");
+    const svg = decodeURIComponent(qr.imageDataUrl);
+    expect(svg).not.toContain("tg://login");
+    expect(svg).toContain('fill="#fff"');
+    expect(svg).toContain('fill="#000"');
   });
 });

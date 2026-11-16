@@ -9,7 +9,6 @@ export const TOOL_SEND_TEXT = "telegram_send_text";
 
 export const SESSION_SECRET_NAMESPACE = "session-secrets";
 export const FILE_NAMESPACE = "inbound-files";
-export const COMPANY_INDEX_STATE_KEY = "connected-company-ids";
 
 export const LOGIN_STREAM_CHANNEL = "telegram-login";
 
