@@ -2242,6 +2242,8 @@ export {
   secretProviderConfigPayloadSchema,
   createSecretBindingSchema,
   rotateSecretSchema,
+  createDeploymentAssertionSchema,
+  type CreateDeploymentAssertion,
   secretBindingTargetSchema,
   updateSecretSchema,
   createToolActionRequestSchema,

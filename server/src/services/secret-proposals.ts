@@ -2,7 +2,7 @@ import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -21,6 +21,7 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { normalizeSecretKey, secretService } from "./secrets.js";
+import { secretDeploymentAssertionService } from "./secret-deployment-assertions.js";
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
@@ -605,6 +606,51 @@ export function createSecretProposalsService(db: Db) {
       throw notFound("Provider vault not found");
     }
     const provider = (providerConfig?.provider ?? "local_encrypted") as SecretProvider;
+    const occupied = await txDb
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, proposal.companyId),
+        eq(companySecrets.name, name),
+        isNull(companySecrets.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (occupied) {
+      if (occupied.scope !== "company") {
+        throw conflict(`Secret name already exists on a non-company secret: ${name}`);
+      }
+      if (occupied.systemPurpose) {
+        throw conflict(`Secret name is reserved by a system secret: ${name}`);
+      }
+      if (
+        proposal.valueFingerprintSha256
+        && await secretDeploymentAssertionService(txDb).hasPendingFor(occupied.id, proposal.valueFingerprintSha256)
+      ) {
+        return occupied;
+      }
+      const rotated = await secrets.rotate(
+        occupied.id,
+        { value, expectedLatestVersion: occupied.latestVersion },
+        { userId: input.resolvedByUserId, agentId: proposal.proposedByAgentId },
+      );
+      await logActivity(txDb, {
+        companyId: proposal.companyId,
+        actorType: "user",
+        actorId: input.resolvedByUserId,
+        action: "secret.rotated",
+        entityType: "secret",
+        entityId: rotated.id,
+        agentId: proposal.proposedByAgentId,
+        runId: proposal.originRunId,
+        details: {
+          name: rotated.name,
+          version: rotated.latestVersion,
+          proposalId: proposal.id,
+          authorization: "board_approval_in_place",
+        },
+      });
+      return rotated;
+    }
     const created = await secrets.create(
       proposal.companyId,
       {
@@ -682,6 +728,21 @@ export function createSecretProposalsService(db: Db) {
     return record.type === "plain" && record.value === "";
   }
 
+  function bindingPathAction(existing: unknown, binding: Record<string, unknown>): "write" | "repoint" | "conflict" {
+    if (isBlankConfigValue(existing)) return "write";
+    if (JSON.stringify(existing) === JSON.stringify(binding)) return "write";
+    const current = asRecord(existing);
+    if (
+      current.type === "secret_ref"
+      && binding.type === "secret_ref"
+      && typeof current.secretId === "string"
+      && current.secretId !== binding.secretId
+    ) {
+      return "repoint";
+    }
+    return "conflict";
+  }
+
   async function applyBindingApproval(
     txDb: Db,
     proposal: Proposal,
@@ -713,18 +774,19 @@ export function createSecretProposalsService(db: Db) {
           allowMissingOverride: false,
         }
       : { type: "secret_ref", secretId: secret.id, version: "latest" };
+    let repointedFromSecretId: string | null = null;
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
-      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
-        throw conflict(`Agent config path already exists: ${proposal.configPath}`);
-      }
+      const action = bindingPathAction(existing, binding);
+      if (action === "conflict") throw conflict(`Agent config path already exists: ${proposal.configPath}`);
+      if (action === "repoint") repointedFromSecretId = String(asRecord(existing).secretId);
       adapterConfig.env = { ...env, [key]: binding };
     } else {
       const existing = adapterConfig[proposal.configPath];
-      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
-        throw conflict(`Agent config path already exists: ${proposal.configPath}`);
-      }
+      const action = bindingPathAction(existing, binding);
+      if (action === "conflict") throw conflict(`Agent config path already exists: ${proposal.configPath}`);
+      if (action === "repoint") repointedFromSecretId = String(asRecord(existing).secretId);
       adapterConfig[proposal.configPath] = binding;
     }
     const updated = await updateAgentConfigurationInTransaction(txDb, target.id, { adapterConfig }, {
@@ -740,6 +802,22 @@ export function createSecretProposalsService(db: Db) {
       entityId: target.id,
       details: { adapterConfig: true, proposalId: proposal.id, configPath: proposal.configPath },
     });
+    if (repointedFromSecretId) {
+      await logActivity(txDb, {
+        companyId: proposal.companyId,
+        actorType: "user",
+        actorId: resolvedByUserId,
+        action: "agent.binding.repointed",
+        entityType: "agent",
+        entityId: target.id,
+        details: {
+          configPath: proposal.configPath,
+          fromSecretId: repointedFromSecretId,
+          toSecretId: binding.type === "secret_ref" ? String(binding.secretId) : null,
+          proposalId: proposal.id,
+        },
+      });
+    }
   }
 
   async function approve(companyId: string, proposalId: string, input: {
@@ -967,5 +1045,34 @@ export function createSecretProposalsService(db: Db) {
     return rejected;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
+  async function findProposalForAssertion(
+    secret: { id: string; companyId: string; name: string },
+    valueFingerprintSha256: string,
+  ) {
+    const row = await db
+      .select()
+      .from(companySecretProposals)
+      .where(and(
+        eq(companySecretProposals.companyId, secret.companyId),
+        eq(companySecretProposals.kind, "secret"),
+        eq(companySecretProposals.valueFingerprintSha256, valueFingerprintSha256),
+        gt(companySecretProposals.expiresAt, new Date()),
+        inArray(companySecretProposals.status, ["pending", "approved"]),
+        or(
+          and(
+            eq(companySecretProposals.status, "pending"),
+            eq(companySecretProposals.proposedName, secret.name),
+          ),
+          eq(companySecretProposals.createdSecretId, secret.id),
+        ),
+      ))
+      .orderBy(desc(companySecretProposals.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    if (row.status === "pending" && !row.valueCiphertext) return null;
+    return row;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt, findProposalForAssertion };
 }

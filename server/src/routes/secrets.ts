@@ -1,6 +1,9 @@
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import { createHash } from "node:crypto";
+import { and, eq, or } from "drizzle-orm";
+import { issues as issueRows, type Db } from "@paperclipai/db";
 import {
+  createDeploymentAssertionSchema,
   createSecretProviderConfigSchema,
   createSecretSchema,
   createUserSecretDefinitionSchema,
@@ -14,13 +17,15 @@ import {
   updateSecretSchema,
   updateUserSecretDefinitionSchema,
   updateUserSecretValueSchema,
+  type RotateSecret,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
+import { secretDeploymentAssertionService } from "../services/secret-deployment-assertions.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -81,6 +86,87 @@ function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], com
 function assertCompanySecretWrite(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
   assertCompanyAccess(req, companyId);
+}
+
+type SecretRotationGrant =
+  | { mode: "board" }
+  | {
+      mode: "agent";
+      agentId: string;
+      runId: string;
+      proposalId: string;
+      assertion: {
+        id: string;
+        deploymentLabel: string;
+        valueFingerprintSha256: string;
+        expectedLatestVersion: number;
+      };
+    };
+
+type SecretRotationDeps = {
+  db: Db;
+  proposals: Pick<ReturnType<typeof createSecretProposalsService>, "getById">;
+};
+
+async function assertSecretRotationWrite(
+  deps: SecretRotationDeps,
+  req: Parameters<typeof assertBoard>[0],
+  secret: { id: string; companyId: string },
+  body: RotateSecret,
+): Promise<SecretRotationGrant> {
+  if (req.actor.type === "board") return { mode: "board" };
+  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+    throw forbidden("Run-bound agent authentication required to rotate a secret");
+  }
+  if (req.actor.companyId !== secret.companyId) {
+    throw forbidden("Agent key cannot access another company");
+  }
+  if (!body.authorizationProposalId) {
+    throw forbidden("A board-approved secret proposal is required: pass authorizationProposalId");
+  }
+  const proposal = await deps.proposals.getById(secret.companyId, body.authorizationProposalId);
+  if (!proposal) throw forbidden("authorizationProposalId does not match a secret proposal in this company");
+  if (proposal.kind !== "secret") throw forbidden("The authorization proposal must be a secret proposal");
+  if (proposal.status !== "approved") throw forbidden("The authorization proposal has not been approved by the board");
+  if (!proposal.resolvedByUserId) throw forbidden("The authorization proposal has no attributable human approval");
+  if (proposal.expiresAt.getTime() <= Date.now()) {
+    throw forbidden("The authorization proposal expired before this rotation was executed");
+  }
+  if (proposal.createdSecretId !== secret.id) throw forbidden("The authorization proposal does not target this secret");
+  if (!proposal.valueFingerprintSha256) {
+    throw forbidden("The authorization proposal no longer carries its approved value fingerprint");
+  }
+  if (body.expectedLatestVersion === undefined) {
+    throw unprocessable("expectedLatestVersion is required when an agent rotates a secret");
+  }
+  if (!body.valueFingerprintSha256) {
+    throw forbidden("valueFingerprintSha256 is required when an agent rotates a secret");
+  }
+  if (body.valueFingerprintSha256 !== proposal.valueFingerprintSha256) {
+    throw conflict("valueFingerprintSha256 does not match the value approved in the proposal");
+  }
+  if (!body.deploymentAssertionId) {
+    throw forbidden("A deployment assertion is required: pass deploymentAssertionId");
+  }
+  const assertion = await secretDeploymentAssertionService(deps.db).loadGuarded(body.deploymentAssertionId, secret);
+  if (assertion.valueFingerprintSha256 !== body.valueFingerprintSha256) {
+    throw forbidden("The deployment assertion does not certify the value being written");
+  }
+  if (assertion.expectedLatestVersion !== body.expectedLatestVersion) {
+    throw conflict("The deployment assertion was registered for a different expectedLatestVersion");
+  }
+  return {
+    mode: "agent",
+    agentId: req.actor.agentId,
+    runId: req.actor.runId,
+    proposalId: proposal.id,
+    assertion: {
+      id: assertion.id,
+      deploymentLabel: assertion.deploymentLabel,
+      valueFingerprintSha256: assertion.valueFingerprintSha256,
+      expectedLatestVersion: assertion.expectedLatestVersion,
+    },
+  };
 }
 
 function currentUserId(req: Parameters<typeof assertBoard>[0]) {
@@ -1001,7 +1087,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   );
 
   router.post("/secrets/:id/rotate", validate(rotateSecretSchema), async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const fetched = await svc.getById(id);
     const existing = await getAccessibleResource(
@@ -1015,29 +1100,164 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
+    if (existing.status !== "active") {
+      throw unprocessable("Cannot rotate a non-active secret");
+    }
+
+    const grant = await assertSecretRotationWrite({ db, proposals }, req, existing, req.body);
+    const body = req.body as RotateSecret;
+    if (grant.mode === "agent") {
+      if (existing.provider === "local_encrypted" && typeof body.value === "string") {
+        if (createHash("sha256").update(body.value).digest("hex") !== body.valueFingerprintSha256) {
+          throw conflict("valueFingerprintSha256 does not match the value supplied for rotation");
+        }
+      }
+    }
 
     const rotated = await svc.rotate(
       id,
       {
-        value: req.body.value,
-        externalRef: req.body.externalRef,
-        providerVersionRef: req.body.providerVersionRef,
-        providerConfigId: req.body.providerConfigId,
+        value: body.value,
+        externalRef: body.externalRef,
+        providerVersionRef: body.providerVersionRef,
+        providerConfigId: body.providerConfigId,
+        expectedLatestVersion: body.expectedLatestVersion,
       },
-      { userId: req.actor.userId ?? "board", agentId: null },
+      grant.mode === "agent"
+        ? { userId: null, agentId: grant.agentId }
+        : { userId: req.actor.userId ?? "board", agentId: null },
     );
 
+    if (grant.mode === "board") {
+      await logActivity(db, {
+        companyId: rotated.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret.rotated",
+        entityType: "secret",
+        entityId: rotated.id,
+        details: { version: rotated.latestVersion },
+      });
+      res.json(rotated);
+      return;
+    }
+
+    const assertions = secretDeploymentAssertionService(db);
+    const liveFingerprint = await assertions.currentVersionFingerprint(rotated.id, rotated.latestVersion);
+    if (liveFingerprint !== body.valueFingerprintSha256) {
+      throw conflict("The rotated value does not match the fingerprint approved for this rotation");
+    }
+    const consumed = await assertions.consume(grant.assertion.id);
+    if (!consumed) throw conflict("The deployment assertion could not be consumed");
     await logActivity(db, {
       companyId: rotated.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: "agent",
+      actorId: grant.agentId,
+      agentId: grant.agentId,
+      runId: grant.runId,
       action: "secret.rotated",
       entityType: "secret",
       entityId: rotated.id,
-      details: { version: rotated.latestVersion },
+      details: {
+        version: rotated.latestVersion,
+        fingerprintSha256: body.valueFingerprintSha256,
+        deploymentLabel: grant.assertion.deploymentLabel,
+        authorizationProposalId: grant.proposalId,
+        deploymentAssertionId: grant.assertion.id,
+      },
     });
 
     res.json(rotated);
+  });
+
+  router.post("/secrets/:id/deployment-assertions", validate(createDeploymentAssertionSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
+    if (existing.status === "deleted") {
+      res.status(404).json({ error: "Secret not found" });
+      return;
+    }
+    if (existing.status !== "active") {
+      throw unprocessable("Cannot register a deployment assertion for a non-active secret");
+    }
+
+    let assertedByAgentId: string | null = null;
+    let originRunId: string | null = null;
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+        throw forbidden("Run-bound agent authentication required to assert a deployment");
+      }
+      if (req.actor.companyId !== existing.companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      assertedByAgentId = req.actor.agentId;
+      originRunId = req.actor.runId;
+    } else if (req.actor.type !== "board") {
+      throw forbidden("Board or run-bound agent access required");
+    }
+
+    const assertions = secretDeploymentAssertionService(db);
+    await assertions.assertRegistrationPreconditions({
+      secret: existing,
+      expectedLatestVersion: req.body.expectedLatestVersion,
+      valueFingerprintSha256: req.body.valueFingerprintSha256,
+      previousValueFingerprintSha256: req.body.previousValueFingerprintSha256,
+    });
+
+    const proposal = await proposals.findProposalForAssertion(existing, req.body.valueFingerprintSha256);
+    if (!proposal) {
+      throw forbidden("No secret proposal for this secret certifies the asserted value fingerprint");
+    }
+
+    const originIssueId = originRunId
+      ? await db
+          .select({ id: issueRows.id })
+          .from(issueRows)
+          .where(and(
+            eq(issueRows.companyId, existing.companyId),
+            or(eq(issueRows.executionRunId, originRunId), eq(issueRows.checkoutRunId, originRunId)),
+          ))
+          .then((rows) => rows[0]?.id ?? null)
+      : null;
+
+    const assertion = await assertions.register({
+      companyId: existing.companyId,
+      secretId: existing.id,
+      expectedLatestVersion: req.body.expectedLatestVersion,
+      valueFingerprintSha256: req.body.valueFingerprintSha256,
+      previousValueFingerprintSha256: req.body.previousValueFingerprintSha256,
+      deploymentLabel: req.body.deploymentLabel,
+      assertedByAgentId,
+      originRunId,
+      originIssueId,
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: assertedByAgentId ? "agent" : "user",
+      actorId: assertedByAgentId ?? req.actor.userId ?? "board",
+      agentId: assertedByAgentId,
+      runId: originRunId,
+      action: "secret.deployment_asserted",
+      entityType: "secret",
+      entityId: existing.id,
+      details: {
+        deploymentAssertionId: assertion.id,
+        deploymentLabel: assertion.deploymentLabel,
+        expectedLatestVersion: assertion.expectedLatestVersion,
+        fingerprintSha256: assertion.valueFingerprintSha256,
+        proposalId: proposal.id,
+      },
+    });
+
+    res.status(201).json(assertion);
   });
 
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {

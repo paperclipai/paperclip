@@ -106,14 +106,37 @@ function requireSecretRotationInput(
   }
 }
 
+const secretValueFingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 export const rotateSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().guid().optional().nullable(),
+  expectedLatestVersion: z.number().int().nonnegative().optional(),
+  valueFingerprintSha256: secretValueFingerprintSchema.optional(),
+  authorizationProposalId: z.string().guid().optional(),
+  deploymentAssertionId: z.string().guid().optional(),
 }).superRefine(requireSecretRotationInput);
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
+
+export const createDeploymentAssertionSchema = z.object({
+  expectedLatestVersion: z.number().int().nonnegative(),
+  valueFingerprintSha256: secretValueFingerprintSchema,
+  previousValueFingerprintSha256: secretValueFingerprintSchema,
+  deploymentLabel: z.string().trim().min(1).max(200),
+}).superRefine((value, ctx) => {
+  if (value.valueFingerprintSha256 === value.previousValueFingerprintSha256) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["valueFingerprintSha256"],
+      message: "The asserted value must differ from the value currently deployed",
+    });
+  }
+});
+
+export type CreateDeploymentAssertion = z.infer<typeof createDeploymentAssertionSchema>;
 
 export const updateSecretSchema = z.object({
   name: z.string().min(1).optional(),

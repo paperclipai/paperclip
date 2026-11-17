@@ -169,6 +169,7 @@ export { remoteAgentProfiles } from "./remote_agent_profiles.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { companySecretProposals } from "./company_secret_proposals.js";
+export { companySecretDeploymentAssertions } from "./company_secret_deployment_assertions.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export {

@@ -701,6 +701,7 @@ export {
   secretProviderConfigPayloadSchema,
   createSecretBindingSchema,
   rotateSecretSchema,
+  createDeploymentAssertionSchema,
   secretBindingTargetSchema,
   updateSecretSchema,
   type CreateSecretBinding,
@@ -717,6 +718,7 @@ export {
   type RemoteSecretImport,
   type RemoteSecretImportSelection,
   type RotateSecret,
+  type CreateDeploymentAssertion,
   type UpdateSecret,
 } from "./secret.js";
 
