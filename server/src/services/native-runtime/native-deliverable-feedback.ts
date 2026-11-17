@@ -202,8 +202,9 @@ function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
             : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
           const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
           const namedDestination = /^\s+(?:is|was)\s+(?:(?:currently|now|already)\s+)?(?:named|called|titled)\b/iu.test(suffix);
-          const comparison = !namedDestination && /\bas\s+(?:(?:a|an|the)\s+)*$/iu.test(prefix)
-            && /^\s+(?:that\s+)?(?:(?:actually|really|still|previously|currently|now|already)\s+)?(?:reads|read|is|are|was|were|appears|looks|stands|says|shows|exists)\b/iu.test(suffix);
+          const adverb = "(?:(?:actually|really|still|previously|currently|now|already)\\s+)?";
+          const comparison = !namedDestination && /\bas\s+the\s+$/iu.test(prefix)
+            && new RegExp(`^\\s+(?:that\\s+${adverb}(?:reads|read|says|said|shows|showed|contains|contained)|${adverb}(?:reads|read|is|are|was|were|appears|looks|stands|says|shows|exists))\\b`, "iu").test(suffix);
           if (comparison) return false;
           const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
             || !inputReference.test(beforeDestination));
