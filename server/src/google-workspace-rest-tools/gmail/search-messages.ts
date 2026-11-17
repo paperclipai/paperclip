@@ -98,6 +98,7 @@ export const searchMessages = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer messages with a smaller pageSize, or use messageFormat MINIMAL, then read single messages with get_message.",
   async run(input, http) {
     const list = await http.send<GmailMessageList>(listMessagesRequest(input));
     const messages = await readMessages(messageIds(list), input, http);

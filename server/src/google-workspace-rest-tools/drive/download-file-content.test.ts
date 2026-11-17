@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { GoogleToolError } from "../errors.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
-import { MAX_RESULT_BYTES, serializedResultBytes } from "../tool.js";
+import { FALLBACK_MAX_RESULT_BYTES, serializedResultBytes } from "../tool.js";
 import { downloadPlan } from "./content.js";
 import { downloadFileContent } from "./download-file-content.js";
-import { MAX_CONTENT_BYTES, READ_LESS, type RestFile } from "./file.js";
+import { READ_LESS, type RestFile } from "./file.js";
 import { DOC, DRAWING, FOLDER, FORM, HUGE_PDF, PDF, SHEET, SLIDES, TEXT_FILE } from "./fixtures/drive-rest.js";
 
-const plan = (file: RestFile, exportMimeType?: string, revision?: string) => downloadPlan(file.id!, file, exportMimeType, revision, READ_LESS.download);
+const plan = (file: RestFile, exportMimeType?: string, revision?: string) => downloadPlan(file.id!, file, exportMimeType, revision, READ_LESS.download, FALLBACK_MAX_RESULT_BYTES);
 const target = (file: RestFile, exportMimeType?: string, revision?: string) => {
   const planned = plan(file, exportMimeType, revision);
   const query = Object.entries(planned.request.query ?? {}).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]);
@@ -36,7 +36,7 @@ describe("download plan", () => {
     [FOLDER, undefined, undefined, /have no content to download/],
     [FORM, undefined, undefined, /have no content to download/],
     [DOC, undefined, "rev0001", /Earlier revisions/],
-    [HUGE_PDF, undefined, undefined, /This file is 10485761 bytes, more than the 250000 bytes/],
+    [HUGE_PDF, undefined, undefined, /This file is 10,485,761 bytes, more than the 250,000 bytes/],
     [DOC, "image/png", undefined, /cannot be exported as image\/png. Use one of: text\/plain/],
     [SHEET, "text/plain", undefined, /cannot be exported as text\/plain/],
     [SLIDES, "application/x-anything", undefined, /cannot be exported/],
@@ -46,8 +46,8 @@ describe("download plan", () => {
   });
 
   it("always addresses the file the caller named, not an ID from Google's answer", () => {
-    expect(downloadPlan("callerFile1", { ...PDF, id: "otherFile9" }, undefined, undefined, "").request.path).toBe("/drive/v3/files/callerFile1");
-    expect(downloadPlan("callerFile1", { ...DOC, id: "otherFile9" }, undefined, undefined, "").request.path).toBe("/drive/v3/files/callerFile1/export");
+    expect(downloadPlan("callerFile1", { ...PDF, id: "otherFile9" }, undefined, undefined, "", FALLBACK_MAX_RESULT_BYTES).request.path).toBe("/drive/v3/files/callerFile1");
+    expect(downloadPlan("callerFile1", { ...DOC, id: "otherFile9" }, undefined, undefined, "", FALLBACK_MAX_RESULT_BYTES).request.path).toBe("/drive/v3/files/callerFile1/export");
   });
 });
 
@@ -82,21 +82,21 @@ describe("download_file_content tool", () => {
     const { fetch, calls } = fakeGoogle(() => json(HUGE_PDF));
     const result = await downloadFileContent.call({ fileId: HUGE_PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(calls).toHaveLength(1);
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file is 10485761 bytes, more than the 250000 bytes this tool returns, so nothing was returned. ${READ_LESS.download}` }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file is 10,485,761 bytes, more than the 250,000 bytes this tool can return, so nothing was returned. ${READ_LESS.download}` }] });
   });
 
   it("refuses an export that streams past the cap, and never returns a cut-short result", async () => {
     const { fetch } = fakeGoogle(({ url }) => (url.pathname.endsWith("/export")
       ? new Response(new ReadableStream({
         start(controller) {
-          controller.enqueue(new Uint8Array(MAX_CONTENT_BYTES));
+          controller.enqueue(new Uint8Array(FALLBACK_MAX_RESULT_BYTES));
           controller.enqueue(new Uint8Array(1));
           controller.close();
         },
       }))
       : json(SHEET)));
     const result = await downloadFileContent.call({ fileId: SHEET.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file's content is more than the 250000 bytes this tool returns, so nothing was returned. ${READ_LESS.download}` }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file's content is more than the 250,000 bytes this tool can return, so nothing was returned. ${READ_LESS.download}` }] });
   });
 
   it("bounds the final serialized result: the largest file that fits is returned, one byte more is refused", async () => {
@@ -111,10 +111,10 @@ describe("download_file_content tool", () => {
       if (!(await run(largest + step)).isError) largest += step;
     }
     const fits = await run(largest);
-    expect(serializedResultBytes(fits)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
-    expect(serializedResultBytes(fits)).toBeGreaterThan(MAX_RESULT_BYTES - 16);
+    expect(serializedResultBytes(fits)).toBeLessThanOrEqual(FALLBACK_MAX_RESULT_BYTES);
+    expect(serializedResultBytes(fits)).toBeGreaterThan(FALLBACK_MAX_RESULT_BYTES - 16);
     const over = await run(largest + 3);
-    expect((over.content[0] as { text: string }).text).toMatch(/^The result is \d+ bytes, more than the 250000 bytes this tool returns, so nothing was returned\. This tool cannot return part of a file/);
+    expect((over.content[0] as { text: string }).text).toMatch(/^The result is [\d,]+ bytes, more than the 250,000 bytes this tool can return, so it was not returned\. This tool cannot return part of a file/);
   });
 
   it("reports Google's export size limit as too large", async () => {

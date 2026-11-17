@@ -344,6 +344,9 @@ const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // grace must exceed the normal sign path (approval-snapshot fetch + interaction
 // create) so a live create keeps its own row.
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
+const MCP_RESULT_FRAMING_BYTES = Buffer.byteLength(
+  `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: `paperclip-tool-${randomUUID()}-version`, result: {} })}`, "utf8") - "{}".length;
+export const GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES = MAX_REMOTE_MCP_RESPONSE_BYTES - MCP_RESULT_FRAMING_BYTES;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 // A tool listing decides access for every tool in the company. The decisions
 // of one listing share a read cache, so this cap only limits how many of them
@@ -8127,6 +8130,7 @@ export function createToolGatewayService(
           service: workspaceTarget.service,
           toolName: workspaceTarget.leaf,
           arguments: parameters,
+          maxResultBytes: GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES,
           credentialHeaders,
           signal,
           fetch: (url, init) => options.remoteHttpRequest

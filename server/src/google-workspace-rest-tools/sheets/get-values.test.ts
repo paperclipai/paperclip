@@ -3,8 +3,8 @@ import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { EMPTY_VALUES, FORMATTED_VALUES, SPREADSHEET_ID } from "./fixtures/sheets-rest.js";
 import { getValues, getValuesRequest, getValuesResult } from "./get-values.js";
-import { serializedResultBytes } from "../tool.js";
-import { boundedReadResult, MAX_CELLS_PER_CALL, MAX_RESULT_BYTES } from "./spreadsheet.js";
+import { FALLBACK_MAX_RESULT_BYTES, serializedResultBytes } from "../tool.js";
+import { boundedReadResult, MAX_CELLS_PER_CALL } from "./spreadsheet.js";
 
 const text = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
 
@@ -34,24 +34,29 @@ describe("get_values result", () => {
     expect(getValuesResult(EMPTY_VALUES).structuredContent).toEqual({ range: "Sheet1!A1:Z100" });
   });
 
+  const callWith = (values: unknown[][]) => getValues.call({ spreadsheetId: SPREADSHEET_ID, range: "Sheet1!A1:Z" },
+    createGoogleHttp({ accessToken: "t", fetch: fakeGoogle(() => json({ range: "Sheet1!A1:Z", values })).fetch }));
+
   it.each([
     ["too many cells", [Array.from({ length: MAX_CELLS_PER_CALL + 1 }, () => "")], /50,001 cells; the limit is 50,000/],
-    ["too many bytes", [["x".repeat(130_000)]], /bytes; the limit is 250,000 per call\. Ask for a narrower range/],
-  ])("refuses %s instead of cutting the result", (_name, values, message) => {
-    expect(() => getValuesResult({ range: "Sheet1!A1:Z", values })).toThrow(message);
+    ["too many bytes", [["x".repeat(130_000)]], /bytes, more than the 250,000 bytes this tool can return, so it was not returned\. Ask for a narrower range/],
+  ])("refuses %s instead of cutting the result", async (_name, values, message) => {
+    const result = await callWith(values);
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(message);
   });
 
-  it.each([["x"], ["é"], ["\""]])("bounds the whole serialized result, text and structured content together, for cells of %j", (unit) => {
-    const sized = (count: number) => ({ range: "Sheet1!A1:B2", values: [[unit.repeat(count)], ["tail"]] });
+  it.each([["x"], ["é"], ["\""]])("bounds the whole serialized result, text and structured content together, for cells of %j", async (unit) => {
+    const sized = (count: number) => ({ range: "Sheet1!A1:Z", values: [[unit.repeat(count)], ["tail"]] });
     const bytes = (count: number) => serializedResultBytes({ content: [{ type: "text", text: JSON.stringify(sized(count)) }], structuredContent: sized(count) });
     let largest = 0;
-    for (let step = 1 << 20; step >= 1; step >>= 1) if (bytes(largest + step) <= MAX_RESULT_BYTES) largest += step;
-    const near = getValuesResult(sized(largest));
+    for (let step = 1 << 20; step >= 1; step >>= 1) if (bytes(largest + step) <= FALLBACK_MAX_RESULT_BYTES) largest += step;
+    const near = await callWith(sized(largest).values);
+    expect(near.isError).toBeUndefined();
     expect(serializedResultBytes(near)).toBe(bytes(largest));
-    expect(serializedResultBytes(near)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
-    expect(serializedResultBytes(near)).toBeGreaterThan(MAX_RESULT_BYTES - 16);
-    expect(bytes(largest + 1)).toBeGreaterThan(MAX_RESULT_BYTES);
-    expect(() => getValuesResult(sized(largest + 1))).toThrow(/bytes; the limit is 250,000 per call\. Ask for a narrower range/);
+    expect(serializedResultBytes(near)).toBeGreaterThan(FALLBACK_MAX_RESULT_BYTES - 16);
+    expect(bytes(largest + 1)).toBeGreaterThan(FALLBACK_MAX_RESULT_BYTES);
+    expect(text(await callWith(sized(largest + 1).values))).toMatch(/bytes, more than the 250,000 bytes this tool can return, so it was not returned\. Ask for a narrower range/);
   });
 
   it("accepts exactly the cell limit and refuses one more", () => {

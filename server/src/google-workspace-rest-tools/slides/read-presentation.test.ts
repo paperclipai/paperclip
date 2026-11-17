@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_RESULT_BYTES } from "../tool.js";
+import { FALLBACK_MAX_RESULT_BYTES } from "../tool.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { DECK, DECK_TEXT, shape, slide } from "./fixtures/slides-rest.js";
@@ -61,11 +61,12 @@ describe("read_presentation tool", () => {
 
   it("refuses a result over the size limit and suggests fields", async () => {
     const line = "y".repeat(10_000);
-    const big = { presentationId: "big", slides: Array.from({ length: Math.ceil(MAX_RESULT_BYTES / 20_000) + 5 }, (_, index) => slide(`s${index}`, [shape(`e${index}`, [{ text: line }])])) };
+    const big = { presentationId: "big", slides: Array.from({ length: Math.ceil(FALLBACK_MAX_RESULT_BYTES / 20_000) + 5 }, (_, index) => slide(`s${index}`, [shape(`e${index}`, [{ text: line }])])) };
     const { fetch } = fakeGoogle(() => json(big));
     const result = await readPresentation.call({ presentationId: "big" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/^This presentation is too large to return in one result .*Pass fields to read only part of it/);
-    expect((result.content[0] as { text: string }).text).toMatch(/\(\d+ KB; the limit is 250 KB\)/);
+    expect((result.content[0] as { text: string }).text).toMatch(/^The result is [\d,]+ bytes, more than the 250,000 bytes this tool can return, so it was not returned\. Pass fields to read only part of it/);
+    const fields = await readPresentation.call({ presentationId: "big", fields: ["slides"] }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((fields.content[0] as { text: string }).text).toMatch(/so it was not returned\. Ask for fewer fields\.$/);
   });
 });
