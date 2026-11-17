@@ -517,6 +517,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (!wasAlreadyArchived) {
           // The separate archive entry shares update()'s agent-before-mirror order.
           await tx.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id)).orderBy(agents.id).for("update");
+          await prepareMuseReceiverAuthorityMutation(tx,{companyId:id});
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
