@@ -31,6 +31,7 @@ import {
 import { toolAccessService, type McpToolDescriptor } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { retirePluginAppConnections } from "../services/plugin-app-catalog.js";
+import { connectorKeyForConnection } from "../services/connector-telemetry.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -206,6 +207,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const gallery = await request(f.app).get(`/api/companies/${f.company.id}/tools/gallery`);
     expect(gallery.body.pluginApps).toEqual([expect.objectContaining({ slug: PLUGIN_SLUG, plugin: { pluginKey: PLUGIN_KEY, appSlug: "circleback" },
       methods: pluginCircleback.methods })]);
+    // Telemetry never names a plugin's connector.
+    expect(connectorKeyForConnection({ config: { sourceTemplateKey: PLUGIN_SLUG } })).toBe("custom");
+    expect(connectorKeyForConnection({ config: { sourceTemplateKey: "circleback" } })).toBe("circleback");
     expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, f.company.id))).toHaveLength(0);
     expect(await f.gateway.listToolsForSession(f.sessions.a.token)).toEqual(await f.gateway.listToolsForSession(f.sessions.b.token));
 

@@ -852,7 +852,14 @@ export function toolAccessService(
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
-  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  const publishCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  // Every catalog refresh (setup, scheduled discovery, or a read that
+  // refreshes) classifies tools from the connector definition, so make sure
+  // plugin-provided definitions are current first.
+  const refreshCatalog: typeof publishCatalog = async (...args) => {
+    await loadPluginAppCatalog(db);
+    return publishCatalog(...args);
+  };
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
   const listAppsNeedingAttention = createToolAppAttention(db, now);
   const aggregatorAccounts = createAggregatorAccounts(db, { options, secrets, audit, credentials: credentialAccess, getConnectionRow, requestRemoteHttpEndpoint, remoteTools: catalogDiscovery.remoteTools });
@@ -4801,7 +4808,7 @@ export function toolAccessService(
 
     checkHealth: checkConnectionHealth,
 
-    refreshCatalog: withPluginApps(refreshCatalog),
+    refreshCatalog,
 
     configureRailwaySsh: async (connectionId: string, companyId: string, input: ConfigureRailwaySsh, actor: ActorInfo): Promise<RailwaySshSetup | null> => {
       await actor.managementContext?.reauthorize();
