@@ -261,7 +261,7 @@
     "packages/shared/src/github-skill-repository.ts": "b00a9963472723bcb7fcd433aae442f75d7a138b",
     "packages/shared/src/gitignore-runtime.test.ts": "e334ab0eca8faeab5807171983ec9102a3f1c734",
     "packages/shared/src/google-workspace-connectors.test.ts": "b92d1c51f4ac8323528b35bc041073f814acd5c9",
-    "packages/shared/src/google-workspace-connectors.ts": "97702d65b28cc414efaef9377a03be1101d1199d",
+    "packages/shared/src/google-workspace-connectors.ts": "dc3cf14356ad8dc04e6b4f7bf13b922af24cc4bf",
     "packages/shared/src/grok-bot.ts": "9de68f00e7926c397729ff62bf8e277f5a41c525",
     "packages/shared/src/heartbeat-inbox.ts": "227dc89705c20460ca02194091cb162e11503186",
     "packages/shared/src/home-paths.test.ts": "81235c17c376224e1be3abd3f034a8400f079c66",
