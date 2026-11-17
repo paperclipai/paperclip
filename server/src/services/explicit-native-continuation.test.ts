@@ -602,7 +602,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     }
     await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
   });
-  it("reconciles a stopped native run's orphaned local lease before delivering its interrupted message", async () => {
+  // The local driver records `driver: "local"` and the environment on every
+  // lease it acquires (the live shape). A bare row with neither must not route
+  // to the sandbox driver, whose teardown has no config and fails forever.
+  it.each(["recorded_local_driver", "bare_local_row"] as const)(
+    "reconciles a stopped native run's orphaned local lease before delivering its interrupted message: %s", async shape => {
     const f = await seed(), queueId = randomUUID();
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted",
@@ -610,9 +614,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         interruptedIssueId: f.issueId, interruptedByActorType: "user", interruptedByActorId: "board",
         queuedCommentInterruptQueueId: queueId },
     }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    // The schema keeps one local environment row; reuse it when it exists.
+    const environment = shape === "recorded_local_driver"
+      ? (await db.select().from(environments).where(eq(environments.driver, "local")).limit(1))[0]
+        ?? (await db.insert(environments).values({ name: "Local", driver: "local" }).returning())[0]
+      : null;
     const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId,
       issueId: f.issueId, heartbeatRunId: f.sourceRunId, provider: "local",
       status: "active", leasePolicy: "ephemeral",
+      ...(environment ? { environmentId: environment.id, metadata: { agentId: f.agentId, driver: "local" } } : {}),
     }).returning();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
       status: "running", contextSnapshot: { issueId: randomUUID() } });

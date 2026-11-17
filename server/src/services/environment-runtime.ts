@@ -823,14 +823,18 @@ function transientSandboxResumeFailure(error: unknown): boolean {
 }
 
 function getLeaseDriverKey(
-  lease: Pick<EnvironmentLease, "metadata">,
+  lease: Pick<EnvironmentLease, "metadata"> & Partial<Pick<EnvironmentLease, "provider">>,
   environment: Pick<Environment, "driver"> | null,
 ): string {
   const leaseDriver = typeof lease.metadata?.driver === "string" ? lease.metadata.driver : null;
   // An orphan `pending_cleanup` row whose environment a delete removed keeps its
-  // driver in the metadata, so the sweep still finds the sandbox driver. Fall
-  // back to "sandbox" because only sandbox leases record orphan cleanup.
-  return leaseDriver ?? environment?.driver ?? "sandbox";
+  // driver in the metadata, so the sweep still finds the sandbox driver. A local
+  // bookkeeping lease that recorded neither owns no provider resource; routing
+  // it to the sandbox driver would fail every cleanup attempt for want of a
+  // sandbox config and strand its run's successors behind `local_cleanup`.
+  // Otherwise fall back to "sandbox" because only sandbox leases record orphan
+  // cleanup.
+  return leaseDriver ?? environment?.driver ?? (lease.provider === "local" ? "local" : "sandbox");
 }
 
 function toEnvironmentLeaseSnapshot(row: typeof environmentLeases.$inferSelect): EnvironmentLease {
