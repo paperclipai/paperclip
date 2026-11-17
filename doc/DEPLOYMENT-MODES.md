@@ -127,7 +127,8 @@ user. Each local OpenCode session starts inside a per-session operating-system
 scope that all of its processes inherit: macOS uses a Seatbelt profile through
 `sandbox-exec`, and Linux uses a Landlock domain. The session keeps its own saved
 state, its own company directory and the shared instance directories. It cannot
-read other sessions' saved state, other companies' directories, run logs,
+read other sessions' saved state or provider homes, other companies'
+directories, run logs,
 provider traces, storage, backups, the database files, `secrets/` or the
 instance `.env`. Locations configured outside the instance directory
 (`PAPERCLIP_RUNNER_STATE_DIR`, `PAPERCLIP_STORAGE_LOCAL_DIR`,

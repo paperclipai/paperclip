@@ -46,7 +46,7 @@ describe("runnerConfinementScope", () => {
       { PAPERCLIP_PROVIDER_TRACE_PATH: trace },
     );
     expect(scope.hidden).toEqual(expect.arrayContaining([
-      paths.durableSessions, paths.runnerStates, paths.controlPlane, paths.opencode, paths.runLogs,
+      paths.durableSessions, paths.runnerStates, paths.controlPlane, paths.opencode, paths.acpx, paths.runLogs,
       paths.providerTraces, paths.database, paths.secrets, paths.storage, paths.environmentFile,
     ]));
     expect(scope.exposed).toEqual([join(paths.durableSessions, "own-scope"), join(paths.opencode, "own_session"), trace]);
@@ -133,6 +133,7 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   r otherSessionConfig "$INSTANCE/runtime/paperclip-runner/durable-sessions/other-scope/opencode/s/config/opencode/opencode.json"
   r otherOpencodeSession "$INSTANCE/runtime/paperclip-runner/opencode/other-session/config.json"
   r secrets "$INSTANCE/secrets/master.key"
+  r acpxCredentials "$INSTANCE/runtime/paperclip-runner/acpx/other-session/home/auth.json"
   r databaseWal "$INSTANCE/db/pg_wal/000000010000000000000001"
   r runLog "$INSTANCE/data/run-logs/c/a/other.ndjson"
   r environmentFile "$INSTANCE/.env"
@@ -160,6 +161,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
     writeFixture(join(paths.opencode, "other-session", "config.json"));
     writeFixture(join(paths.opencode, "own-session", "config.json"), "own\n");
     writeFixture(join(paths.secrets, "master.key"));
+    writeFixture(join(paths.acpx, "other-session", "home", "auth.json"));
     writeFixture(join(paths.database, "pg_wal", "000000010000000000000001"));
     writeFixture(join(paths.runLogs, "c", "a", "other.ndjson"));
     writeFixture(paths.environmentFile);
@@ -199,7 +201,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
 
   it("leaves an unconfined session able to read every session's state", async () => {
     const result = await launch(false);
-    expect(result).toMatchObject({ otherSessionConfig: "readable", secrets: "readable", sessionListing: "listable", otherCompanyFile: "readable" });
+    expect(result).toMatchObject({ otherSessionConfig: "readable", secrets: "readable", acpxCredentials: "readable", sessionListing: "listable", otherCompanyFile: "readable" });
   }, 60_000);
 
   it("keeps the session to its own state", async () => {
@@ -209,6 +211,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       otherSessionConfig: "denied",
       otherOpencodeSession: "denied",
       secrets: "denied",
+      acpxCredentials: "denied",
       databaseWal: "denied",
       runLog: "denied",
       environmentFile: "denied",

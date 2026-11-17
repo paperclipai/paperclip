@@ -136,9 +136,10 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
     const parent = dirname(value);
     if (!scope.traversable.includes(parent)) scope.traversable.push(parent);
   };
-  for (const value of [paths.durableSessions, paths.runnerStates, paths.controlPlane, paths.sessions, paths.opencode, paths.runLogs,
+  // ACPX provider homes hold other sessions' provider credentials; confined providers do not use them.
+  for (const value of [paths.durableSessions, paths.runnerStates, paths.controlPlane, paths.sessions, paths.opencode, paths.acpx, paths.runLogs,
     paths.providerTraces, paths.backups, paths.storage, paths.workspaceOperationLogs, paths.database, paths.secrets, paths.environmentFile]) hide(value);
-  scope.precreated.push(paths.acpx, ...INSTANCE_SHARED_DIRECTORIES.map((name) => join(instanceRoot, ...name.split("/"))));
+  scope.precreated.push(...INSTANCE_SHARED_DIRECTORIES.map((name) => join(instanceRoot, ...name.split("/"))));
   const companyId = policy.companyId?.trim();
   if (companyId && /^[A-Za-z0-9._-]+$/.test(companyId) && companyId !== "." && companyId !== "..") {
     const companies = join(instanceRoot, "companies");
