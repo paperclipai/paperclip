@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawnRunner, waitForProcess } from "./durable-prp-control-plane.js";
@@ -9,6 +8,7 @@ import {
   RUNNER_CONFINEMENT_UNAVAILABLE,
   confineRunnerLaunch,
   instanceSessionStatePaths,
+  landlockTemporaryConflict,
   resetRunnerConfinementAvailability,
   runnerConfinementScope,
   runnerConfinementUnavailableReason,
@@ -23,7 +23,8 @@ const OPENCODE_LAUNCH_PROFILE = {
 
 let root: string;
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "runner-confinement-")));
+  // Outside the shared temporary directory: Linux does not confine instance state there.
+  root = realpathSync(mkdtempSync(join(process.cwd(), ".runner-confinement-test-")));
   resetRunnerConfinementAvailability();
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -101,6 +102,16 @@ describe("confineRunnerLaunch", () => {
   it("refuses by name when confinement is required but unavailable", () => {
     expect(() => confineRunnerLaunch({ policy: { mode: "required", instanceRoot: root }, command: "/bin/x", args: [], environment: {}, platform: "win32" }))
       .toThrow(expect.objectContaining({ code: RUNNER_CONFINEMENT_UNAVAILABLE }));
+  });
+
+  it("does not confine on Linux when instance state lies in a shared temporary directory", () => {
+    const launch = (mode: "auto" | "required") => confineRunnerLaunch({
+      policy: { mode, instanceRoot: join(root, "instance") }, command: "/bin/x", args: [], environment: {},
+      platform: "linux", sharedTemporaryDirectories: [root],
+    });
+    expect(launch("auto")).toBeNull();
+    expect(() => launch("required")).toThrow(expect.objectContaining({ code: RUNNER_CONFINEMENT_UNAVAILABLE }));
+    expect(landlockTemporaryConflict("darwin", runnerConfinementScope({ mode: "auto", instanceRoot: join(root, "i") }, [], {}), [root])).toBeNull();
   });
 
   it("falls back to an unconfined launch in auto mode when unavailable", () => {

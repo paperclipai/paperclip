@@ -385,6 +385,19 @@ export function resetRunnerConfinementAvailability() {
   availability.clear();
 }
 
+/**
+ * Landlock hides a path by leaving its ancestors ungranted, and an ungranted
+ * directory accepts no new entries. Instance state inside a shared temporary
+ * directory would stop every confined process creating files there (mktemp,
+ * runnerd's activity pipe), so such a host does not confine on Linux.
+ */
+export function landlockTemporaryConflict(platform: NodeJS.Platform, scope: RunnerConfinementScope, sharedTemporaryDirectories?: readonly string[]) {
+  if (platform !== "linux") return null;
+  const shared = [...new Set((sharedTemporaryDirectories ?? [tmpdir(), "/tmp", "/var/tmp"]).map(canonicalPath))];
+  const conflict = scope.hidden.map(canonicalPath).find((hidden) => shared.some((temporary) => hidden !== temporary && within(hidden, temporary)));
+  return conflict ? "instance state lies in a shared temporary directory" : null;
+}
+
 const warned = new Set<string>();
 
 /**
@@ -398,11 +411,15 @@ export function confineRunnerLaunch(input: {
   args: readonly string[];
   environment: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  /** Test seam: the shared temporary directories (default: the OS temporary directory, /tmp and /var/tmp). */
+  sharedTemporaryDirectories?: readonly string[];
 }): { command: string; args: string[]; scope: RunnerConfinementScope } | null {
   const { policy } = input;
   if (policy.mode === "off") return null;
   const platform = input.platform ?? process.platform;
-  const reason = runnerConfinementUnavailableReason(platform);
+  const scope = runnerConfinementScope(policy, input.args, input.environment);
+  const reason = landlockTemporaryConflict(platform, scope, input.sharedTemporaryDirectories)
+    ?? runnerConfinementUnavailableReason(platform);
   if (reason !== null) {
     if (policy.mode === "required") throw new RunnerConfinementUnavailableError(reason);
     if (!warned.has(reason)) {
@@ -411,7 +428,6 @@ export function confineRunnerLaunch(input: {
     }
     return null;
   }
-  const scope = runnerConfinementScope(policy, input.args, input.environment);
   prepareRunnerConfinementScope(scope);
   if (platform === "darwin") return { ...seatbeltInvocation(scope, input.command, input.args), scope };
   const python = pythonExecutable()!;

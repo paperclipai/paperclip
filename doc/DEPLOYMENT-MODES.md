@@ -146,6 +146,11 @@ or run set-user-ID programs such as `ps`; use `pgrep` instead.
   recovery does not retry it.
 - `off`: never confine.
 
+On Linux, a hidden path's parent directories accept no new entries inside the
+scope. A server whose instance state lies in a shared temporary directory
+(`/tmp`, `/var/tmp` or the OS temporary directory) therefore does not confine
+sessions on Linux. `auto` logs a warning once, and `required` refuses.
+
 Other providers start their own operating-system sandboxes, which cannot nest
 inside this scope. They stay unconfined until they are qualified. Sessions that
 were already running when the server upgraded keep running unconfined until
