@@ -138,7 +138,9 @@ exposes the `TelemetryTransport` seam on `TelemetryClient`:
 - With a transport, each flushed batch goes to the transport and never to the
   collector. One batch has exactly one sender.
 - A transport with `hashesPrivateRefs: false` makes the typed helpers emit raw
-  task ids and private source refs, and `source_ref_hashed` is then `false`.
+  task ids. Private source refs (for example a private repository name) are
+  customer content, not identifiers, so they stay hashed on every path and
+  `source_ref_hashed` stays `true` for them.
 - The transport can capture per-event context at track time. That context is
   never added to the collector envelope.
 

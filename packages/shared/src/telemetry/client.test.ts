@@ -682,7 +682,8 @@ describe("TelemetryClient transport seam", () => {
     expect(batch.installId).toBe("test-install");
     expect(batch.events.map(({ event }) => event.dimensions)).toEqual([
       { agent_id: "agent-1", state: "succeeded", task_id: "task-raw-id" },
-      { source_type: "github", source_ref: "acme/private", source_ref_hashed: false },
+      // Private source refs are customer content and stay hashed on Cloud too.
+      { source_type: "github", source_ref: client.hashPrivateRef("acme/private"), source_ref_hashed: true },
     ]);
     expect(batch.events.map(({ context }) => context)).toEqual([{ tag: "ctx" }, { tag: "ctx" }]);
     // The per-event context never leaks into the event object itself.

@@ -101,8 +101,9 @@ export interface TelemetryOutgoingBatch {
  */
 export interface TelemetryTransport {
   /**
-   * Whether typed helpers hash private references (task ids, private source
-   * refs) before emission. The default collector path always hashes.
+   * Whether typed helpers hash private task ids before emission. The default
+   * collector path always hashes. Private source refs stay hashed on every
+   * path, because they are customer content rather than identifiers.
    */
   readonly hashesPrivateRefs: boolean;
   /** Captures per-event context at track time (for example the acting request). */

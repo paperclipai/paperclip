@@ -8,16 +8,12 @@ function asEventDimension<T extends string>(value: RawDimension<T>): T {
 }
 
 /**
- * Emitted form of a private reference. The default collector path always
+ * Emitted form of a private task reference. The default collector path always
  * hashes it with `hashPrivateRef()`. Only a client whose transport declares
- * `hashesPrivateRefs: false` (Paperclip Cloud direct delivery) emits it raw.
+ * `hashesPrivateRefs: false` (Paperclip Cloud direct delivery) emits the raw id.
  */
-function hashesPrivateRefs(client: TelemetryClient): boolean {
-  return client.privateRefsHashed !== false;
-}
-
 function emitPrivateRef(client: TelemetryClient, value: string): string {
-  return hashesPrivateRefs(client) ? client.hashPrivateRef(value) : value;
+  return client.privateRefsHashed === false ? value : client.hashPrivateRef(value);
 }
 
 export function trackInstallStarted(client: TelemetryClient): void {
@@ -41,11 +37,13 @@ export function trackCompanyImported(
     isPrivate: boolean;
   },
 ): void {
-  const ref = dims.isPrivate ? emitPrivateRef(client, dims.sourceRef) : dims.sourceRef;
+  // A private source ref is customer content (for example a private repository
+  // name), not an identifier. It stays hashed on every path, Cloud included.
+  const ref = dims.isPrivate ? client.hashPrivateRef(dims.sourceRef) : dims.sourceRef;
   client.track("company.imported", {
     source_type: asEventDimension(dims.sourceType),
     source_ref: ref,
-    source_ref_hashed: dims.isPrivate && hashesPrivateRefs(client),
+    source_ref_hashed: dims.isPrivate,
   });
 }
 

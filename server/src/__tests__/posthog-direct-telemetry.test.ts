@@ -5,7 +5,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { trackAgentTaskRun, trackRoutineCreated } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskRun, trackCompanyImported, trackRoutineCreated } from "@paperclipai/shared/telemetry";
 
 const hoisted = vi.hoisted(() => ({ instanceRoot: "", posthogNodeLoads: 0 }));
 
@@ -138,14 +138,24 @@ describe("server telemetry sender selection", () => {
     const client = initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory })!;
     expect(isPostHogDirectTelemetryActive()).toBe(true);
     trackAgentTaskRun(client, { agentId: "agent-1", state: "succeeded", taskId: "task-raw-id" });
+    trackCompanyImported(client, { sourceType: "github", sourceRef: "acme/private-repo", isPrivate: true });
     await shutdownTelemetry();
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(posthog.captured.map((message) => message.event).sort()).toEqual([
       "agent.task_run",
       "cloud.workspace_started",
+      "company.imported",
       "server.started",
     ]);
+    // A private source ref is customer content: it stays hashed on Cloud too.
+    const imported = posthog.captured.find((message) => message.event === "company.imported")!;
+    const salt = readState().salt;
+    expect(imported.properties).toMatchObject({
+      source_ref: createHash("sha256").update(salt + "acme/private-repo").digest("hex").slice(0, 16),
+      source_ref_hashed: true,
+    });
+    expect(JSON.stringify(imported)).not.toContain("acme/private-repo");
     const run = posthog.captured.find((message) => message.event === "agent.task_run")!;
     expect(run.distinctId).toBe("workspace:stack-123");
     expect(run.groups).toEqual({ workspace: "stack-123" });
