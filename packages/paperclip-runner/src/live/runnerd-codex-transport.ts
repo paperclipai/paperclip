@@ -9908,6 +9908,7 @@ export function coldAdmissionTimeoutMs(provider: string | undefined, agent: stri
   return (
     (provider === "acpx" && (agent === "pi" || agent === "claude")) ||
     provider === "opencode" ||
+    provider === undefined ||
     provider === "codex"
   ) ? 60_000 : 30_000;
 }
