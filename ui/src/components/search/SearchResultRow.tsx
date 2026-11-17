@@ -9,6 +9,7 @@ import { StatusIcon } from "../StatusIcon";
 import { Identity } from "../Identity";
 import { HighlightedText, type HighlightedTextProps } from "./HighlightedText";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type SnippetStyle = {
   Icon: ComponentType<SVGProps<SVGSVGElement>>;
@@ -265,7 +266,7 @@ function SnippetLine({ text, highlights, field, fallbackLabel, multiline = false
       <HighlightedText
         text={text}
         highlights={highlights}
-        className={multiline ? "line-clamp-2 leading-relaxed" : "line-clamp-1 truncate"}
+        className={cn(multiline ? "line-clamp-2 leading-relaxed" : "line-clamp-1 truncate", ANALYTICS_MASK_CLASS)}
       />
     </div>
   );

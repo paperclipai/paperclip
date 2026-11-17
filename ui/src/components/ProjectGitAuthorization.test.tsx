@@ -6,6 +6,7 @@ import type { Project } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { projectsApi } from "@/api/projects";
 import { ProjectGitAuthorization } from "./ProjectGitAuthorization";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/api/projects", () => ({
   projectsApi: {
@@ -70,6 +71,44 @@ describe("ProjectGitAuthorization", () => {
         grantId: null,
       });
       expect(container.textContent).not.toContain("Revoke authorization");
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      client.clear();
+    }
+  });
+
+  it("masks GitHub logins in session replay", async () => {
+    const saved = {
+      grantId: "grant-a",
+      authorizedByUserId: "user-a",
+      options: [
+        { grantId: "grant-a", connectionName: "Work GitHub", login: "saved-octo-quillon" },
+        { grantId: "grant-b", connectionName: "Side GitHub", login: "picked-octo-varnell" },
+      ],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["project-git-authorization", "company-a", "project-b"], saved);
+    const container = document.createElement("div"),
+      root = createRoot(container);
+    document.body.appendChild(container);
+    try {
+      await act(async () =>
+        root.render(
+          <QueryClientProvider client={client}>
+            <ProjectGitAuthorization project={{ id: "project-b", companyId: "company-a" } as Project} />
+          </QueryClientProvider>,
+        ),
+      );
+      expect(replayLeaks("saved-octo-quillon", container)).toEqual({ rendered: true, recorded: false });
+      const trigger = container.querySelector<HTMLElement>('[role="combobox"]')!;
+      await act(async () => {
+        trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      });
+      expect(replayLeaks("picked-octo-varnell", document.body)).toEqual({ rendered: true, recorded: false });
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes("picked-octo-varnell"))!;
+      await act(async () => option.click());
+      expect(replayLeaks("picked-octo-varnell", trigger)).toEqual({ rendered: true, recorded: false });
     } finally {
       await act(async () => root.unmount());
       container.remove();

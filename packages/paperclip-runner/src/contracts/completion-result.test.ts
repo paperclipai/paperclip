@@ -204,6 +204,27 @@ describe("provider-neutral completion result schema", () => {
     expect(validate(response)).toBe(false);
   });
 
+  it("keeps nested continuation fields visible to code-mode discovery without changing validation", () => {
+    const continuation = PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation;
+    expect(continuation).not.toHaveProperty("allOf");
+    expect(continuation.type).toEqual(["object", "null"]);
+    expect(continuation.required).toEqual(["kind", "summary", "idempotencyKey"]);
+    const provider = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const canonical = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_OUTPUT_SCHEMA);
+    for (const kind of ["monitor", "response_wake", "case_handoff", "same_agent", "invented"]) {
+      for (const key of [undefined, "", 42, "stable-wait-key"]) {
+        for (const handoffId of [undefined, "", "accepted-handoff-id"]) {
+          const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+            kind, summary: "Wait for the next action.",
+            ...(key === undefined ? {} : { idempotencyKey: key }),
+            ...(handoffId === undefined ? {} : { handoffId }),
+          } };
+          expect(provider(report), JSON.stringify(report.continuation)).toBe(canonical(report));
+        }
+      }
+    }
+  });
+
   it("exposes concrete completion fields while retaining response-wake validation", () => {
     // The live Codex code-mode renderer reduced a conditional-only root allOf
     // to `args: unknown`. Keep this tool object-shaped for provider discovery.

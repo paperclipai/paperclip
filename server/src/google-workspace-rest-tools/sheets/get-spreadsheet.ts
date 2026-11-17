@@ -110,6 +110,7 @@ export const getSpreadsheet = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   args,
+  whenTooLarge: NARROW,
   async run(input, http) {
     return getSpreadsheetResult(await sendRead<RestSpreadsheet>(http, getSpreadsheetRequest(input), NARROW));
   },

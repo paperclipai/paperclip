@@ -6,8 +6,9 @@ land. It covers section 2 of the
 
 Based on a read of master at `56654adecd`. Items marked **confirmed** were seen
 in the code. Items marked **to check** are suspected gaps that need a look
-before any change. Fixes 1 to 4 and 6 landed on November 17. Work on fixes 9
-and 10 has started. Fixes 5, 7 and 8 are not started.
+before any change. Fixes 1 to 4 and 6 landed on November 17. Fix 9 has every
+tool built but no service switched on. Fix 10 is done in the app. Fixes 5, 7
+and 8 are not started.
 
 Each fix is its own pull request with a failing test first. For the scope
 change in fix 2, the deploy order is app first, then broker (see fix 10).
@@ -24,7 +25,7 @@ change in fix 2, the deploy order is app first, then broker (see fix 10).
 | 6 | Retention and deletion of Google content | Audit, then unknown | Yes | Done with limits, [#22010](https://github.com/paperclipai/paperclip/pull/22010) |
 | 7 | Security scan findings | Unknown | Yes (assessment) | Not started |
 | 8 | Remove the experimental gate | Small | No, release step | Not started |
-| 9 | REST-backed tool set | Large | Yes | Gmail and Calendar done, switch merged, none switched on; Drive, Docs, Sheets, Slides in progress |
+| 9 | REST-backed tool set | Large | Yes | All 36 tools and the switch merged; none switched on |
 | 10 | Scope cleanup across code, Cloud and Console | Medium | Yes | App done; broker and Console open |
 
 ## 1. Data-use disclosure in the picker
@@ -214,21 +215,34 @@ deleted cleanly. Part 1 is
 folder and Gmail `get_message`, `search_threads` and `create_draft`. Its README
 records the dispatch trace and the recommended in-process seam.
 
-Status (Nov 17, late evening):
+Status (Nov 17, night):
 
 | Service | Implemented | Switched on | PRs |
 | --- | --- | --- | --- |
 | Gmail | 9 of 9 | No | [#22000](https://github.com/paperclipai/paperclip/pull/22000), [#22014](https://github.com/paperclipai/paperclip/pull/22014) |
 | Calendar | 9 of 9 | No | [#22017](https://github.com/paperclipai/paperclip/pull/22017) |
-| Drive | 0 of 8 | No | In progress |
-| Docs | 0 of 2 | No | In progress |
-| Sheets | 0 of 6 | No | In progress |
-| Slides | 0 of 2 | No | In progress |
+| Drive | 8 of 8 | No | [#22028](https://github.com/paperclipai/paperclip/pull/22028) |
+| Docs | 2 of 2 | No | [#22029](https://github.com/paperclipai/paperclip/pull/22029) |
+| Sheets | 6 of 6 | No | [#22027](https://github.com/paperclipai/paperclip/pull/22027) |
+| Slides | 2 of 2 | No | [#22029](https://github.com/paperclipai/paperclip/pull/22029) |
 
 The per-service switch and in-process dispatch landed in
 [#22016](https://github.com/paperclipai/paperclip/pull/22016). Every service is
 still on Google's MCP. The gateway calls the REST tools in process, as the
-trace in #22000 recommended.
+trace in #22000 recommended. The gateway also sets the size limit for REST
+results (999,885 bytes, matching what it accepts from Google's MCP servers);
+see "Result size" in the folder README.
+
+Remaining work:
+
+- Refuse inserting an image by public web address in Docs and Slides before
+  they are switched on (Google fetches an address the agent chose).
+- Create the staging tester and run live acceptance there.
+- Switch services to REST one at a time, each after its live test.
+- Record a `tools/list` and sample answers from Google's servers for the
+  contract test, and compare `read_doc` and `read_presentation` content.
+- Check `copy_file` under `drive.file` on a file the app never opened.
+- Removal test (step 4 below).
 
 ### The seam
 
@@ -302,7 +316,7 @@ server/src/google-workspace-rest-tools/
 2. Folder skeleton, `google-http.ts`, and Gmail `get_message`,
    `search_threads` and `create_draft` (#22000, merged). Then the switch, end to
    end on the staging tester. The demo depends on Gmail.
-3. Rest of Gmail, then Calendar, Drive, Docs, Sheets, Slides.
+3. Rest of Gmail, then Calendar, Drive, Docs, Sheets, Slides (done Nov 17).
 4. Contract and removal tests.
 
 Tools to build (36): Gmail 9, Drive 8, Docs 2, Sheets 6, Slides 2, Calendar 9.
@@ -311,7 +325,8 @@ Tools to build (36): Gmail 9, Drive 8, Docs 2, Sheets 6, Slides 2, Calendar 9.
 
 - Whether a Google client marked for AI agents may call the REST APIs.
 - Each Cloud project needs the six REST APIs enabled.
-- Speed: this sits in the tool-call path, so measure added time per call.
+- Speed: this sits in the tool-call path. Measured: the adapter adds about
+  15 µs per call; the result size check adds about 5 µs for a 4 KB result.
 
 ### Lessons
 

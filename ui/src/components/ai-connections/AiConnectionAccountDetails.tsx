@@ -5,6 +5,8 @@ import { describeError } from "@/api/errors";
 import { retryTransientOnly } from "@/lib/query-client";
 import { Button } from "@/components/ui/button";
 import { AI_PROVIDERS, aiMethodLabel } from "./model";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /** Provider profile loading is independent of account access and maintenance controls. */
 export function AiConnectionAccountDetails({ account, grant }: {
@@ -28,10 +30,10 @@ export function AiConnectionAccountDetails({ account, grant }: {
       <h3 className="text-sm font-semibold">Connected account</h3>
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <dt className="text-muted-foreground">{AI_PROVIDERS[account.provider].name} account</dt>
-        <dd className="break-words">{accountLabel ?? "Not available"}</dd>
+        <dd className={cn("break-words", ANALYTICS_MASK_CLASS)}>{accountLabel ?? "Not available"}</dd>
         {(isChatGpt || identity.data?.organizationLabel) && <>
           <dt className="text-muted-foreground">{isChatGpt ? "ChatGPT workspace" : "Organization"}</dt>
-          <dd className="break-words">{identity.data?.organizationLabel ?? (identity.isPending && canLookUp ? "Checking…" : "Not available")}</dd>
+          <dd className={cn("break-words", ANALYTICS_MASK_CLASS)}>{identity.data?.organizationLabel ?? (identity.isPending && canLookUp ? "Checking…" : "Not available")}</dd>
         </>}
         <dt className="text-muted-foreground">Sign-in method</dt>
         <dd>{aiMethodLabel(account.provider, account.method)}</dd>

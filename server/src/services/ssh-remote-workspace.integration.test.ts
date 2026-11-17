@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companyMemberships, closeRegisteredClients, companies, createDb, environmentLeases, environments,
   executionWorkspaces, heartbeatRuns, issues } from "@paperclipai/db";
 import type { AdapterSshExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { buildSshEnvLabFixtureConfig, getSshEnvLabSupport, startSshEnvLabFixture,
+import { buildSshEnvLabFixtureConfig, getSshEnvLabSupport, shellQuote, startSshEnvLabFixture,
   stopSshEnvLabFixture, type SshEnvLabFixtureState } from "@paperclipai/adapter-utils/ssh";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -195,49 +195,78 @@ describe.skipIf(!postgres.supported || !ssh.supported)("Cloud SSH durable worksp
     } finally { extract.mockRestore(); }
   }, 60_000);
 
-  it("runs an assigned Claude task through heartbeat with the configured Paperclip account", async () => {
+  it.each(["cli", "acp"])("runs an assigned Claude %s task through heartbeat with the configured Paperclip account", async engine => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "synthetic-cloud-ssh-jwt-secret");
     vi.stubEnv("AWS_EC2_METADATA_DISABLED", "true");
-    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(root, "heartbeat-objects"))), provider: "s3" as const };
+    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(root, `heartbeat-${engine}-objects`))), provider: "s3" as const };
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     vi.spyOn(runLogModule, "getRunLogStore").mockReturnValue(objectLogFixture());
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), userId = `ssh-user-${randomUUID()}`;
     await db.insert(authUsers).values({ id: userId, name: "SSH test user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-    await db.insert(companies).values({ id: companyId, name: "Cloud SSH task", issuePrefix: "HSSH", defaultResponsibleUserId: userId });
+    await db.insert(companies).values({ id: companyId, name: "Cloud SSH task", issuePrefix: engine === "cli" ? "HCLI" : "HACP", defaultResponsibleUserId: userId });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     const account = await aiConnectionService(db).save(companyId, userId, { provider: "anthropic", method: "api_key",
       ownership: "personal", name: "Selected test account", apiKey: "synthetic-selected-ssh-key", agentIds: [], allAgents: true }, "synthetic-selected-ssh-key");
     const config = await buildSshEnvLabFixtureConfig(sshd!);
-    const command = path.join(root, "fake-claude");
+    const command = path.join(root, `fake-claude-${engine}`);
     await writeFile(command, `#!${process.execPath}
 if (process.argv.includes('--version')) { console.log('2.1.0'); process.exit(0); }
 if (process.env.ANTHROPIC_API_KEY !== 'synthetic-selected-ssh-key') process.exit(91);
 const fs = require('fs'), path = require('path');
 const history = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'fixture-history');
-const resumed = process.argv.includes('--resume');
-if (resumed && !fs.existsSync(history)) process.exit(92);
+const runTask = (resumed) => {
+if (resumed && !fs.existsSync(history)) throw Error('Missing provider conversation history');
 fs.mkdirSync(path.dirname(history), {recursive:true}); fs.writeFileSync(history, 'provider conversation state');
 fs.writeFileSync('continuation.json', JSON.stringify({resumed}));
 require('fs').writeFileSync('hello_world.txt', 'Hello World\\n');
-console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'Created hello_world.txt',session_id:'12345678-1234-4abc-9def-123456789012',total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}));
+};
+if (process.argv.includes('--acp-fixture')) {
+ const send = message => process.stdout.write(JSON.stringify(message) + '\\n');
+ let resumed = false;
+ require('readline').createInterface({input:process.stdin}).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  let result = {};
+  try {
+   if (request.method === 'initialize') result = {protocolVersion:1, agentCapabilities:{loadSession:true, sessionCapabilities:{close:{}}}};
+   if (request.method === 'session/new') result = {sessionId:'12345678-1234-4abc-9def-123456789012'};
+   if (request.method === 'session/load') resumed = true;
+   if (request.method === 'session/new' || request.method === 'session/load') {
+    if (request.params.cwd !== process.cwd()) throw Error('ACP working directory mismatch');
+   }
+   if (request.method === 'session/prompt') {
+    runTask(resumed);
+    send({jsonrpc:'2.0',method:'session/update',params:{sessionId:request.params.sessionId,
+     update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Created hello_world.txt'}}}});
+    result = {stopReason:'end_turn'};
+   }
+   send({jsonrpc:'2.0',id:request.id,result});
+  } catch (error) { send({jsonrpc:'2.0',id:request.id,error:{code:-32603,message:error.message}}); }
+ });
+} else {
+ runTask(process.argv.includes('--resume'));
+ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,result:'Created hello_world.txt',session_id:'12345678-1234-4abc-9def-123456789012',total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}}));
+}
 `, { mode: 0o700 });
-    const storedConfig = await normalizeEnvironmentConfigForPersistence({ db, companyId, environmentName: "Heartbeat SSH",
+    const storedConfig = await normalizeEnvironmentConfigForPersistence({ db, companyId, environmentName: `Heartbeat SSH ${engine}`,
       driver: "ssh", secretProvider: "local_encrypted", config: { ...config, useHostAuth: false } });
-    const [environment] = await db.insert(environments).values({ driver: "ssh", name: "Heartbeat SSH", config: storedConfig }).returning();
+    const [environment] = await db.insert(environments).values({ driver: "ssh", name: `Heartbeat SSH ${engine}`, config: storedConfig }).returning();
     await secretService(db).replaceSecretRefsForInstanceTarget({ targetType: "environment", targetId: environment.id },
       await collectEnvironmentSecretRefs({ db, environment: { id: environment.id, driver: "ssh", config: storedConfig } }));
+    const adapterConfig = { command, ...(engine === "cli" ? { engine: "cli" } : { agentCommand: `${shellQuote(command)} --acp-fixture`, acpWarmHandleIdleMs: 60_000 }),
+      model: "claude-sonnet-4-6", timeoutSec: 20 };
     await db.insert(agents).values({ id: agentId, companyId, name: "Claude SSH task", adapterType: "claude_local", status: "idle",
-      defaultEnvironmentId: environment.id, adapterConfig: { command, engine: "cli", model: "claude-sonnet-4-6", timeoutSec: 20 },
+      defaultEnvironmentId: environment.id, adapterConfig,
       runtimeConfig: { aiConnection: { provider: "anthropic", method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Create hello_world.txt", status: "todo", assigneeAgentId: agentId,
       responsibleUserId: userId, issueNumber: 1 });
     const adapter = getServerAdapter("claude_local"), execute = adapter.execute;
     expect(adapter.type).toBe("claude_local");
-    vi.spyOn(adapter, "execute").mockImplementation(async input => {
+    const executing = vi.spyOn(adapter, "execute").mockImplementation(async input => {
       const result = await execute(input);
-      // The synthetic CLI stands in for the provider's final task update too.
+      // The synthetic provider stands in for the final task update too.
       if (result.exitCode === 0) await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
       return result;
     });
@@ -266,9 +295,11 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
         retryReason: continued?.scheduledRetryReason, retryAt: continued?.scheduledRetryAt, errorCode: continued?.errorCode,
         error: continued?.error, result: continued?.resultJson, log: await heartbeat.readLog(followup!.id, { limitBytes: 12_000 }).catch(() => null) }));
       expect(continued).toMatchObject({ status: "succeeded" });
-      expect(JSON.parse(await readFile(path.join(authority.remoteCwd, "continuation.json"), "utf8"))).toEqual({ resumed: true });
+      const continuation = JSON.parse(await readFile(path.join(authority.remoteCwd, "continuation.json"), "utf8"));
+      expect(continuation).toEqual({ resumed: true });
     } finally {
       await heartbeat.drainActiveRunExecutions();
+      executing.mockRestore();
     }
   }, 60_000);
 });

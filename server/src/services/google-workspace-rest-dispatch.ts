@@ -42,7 +42,7 @@ export function listGoogleWorkspaceRest(service: GoogleWorkspaceService): Tool[]
 }
 
 export async function callGoogleWorkspaceRest(
-  input: GoogleWorkspaceRestContext & { toolName: string; arguments: unknown },
+  input: GoogleWorkspaceRestContext & { toolName: string; arguments: unknown; maxResultBytes: number },
 ): Promise<GoogleWorkspaceRestCallOutcome> {
   try {
     const result = await callGoogleWorkspaceRestTool({
@@ -52,6 +52,7 @@ export async function callGoogleWorkspaceRest(
       accessToken: bearerToken(input.credentialHeaders),
       fetch: input.fetch,
       signal: input.signal,
+      maxResultBytes: input.maxResultBytes,
     });
     return { ok: true, result };
   } catch (error) {

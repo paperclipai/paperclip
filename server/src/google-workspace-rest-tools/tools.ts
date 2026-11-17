@@ -8,7 +8,7 @@ import { GMAIL_TOOLS } from "./gmail/index.js";
 import { SLIDES_TOOLS } from "./slides/index.js";
 import { createGoogleHttp, type GoogleFetch } from "./google-http.js";
 import { SHEETS_TOOLS } from "./sheets/index.js";
-import type { RestTool } from "./tool.js";
+import { FALLBACK_MAX_RESULT_BYTES, type RestTool } from "./tool.js";
 
 export const GOOGLE_WORKSPACE_REST_SERVICES = ["gmail", "calendar", "drive", "docs", "slides", "sheets"] as const;
 export type GoogleWorkspaceRestService = (typeof GOOGLE_WORKSPACE_REST_SERVICES)[number];
@@ -38,12 +38,15 @@ export interface CallGoogleWorkspaceRestToolInput {
   fetch?: GoogleFetch;
   signal?: AbortSignal;
   timeoutMs?: number;
+  maxResultBytes?: number;
 }
 
 export async function callGoogleWorkspaceRestTool(input: CallGoogleWorkspaceRestToolInput): Promise<CallToolResult> {
   const tool = TOOLS[input.service].find((candidate) => candidate.definition.name === input.name);
   if (!tool) throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${input.name}`);
+  const maxResultBytes = input.maxResultBytes ?? FALLBACK_MAX_RESULT_BYTES;
+  if (!Number.isSafeInteger(maxResultBytes) || maxResultBytes <= 0) throw new RangeError("maxResultBytes must be a positive integer");
   if (!input.accessToken) throw new GoogleWorkspaceAuthError("unauthenticated");
   const http = createGoogleHttp({ accessToken: input.accessToken, fetch: input.fetch, signal: input.signal, timeoutMs: input.timeoutMs });
-  return tool.call(input.arguments, http);
+  return tool.call(input.arguments, http, { maxResultBytes });
 }

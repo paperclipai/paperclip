@@ -1,14 +1,12 @@
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
-import { boundedStructuredResult, compact, MAX_RESULT_BYTES } from "../tool.js";
+import { compact } from "../tool.js";
 
 export const DRIVE_HOST = "www.googleapis.com" as const;
 export const DRIVE_BASE = "/drive/v3";
 export const DRIVE_UPLOAD_BASE = "/upload/drive/v3";
 
-export const MAX_CONTENT_BYTES = MAX_RESULT_BYTES;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_PAGE_SIZE = 10;
 export const MAX_PAGE_SIZE = 100;
@@ -178,14 +176,6 @@ export const READ_LESS = {
   metadata: "Leave out includeRichMetadata.",
   permissions: "This file has too many permissions to list with this tool.",
 } as const;
-
-export function tooLargeMessage(bytes: number, advice: string): string {
-  return `The result is ${bytes} bytes, more than the ${MAX_RESULT_BYTES} bytes this tool returns, so nothing was returned. ${advice}`;
-}
-
-export function boundedResult(value: Record<string, unknown>, advice: string): CallToolResult {
-  return boundedStructuredResult(value, MAX_RESULT_BYTES, (bytes) => tooLargeMessage(bytes, advice));
-}
 
 export function isGoogleType(mimeType: string | undefined): boolean {
   return Boolean(mimeType?.startsWith(GOOGLE_APPS_PREFIX));

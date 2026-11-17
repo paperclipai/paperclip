@@ -2,8 +2,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
-import { compact, defineTool } from "../tool.js";
-import { boundedResult, DRIVE_HOST, fileId, fileIdInput, filePath, READ_LESS, type RestPermission } from "./file.js";
+import { compact, defineTool, structuredResult } from "../tool.js";
+import { DRIVE_HOST, fileId, fileIdInput, filePath, READ_LESS, type RestPermission } from "./file.js";
 
 const args = z.object({ fileId });
 export type GetFilePermissionsArgs = z.infer<typeof args>;
@@ -41,7 +41,7 @@ export function toMcpPermission(permission: RestPermission): Record<string, unkn
 }
 
 export function getFilePermissionsResult(permissions: RestPermission[]): CallToolResult {
-  return boundedResult({ permissions: permissions.filter((permission) => !permission.deleted).map(toMcpPermission) }, READ_LESS.permissions);
+  return structuredResult({ permissions: permissions.filter((permission) => !permission.deleted).map(toMcpPermission) });
 }
 
 export async function readPermissions(id: string, http: GoogleHttp): Promise<RestPermission[]> {
@@ -88,6 +88,7 @@ export const getFilePermissions = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: READ_LESS.permissions,
   async run(input, http) {
     return getFilePermissionsResult(await readPermissions(input.fileId, http));
   },

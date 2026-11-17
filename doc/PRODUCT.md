@@ -469,6 +469,12 @@ or returning to Paperclip. Dismissals persist per user across companies and
 browsers within an instance. Operators can disable fetching independently of
 telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
+The self-hosted GitHub star prompt only enrolls companies first observed with
+fewer than five completed tasks. Companies already at five or more are skipped.
+The browser saves eligibility per company across visits. Eligible companies see
+the prompt at most once when they reach five completed tasks. Cloud instances
+and unfinished onboarding remain excluded.
+
 ### Agent chat discovery
 
 With Agent Chat enabled, Chat is the first row of the Work section and opens a

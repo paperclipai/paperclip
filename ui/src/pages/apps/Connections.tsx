@@ -54,6 +54,7 @@ import {
   type ConnectionOwnerProfile,
 } from "./connection-owner";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const BROWSE_HREF = "/apps";
 
@@ -405,7 +406,7 @@ export function Connections() {
             </button>
           )}
 
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div className={cn("overflow-hidden rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
@@ -464,7 +465,7 @@ export function Connections() {
                           />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium text-foreground">{row.displayName}</span>
+                              <span className={cn("font-medium text-foreground", ANALYTICS_MASK_CLASS)}>{row.displayName}</span>
                               <ConnectionProvenanceChip connection={row.connection} />
                             </div>
                             {hint && (
@@ -553,7 +554,7 @@ export function Connections() {
           if (!open && !deleteConnection.isPending) setConnectionToDelete(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               Delete {connectionToDelete?.appName ?? "this"} connection?

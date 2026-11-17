@@ -72,7 +72,7 @@ describe("get_thread with bodies Gmail stores separately", () => {
       if (url.pathname.endsWith("/attachments/ANGjdJ_m2_html")) return json({ data: Buffer.from(`<pre>${large}</pre>`).toString("base64url") });
       return json(thread);
     });
-    const result = await getThread.call({ threadId: "th1" }, createGoogleHttp({ accessToken: "t", fetch }));
+    const result = await getThread.call({ threadId: "th1" }, createGoogleHttp({ accessToken: "t", fetch }), { maxResultBytes: 1_000_000 });
     const messages = (result.structuredContent as { messages: Array<{ plaintextBody?: string; htmlBody?: string }> }).messages;
     expect(messages[0]!.plaintextBody).toBe("short");
     expect(messages[1]!.plaintextBody).toBe(large);

@@ -70,6 +70,7 @@ export const getMessage = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Read it with messageFormat METADATA_ONLY or MINIMAL, which leave out the bodies.",
   async run(input, http) {
     const message = await http.send<GmailRestMessage>(getMessageRequest(input));
     return getMessageResult(message, input, await readExternalBodies(message, input, http));

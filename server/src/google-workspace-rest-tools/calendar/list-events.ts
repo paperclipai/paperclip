@@ -201,6 +201,7 @@ export const listEvents = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer events with a smaller pageSize or a narrower time range.",
   async run(input, http) {
     assertTimeZone(input.timeZone);
     const page = decodePageToken(input.pageToken, input.orderBy);

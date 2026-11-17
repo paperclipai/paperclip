@@ -4559,7 +4559,8 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
-  it.each(["turn", "bridge"])("stages the configured agent account for SSH, resumes it, and copies back before disposal after a %s failure", async failure => {
+  it.each(["turn", "bridge"].flatMap(failure => [false, true].map(inPlace => ({ failure, inPlace }))))(
+    "stages the configured SSH account and restores credentials after $failure failure (inPlace=$inPlace)", async ({ failure, inPlace }) => {
     const { root, stateDir, localCwd, remoteCwd } = await setupRemoteSandbox();
     const homes = await Promise.all(["first", "second", "third"].map(async name => {
       const home = path.join(root, `selected-account-${name}`);
@@ -4567,9 +4568,10 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       return home;
     }));
     const home = path.join(homes[0]!, "provider");
-    const workspace = path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
-    const runtimeRootDir = path.posix.join(workspace, ".paperclip-runtime/custom");
+    const workspace = inPlace ? remoteCwd : path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
+    const runtimeRootDir = path.join(root, "private-runtime");
     const executionTarget = { kind: "remote", transport: "ssh", remoteCwd, spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    if (inPlace) Object.assign(executionTarget, { workspaceRealization: { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] } });
     let copybackHome = "";
     const restore = vi.fn(async () => {
       await fs.mkdir(copybackHome, { recursive: true });
@@ -4600,8 +4602,14 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       const result = await runExecutor(config, options);
       expect(seam).toHaveBeenCalledOnce();
       expect(seam.mock.calls[0]![0].executionTarget).toMatchObject({ kind: "remote", transport: "ssh" });
+      if (inPlace) {
+        expect(result.sessionInputs[0]?.cwd).toBe(remoteCwd);
+        expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0]).toMatchObject({
+          syncWorkspace: false, workspaceRemoteDir: remoteCwd, privateRuntime: true, retainRuntime: true,
+        });
+      }
       expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(expect.objectContaining({ assets: [{ key: "home", localDir: home }] }));
-      expect(result.sessionInputs[0]?.cwd).toMatch(new RegExp(`${remoteCwd}/\\.paperclip-runtime/runs/[a-f0-9]+/workspace$`));
+      if (!inPlace) expect(result.sessionInputs[0]?.cwd).toMatch(new RegExp(`${remoteCwd}/\\.paperclip-runtime/runs/[a-f0-9]+/workspace$`));
       const bridgeInput = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls[0]![0];
       const env = typeof bridgeInput.env === "function" ? await bridgeInput.env() : bridgeInput.env;
       expect(env.CODEX_HOME).toBe(path.posix.join(runtimeRootDir, "home"));
@@ -4654,7 +4662,8 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       else changed.env.USER_OPTION = "changed";
       const reset = await runExecutor(changed, { ...options, runId: "run-4", expectedExitCode: 1,
         runtime: { sessionParams: resumed.result.sessionParams } });
-      expect(reset.sessionInputs[0]?.cwd).not.toBe(result.sessionInputs[0]?.cwd);
+      if (inPlace) expect(reset.sessionInputs[0]?.cwd).toBe(remoteCwd);
+      else expect(reset.sessionInputs[0]?.cwd).not.toBe(result.sessionInputs[0]?.cwd);
       expect(reset.sessionInputs[0]?.resumeSessionId).not.toBe(result.result.sessionId);
       expect(seam).toHaveBeenCalledTimes(2);
       expect(restore).toHaveBeenCalledTimes(4);

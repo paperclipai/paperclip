@@ -149,9 +149,9 @@ export function Sidebar() {
               width; a nav row also keeps search reachable from the
               collapsed rail, where the old header icon was dropped entirely.
               Cmd/Ctrl+K remains the keyboard path (command palette). */}
-          <SidebarNavItem analyticsChrome to="/search" label="Search" icon={Search} />
-          <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          <SidebarNavItem analyticsChrome
+          <SidebarNavItem to="/search" label="Search" icon={Search} />
+          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem
             to="/inbox"
             label="Inbox"
             icon={Inbox}
@@ -161,7 +161,7 @@ export function Sidebar() {
             alert={inboxBadge.failedRuns > 0}
           />
           {showDecisions ? (
-            <SidebarNavItem analyticsChrome
+            <SidebarNavItem
               to="/decisions"
               label="Decisions"
               icon={ListChecks}
@@ -170,21 +170,21 @@ export function Sidebar() {
             />
           ) : null}
           {showStatusCards ? (
-            <SidebarNavItem analyticsChrome to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
+            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
           ) : null}
           {conferenceRoomChatEnabled ? (
-            <SidebarNavItem analyticsChrome to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
         </div>
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
-          <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleDot} />
+          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           {showCases ? (
-            <SidebarNavItem analyticsChrome to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}
-          <SidebarNavItem analyticsChrome to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           {showGoalsLink ? (
-            <SidebarNavItem analyticsChrome to="/goals" label="Goals" icon={Target} />
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
@@ -192,14 +192,14 @@ export function Sidebar() {
               aria-hidden="true"
             />
           ) : null}
-          <SidebarNavItem analyticsChrome to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem analyticsChrome to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
-            <SidebarNavItem analyticsChrome to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
           {streamlined ? (
             <>
-              <SidebarNavItem analyticsChrome to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
               <SidebarStarredProjects />
             </>
           ) : null}
@@ -224,14 +224,14 @@ export function Sidebar() {
         <SidebarAgents streamlined={streamlined} />
 
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
-          <SidebarNavItem analyticsChrome to="/org" label="Org" icon={Network} />
-          {showApps ? <SidebarNavItem analyticsChrome to="/apps" label="Connectors" icon={Unplug} /> : null}
-          <SidebarNavItem analyticsChrome to="/timeline" label="Timeline" icon={GanttChartSquare} />
-          <SidebarNavItem analyticsChrome to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/org" label="Org" icon={Network} />
+          {showApps ? <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} /> : null}
+          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
+          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
-          <SidebarNavItem analyticsChrome to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem analyticsChrome to="/activity/commentary" label="Commentary" icon={History} />
-          <SidebarNavItem analyticsChrome to="/company/settings" label="Settings" icon={Settings} />
+          <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
+          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet

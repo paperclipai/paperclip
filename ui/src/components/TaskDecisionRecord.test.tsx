@@ -8,6 +8,7 @@ import type { DecisionOutcome } from "@/api/decisions";
 import type { DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorDecisionReceipt } from "./coordinator/CoordinatorDecisionReceipt";
 import { TaskDecisionRecord } from "./TaskDecisionRecord";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), resolver: vi.fn() }));
 vi.mock("@/api/decisions", () => ({ decisionsApi: { get: mocks.get } }));
@@ -75,4 +76,14 @@ it("refreshes the mounted record after company decision events invalidate its re
   await vi.waitFor(() => expect(host.textContent).toContain("Blog draft queued"));
   expect(mocks.get).toHaveBeenCalledTimes(2);
   expect(mocks.resolver).toHaveBeenLastCalledWith(expect.objectContaining({ recordedDecision: decision }));
+});
+it("keeps the recorded choice, inputs and receipt label out of session replay", async () => {
+  await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/ORG/issues/ORG-1#decision-decision-1"]}>
+    <CoordinatorDecisionReceipt item={{ href: "/ORG/issues/ORG-1#decision-decision-1", label: "Own blog first" } as DecisionHistoryItem} onOpen={() => {}} />
+    <TaskDecisionRecord companyId="company" issueId="task-1" viewerId="person" />
+  </MemoryRouter></QueryClientProvider>));
+  await vi.waitFor(() => expect(host.textContent).toContain("The draft is ready"));
+  expect(replayLeaks("Own blog first", host)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("The draft is ready", host)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Decision record", host)).toEqual({ rendered: true, recorded: true });
 });

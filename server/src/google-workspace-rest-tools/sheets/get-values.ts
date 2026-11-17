@@ -65,6 +65,7 @@ export const getValues = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   args,
+  whenTooLarge: NARROW,
   async run(input, http) {
     return getValuesResult(await sendRead<RestValueRange>(http, getValuesRequest(input), NARROW));
   },
