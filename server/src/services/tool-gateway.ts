@@ -1090,6 +1090,31 @@ export function shortStableId(id: string): string {
   return id.replace(/-/g, "").slice(0, 8);
 }
 
+/**
+ * The `transport.namespace-id` part of a connected tool's gateway name. Every
+ * place that rebuilds a gateway tool name (listing, icons) must use this.
+ *
+ * Another Paperclip's tools share names with the agent's own, so they carry
+ * that instance's label. Setup records it when the connection is created; it
+ * never follows the editable name. Connections without it, including peers
+ * created before it existed, keep their original names so saved tool-name
+ * rules and pending approvals still match.
+ */
+export function connectionToolNamespace(input: {
+  connectionId: string;
+  transport: string;
+  connectionName: string | null;
+  config: Record<string, unknown> | null | undefined;
+  applicationKey: string | null | undefined;
+  applicationName: string;
+}): string {
+  const peerNamespace = input.config?.paperclipPeerToolNamespace;
+  const namespaceSource = typeof peerNamespace === "string" && peerNamespace
+    ? peerNamespace
+    : input.applicationKey ?? input.connectionName ?? input.applicationName;
+  return `${input.transport === "rest_api" ? "app" : "mcp"}.${slugSegment(namespaceSource, "mcp")}-${shortStableId(input.connectionId)}`;
+}
+
 function toolRequiresFormalApproval(tool: ToolGatewayDescriptor): boolean {
   return tool.risk === "destructive";
 }
@@ -1764,19 +1789,11 @@ export function createToolGatewayService(
     );
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
-        const applicationKey = application.applicationKey ?? null;
-        // Another Paperclip's tools share names with the agent's own, so they
-        // carry that instance's label. Setup records it when the connection is
-        // created; it never follows the editable name. Connections without it,
-        // including peers created before it existed, keep their original names
-        // so saved tool-name rules and pending approvals still match.
-        const peerNamespace = connection.config?.paperclipPeerToolNamespace;
-        const namespaceSource = typeof peerNamespace === "string" && peerNamespace
-          ? peerNamespace
-          : applicationKey ?? connection.name ?? application.name;
-        const connectionNamespace = `${slugSegment(namespaceSource, "mcp")}-${shortStableId(connection.id)}`;
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
-        return `${connection.transport === "rest_api" ? "app" : "mcp"}.${connectionNamespace}:${toolSlug}`;
+        return `${connectionToolNamespace({
+          connectionId: connection.id, transport: connection.transport, connectionName: connection.name,
+          config: connection.config, applicationKey: application.applicationKey, applicationName: application.name,
+        })}:${toolSlug}`;
       },
     );
     const baseNameCounts = baseNames.reduce<Map<string, number>>(

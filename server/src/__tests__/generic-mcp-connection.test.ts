@@ -55,6 +55,7 @@ import * as instanceSettingsModule from "../services/instance-settings.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -904,7 +905,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
             .filter((tool) => tool.connectionId === connected.connectionId)
             .sort((a, b) => a.name.localeCompare(b.name));
         };
-        return Object.assign(await list(), { list, service, connectionId: connected.connectionId });
+        return Object.assign(await list(), { list, service, companyId: company.id, connectionId: connected.connectionId });
       };
 
       installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
@@ -914,6 +915,12 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         expect.stringMatching(/^mcp\.8-8-8-8-paperclip-[0-9a-f]+:list-insights$/),
       ]);
       expect(assignedToolName(peerTools[0]!.name)).toMatch(/^app_mcp_8_8_8_8_papercli_create_insight_/);
+
+      // Provider icons are keyed by the same gateway name, so the chat finds them.
+      const icons = [{ src: "https://cdn.example.com/peer.png", mimeType: "image/png" }];
+      await db.update(toolCatalogEntries).set({ icons }).where(eq(toolCatalogEntries.connectionId, peerTools.connectionId));
+      expect((await listCompanyProviderToolIcons(db, peerTools.companyId, [peerTools.connectionId])).map((entry) => entry.gatewayToolName).sort())
+        .toEqual(peerTools.map((tool) => tool.name));
 
       // Renaming the connection must not rename tools agents or approvals already hold.
       await peerTools.service.updateConnection(peerTools.connectionId, { name: "Ops intake" });
