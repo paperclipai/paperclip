@@ -69,7 +69,7 @@ describe("SidebarRecentTasks", () => {
     Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
     mockIssuesApi.summaries.mockImplementation(async (_company: string, ids: string[]) => {
       const rows = await Promise.all(ids.map(id => mockIssuesApi.get.getMockImplementation()?.(id)));
-      return rows.filter(row => row && !row.hiddenAt);
+      return rows.filter(row => row && !row.hiddenAt).map(row => ({ ...row, isParticipantForMe: true }));
     });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -134,7 +134,7 @@ describe("SidebarRecentTasks", () => {
     expect(container.textContent).not.toContain("Open or create a task");
   });
   it("keeps actions on both parent and nested child rows", async () => {
-    const parent = { id: "parent", companyId: "company-1", title: "Parent", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1), subtaskCount: 1 };
+    const parent = { id: "parent", companyId: "company-1", title: "Parent", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1), subtaskCount: 1, isParticipantForMe: true };
     recordRecentTask(parent, "user-1");
     mockIssuesApi.summaries.mockResolvedValue([parent]);
     mockIssuesApi.listCompact.mockResolvedValue([{ id: "child", companyId: "company-1", parentId: "parent", title: "Child", identifier: "PAP-2", status: "todo" }] as never);
@@ -149,7 +149,7 @@ describe("SidebarRecentTasks", () => {
   it("shows every task once in a four-level recent chain", async () => {
     const tasks = ["a", "b", "c", "d"].map((id, index) => ({
       id, companyId: "company-1", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo" as const, updatedAt: new Date(index + 1),
-      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
+      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0, isParticipantForMe: true,
     }));
     tasks.forEach(task => recordRecentTask(task, "user-1"));
     mockIssuesApi.summaries.mockResolvedValue(tasks);
@@ -203,7 +203,7 @@ describe("SidebarRecentTasks", () => {
     expect(actions?.className).toContain("opacity-0");
   });
 
-  it("keeps rows stable during alternating activity and applies the final order after quiet", async () => {
+  it("refreshes background activity without changing the personal order after quiet", async () => {
     const tasks = [1, 2, 3].map((id) => ({
       id: `issue-${id}`,
       companyId: "company-1",
@@ -239,13 +239,13 @@ describe("SidebarRecentTasks", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(499); });
     expect(order()).toEqual(originalOrder);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(order()).toEqual(["/issues/PAP-2", "/issues/PAP-1", "/issues/PAP-3"]);
+    expect(order()).toEqual(originalOrder);
     expect(mockIssuesApi.get).not.toHaveBeenCalled();
     expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
     queryClient.clear();
   });
 
-  it("adds and removes tasks immediately while an activity reorder is pending", async () => {
+  it("adds verified tasks and removes tasks while a personal activity reorder is pending", async () => {
     const task = (id: string, recordedAt: number) => ({
       id, companyId: "company-1", title: id, identifier: id,
       status: "todo" as const, updatedAt: new Date(recordedAt),
@@ -259,8 +259,9 @@ describe("SidebarRecentTasks", () => {
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/second");
     await act(async () => {
       recordRecentTask(task("new", 4), "user-1");
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10);
     });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/new");
     act(() => pruneRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1", new Set(["second"])));
     expect(container.querySelector('a[href="/issues/second"]')).toBeNull();
@@ -518,7 +519,10 @@ describe("SidebarRecentTasks", () => {
   });
 
   it("synchronizes recent tasks written by another tab", async () => {
-    mockIssuesApi.get.mockImplementation(() => new Promise(() => {}));
+    mockIssuesApi.get.mockResolvedValue({
+      id: "issue-2", companyId: "company-1", title: "Cross-tab task", identifier: "PAP-2",
+      status: "todo", updatedAt: new Date(2),
+    });
     await render();
     const storageKey = getRecentTasksStorageKey("company-1", "user-1");
     const entries = [{
@@ -533,8 +537,9 @@ describe("SidebarRecentTasks", () => {
     await act(async () => {
       window.localStorage.setItem(storageKey, JSON.stringify(entries));
       window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
-      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 10));
     });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
 
     expect(container.querySelector('a[href="/issues/PAP-2"]')?.textContent).toContain("Cross-tab task");
   });

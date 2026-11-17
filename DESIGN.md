@@ -710,6 +710,11 @@ Its sidebar groups Chat, Tasks and Needs you with space after New task and
 before More, and keeps global search beside the organization menu (below it
 in the collapsed rail).
 Recents appears only when it contains entries, without an empty state.
+Task entries require the viewer's own participation under the Mine inbox rule,
+regardless of inbox archive state. Automated provenance, account ownership and
+read-only visits do not establish participation. A qualifying task's title and
+status stay current, but background updates do not promote it above newer user
+activity. Readable subtasks remain contextual navigation under a qualifying parent.
 
 ### Reuse collection behavior as well as appearance
 

@@ -3834,9 +3834,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const recentVisitRef = useRef<string | null>(null);
   useEffect(() => {
     if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
-    recordRecentTask(issue, currentUserId);
+    const visit = JSON.stringify([issue.companyId, issue.id, currentUserId]);
+    if (recentVisitRef.current === visit) return;
+    recentVisitRef.current = visit;
+    // Record the human visit once. Background task refreshes only update the
+    // sidebar snapshot; the navigation summary decides personal eligibility.
+    recordRecentTask(issue, currentUserId, Date.now());
   }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
@@ -4655,7 +4661,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
       if (streamlinedUiEnabled && sessionResolved) {
-        recordRecentTask(nextIssue, currentUserId);
+        recordRecentTask(nextIssue, currentUserId, Date.now());
       }
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.activity(issueId!),

@@ -1,8 +1,8 @@
 import type { Issue, IssueStatus, IssueSummary } from "@paperclipai/shared";
 
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
-const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
-const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
+const STORAGE_PREFIX = "paperclip.recentTasks.v3:";
+const LEGACY_STORAGE_PREFIXES = ["paperclip.recentTasks.v2:", "paperclip.recentTasks:"];
 
 export interface RecentTaskEntry {
   id: string;
@@ -31,7 +31,7 @@ interface RecentTasksUpdatedDetail {
 }
 
 export function getRecentTasksStorageKey(companyId: string, userId: string | null | undefined) {
-  // Old tabs can still publish stale snapshots. Keep their writes out of v2.
+  // Old tabs still promote machine activity. Keep their writes out of v3.
   return `${STORAGE_PREFIX}${companyId}:${userId ?? "__local_board__"}`;
 }
 
@@ -54,10 +54,10 @@ function isRecentTaskEntry(value: unknown, companyId: string): value is RecentTa
 export function readRecentTasks(storageKey: string, companyId: string): RecentTaskEntry[] {
   if (typeof window === "undefined") return [];
   try {
-    const legacyKey = storageKey.startsWith(STORAGE_PREFIX)
-      ? LEGACY_STORAGE_PREFIX + storageKey.slice(STORAGE_PREFIX.length)
-      : storageKey;
-    const raw = window.localStorage.getItem(storageKey) ?? window.localStorage.getItem(legacyKey);
+    const keys = storageKey.startsWith(STORAGE_PREFIX)
+      ? [storageKey, ...LEGACY_STORAGE_PREFIXES.map(prefix => prefix + storageKey.slice(STORAGE_PREFIX.length))]
+      : [storageKey];
+    const raw = keys.map(key => window.localStorage.getItem(key)).find(value => value !== null);
     const parsed = JSON.parse(raw ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
     return normalizeRecentTasks(
@@ -139,7 +139,6 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
     externalConversationState: issue.externalConversationState,
     blockerAttention: issue.blockerAttention,
     snapshotUpdatedAt,
-    recordedAt: Math.max(entry.recordedAt, snapshotUpdatedAt),
   };
 }
 
