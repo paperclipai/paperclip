@@ -62,8 +62,18 @@ function staticMarker(config: unknown): unknown {
   return (config as Record<string, unknown>)[DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY];
 }
 
-export function staticTemplateEntries(spec: readonly DefaultMcpEntrySpec[]): DefaultMcpEntrySpec[] {
-  return spec.filter((entry) => entry.templateBootstrap === "static" && entry.setupHook && entry.reviewedTools);
+/**
+ * The static entries whose template may exist now: an entry with a `requiresEnvFlag` needs that env var to be `true`.
+ * `env: null` skips that gate (repair keeps healing connections that already exist after the flag is turned off).
+ */
+export function staticTemplateEntries(spec: readonly DefaultMcpEntrySpec[], env: NodeJS.ProcessEnv | null = process.env): DefaultMcpEntrySpec[] {
+  return spec.filter(
+    (entry) =>
+      entry.templateBootstrap === "static" &&
+      entry.setupHook &&
+      entry.reviewedTools &&
+      (!entry.staticTemplate?.requiresEnvFlag || env === null || env[entry.staticTemplate.requiresEnvFlag]?.trim().toLowerCase() === "true"),
+  );
 }
 
 const versionHashOf = (entryKey: string, tool: string, version: number) =>
@@ -322,7 +332,7 @@ export async function ensureStaticCompanyTemplates(
   if (!isDefaultMcpSpecEnabled(env)) return [{ kind: "skipped", reason: "feature_disabled" }];
   const scope = ctx.scope ?? readDefaultMcpTemplateScope();
   if (!isCompanyInDefaultMcpTemplateScope(scope, input.companyId)) return [{ kind: "skipped", reason: "out_of_scope" }];
-  const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC);
+  const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC, env);
   if (entries.length === 0) return [{ kind: "skipped", reason: "no_static_entry" }];
   const now = ctx.now?.() ?? new Date();
   const outcomes: StaticTemplateOutcome[] = [];
@@ -353,7 +363,7 @@ export async function sweepStaticCompanyTemplates(ctx: DefaultMcpTemplateContext
   const scope = ctx.scope ?? readDefaultMcpTemplateScope();
   if (scope.mode === "none") return 0;
   if (scope.mode === "allowlist" && scope.companyIds.length === 0) return 0;
-  const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC);
+  const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC, env);
   let total = 0;
   for (const entry of entries) {
     if (!resolveStaticTemplateMcpUrl(entry.staticTemplate?.mcpUrl, ctx.env).ok) continue;
@@ -410,7 +420,7 @@ export async function repairStaticCatalogConnections(
   if (scope.mode === "allowlist" && scope.companyIds.length === 0) return 0;
   const now = ctx.now?.() ?? new Date();
   let changed = 0;
-  for (const entry of staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC)) {
+  for (const entry of staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC, null)) {
     const allow = [...(entry.reviewedTools?.allow ?? [])];
     if (allow.length === 0) continue;
     const scopeSql =

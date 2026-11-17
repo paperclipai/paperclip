@@ -53,6 +53,7 @@ import {
   commsReviewedAllowlist,
   DEFAULT_MCP_TEMPLATE_UID,
   staticCatalogAllowlist,
+  staticCatalogReviewedRisk,
   stripDefaultMcpProtectedConfigKeys,
   grantHasPersonalOAuthAccessToken,
 } from "./default-mcp-spec.js";
@@ -9014,16 +9015,19 @@ export function toolAccessService(
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
-      const riskLevel = classifyRisk(descriptor, isRailwayEndpoint(connection.config.url) ? "railway" : sourceTemplateKey);
+      // A static-catalog verb whose spec declares its risk keeps that reviewed risk (see `staticCatalogReviewedRisk`).
+      const staticReviewedRisk = staticAllowlist !== null ? staticCatalogReviewedRisk(connection.config, descriptor.name) : null;
+      const riskLevel = staticReviewedRisk ?? classifyRisk(descriptor, isRailwayEndpoint(connection.config.url) ? "railway" : sourceTemplateKey);
       const hash = descriptorHash(descriptor, riskLevel);
       const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
       const changed =
         existing &&
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
-      // Reviewed static-catalog verbs are accepted on drift while they still classify as plain reads; one that no
-      // longer does (write/destructive annotation) takes the normal quarantine path instead (fail closed).
-      const staticReviewedRead = staticAllowlist !== null && riskLevel === "read";
+      // Reviewed static-catalog verbs are accepted on drift while they still classify as plain reads (or, when the spec
+      // declares the verb's risk, always: that reviewed risk is what is stored); one that no longer reads and has no
+      // declared risk (write/destructive annotation) takes the normal quarantine path instead (fail closed).
+      const staticReviewedRead = staticAllowlist !== null && (staticReviewedRisk !== null || riskLevel === "read");
       // A reviewed comms-board tool is accepted on drift unless it now classifies as destructive (fail closed).
       const commsReviewedTool = commsReviewed !== null && commsReviewed.has(descriptor.name) && riskLevel !== "destructive";
       const shouldQuarantine =

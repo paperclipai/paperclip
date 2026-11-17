@@ -755,6 +755,16 @@ Run it per company, batch by batch:
 
 The registry is insert-only per sub. An agent whose memory token was minted by hand (`agent-memory-<id>` already registered) ends at `ownership_conflict`; configure those agents manually, as before. Setup output never contains a token.
 
+### `agent-memory-tools` (TECH-8832)
+
+Explicit memory tools for Claude and Codex agents, beside the recall/capture hooks. It is a `templateBootstrap: "static"` dedicated entry (`setupHook: "agent_memory_tools"`, `newAgentsOnly`, `installByDefault`) whose template connection `rh-agent-memory-tools` points at `${PAPERCLIP_AGENT_MEMORY_URL}/mcp` and offers exactly `memory_search` (read), `memory_add` and `memory_delete` (reviewed writes; `memory_delete` removes only the caller's own rows, so it is seeded non-destructive and a live `destructiveHint` does not demote it). `memory_purge_agent` (admin) is never reviewed. The hook mints nothing: it waits (`memory_token_unavailable`) until the agent's own `agent-memory` entry is ready, then binds that same secret (`agent_memory.<agentId>`) to the agent's dedicated gateway connection, so rotation of that secret reaches the connection and the CLI only ever talks to Paperclip's gateway (no proxy or upstream token in the container). 
+
+Flags and enrolment: it needs `PAPERCLIP_AGENT_MEMORY_TOOLS_ENABLED=true` on top of `PAPERCLIP_AGENT_MEMORY_ENABLED`, a valid `PAPERCLIP_AGENT_MEMORY_URL` and `PAPERCLIP_DEFAULT_MCP_SPEC_ENABLED` (see the environment variable reference). New Claude and Codex agents get it at creation. Existing agents are enrolled with `"keys": ["agent-memory-tools"]`, which also needs `PAPERCLIP_AGENT_MEMORY_BACKFILL_ENABLED=true` and an `agent-memory` entry already present in the agent's metadata (its state is not checked at enrolment; setup waits until it is ready). Because the entry is `installByDefault` and a backfilled entry carries no `installOnReady` marker, the install-reconcile sweep installs the agent's own connection once the entry is ready.
+
+The flag gates creating the template, new-agent provisioning, enrolment and setup. It is not a kill switch for agents that are already ready: their connection stays active, repair keeps healing it and `verifyReady` keeps passing. To take the tools away from an agent, remove its install (or archive its `rh-agent-memory-tools:<agentId>` connection).
+
+
+
 ### Rotation
 
 Memory tokens last 90 days and the registry never revokes. The 60-second setup sweep rotates every ready `agent-memory` entry whose `binding.tokenExpiresAt` is within 14 days (`agent-memory-rotation.ts`), when agent memory is configured and `PAPERCLIP_DEFAULT_MCP_SPEC_ENABLED` is `true`: one registry rotate per agent (`POST {ownership API}/agents/agent-memory-<id>/rotate`, memory scopes, 90 days), then a new version of the agent's secret (the env reference is `version: "latest"`, so runs pick it up), then the new expiry is recorded. Any failure leaves `binding.rotation = { state: "failed", ... }` (codes and a timestamp only) and the old token keeps working; the agent is retried after one hour. A registry reply with no usable expiry is refused before anything is stored. A disabled or deleted secret is never rotated or revived. Each rotation writes an `agent.agent_memory.rotated` activity row with no secret data.

@@ -46,6 +46,13 @@ export const RH_MEMORY_CAPTURE_KEY = "RH_MEMORY_CAPTURE";
  * enrollment may add the agent-memory entry to agents that already hold a default-MCP state. New agents never need it.
  */
 export const AGENT_MEMORY_BACKFILL_ENABLED_ENV = "PAPERCLIP_AGENT_MEMORY_BACKFILL_ENABLED";
+/**
+ * The explicit memory tools for Claude and Codex agents (TECH-8832): a per-agent gateway connection to the memory
+ * service's MCP endpoint (`memory_search`, `memory_add`, `memory_delete`), next to the recall/capture hooks. Off unless
+ * this is `true` AND the memory settings above are valid. Hermes agents have their own mem0 tools and never get it.
+ */
+export const AGENT_MEMORY_TOOLS_ENTRY_KEY = "agent-memory-tools";
+export const AGENT_MEMORY_TOOLS_ENABLED_ENV = "PAPERCLIP_AGENT_MEMORY_TOOLS_ENABLED";
 
 /** The harness-specific part of the provisioning: which keys the agent's adapterConfig receives. */
 export interface AgentMemoryAdapterProfile {
@@ -165,6 +172,39 @@ export function agentMemoryEligibleForNewAgent(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return agentMemoryProfileFor(adapterType, adapterConfig) !== null && resolveAgentMemoryConfig(env).ok;
+}
+
+/** Tools are on only with their own flag AND a valid memory configuration. */
+export function agentMemoryToolsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[AGENT_MEMORY_TOOLS_ENABLED_ENV]?.trim().toLowerCase() === "true" && resolveAgentMemoryConfig(env).ok;
+}
+
+/** Claude and Codex harnesses only: Hermes agents use the mem0 provider's own tools. */
+export function agentMemoryToolsHarness(adapterType: string | null | undefined, adapterConfig?: unknown): boolean {
+  if (agentMemoryProfileFor(adapterType, adapterConfig) === null) return false;
+  const harness = agentHarnessType(adapterType!, asRecord(adapterConfig));
+  return harness === "claude_local" || harness === "codex_local";
+}
+
+/** Whether a NEW agent of this adapter type gets the memory tools entry at creation. */
+export function agentMemoryToolsEligibleForNewAgent(
+  adapterType: string | null | undefined,
+  adapterConfig: unknown = {},
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return agentMemoryToolsHarness(adapterType, adapterConfig) && agentMemoryToolsEnabled(env);
+}
+
+/** The new-agent setup keys to leave out for an agent of this adapter type (memory settings, and the tools). */
+export function agentMemoryExcludedSetupKeys(
+  adapterType: string | null | undefined,
+  adapterConfig: unknown = {},
+  env: NodeJS.ProcessEnv = process.env,
+): Set<string> {
+  const excluded = new Set<string>();
+  if (!agentMemoryEligibleForNewAgent(adapterType, adapterConfig, env)) excluded.add(AGENT_MEMORY_ENTRY_KEY);
+  if (!agentMemoryToolsEligibleForNewAgent(adapterType, adapterConfig, env)) excluded.add(AGENT_MEMORY_TOOLS_ENTRY_KEY);
+  return excluded;
 }
 
 /** `2027-03-01T00:00:00+00:00` and friends to one canonical UTC form; null when absent or unparseable. */

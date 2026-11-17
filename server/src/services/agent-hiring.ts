@@ -9,7 +9,7 @@ import { readPlatformDefaultOpenAiKey } from "../secrets/platform-default-openai
 import { readPlatformDefaultRouterKey } from "../secrets/platform-default-router-key.js";
 import { logActivity } from "./activity-log.js";
 import type { ActivityPublication } from "../types/activity-publication.js";
-import { AGENT_MEMORY_ENTRY_KEY, agentMemoryEligibleForNewAgent } from "./default-mcp-agent-memory.js";
+import { agentMemoryExcludedSetupKeys } from "./default-mcp-agent-memory.js";
 import { isDefaultMcpSpecEnabled, stripReservedDefaultMcpMetadata } from "./default-mcp-spec.js";
 import { assertAgentMetadataShape, protectedMetadataReplacement } from "./agent-metadata-protection.js";
 import { bindDefaultMcpOwnerForApproval, resolveCreatorOwnerUserId, snapshotDefaultMcpForNewAgent } from "./default-mcp-setup.js";
@@ -257,8 +257,12 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
       status: created.status,
       installDedicatedOnReady: true,
       newAgentCreation: true,
-      // Agent memory (TECH-8409) is offered only to new agents of a profiled adapter (Hermes or Claude local) while the server enables it.
-      ...(agentMemoryEligibleForNewAgent(created.adapterType, created.adapterConfig) ? {} : { excludedSetupKeys: new Set([AGENT_MEMORY_ENTRY_KEY]) }),
+      // Agent memory (TECH-8409) is offered only to new agents of a profiled adapter (Hermes or Claude local) while the
+      // server enables it; the memory tools (TECH-8832) only to Claude and Codex agents while their own flag is on.
+      ...(() => {
+        const excluded = agentMemoryExcludedSetupKeys(created.adapterType, created.adapterConfig);
+        return excluded.size > 0 ? { excludedSetupKeys: excluded } : {};
+      })(),
     });
   }
   if (options?.aiConnectionInstall) {

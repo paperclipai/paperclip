@@ -1166,9 +1166,9 @@ describe("discovery-only seeds and strict personal instances (TECH-7340)", () =>
 });
 
 describe("installByDefault", () => {
-  it("is set only on the dedicated comms-board entry", () => {
+  it("is set only on the dedicated comms-board and agent-memory-tools entries", () => {
     const flagged = DEFAULT_MCP_SPEC.filter((entry) => entry.installByDefault).map((entry) => entry.key);
-    expect(flagged).toEqual(["comms-board"]);
+    expect(flagged).toEqual(["comms-board", "agent-memory-tools"]);
     expect(DEFAULT_MCP_SPEC.every((entry) => !entry.installByDefault || entry.setupHook)).toBe(true);
   });
 });

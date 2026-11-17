@@ -38,7 +38,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { agentMemoryHook } from "./default-mcp-agent-memory.js";
+import { AGENT_MEMORY_ENTRY_KEY, agentMemoryHook, agentMemoryToolsEnabled, agentMemoryToolsHarness } from "./default-mcp-agent-memory.js";
 import { sweepAgentMemoryRotation } from "./agent-memory-rotation.js";
 import { ownerEmailFor } from "./default-mcp-owner.js";
 import { isCompanyInDefaultMcpTemplateScope, readDefaultMcpTemplateScope } from "../secrets/default-mcp-template-scope.js";
@@ -58,13 +58,13 @@ import {
   type FetchLike,
 } from "./comms-board-provisioner-client.js";
 import {
-  ARCANA_STATIC_TEMPLATE_UID,
   DEFAULT_MCP_LEASE_MS,
   DEFAULT_MCP_MAX_ATTEMPTS,
   DEFAULT_MCP_METADATA_KEY,
   DEFAULT_MCP_SPEC,
   DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY,
   defaultMcpBackoffMs,
+  isArcanaStaticTemplate,
   isDefaultMcpSpecEnabled,
   isManagedTemplate,
   isValidDefaultMcpTemplate,
@@ -1072,11 +1072,11 @@ async function ensureDedicatedStage(
       dedicated = await toolAccessService(txDb).cloneConnectionFromTemplate(txDb, template, {
         name,
         credentialRefs: [{ ...templateRef, secretId: binding.secretId!, version: "latest" }],
-        // A clone of OUR static-catalog template carries the server-owned marker explicitly (it also inherits it from
+        // A clone of ANY static-catalog template of ours (by its fixed uid) carries the server-owned marker explicitly (it also inherits it from
         // the template's config): refresh then keeps exactly the reviewed verbs active and never adds others.
         configOverlay: {
           mcpSessionRequired: true,
-          ...(template.uid === ARCANA_STATIC_TEMPLATE_UID ? { [DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY]: input.entry.key } : {}),
+          ...(isArcanaStaticTemplate(template) ? { [DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY]: input.entry.key } : {}),
         },
       });
     }
@@ -1449,12 +1449,85 @@ export const arcanaBrainHook: DefaultMcpSetupHook = async (input) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Hook: agent_memory_tools (TECH-8832)
+// ---------------------------------------------------------------------------
+
+/**
+ * Gives a Claude or Codex agent explicit memory tools: its own dedicated gateway connection to the memory service's MCP
+ * endpoint. The token is the one the `agent-memory` entry already minted and stored (`agent_memory.<agentId>`), so
+ * nothing is minted here, the secret stays single and rotation (which rewrites that secret in place) reaches the gateway
+ * connection too. The hook waits until that entry is ready, then runs the same local stage as the other dedicated entries.
+ */
+export const agentMemoryToolsHook: DefaultMcpSetupHook = async (input) => {
+  const { db, companyId, agentId, entry } = input;
+  const current = input.current();
+  const templateName = current.templateKey || entry.connectionName; // the FROZEN key, never today's spec
+  let binding = current.binding;
+
+  if (!agentMemoryToolsEnabled(input.env)) return { kind: "waiting", reason: "provisioner_not_configured" };
+
+  const [agentRow] = await db
+    .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig, metadata: agents.metadata })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+    .limit(1);
+  if (!agentRow || !agentMemoryToolsHarness(agentRow.adapterType, agentRow.adapterConfig)) return { kind: "error", reason: "adapter_unsupported" };
+
+  // The memory token comes from the agent's own agent-memory entry; until that is ready there is nothing to bind.
+  const memory = readDefaultMcpState(agentRow.metadata)?.entries[AGENT_MEMORY_ENTRY_KEY];
+  const memorySecretId = memory?.setup.state === "ready" ? memory.binding?.secretId : null;
+  if (!memorySecretId) return { kind: "waiting", reason: "memory_token_unavailable" };
+
+  if (binding?.secretId !== memorySecretId) {
+    binding = {
+      boardAgentId: null,
+      baseSub: memory!.binding?.baseSub ?? `agent-memory-${agentId.toLowerCase()}`,
+      agentKey: null,
+      boardSub: null,
+      secretId: memorySecretId,
+      secretVersion: "latest",
+      // Kept when the secret id changed under an existing connection: the stage re-points its header ref.
+      connectionId: binding?.connectionId ?? null,
+      grantId: binding?.grantId ?? null,
+      tokenExpiresAt: memory!.binding?.tokenExpiresAt ?? null,
+    };
+    await input.checkpoint({ binding });
+  }
+
+  // A deleted or disabled secret is an intentionally revoked credential.
+  if (!(await vaultSecretUsable(db, companyId, binding.secretId!))) return { kind: "error", reason: "secret_unavailable" };
+
+  const resolved = await resolveTemplate(db, companyId, templateName, entry.reviewedTools);
+  if ("reason" in resolved) {
+    return binding.connectionId && boundsCredentialHolder(resolved)
+      ? { kind: "retry", reason: resolved.reason }
+      : { kind: "waiting", reason: resolved.reason };
+  }
+
+  try {
+    await ensureDedicatedStage(input, templateName, binding, current.ownerUserId, "Agent memory token");
+    return { kind: "ready" };
+  } catch (err) {
+    if (err instanceof ClaimLostError) throw err;
+    if (err instanceof TemplateUnavailableError) {
+      return boundsCredentialHolder(err) ? { kind: "retry", reason: err.reason } : { kind: "waiting", reason: err.reason };
+    }
+    logger.warn(
+      { agentId, entryKey: entry.key, errorClass: err instanceof Error ? err.constructor.name : typeof err },
+      "default MCP dedicated stage failed",
+    );
+    return { kind: "retry", reason: "binding_failed" };
+  }
+};
+
 export const DEFAULT_MCP_SETUP_HOOKS: Partial<Record<DefaultMcpSetupHookKey, DefaultMcpSetupHook>> = {
   comms_board_identity: commsBoardIdentityHook,
   arcana_brain: arcanaBrainHook,
   // Deferred: agent-memory imports the agent service, which (through agent-hiring) imports this module. Reading the
   // binding eagerly here could hit it before initialization when agent-hiring loads first.
   agent_memory: (input) => agentMemoryHook(input),
+  agent_memory_tools: agentMemoryToolsHook,
 };
 
 /** The wiring a READY comms entry depends on, checked against the real rows (local reads only). */
@@ -1508,6 +1581,7 @@ async function vaultSecretUsable(db: Pick<Db, "select">, companyId: string, secr
 
 commsBoardIdentityHook.verifyReady = (db, companyId, agentId, entry) => commsWiringIntact(db, companyId, agentId, entry);
 arcanaBrainHook.verifyReady = (db, companyId, agentId, entry) => commsWiringIntact(db, companyId, agentId, entry);
+agentMemoryToolsHook.verifyReady = (db, companyId, agentId, entry) => commsWiringIntact(db, companyId, agentId, entry);
 
 /**
  * Fail-closed, validated lookup of an agent's comms-board binding for the wake bridge: the agent

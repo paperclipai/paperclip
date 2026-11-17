@@ -11,6 +11,7 @@ import { agentService } from "../services/agents.js";
 import {
   ARCANA_BRAIN_REVIEWED_TOOLS,
   ARCANA_STATIC_TEMPLATE_UID,
+  DEFAULT_MCP_METADATA_KEY,
   DEFAULT_MCP_SPEC,
   DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY,
   readDefaultMcpState,
@@ -19,6 +20,8 @@ import {
 } from "../services/default-mcp-spec.js";
 import { runDefaultMcpSetupForAgent, waitForScheduledDefaultMcpSetups } from "../services/default-mcp-setup.js";
 import { ARCANA_MCP_URL_ENV, ARCANA_PROVISION_KEY_ENV, ARCANA_URL_ENV } from "../services/arcana-provisioner-client.js";
+import { AGENT_MEMORY_ENABLED_ENV, AGENT_MEMORY_TOOLS_ENABLED_ENV, AGENT_MEMORY_URL_ENV } from "../services/default-mcp-agent-memory.js";
+import { secretService } from "../services/secrets.js";
 import { ensureStaticCompanyTemplates, repairStaticCatalogConnections } from "../services/default-mcp-static-template.js";
 import { sweepCompanyTemplates } from "../services/default-mcp-template.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -33,6 +36,9 @@ const MCP_URL = "https://arcana-mcp.example.test/mcp";
 const PROVISION_KEY = "synthetic-provision-key-0123456789abcdef";
 const ARCANA_ENTRY = DEFAULT_MCP_SPEC.find((entry) => entry.key === "arcana-brain")!;
 const MARKER = DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY;
+const MEMORY_ENTRY = DEFAULT_MCP_SPEC.find((entry) => entry.key === "agent-memory-tools")!;
+const MEMORY_URL = "https://memory.example.test";
+const MEMORY_MCP_URL = `${MEMORY_URL}/mcp`;
 
 /** Real-shaped descriptors: the live server's text and schemas never match the seeded placeholders. */
 const realDescriptor = (name: string, extra: Record<string, unknown> = {}) => ({
@@ -44,9 +50,9 @@ const realDescriptor = (name: string, extra: Record<string, unknown> = {}) => ({
 });
 
 /** A minimal MCP streamable-HTTP server at MCP_URL serving initialize / tools/list / tools/call. */
-function mcpFetch(descriptors: () => Array<Record<string, unknown>>) {
+function mcpFetch(descriptors: () => Array<Record<string, unknown>>, serverUrl: string = MCP_URL) {
   return vi.fn(async (url: string, init: RequestInit) => {
-    if (url !== MCP_URL) throw new Error(`unexpected request ${url}`);
+    if (url !== serverUrl) throw new Error(`unexpected request ${url}`);
     if (init.method === "DELETE") return new Response(null, { status: 200 });
     const body = JSON.parse(String(init.body)) as { id?: number; method: string };
     if (body.method === "initialize") {
@@ -251,6 +257,163 @@ describeEmbeddedPostgres("static-catalog connections survive a live catalog refr
     const statuses = await statusMap(dedicated.id);
     expect(statuses.open_source).toBe("disabled");
     expect(statuses.recall).toBe("active");
+  });
+
+  describe("agent-memory-tools entry (TECH-8832)", () => {
+    const memoryEnv: NodeJS.ProcessEnv = {
+      [FEATURE_ENV]: "true",
+      [AGENT_MEMORY_ENABLED_ENV]: "true",
+      [AGENT_MEMORY_URL_ENV]: MEMORY_URL,
+      [AGENT_MEMORY_TOOLS_ENABLED_ENV]: "true",
+    };
+    const memoryCtx = (extra: Partial<NodeJS.ProcessEnv> = {}) => ({ db, env: { ...memoryEnv, ...extra }, spec: [MEMORY_ENTRY], scope: { mode: "all" } as const });
+    const MEMORY_TOOL_NAMES = ["memory_search", "memory_add", "memory_delete"];
+    /** The live service's descriptors: memory_delete carries `destructiveHint`, which must not demote a reviewed verb. */
+    const memoryDescriptors = () => [
+      realDescriptor("memory_search"),
+      realDescriptor("memory_add", { annotations: { readOnlyHint: false, destructiveHint: false } }),
+      realDescriptor("memory_delete", { annotations: { destructiveHint: true } }),
+      realDescriptor("memory_purge_agent", { annotations: { destructiveHint: true } }),
+    ];
+
+    /** A Claude agent whose agent-memory entry is ready (its token secret exists), with a pending memory tools entry. */
+    async function memoryAgent(adapterType = "claude_local") {
+      const companyId = await seedCompany();
+      const created = await agentService(db).create(companyId, {
+        name: "Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType,
+        adapterConfig: {},
+        runtimeConfig: {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      });
+      const secret = await secretService(db).create(
+        companyId,
+        { name: "Agent memory token", key: `agent_memory.${created.id}`, provider: "local_encrypted", value: "synthetic-memory-token-0123456789", description: "test" },
+        { userId: null },
+      );
+      const nowIso = new Date().toISOString();
+      const setup = (state: string) => ({ state, reason: null, attemptCount: 0, nextAttemptAt: null, leaseUntil: null, claimId: null, registerAttemptedAt: null, mintAttemptedAt: null, updatedAt: nowIso });
+      const memoryBinding = { boardAgentId: null, baseSub: `agent-memory-${created.id}`, agentKey: null, boardSub: null, secretId: secret.id, secretVersion: "latest", connectionId: null, grantId: null, tokenExpiresAt: null };
+      await db
+        .update(agents)
+        .set({
+          metadata: {
+            [DEFAULT_MCP_METADATA_KEY]: {
+              version: 1,
+              entries: {
+                "agent-memory": { key: "agent-memory", templateKey: "rh-agent-memory", dedicated: true, enabled: false, templateConnectionId: null, connectionId: null, ownerUserId: null, setup: setup("ready"), binding: memoryBinding },
+                "agent-memory-tools": { key: "agent-memory-tools", templateKey: "rh-agent-memory-tools", dedicated: true, enabled: false, installOnReady: true, templateConnectionId: null, connectionId: null, ownerUserId: null, setup: setup("pending"), binding: null },
+              },
+            },
+          },
+        })
+        .where(eq(agents.id, created.id));
+      return { companyId, agentId: created.id, secretId: secret.id };
+    }
+
+    const runTools = (companyId: string, agentId: string, extra: Partial<NodeJS.ProcessEnv> = {}) =>
+      runDefaultMcpSetupForAgent(
+        { db, env: { ...memoryEnv, ...extra }, fetchImpl: vi.fn(async () => { throw new Error("no network expected"); }) as unknown as typeof fetch, spec: [MEMORY_ENTRY], now: later },
+        { companyId, agentId },
+      );
+    const toolsEntry = async (agentId: string) => {
+      const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+      return readDefaultMcpState(row!.metadata)!.entries["agent-memory-tools"]!;
+    };
+
+    it("the template carries the entry's own uid and marker and seeds the three reviewed verbs with their reviewed risk", async () => {
+      const companyId = await seedCompany();
+      expect(await ensureStaticCompanyTemplates(memoryCtx(), { companyId })).toEqual([{ kind: "ready", created: true }]);
+      const [template] = await db.select().from(toolConnections).where(eq(toolConnections.companyId, companyId));
+      expect(template!.uid).toBe(MEMORY_ENTRY.staticTemplate!.uid);
+      expect(template!.uid).not.toBe(ARCANA_STATIC_TEMPLATE_UID);
+      expect((template!.config as Record<string, unknown>)[MARKER]).toBe("agent-memory-tools");
+      expect(template!.config).toMatchObject({ url: MEMORY_MCP_URL });
+      const catalog = await catalogOf(template!.id);
+      expect(catalog.map((row) => row.toolName).sort()).toEqual([...MEMORY_TOOL_NAMES].sort());
+      expect(catalog.every((row) => row.status === "active")).toBe(true);
+      expect(Object.fromEntries(catalog.map((row) => [row.toolName, [row.riskLevel, row.isDestructive]]))).toEqual({
+        memory_search: ["read", false],
+        memory_add: ["write", false],
+        memory_delete: ["write", false],
+      });
+    });
+
+    it("creates no template while the tools flag is off", async () => {
+      const companyId = await seedCompany();
+      expect(await ensureStaticCompanyTemplates(memoryCtx({ [AGENT_MEMORY_TOOLS_ENABLED_ENV]: "false" }), { companyId })).toEqual([{ kind: "skipped", reason: "no_static_entry" }]);
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, companyId))).toHaveLength(0);
+    });
+
+    it("waits until the agent's own agent-memory entry is ready, then binds that same secret to a dedicated connection and installs it", async () => {
+      const { companyId, agentId, secretId } = await memoryAgent();
+      await ensureStaticCompanyTemplates(memoryCtx(), { companyId });
+      await runTools(companyId, agentId);
+      const entry = await toolsEntry(agentId);
+      expect(entry.setup.state).toBe("ready");
+      expect(entry.binding?.secretId).toBe(secretId);
+      const connections = await db.select().from(toolConnections).where(eq(toolConnections.companyId, companyId));
+      const dedicated = connections.find((c) => c.name === `rh-agent-memory-tools:${agentId}`)!;
+      expect(dedicated).toBeDefined();
+      expect((dedicated.config as Record<string, unknown>)[MARKER]).toBe("agent-memory-tools");
+      expect(dedicated.credentialRefs.filter((ref) => ref.placement === "header").map((ref) => ref.secretId)).toEqual([secretId]);
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, dedicated.id));
+      expect(installs.map((i) => `${i.targetType}:${i.targetId}`)).toEqual([`agent:${agentId}`]);
+      expect(await statusMap(dedicated.id)).toEqual(Object.fromEntries(MEMORY_TOOL_NAMES.map((name) => [name, "active"])));
+      // No second secret was minted: the vault still holds only the agent's one memory token.
+      const secrets = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.key, `agent_memory.${agentId}`)));
+      expect(secrets).toHaveLength(1);
+    });
+
+    it("waits (provisioner_not_configured) while the tools flag is off, writing no connection", async () => {
+      const { companyId, agentId } = await memoryAgent();
+      await ensureStaticCompanyTemplates(memoryCtx(), { companyId });
+      await runTools(companyId, agentId, { [AGENT_MEMORY_TOOLS_ENABLED_ENV]: "false" });
+      expect((await toolsEntry(agentId)).setup).toMatchObject({ state: "pending", reason: "provisioner_not_configured" });
+      const connections = await db.select().from(toolConnections).where(eq(toolConnections.companyId, companyId));
+      expect(connections.some((c) => c.name === `rh-agent-memory-tools:${agentId}`)).toBe(false);
+    });
+
+    it("waits (memory_token_unavailable) while the agent-memory entry is not ready", async () => {
+      const { companyId, agentId } = await memoryAgent();
+      await ensureStaticCompanyTemplates(memoryCtx(), { companyId });
+      const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const state = readDefaultMcpState(row!.metadata)!;
+      state.entries["agent-memory"]!.setup.state = "pending";
+      await db.update(agents).set({ metadata: { [DEFAULT_MCP_METADATA_KEY]: state } }).where(eq(agents.id, agentId));
+      await runTools(companyId, agentId);
+      expect((await toolsEntry(agentId)).setup).toMatchObject({ state: "pending", reason: "memory_token_unavailable" });
+    });
+
+    it("refuses an agent that is not a Claude or Codex harness (Hermes has its own memory tools)", async () => {
+      const { companyId, agentId } = await memoryAgent("hermes_local");
+      await ensureStaticCompanyTemplates(memoryCtx(), { companyId });
+      await runTools(companyId, agentId);
+      expect((await toolsEntry(agentId)).setup).toMatchObject({ state: "error", reason: "adapter_unsupported" });
+    });
+
+    it("first live refresh keeps the reviewed write tools active (memory_delete's destructive hint does not quarantine it), and never adds the purge tool", async () => {
+      const { companyId, agentId } = await memoryAgent();
+      await ensureStaticCompanyTemplates(memoryCtx(), { companyId });
+      await runTools(companyId, agentId);
+      const [dedicated] = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.name, `rh-agent-memory-tools:${agentId}`)));
+      const server = mcpFetch(memoryDescriptors, MEMORY_MCP_URL);
+      const refresh = await accessFor(server).refreshCatalog(dedicated!.id, { actorType: "system", actorId: "test" });
+      expect(refresh.quarantinedCount).toBe(0);
+      expect(await statusMap(dedicated!.id)).toEqual(Object.fromEntries(MEMORY_TOOL_NAMES.map((name) => [name, "active"])));
+      const catalog = await catalogOf(dedicated!.id);
+      const byName = Object.fromEntries(catalog.map((row) => [row.toolName, row]));
+      expect(byName.memory_search!.description).toContain("Live description of memory_search");
+      expect([byName.memory_add!.riskLevel, byName.memory_add!.isDestructive]).toEqual(["write", false]);
+      expect([byName.memory_delete!.riskLevel, byName.memory_delete!.isDestructive]).toEqual(["write", false]);
+      expect(byName.memory_purge_agent).toBeUndefined();
+      // The health-check cadence: a second refresh changes nothing.
+      await accessFor(server).refreshCatalog(dedicated!.id, { actorType: "system", actorId: "test" });
+      expect(await statusMap(dedicated!.id)).toEqual(Object.fromEntries(MEMORY_TOOL_NAMES.map((name) => [name, "active"])));
+    });
   });
 
   it("an unmarked connection keeps the generic behavior: drift is quarantined (control)", async () => {

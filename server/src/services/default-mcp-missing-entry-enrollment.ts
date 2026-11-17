@@ -35,7 +35,14 @@ import {
   type DefaultMcpEntryState,
 } from "./default-mcp-spec.js";
 import { scheduleDefaultMcpSetup, snapshotDefaultMcpForNewAgent } from "./default-mcp-setup.js";
-import { AGENT_MEMORY_ENTRY_KEY, agentMemoryBackfillEnabled, agentMemoryProfileFor } from "./default-mcp-agent-memory.js";
+import {
+  AGENT_MEMORY_ENTRY_KEY,
+  AGENT_MEMORY_TOOLS_ENTRY_KEY,
+  agentMemoryBackfillEnabled,
+  agentMemoryProfileFor,
+  agentMemoryToolsEnabled,
+  agentMemoryToolsHarness,
+} from "./default-mcp-agent-memory.js";
 import { assessLegacyOrdinaryAccess, resolveLegacyResponsibleUser, verifyResponsibleUserCandidate } from "./default-mcp-legacy-enrollment.js";
 
 export const MISSING_ENTRY_BATCH_LIMIT = 25;
@@ -51,7 +58,7 @@ export function missingEntryEligibleSpec(): readonly DefaultMcpEntrySpec[] {
 
 /** The keys this job can ever enroll: the eligible managed entries plus agent memory (still gated per agent by its flag). */
 export function missingEntryEnrollableKeys(): readonly string[] {
-  return [...missingEntryEligibleSpec().map((entry) => entry.key), AGENT_MEMORY_ENTRY_KEY];
+  return [...missingEntryEligibleSpec().map((entry) => entry.key), AGENT_MEMORY_ENTRY_KEY, AGENT_MEMORY_TOOLS_ENTRY_KEY];
 }
 
 /**
@@ -64,6 +71,21 @@ function agentMemoryBackfillSpec(
 ): readonly DefaultMcpEntrySpec[] {
   if (!agentMemoryBackfillEnabled(env) || agentMemoryProfileFor(agent.adapterType, agent.adapterConfig) === null) return [];
   return DEFAULT_MCP_SPEC.filter((entry) => entry.key === AGENT_MEMORY_ENTRY_KEY);
+}
+
+/**
+ * The memory tools entry (TECH-8832) is `newAgentsOnly` too: it joins the missing set only for a Claude or Codex agent,
+ * while the tools flag is on and the backfill flag is on, both with a valid memory configuration. An agent whose
+ * `agent-memory` entry is absent gets nothing here (its setup would wait for a token that nothing provisions).
+ */
+export function agentMemoryToolsBackfillSpec(
+  env: NodeJS.ProcessEnv,
+  agent: { adapterType: string | null; adapterConfig: unknown },
+  raw: Record<string, unknown>,
+): readonly DefaultMcpEntrySpec[] {
+  if (!agentMemoryToolsEnabled(env) || !agentMemoryBackfillEnabled(env) || !agentMemoryToolsHarness(agent.adapterType, agent.adapterConfig)) return [];
+  if (!(AGENT_MEMORY_ENTRY_KEY in raw)) return [];
+  return DEFAULT_MCP_SPEC.filter((entry) => entry.key === AGENT_MEMORY_TOOLS_ENTRY_KEY);
 }
 
 export type MissingEntrySkipReason =
@@ -159,7 +181,7 @@ function missingSpecFor(
   keys?: readonly string[],
 ): DefaultMcpEntrySpec[] {
   const raw = (metadata as { [DEFAULT_MCP_METADATA_KEY]?: { entries?: Record<string, unknown> } }).defaultMcp?.entries ?? {};
-  return [...missingEntryEligibleSpec(), ...agentMemoryBackfillSpec(env, agent)]
+  return [...missingEntryEligibleSpec(), ...agentMemoryBackfillSpec(env, agent), ...agentMemoryToolsBackfillSpec(env, agent, raw)]
     .filter((entry) => !(entry.key in raw))
     .filter((entry) => !keys || keys.includes(entry.key));
 }
