@@ -26,7 +26,7 @@ export const ProductionPickerReadOnly: Story = {
     const body = within(canvasElement.ownerDocument.body);
     const disclosure = body.getByRole("region", { name: "How Paperclip uses your Google data" });
     await expect(disclosure).toHaveTextContent("Gmail: agents can read and search your email.");
-    await expect(disclosure).not.toHaveTextContent(/Drive|drafts|send/);
+    await expect(disclosure).not.toHaveTextContent(/Drive|drafts|sending|Paperclip does not send/);
     await expect(disclosure).toHaveTextContent("the content is sent to the AI model provider configured for your workspace");
     await expect(within(disclosure).getByRole("link", { name: /Limited Use/ })).toHaveAttribute("href", "https://paperclip.ing/privacy");
     await userEvent.click(body.getByRole("switch", { name: /^Gmail$/ }));

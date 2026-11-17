@@ -153,6 +153,8 @@ describe("Workspace service consent", () => {
 
 });
 
+const GMAIL_SEND_NOTE = "Google's permission screen also mentions sending email; Paperclip does not send email.";
+
 describe("Google Workspace data-use disclosure", () => {
   const use = [
     "Agents read this content only to do the tasks you give them.",
@@ -163,7 +165,7 @@ describe("Google Workspace data-use disclosure", () => {
 
   it.each([
     [{ gmail: "read" }, ["Gmail: agents can read and search your email."]],
-    [{ gmail: "write" }, ["Gmail: agents can read and search your email, and create drafts."]],
+    [{ gmail: "write" }, ["Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email."]],
     [{ drive: "read" }, ["Drive: agents can read and search your files, Docs, Sheets and Slides."]],
     [{ drive: "write" }, ["Drive: agents can read and search your files, Docs, Sheets and Slides. They can also create files and edit Docs, Sheets and Slides."]],
     [{ calendar: "read" }, ["Calendar: agents can see your calendars, events and free/busy times."]],
@@ -178,11 +180,14 @@ describe("Google Workspace data-use disclosure", () => {
     expect(disclosure.use).toContain("To do that, the content is sent to the AI model provider configured for your workspace.");
   });
 
-  it("never says Gmail can send, at either access level", () => {
-    for (const gmail of ["read", "write"] as const) {
-      const text = [...googleWorkspaceDataUseDisclosure({ gmail }).access, ...googleWorkspaceDataUseDisclosure({ gmail }).use].join(" ");
-      expect(text).not.toMatch(/send/i);
-    }
+  it("never claims Gmail can send: read only never mentions sending, read & write only says Paperclip does not send", () => {
+    const text = (gmail: "read" | "write") => {
+      const { access, use } = googleWorkspaceDataUseDisclosure({ gmail });
+      return [...access, ...use].join(" ");
+    };
+    expect(text("read")).not.toMatch(/send/i);
+    expect(text("write")).toContain("Paperclip does not send email.");
+    expect(text("write").replace(GMAIL_SEND_NOTE, "")).not.toMatch(/send/i);
   });
 
   it("says nothing with no services selected", () => {
@@ -214,10 +219,10 @@ describe("Workspace picker disclosure", () => {
   it("shows the selected services, sharing and privacy policy before Continue", async () => {
     await render({ gmail: "write", calendar: "read" });
     const block = disclosure()!;
-    expect(block.textContent).toContain("Gmail: agents can read and search your email, and create drafts.");
+    expect(block.textContent).toContain("Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.");
     expect(block.textContent).toContain("Calendar: agents can see your calendars, events and free/busy times.");
     expect(block.textContent).not.toContain("Drive");
-    expect(block.textContent).not.toMatch(/send/i);
+    expect(block.textContent!.replace(GMAIL_SEND_NOTE, "")).not.toMatch(/\bsend/i);
     expect(block.textContent).toContain("the content is sent to the AI model provider configured for your workspace");
     const link = block.querySelector("a")!;
     expect(link.getAttribute("href")).toBe(GOOGLE_WORKSPACE_PRIVACY_POLICY_URL);

@@ -2185,7 +2185,7 @@ describe("AppDetail", () => {
       expect(startOAuthMock).not.toHaveBeenCalled();
       await act(async () => { document.body.querySelector<HTMLElement>("#workspace-service-gmail")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
       await flushReact();
-      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email, and create drafts.");
+      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.");
       await clickBody("Continue");
       expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { workspaceServices: { gmail: "write" } });
     });

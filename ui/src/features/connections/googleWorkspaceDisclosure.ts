@@ -4,11 +4,12 @@ export const GOOGLE_WORKSPACE_PRIVACY_POLICY_URL = "https://paperclip.ing/privac
 
 type ServiceId = (typeof GOOGLE_WORKSPACE_SERVICE_GROUPS)[number]["id"];
 
-// Gmail write only creates drafts: Paperclip cannot send email, so this copy must never say it can.
+// Gmail write only creates drafts. Google's consent screen describes the compose
+// permission as sending too, so the copy says so and states that Paperclip does not send.
 const ACCESS: Record<ServiceId, { read: string; write: string }> = {
   gmail: {
     read: "Gmail: agents can read and search your email.",
-    write: "Gmail: agents can read and search your email, and create drafts.",
+    write: "Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.",
   },
   drive: {
     read: "Drive: agents can read and search your files, Docs, Sheets and Slides.",
