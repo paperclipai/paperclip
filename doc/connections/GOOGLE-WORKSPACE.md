@@ -268,10 +268,12 @@ checked first. Then `secrets.remove(secretId, { expectedVersion })` claims the
 row in one statement only if it is not deleted and its `latestVersion` still
 equals the version that was read, and only then runs the usual provider-side
 deletion and row removal. No caller transaction or row lock is held, and the
-broker call never runs inside a transaction. A sign-in that finishes during the
-call either writes a new version of the refresh token or, when Google returns
-none, drops the old secret from the grant; either way the new sign-in's token
-is never deleted, and a later removal sends that new token. During a whole-
+broker call never runs inside a transaction. A managed Google sign-in that finishes
+during the call always writes a new version of the refresh token, so the new
+sign-in's token is never deleted, and a later removal sends that new token. A
+sign-in that returns no refresh token is refused before anything is written
+(`oauth_refresh_missing`), so it cannot reactivate the grant with the old
+token. During a whole-
 connection removal a sign-in cannot complete after the teardown: the teardown
 deletes the connection's OAuth states, and the callback must consume its state
 in its own transaction. An organization

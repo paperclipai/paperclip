@@ -27,7 +27,7 @@ import {
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { GOOGLE_WORKSPACE_CONNECTOR_PROFILES } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -481,13 +481,13 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
 
-  async function signInAgain(fixture: Awaited<ReturnType<typeof connectManagedGmail>>, refreshToken: string) {
+  async function signInAgain(fixture: Awaited<ReturnType<typeof connectManagedGmail>>, refreshToken: string | null) {
     const actor = { actorType: "user" as const, actorId: fixture.userId };
     const started = await fixture.service.startOAuth(fixture.company.id, fixture.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
     });
     const claimed = await fixture.connector.claim({ subject: fixture.userId });
-    fixture.connector.claim.mockResolvedValueOnce({ ...claimed, refreshToken });
+    fixture.connector.claim.mockResolvedValueOnce({ ...claimed, refreshToken } as typeof claimed);
     return () => fixture.service.completePaperclipCloudConnectorCallback({
       state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: `again-${randomUUID()}`, actor,
     });
@@ -569,6 +569,49 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
       actor: { actorType: "user", actorId: fixture.userId },
     });
     expect(fixture.connector.refresh).toHaveBeenCalledWith(expect.objectContaining({ refreshToken: "fresh-refresh-token-do-not-log" }));
+  });
+
+  async function liveRefsToMissingSecrets(companyId: string) {
+    const live = new Set((await db.select({ id: companySecrets.id }).from(companySecrets)
+      .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt)))).map((row) => row.id));
+    const grants = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, companyId), ne(connectionGrants.status, "revoked")));
+    const connections = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), ne(toolConnections.status, "archived")));
+    return [
+      ...grants.flatMap((grant) => grant.credentialSecretRefs),
+      ...connections.flatMap((connection) => [...connection.credentialSecretRefs, ...connection.credentialRefs]),
+    ].filter((ref) => !live.has(ref.secretId));
+  }
+
+  it("refuses a managed Google sign-in that returns no refresh token and leaves the grant unchanged", async () => {
+    const fixture = await connectManagedGmail();
+
+    await expect((await signInAgain(fixture, null))()).rejects.toMatchObject({ details: { code: "oauth_refresh_missing" } });
+
+    const [grantRow] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grantRow!.status).toBe("active");
+    expect(grantRow!.credentialSecretRefs).toEqual(fixture.grant.credentialSecretRefs);
+    expect(await liveRefsToMissingSecrets(fixture.company.id)).toEqual([]);
+  });
+
+  it("still deletes the old refresh token when a sign-in without one is refused while Paperclip Cloud answers a grant removal", async () => {
+    const fixture = await connectManagedGmail();
+    const oldRefreshId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const finishSignIn = await signInAgain(fixture, null);
+    let signIn: unknown = null;
+    fixture.connector.revoke.mockImplementation(async () => {
+      signIn = await finishSignIn().then(() => "completed", (error: { details?: { code?: string } }) => error.details?.code);
+      return { outcome: "revoked" };
+    });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    expect(signIn).toBe("oauth_refresh_missing");
+    const [grantRow] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grantRow!.status).toBe("revoked");
+    const [oldRefresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(eq(companySecrets.id, oldRefreshId));
+    expect(oldRefresh).toBeUndefined();
+    expect(await liveRefsToMissingSecrets(fixture.company.id)).toEqual([]);
   });
 
   it("refuses a sign-in for a connection that was removed while Paperclip Cloud answered", async () => {
