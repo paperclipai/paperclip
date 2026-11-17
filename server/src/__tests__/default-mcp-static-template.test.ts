@@ -8,9 +8,9 @@ import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, authUsers, companies, companyMemberships, companySecretBindings, companySecretVersions, companySecrets, connectionGrants, connectionTokenIssuances, createDb, heartbeatRuns, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolMcpGatewayTokens, toolMcpGateways, toolOauthStates, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots, principalPermissionGrants } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
-import { ARCANA_BRAIN_REVIEWED_TOOLS, ARCANA_STATIC_TEMPLATE_UID, DEFAULT_MCP_SPEC, readDefaultMcpState } from "../services/default-mcp-spec.js";
+import { ARCANA_BRAIN_REVIEWED_TOOLS, ARCANA_STATIC_TEMPLATE_UID, DEFAULT_MCP_SPEC, readDefaultMcpState, staticTemplateUidOf, type DefaultMcpEntrySpec } from "../services/default-mcp-spec.js";
 import { runDefaultMcpSetupForAgent, waitForScheduledDefaultMcpSetups } from "../services/default-mcp-setup.js";
-import { ARCANA_MCP_URL_ENV, ARCANA_PROVISION_KEY_ENV, ARCANA_URL_ENV, resolveArcanaMcpUrl } from "../services/arcana-provisioner-client.js";
+import { ARCANA_MCP_URL_ENV, ARCANA_PROVISION_KEY_ENV, ARCANA_URL_ENV, resolveArcanaMcpUrl, resolveStaticTemplateMcpUrl } from "../services/arcana-provisioner-client.js";
 import { ensureStaticCompanyTemplates, staticTemplateEntries, sweepStaticCompanyTemplates } from "../services/default-mcp-static-template.js";
 import { ensureCompanyTemplate, sweepCompanyTemplates } from "../services/default-mcp-template.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -26,6 +26,29 @@ const ARCANA_ENTRY = DEFAULT_MCP_SPEC.find((entry) => entry.key === "arcana-brai
 const later = (ms = 2 * 3_600_000) => () => new Date(Date.now() + ms);
 
 const MCP_URL = "https://arcana-mcp.example.test/mcp";
+
+// A second static entry with its own uid, endpoint and write tools (TECH-8832): proves the template is not Arcana-only.
+const OTHER_URL_ENV = "TEST_STATIC_MCP_URL";
+const OTHER_UID = "rh-test-static/default-mcp-template";
+const OTHER_ENTRY: DefaultMcpEntrySpec = {
+  key: "test-static",
+  displayName: "Test Static",
+  connectionName: "rh-test-static",
+  authKind: "managed_token",
+  defaultEnabled: false,
+  setupHook: "agent_memory",
+  templateBootstrap: "static",
+  reviewedTools: { version: 1, allow: ["tool_search", "tool_add", "tool_delete"] },
+  staticTemplate: {
+    uid: OTHER_UID,
+    mcpUrl: { env: OTHER_URL_ENV, path: "/mcp" },
+    placeholderSecretKey: "default_mcp.test_static.template_placeholder",
+    tools: {
+      tool_add: { description: "Add one fact", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, riskLevel: "write" },
+      tool_delete: { riskLevel: "write", isDestructive: false },
+    },
+  },
+};
 
 describeEmbeddedPostgres("default MCP static-catalog template bootstrap (TECH-7253)", () => {
   let stopDb: (() => Promise<void>) | null = null;
@@ -361,5 +384,54 @@ describeEmbeddedPostgres("default MCP static-catalog template bootstrap (TECH-72
     const at = new Date(Date.now() + 5 * 60_000);
     await ensureStaticCompanyTemplates(ctx({ now: () => at }), { companyId });
     expect((await read()).nextAttemptAt).toBe(at.toISOString());
+  });
+
+  it("seeds a second static entry with its own uid, endpoint, placeholder and per-tool write flags", async () => {
+    const otherEnv = { ...env, [OTHER_URL_ENV]: "https://memory.example.test/" };
+    const companyId = await seedCompany();
+    const outcomes = await ensureStaticCompanyTemplates(ctx({ env: otherEnv, spec: [ARCANA_ENTRY, OTHER_ENTRY] }), { companyId });
+    expect(outcomes).toEqual([{ kind: "ready", created: true }, { kind: "ready", created: true }]);
+    expect(await ensureStaticCompanyTemplates(ctx({ env: otherEnv, spec: [ARCANA_ENTRY, OTHER_ENTRY] }), { companyId })).toEqual([
+      { kind: "ready", created: false },
+      { kind: "ready", created: false },
+    ]);
+
+    const rows = await rowsOf(companyId);
+    expect(rows.map((row) => row.uid).sort()).toEqual([ARCANA_STATIC_TEMPLATE_UID, OTHER_UID].sort());
+    const other = rows.find((row) => row.uid === OTHER_UID)!;
+    expect(other).toMatchObject({ name: "rh-test-static", transport: "mcp_remote", authKind: "api_key", status: "active" });
+    expect((other.config as { url: string }).url).toBe("https://memory.example.test/mcp");
+    expect((other.config as Record<string, unknown>).defaultMcpStaticCatalog).toBe("test-static");
+
+    const catalog = Object.fromEntries((await catalogOf(other.id)).map((row) => [row.toolName, row]));
+    expect(Object.keys(catalog).sort()).toEqual(["tool_add", "tool_delete", "tool_search"]);
+    expect(catalog.tool_search).toMatchObject({ riskLevel: "read", isReadOnly: true, isWrite: false, isDestructive: false, inputSchema: { type: "object" }, description: "Test Static tool: tool_search" });
+    expect(catalog.tool_add).toMatchObject({ riskLevel: "write", isReadOnly: false, isWrite: true, isDestructive: false, description: "Add one fact" });
+    expect(catalog.tool_add!.inputSchema).toEqual({ type: "object", properties: { text: { type: "string" } }, required: ["text"] });
+    expect(catalog.tool_delete).toMatchObject({ riskLevel: "write", isWrite: true, isDestructive: false, annotations: { readOnlyHint: false, destructiveHint: false } });
+    expect(Object.values(catalog).every((row) => row.status === "active")).toBe(true);
+
+    // Arcana's template is untouched, and each template has its own placeholder secret.
+    const arcana = rows.find((row) => row.uid === ARCANA_STATIC_TEMPLATE_UID)!;
+    expect((await catalogOf(arcana.id)).every((row) => row.isReadOnly && !row.isWrite)).toBe(true);
+    const secretKeys = (await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId))).map((row) => row.key).sort();
+    expect(secretKeys).toEqual(["default_mcp.arcana_brain.template_placeholder", "default_mcp.test_static.template_placeholder"]);
+  });
+
+  it("a second entry whose URL is unset waits without blocking the Arcana template", async () => {
+    const companyId = await seedCompany();
+    const outcomes = await ensureStaticCompanyTemplates(ctx({ spec: [ARCANA_ENTRY, OTHER_ENTRY] }), { companyId });
+    expect(outcomes).toEqual([{ kind: "ready", created: true }, { kind: "waiting", reason: "mcp_url_not_configured" }]);
+    expect((await rowsOf(companyId)).map((row) => row.uid)).toEqual([ARCANA_STATIC_TEMPLATE_UID]);
+  });
+
+  it("resolves a static template URL from a named env var and defaults to Arcana's", () => {
+    expect(resolveStaticTemplateMcpUrl(undefined, { [ARCANA_MCP_URL_ENV]: MCP_URL })).toEqual({ ok: true, url: MCP_URL });
+    const source = { env: OTHER_URL_ENV, path: "/mcp" };
+    expect(resolveStaticTemplateMcpUrl(source, { [OTHER_URL_ENV]: "https://memory.example.test//" })).toEqual({ ok: true, url: "https://memory.example.test/mcp" });
+    expect(resolveStaticTemplateMcpUrl(source, {})).toEqual({ ok: false, reason: "mcp_url_not_configured" });
+    expect(resolveStaticTemplateMcpUrl(source, { [OTHER_URL_ENV]: "http://memory.example.test" })).toEqual({ ok: false, reason: "mcp_url_invalid" });
+    expect(staticTemplateUidOf(ARCANA_ENTRY)).toBe(ARCANA_STATIC_TEMPLATE_UID);
+    expect(staticTemplateUidOf(OTHER_ENTRY)).toBe(OTHER_UID);
   });
 });

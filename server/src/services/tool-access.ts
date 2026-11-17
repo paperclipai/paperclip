@@ -35,7 +35,7 @@ import {
   DEFAULT_MCP_MANAGED_CONFIG_KEY,
   DEFAULT_MCP_SPEC,
   DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY,
-  ARCANA_STATIC_TEMPLATE_UID,
+  staticTemplateUids,
   DEFAULT_MCP_TEMPLATE_CONFIG_KEY,
   agentMayUseConnectionTool,
   initialActiveToolsForPersonalInstance,
@@ -5774,7 +5774,7 @@ export function toolAccessService(
         .where(
           and(
             eq(toolConnections.companyId, companyId),
-            or(isNull(toolConnections.uid), ne(toolConnections.uid, ARCANA_STATIC_TEMPLATE_UID)),
+            or(isNull(toolConnections.uid), notInArray(toolConnections.uid, staticTemplateUids())),
           ),
         ),
       db
@@ -9460,7 +9460,7 @@ export function toolAccessService(
           ne(toolConnections.transport, "runtime_auth"),
           ne(toolApplications.type, "paperclip_plugin"),
           // The static Arcana template's placeholder credential never resolves; nothing to check.
-          or(isNull(toolConnections.uid), ne(toolConnections.uid, ARCANA_STATIC_TEMPLATE_UID)),
+          or(isNull(toolConnections.uid), notInArray(toolConnections.uid, staticTemplateUids())),
           or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )

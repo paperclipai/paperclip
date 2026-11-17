@@ -19,6 +19,27 @@ export type DefaultMcpAuthKind = "managed_token" | "oauth" | "none";
 
 export type DefaultMcpSetupHookKey = "comms_board_identity" | "arcana_brain" | "agent_memory";
 
+/** One reviewed tool of a static-catalog template, for entries that need more than the read-only Arcana defaults. */
+export interface DefaultMcpStaticToolSpec {
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  /** Default `read`. A `write` tool is seeded non-read-only; set `isDestructive` only when it should need approval. */
+  riskLevel?: "read" | "write";
+  isDestructive?: boolean;
+}
+
+/** Overrides for a `templateBootstrap: "static"` entry. Omitted fields keep the Arcana template's behaviour. */
+export interface DefaultMcpStaticTemplateSpec {
+  /** Fixed, unforgeable `tool_connections.uid` of the template. Default `ARCANA_STATIC_TEMPLATE_UID`. */
+  uid?: string;
+  /** Endpoint source: the value of env var `env` (trailing slashes dropped) plus `path`. Default: the Arcana MCP URL. */
+  mcpUrl?: { env: string; path?: string };
+  /** Vault key of the template's placeholder secret. Default `default_mcp.arcana_brain.template_placeholder`. */
+  placeholderSecretKey?: string;
+  /** Seeded catalog details per reviewed tool. Tools not listed get the read-only default. */
+  tools?: Readonly<Record<string, DefaultMcpStaticToolSpec>>;
+}
+
 export interface DefaultMcpEntrySpec {
   /** Stable MCP identifier. Persisted on the agent, never derived from a display name. */
   key: string;
@@ -53,6 +74,8 @@ export interface DefaultMcpEntrySpec {
    * `default-mcp-template.ts`) instead of requiring an operator-authored one. Requires `reviewedTools`.
    */
   templateBootstrap?: boolean | "static";
+  /** `templateBootstrap: "static"` only: per-entry uid, endpoint and tool details (see `DefaultMcpStaticTemplateSpec`). */
+  staticTemplate?: DefaultMcpStaticTemplateSpec;
   /**
    * The reviewed action allowlist for a bootstrapped template. The board's catalog lists EVERY tool
    * regardless of token scope, so the allowlist is mandatory: only the exact names below become ACTIVE;
@@ -241,7 +264,19 @@ export const ARCANA_STATIC_TEMPLATE_UID = "rh-arcana-brain/default-mcp-template"
  * health surfaces skip it; per-agent clones (which carry their own uid and key secret) are unaffected.
  */
 export function isArcanaStaticTemplate(connection: { uid?: string | null }): boolean {
-  return connection.uid === ARCANA_STATIC_TEMPLATE_UID;
+  return Boolean(connection.uid) && staticTemplateUids().includes(connection.uid!);
+}
+
+/** The template uid of a static-catalog entry. */
+export function staticTemplateUidOf(entry: DefaultMcpEntrySpec): string {
+  return entry.staticTemplate?.uid ?? ARCANA_STATIC_TEMPLATE_UID;
+}
+
+/** Every static-catalog template uid in the spec (always includes Arcana's). */
+export function staticTemplateUids(): string[] {
+  const uids = new Set([ARCANA_STATIC_TEMPLATE_UID]);
+  for (const entry of DEFAULT_MCP_SPEC) if (entry.templateBootstrap === "static") uids.add(staticTemplateUidOf(entry));
+  return [...uids];
 }
 
 /** Health columns to persist for a connection: the static template is always recorded healthy (see above). */

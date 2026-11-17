@@ -32,13 +32,12 @@ import {
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { isCompanyInDefaultMcpTemplateScope, readDefaultMcpTemplateScope } from "../secrets/default-mcp-template-scope.js";
-import { resolveArcanaMcpUrl } from "./arcana-provisioner-client.js";
+import { resolveStaticTemplateMcpUrl } from "./arcana-provisioner-client.js";
 import {
-  ARCANA_STATIC_TEMPLATE_UID,
   DEFAULT_MCP_SPEC,
   DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY,
-  isArcanaStaticTemplate,
   isDefaultMcpSpecEnabled,
+  staticTemplateUidOf,
   type DefaultMcpEntrySpec,
 } from "./default-mcp-spec.js";
 import { nudgeWaitingAgents } from "./default-mcp-template.js";
@@ -71,14 +70,15 @@ const versionHashOf = (entryKey: string, tool: string, version: number) =>
   createHash("sha256").update(`paperclip:static-template:${entryKey}:${tool}:v${version}`).digest("hex");
 
 /** An active placeholder secret for the template's header ref: reused if one exists, else created (outside the tx). */
-async function ensurePlaceholderSecret(db: Db, txDb: Db, companyId: string): Promise<string> {
+async function ensurePlaceholderSecret(db: Db, txDb: Db, companyId: string, entry: DefaultMcpEntrySpec): Promise<string> {
+  const secretKey = entry.staticTemplate?.placeholderSecretKey ?? ARCANA_TEMPLATE_PLACEHOLDER_SECRET_KEY;
   const [existing] = await txDb
     .select({ id: companySecrets.id })
     .from(companySecrets)
     .where(
       and(
         eq(companySecrets.companyId, companyId),
-        eq(companySecrets.key, ARCANA_TEMPLATE_PLACEHOLDER_SECRET_KEY),
+        eq(companySecrets.key, secretKey),
         eq(companySecrets.status, "active"),
         isNull(companySecrets.deletedAt),
       ),
@@ -91,11 +91,13 @@ async function ensurePlaceholderSecret(db: Db, txDb: Db, companyId: string): Pro
   const created = await secretService(db).create(
     companyId,
     {
-      name: "Arcana brain template placeholder",
-      key: ARCANA_TEMPLATE_PLACEHOLDER_SECRET_KEY,
+      name: entry.staticTemplate ? `${entry.displayName} template placeholder` : "Arcana brain template placeholder",
+      key: secretKey,
       provider: "local_encrypted",
       value: randomBytes(36).toString("base64url"),
-      description: "Placeholder for the Arcana brain template connection. Authorizes nothing; never used by an agent.",
+      description: entry.staticTemplate
+        ? `Placeholder for the ${entry.displayName} template connection. Authorizes nothing; never used by an agent.`
+        : "Placeholder for the Arcana brain template connection. Authorizes nothing; never used by an agent.",
     },
     { userId: null },
   );
@@ -111,6 +113,7 @@ async function ensureOne(
 ): Promise<StaticTemplateOutcome> {
   const reviewed = entry.reviewedTools!;
   const allow = new Set(reviewed.allow);
+  const templateUid = staticTemplateUidOf(entry);
   const txResult = await ctx.db.transaction(async (tx) => {
     const txDb = tx as unknown as Db;
     await txDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${"paperclip:default-mcp:static-template:" + companyId + ":" + entry.key}, 0))`);
@@ -124,10 +127,10 @@ async function ensureOne(
       .where(
         and(
           eq(toolConnections.companyId, companyId),
-          or(eq(toolConnections.uid, ARCANA_STATIC_TEMPLATE_UID), and(eq(toolConnections.name, entry.connectionName), ne(toolConnections.status, "archived"))),
+          or(eq(toolConnections.uid, templateUid), and(eq(toolConnections.name, entry.connectionName), ne(toolConnections.status, "archived"))),
         ),
       );
-    const ours = rows.find((row) => row.uid === ARCANA_STATIC_TEMPLATE_UID);
+    const ours = rows.find((row) => row.uid === templateUid);
     const sameName = rows.filter((row) => row.name === entry.connectionName && row.status !== "archived");
     if (ours?.status === "archived") return { kind: "revoked" } as const;
     if (sameName.length > 1) return { kind: "collision", reason: "template_ambiguous" } as const;
@@ -159,7 +162,7 @@ async function ensureOne(
       }
       // A placeholder the header ref can point at. It is a random value that is not, and cannot become, a valid
       // exchange key (Arcana only accepts keys whose hash it registered); every agent's clone replaces the ref.
-      const placeholderId = await ensurePlaceholderSecret(ctx.db, txDb, companyId);
+      const placeholderId = await ensurePlaceholderSecret(ctx.db, txDb, companyId, entry);
       const endpoint = { url: mcpUrl, mcpSessionRequired: true, quarantineNewEntries: true };
       // The server-owned static-catalog marker: refresh of this connection (and of every clone, which copies this
       // config) only ever accepts the reviewed verbs and never quarantines them on descriptor drift.
@@ -170,7 +173,7 @@ async function ensureOne(
           companyId,
           applicationId: application.id,
           name: entry.connectionName,
-          uid: ARCANA_STATIC_TEMPLATE_UID,
+          uid: templateUid,
           connectionKind: "managed",
           ownership: "customer",
           transport: "mcp_remote",
@@ -192,7 +195,7 @@ async function ensureOne(
     }
 
     // Our own fixed-uid template created before the marker existed: stamp it (path-scoped, never a whole-object write).
-    if (connection.uid === ARCANA_STATIC_TEMPLATE_UID && staticMarker(connection.config) !== entry.key) {
+    if (connection.uid === templateUid && staticMarker(connection.config) !== entry.key) {
       await txDb
         .update(toolConnections)
         .set({ config: sql`${toolConnections.config} || ${JSON.stringify({ [DEFAULT_MCP_STATIC_CATALOG_CONFIG_KEY]: entry.key })}::jsonb`, updatedAt: now })
@@ -200,7 +203,7 @@ async function ensureOne(
     }
 
     // Heal a template an earlier health write marked broken (its placeholder credential never resolves by design).
-    if (isArcanaStaticTemplate(connection) && (connection.healthStatus !== "ok" || connection.lastError || connection.healthMessage)) {
+    if (connection.uid === templateUid && (connection.healthStatus !== "ok" || connection.lastError || connection.healthMessage)) {
       await txDb
         .update(toolConnections)
         .set({ healthStatus: "ok", healthMessage: null, lastError: null, updatedAt: now })
@@ -209,6 +212,8 @@ async function ensureOne(
 
     // Seed the catalog with exactly the reviewed verbs (conflict-safe), then narrow anything else.
     for (const tool of reviewed.allow) {
+      const detail = entry.staticTemplate?.tools?.[tool];
+      const isWrite = detail?.riskLevel === "write";
       await txDb
         .insert(toolCatalogEntries)
         .values({
@@ -219,13 +224,13 @@ async function ensureOne(
           name: tool,
           toolName: tool,
           title: tool,
-          description: `Arcana brain verb: ${tool}`,
-          inputSchema: { type: "object" },
-          annotations: { readOnlyHint: true },
-          riskLevel: "read",
-          isReadOnly: true,
-          isWrite: false,
-          isDestructive: false,
+          description: detail?.description ?? (entry.staticTemplate ? `${entry.displayName} tool: ${tool}` : `Arcana brain verb: ${tool}`),
+          inputSchema: detail?.inputSchema ?? { type: "object" },
+          annotations: isWrite ? { readOnlyHint: false, destructiveHint: detail?.isDestructive === true } : { readOnlyHint: true },
+          riskLevel: isWrite ? "write" : "read",
+          isReadOnly: !isWrite,
+          isWrite,
+          isDestructive: isWrite && detail?.isDestructive === true,
           status: "active",
           version: String(reviewed.version),
           versionHash: versionHashOf(entry.key, tool, reviewed.version),
@@ -319,11 +324,14 @@ export async function ensureStaticCompanyTemplates(
   if (!isCompanyInDefaultMcpTemplateScope(scope, input.companyId)) return [{ kind: "skipped", reason: "out_of_scope" }];
   const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC);
   if (entries.length === 0) return [{ kind: "skipped", reason: "no_static_entry" }];
-  const url = resolveArcanaMcpUrl(ctx.env);
-  if (!url.ok) return [{ kind: "waiting", reason: url.reason }];
   const now = ctx.now?.() ?? new Date();
   const outcomes: StaticTemplateOutcome[] = [];
   for (const entry of entries) {
+    const url = resolveStaticTemplateMcpUrl(entry.staticTemplate?.mcpUrl, ctx.env);
+    if (!url.ok) {
+      outcomes.push({ kind: "waiting", reason: url.reason });
+      continue;
+    }
     const outcome = await ensureOne(ctx, entry, input.companyId, url.url, now);
     if (outcome.kind === "ready" && outcome.created) await nudgeWaitingAgents(ctx.db, input.companyId, entry.key, now);
     outcomes.push(outcome);
@@ -346,9 +354,9 @@ export async function sweepStaticCompanyTemplates(ctx: DefaultMcpTemplateContext
   if (scope.mode === "none") return 0;
   if (scope.mode === "allowlist" && scope.companyIds.length === 0) return 0;
   const entries = staticTemplateEntries(ctx.spec ?? DEFAULT_MCP_SPEC);
-  if (entries.length === 0 || !resolveArcanaMcpUrl(ctx.env).ok) return 0;
   let total = 0;
   for (const entry of entries) {
+    if (!resolveStaticTemplateMcpUrl(entry.staticTemplate?.mcpUrl, ctx.env).ok) continue;
     const scopeSql =
       scope.mode === "allowlist"
         ? sql`and c.id::text in (${sql.join(scope.companyIds.map((id) => sql`${id}`), sql`, `)})`
@@ -361,7 +369,7 @@ export async function sweepStaticCompanyTemplates(ctx: DefaultMcpTemplateContext
         and not exists (
           select 1 from tool_connections t
           where t.company_id = c.id
-            and (t.uid = ${ARCANA_STATIC_TEMPLATE_UID} or (t.name = ${entry.connectionName} and t.status <> 'archived'))
+            and (t.uid = ${staticTemplateUidOf(entry)} or (t.name = ${entry.connectionName} and t.status <> 'archived'))
         )
       order by c.created_at asc
       limit ${ctx.limit ?? SWEEP_LIMIT}
@@ -415,7 +423,7 @@ export async function repairStaticCatalogConnections(
       where c.status <> 'archived'
         ${scopeSql}
         and (
-          c.uid = ${ARCANA_STATIC_TEMPLATE_UID}
+          c.uid = ${staticTemplateUidOf(entry)}
           or (
             c.credential_policy = 'per_agent'
             and exists (

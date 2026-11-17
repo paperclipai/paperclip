@@ -76,6 +76,19 @@ export function resolveArcanaMcpUrl(env?: NodeJS.ProcessEnv): ArcanaMcpUrlResult
   return { ok: true, url: snapshot.mcpUrl };
 }
 
+/** The MCP endpoint of a static-catalog template: Arcana's frozen URL, or `<env var><path>` for an entry that names its own source. */
+export function resolveStaticTemplateMcpUrl(
+  source: { env: string; path?: string } | undefined,
+  env?: NodeJS.ProcessEnv,
+): ArcanaMcpUrlResult {
+  if (!source) return resolveArcanaMcpUrl(env);
+  const base = ((env ?? process.env)[source.env] ?? "").trim().replace(/\/+$/, "");
+  if (!base) return { ok: false, reason: "mcp_url_not_configured" };
+  const url = `${base}${source.path ?? ""}`;
+  if (!validEndpoint(url)) return { ok: false, reason: "mcp_url_invalid" };
+  return { ok: true, url };
+}
+
 function uuidFromDomain(domain: "principal" | "runtime", companyId: string, agentId: string): string {
   const bytes = createHash("sha256").update(`paperclip:arcana-brain:${domain}:${companyId}:${agentId}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
