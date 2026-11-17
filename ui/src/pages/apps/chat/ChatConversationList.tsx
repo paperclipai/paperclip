@@ -89,7 +89,7 @@ export function ChatConversationList({
                   href={row.externalUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="break-words hover:text-foreground hover:underline"
+                  className={cn("break-words hover:text-foreground hover:underline", ANALYTICS_MASK_CLASS)}
                 >
                   {conversationDestination(row, provider)}
                 </a>

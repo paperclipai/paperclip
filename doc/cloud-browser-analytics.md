@@ -145,24 +145,30 @@ are always masked.
   - Link preview cards, task quicklook descriptions, external object pills and
     rows, and related-work titles.
   - Email message cards and email send intents.
-  - Connected account names and email addresses (Browse, Connections, app
-    detail headers, the app sidebar, connection choice lists, connection
-    access and repair cards), GitHub logins and repositories, Slack workspace
-    names, chat channel and linked user labels.
+  - Connected account names and email addresses (Browse rows and the remove
+    dialog, Connections, app detail headers, the app sidebar, connection
+    choice lists, AI connection pickers, connection access and repair cards),
+    GitHub logins and repositories, Slack workspace names (list and selected
+    value), chat channels, linked user labels and chat identity pages.
+  - App action test results (parsed preview and raw response).
   - Inbox and decision rows (subject and detail line), obligation evidence,
-    Needs You notes and receipts, decision options and result summaries,
-    interaction cards (questions, options, answers, tool action requests,
-    suggested tasks) wherever they render.
+    Needs You notes and receipts, decision cards and compact decisions,
+    decision records, and interaction cards (questions, options, answers,
+    tool action requests, suggested tasks) wherever they render.
   - Approval payloads, action card input and reason, recovery card headline,
-    evidence and options, run ledger retry detail and interrupt handoff
+    evidence and options, run ledger retry details and interrupt handoff
     previews.
-  - Run transcripts, run failure details and run events on the agent page.
-  - Search result snippets, toast bodies, voice transcripts and call
+  - Run transcripts, run failure details, run events and the run invocation
+    prompt, context and environment on the agent page.
+  - Document and case revision diffs.
+  - Search result snippets, toasts (title and body), voice and call
     transcripts, case summaries, files and fields, attachment previews and
     artifact previews (text, tables, patches and documents).
 
-  `ui/src/lib/analytics/replay-masking.test.tsx` pins this list. A new surface
-  that shows connected-account content needs the class and an entry there.
+  `ui/src/lib/analytics/replay-masking.test.tsx` pins this list: for each
+  entry it checks that the content sits inside an element with the class. A
+  new surface that shows connected-account content needs the class and an
+  entry there.
 - Residual risk: text that the owner accepted as visible can still hold
   customer words. Task titles, agent names, project names, company names,
   routine names, artifact and document titles, and activity rows (which name

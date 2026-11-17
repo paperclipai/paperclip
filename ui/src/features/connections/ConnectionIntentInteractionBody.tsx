@@ -366,7 +366,7 @@ export function ConnectionIntentInteractionBody({
     const busy = completeMutation.isPending || declineMutation.isPending;
     const askFirst = accessRequest.tools.filter(tool => tool.permission === "ask_first").length;
     return <div id={focusTargetId} ref={focusTargetRef} tabIndex={-1} data-testid="connection-intent-focus-target">
-      <div data-testid="connection-intent-access-request" className="space-y-4">
+      <div data-testid="connection-intent-access-request" className={cn("space-y-4", ANALYTICS_MASK_CLASS)}>
         <NeedsYouPanel>
           {artifactRow}
           <NeedsYouPanelRow icon={serviceLogo} title={`${interaction.payload.serviceName} · ${accessRequest.connectionName}`}

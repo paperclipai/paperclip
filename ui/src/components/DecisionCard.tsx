@@ -326,6 +326,7 @@ export function DecisionCard({
         SHELL[tone],
         dimmed && "opacity-80",
         className,
+        ANALYTICS_MASK_CLASS,
       )}
       data-decision-state={badgeLabel.toLowerCase()}
     >
@@ -474,7 +475,7 @@ export function DecisionCard({
                     )}
                   </div>
                   {option.description && (
-                    <div className={cn("mt-1 text-sm leading-6 text-muted-foreground", ANALYTICS_MASK_CLASS)}>{option.description}</div>
+                    <div className="mt-1 text-sm leading-6 text-muted-foreground">{option.description}</div>
                   )}
                   {option.effects.length > 0 && (
                     <ul className="mt-2 space-y-0.5">
@@ -600,7 +601,7 @@ export function DecisionCard({
                   return (
                     <li key={row.key} className="flex items-start gap-2">
                       {RESULT_ICON[row.status]}
-                      <span className={cn("min-w-0 flex-1 text-sm text-foreground/90", ANALYTICS_MASK_CLASS)}>{row.summary}</span>
+                      <span className="min-w-0 flex-1 text-sm text-foreground/90">{row.summary}</span>
                       <IssueLink ref={row.link} />
                     </li>
                   );

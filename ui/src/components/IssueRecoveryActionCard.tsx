@@ -1307,7 +1307,7 @@ export function IssueRecoveryActionCard({
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
             evidenceSummary.isCode ? (
-              <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
+              <span className={cn("break-words font-mono text-(length:--text-micro) text-foreground/80", ANALYTICS_MASK_CLASS)}>
                 {evidenceSummary.text}
               </span>
             ) : (

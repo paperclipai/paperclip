@@ -145,7 +145,7 @@ describe("product analytics", () => {
       session_recording: { maskAllInputs: true, blockClass: "ph-no-capture" },
     });
     // Replay masks text only inside customer content, secrets and editable content.
-    expect(options.session_recording?.maskTextSelector).toBe(".ph-mask, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"])");
+    expect(options.session_recording?.maskTextSelector).toBe(".ph-mask, .ph-sensitive, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"])");
     expect(options.session_recording).not.toHaveProperty("maskTextFn");
     expect(options.session_recording?.maskAttributeFn).toBeTypeOf("function");
     expect(options).toMatchObject({ disable_surveys: true, disable_product_tours: true, disable_web_experiments: true, disable_conversations: true });

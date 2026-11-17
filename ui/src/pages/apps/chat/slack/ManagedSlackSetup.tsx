@@ -130,7 +130,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
       : reconnectWorkspace ? null : <>
         {workspaces.length === 1 && <p className={cn("text-sm", ANALYTICS_MASK_CLASS)}>Add <strong>{endpoint.assignedAgentName}</strong> to <strong>{workspaces[0]!.workspaceName}</strong>.</p>}
         {workspaces.length > 1 && <Select value={grantId ?? ""} onValueChange={setSelectedGrant} disabled={busy || started}>
-          <SelectTrigger aria-label="Slack workspace"><SelectValue placeholder="Choose a Slack workspace" /></SelectTrigger>
+          <SelectTrigger className={ANALYTICS_MASK_CLASS} aria-label="Slack workspace"><SelectValue placeholder="Choose a Slack workspace" /></SelectTrigger>
           <SelectContent className={ANALYTICS_MASK_CLASS}>{workspaces.map(workspace => <SelectItem key={workspace.grantId} value={workspace.grantId}>{workspace.workspaceName}</SelectItem>)}</SelectContent>
         </Select>}
         {!started && workspaces.length > 0 && <div><Button variant="link" className="h-auto p-0" disabled={busy} onClick={() => void run(authorize)}>Connect another Slack workspace</Button></div>}

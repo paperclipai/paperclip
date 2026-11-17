@@ -45,6 +45,7 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -862,7 +863,7 @@ function AllowedResult({
   const value = outcome.result.result;
   const preview = resultPreview(value);
   return (
-    <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-4">
+    <div className={cn("rounded-md border border-emerald-500/40 bg-emerald-500/5 p-4", ANALYTICS_MASK_CLASS)}>
       <div className="flex items-center gap-2">
         <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
         <span className="text-sm font-medium text-foreground">{successHeadline(preview.summary, entry, appName)}</span>
@@ -1061,7 +1062,7 @@ function ErrorResult({
   const hints = errorHints(toolErrorMessage, error.reasonCode);
   const needsReconnect = isReconnectError(error.reasonCode);
   return (
-    <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-4">
+    <div className={cn("rounded-md border border-amber-500/40 bg-amber-500/5 p-4", ANALYTICS_MASK_CLASS)}>
       <div className="flex items-center gap-2">
         <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
         <span className="text-sm font-medium text-foreground">It didn't work.</span>

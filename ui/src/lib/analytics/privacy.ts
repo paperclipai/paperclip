@@ -27,7 +27,10 @@ export const ANALYTICS_MASK_CLASS = "ph-mask ph-sensitive";
 export const ANALYTICS_NO_CAPTURE_CLASS = "ph-no-capture";
 
 /** Session replay masks text only inside these markers. */
-export const ANALYTICS_MASK_TEXT_SELECTOR = ".ph-mask, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"])";
+export const ANALYTICS_MASK_TEXT_SELECTOR = [
+  ...ANALYTICS_MASK_CLASS.split(" "),
+  ANALYTICS_NO_CAPTURE_CLASS,
+].map((name) => `.${name}`).concat("[contenteditable]:not([contenteditable=\"false\"])").join(", ");
 
 /**
  * Attributes that only describe layout, state or structure. Every other
