@@ -385,7 +385,7 @@ export function agentInstructionRevisionService(db: Db) {
     actor: AuthorizationActor,
   ): Promise<AgentInstructionHistory> {
     const limit = Math.max(1, Math.min(100, target.limit ?? 50));
-    return db.transaction(async (tx) => {
+    return withAgentFilesRestoredBeforeLock(() => db.transaction(async (tx) => {
       const state = await lockTarget(tx, target, actor);
       await authorizeRead(tx, actor, target);
       const current = await currentFile(tx, target, state);
@@ -423,13 +423,13 @@ export function agentInstructionRevisionService(db: Db) {
         revisions: rows.slice(0, limit).map(metadata),
         nextCursor: rows.length > limit ? rows[limit - 1]!.id : null,
       };
-    });
+    }));
   }
   async function readRevision(
     target: InstructionTarget & { entryFile: string; revisionId: string },
     actor: AuthorizationActor,
   ) {
-    return db.transaction(async (tx) => {
+    return withAgentFilesRestoredBeforeLock(() => db.transaction(async (tx) => {
       const state = await lockTarget(tx, target, actor);
       await authorizeRead(tx, actor, target);
       return snapshot(
@@ -441,7 +441,7 @@ export function agentInstructionRevisionService(db: Db) {
           await currentFile(tx, target, state),
         ),
       );
-    });
+    }));
   }
   async function diff(
     target: InstructionTarget & {
