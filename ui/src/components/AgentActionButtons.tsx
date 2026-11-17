@@ -454,7 +454,7 @@ export function AgentActionButtons({
                 {runLabel}
               </button>
             ) : null}
-            {needsSetup ? null : isAgentError ? (
+            {!needsSetup && isAgentError && (
               <button
                 type="button"
                 className={cn(item, "text-destructive")}
@@ -465,7 +465,8 @@ export function AgentActionButtons({
                 <CheckCircle2 className={cn(icon, "text-destructive")} />
                 Clear error
               </button>
-            ) : isPaused ? (
+            )}
+            {needsSetup ? null : isPaused ? (
               <button type="button" className={item} disabled={pauseResumeDisabled} onClick={select(() => agentAction.mutate("resume"))}>
                 <Play className={icon} />
                 Resume
@@ -592,13 +593,14 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {!needsSetup && (agent.status === "error" ? (
+      {!needsSetup && agent.status === "error" && (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}
           disabled={clearErrorDisabled}
           size={size}
         />
-      ) : (
+      )}
+      {!needsSetup && (
         <PauseResumeButton
           isPaused={isPaused}
           onPause={() => (pauseConfirm ? setPauseConfirmOpen(true) : agentAction.mutate("pause"))}
@@ -606,7 +608,7 @@ export function AgentActionButtons({
           disabled={pauseResumeDisabled}
           size={size}
         />
-      ))}
+      )}
       {pauseConfirm && (
         <AlertDialog open={pauseConfirmOpen} onOpenChange={setPauseConfirmOpen}>
           <AlertDialogContent>

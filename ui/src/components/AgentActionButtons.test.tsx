@@ -262,13 +262,21 @@ describe("AgentActionButtons", () => {
     }
   });
 
-  it("replaces the pause slot with Clear error for error agents", async () => {
+  it("keeps Pause alongside Clear error for error agents", async () => {
     render(makeAgent({ status: "error" }));
     await flushReact();
 
     expect(container.textContent).toContain("Clear error");
-    expect(container.textContent).not.toContain("Pause");
+    const pause = [...container.querySelectorAll("button")].find(button => button.textContent === "Pause");
+    expect(pause).toBeDefined();
+    expect(pause!.disabled).toBe(false);
     expect(container.textContent).toContain("Run Heartbeat");
+
+    await act(async () => pause!.click());
+    await flushReact();
+    expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(mockAgentsApi.clearError).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
@@ -294,7 +302,7 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
     const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
-    expect(items).toEqual(["Run Heartbeat", "Clear error", "Agent history", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
+    expect(items).toEqual(["Run Heartbeat", "Clear error", "Pause", "Agent history", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
 
     await act(async () => {
       [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Agent history")?.click();
@@ -310,6 +318,23 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
     expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
+  });
+
+  it("pauses an errored agent directly from the profile menu", async () => {
+    render(makeAgent({ status: "error" }), { workActionsInMenu: true });
+    await flushReact();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')!.click();
+    });
+    await flushReact();
+    const pause = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Pause");
+    expect(pause).toBeDefined();
+    expect(pause!.disabled).toBe(false);
+    await act(async () => pause!.click());
+    await flushReact();
+    expect(mockAgentsApi.pause).toHaveBeenCalledWith("agent-1", "company-1");
+    expect(mockAgentsApi.clearError).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
   });
 
   it("keeps Finish setup as the one button while setup is pending in menu mode", async () => {
