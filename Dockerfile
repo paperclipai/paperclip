@@ -55,7 +55,6 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/google-sheets-mcp-server/package.json packages/google-sheets-mcp-server/
-COPY packages/google-workspace-rest-tools/package.json packages/google-workspace-rest-tools/
 COPY packages/kv-demo-mcp-server/package.json packages/kv-demo-mcp-server/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/

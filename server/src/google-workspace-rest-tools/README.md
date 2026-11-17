@@ -4,6 +4,10 @@ Paperclip's own implementation of the tools that Google's hosted Workspace MCP
 servers expose (for example `https://gmailmcp.googleapis.com/mcp/v1`), backed
 by Google's generally available REST APIs.
 
+It lives in this one folder, `server/src/google-workspace-rest-tools/`, inside
+the server package. It is not a separate npm package, so nothing new is
+published.
+
 This release has three Gmail tools: `get_message`, `search_threads` and
 `create_draft`. There is no send tool, and none may be added.
 
@@ -17,23 +21,30 @@ so they can be deleted cleanly when that happens.
 
 ## Boundary rules
 
+- **One entry point.** Other server code may import only `index.ts`.
+- **Isolated imports, enforced by `boundary.test.ts`.** Source files import
+  only files in this folder, Node built-ins, `@modelcontextprotocol/sdk` and
+  `zod` (both existing server dependencies). Test files and `fixtures/` may
+  also import `vitest` and `@paperclipai/shared`. Nothing in this folder
+  imports other server code. In this release nothing else in the server
+  imports this folder; the test also checks that, and the switch PR relaxes
+  that one check.
 - **Same tools as Google's MCP servers.** Same tool names, same input fields,
   same result shape. Names, field names, types and enums come from Google's
   published reference (Gmail:
   <https://developers.google.com/workspace/gmail/api/reference/mcp>, recorded
   2026-11-17). Where REST cannot match, the difference is listed below.
-- **Public surface is MCP only.** `src/index.ts` exports tool definitions
-  (`Tool`), results (`CallToolResult`), an MCP server, and the MCP error thrown
-  for token problems. No Google REST type is exported.
+- **Public surface is MCP only.** `index.ts` exports tool definitions (`Tool`),
+  results (`CallToolResult`), an MCP server, and the MCP error thrown for token
+  problems. No Google REST type is exported.
 - **Knows nothing about Paperclip.** No company, connection, grant, policy,
-  audit, approval or screening code, and no imports from `server/` or `ui/`.
-  Input is a service, a tool name, arguments and an access token. Output is an
-  MCP result. Authorization, scope checks, approval, audit and injection
-  screening stay with their current owners in the gateway. The only Paperclip
-  import is in `src/allowlist.test.ts`, a test-only dev dependency.
+  audit, approval or screening code. Input is a service, a tool name,
+  arguments and an access token. Output is an MCP result. Authorization, scope
+  checks, approval, audit and injection screening stay with their current
+  owners in the gateway.
 - **Stores nothing.** No tokens, no content, no cache. The access token is used
   for one call and dropped.
-- **One file calls Google.** `src/google-http.ts` is the only place that calls
+- **One file calls Google.** `google-http.ts` is the only place that calls
   `googleapis.com`. It sets the bearer header, allows only listed hosts,
   bounds each request (20 s deadline, 20 MB response, including the body
   read), maps Google errors, and retries a read (GET) once after a network
@@ -41,15 +52,16 @@ so they can be deleted cleanly when that happens.
   after it was sent (network error, dropped connection, timeout, caller
   cancellation, HTTP 5xx, or a success answer that is too large or not JSON)
   says that the change may or may not have been made.
-- **One tool, one file.** Each tool in `src/gmail/` is a set of pure functions
+- **One tool, one file.** Each tool in `gmail/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
-- **`src/server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
+- **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
 - **The allowlist stays where it is.** `toolScopes` in
   `packages/shared/src/google-workspace-connectors.ts` is the single list of
-  allowed Google tools. `src/allowlist.test.ts` fails if this package
-  implements a tool that is not on it, or if a tool's read-only hint disagrees
-  with the allowlist's write flag.
+  allowed Google tools. `allowlist.test.ts` fails if this folder implements a
+  tool that is not on it, if a tool's read-only hint disagrees with the
+  allowlist's write flag, or if a description names a tool this folder does
+  not list.
 
 ### Errors
 
@@ -104,48 +116,39 @@ Traced on `origin/master` at `ca34aca777`.
 
 The gateway speaks MCP `2026-07-28` (stateless) first, then the legacy
 handshake versions `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`
-(`server/src/services/mcp-http.ts`). The MCP SDK this package uses (1.31)
-speaks the legacy versions only, so over HTTP every new session would pay a
-failed modern probe plus an `initialize` round trip.
+(`server/src/services/mcp-http.ts`). The MCP SDK the server uses (1.31) speaks
+the legacy versions only, so over HTTP every new session would pay a failed
+modern probe plus an `initialize` round trip.
 
-### Precedent
+### Recommendation: call it in process
 
-The gateway already runs REST-backed tool sets in process:
-`restConnectorFor` (`server/src/services/connectors/rest-registry.ts`) and
-`nativeProviderCatalogFor` (`server/src/services/native-provider-catalogs.ts`).
-Both are selected by a small registry, receive the resolved credential headers
-and an egress-guarded `request` function, and return their result into the
-same post-processing. Discovery returns their static tool list after a probe.
+The code already runs in the server process, so the gateway calls
+`callGoogleWorkspaceRestTool()` and `listGoogleWorkspaceRestTools()` directly,
+the way it already runs other REST-backed tool sets (`restConnectorFor` in
+`server/src/services/connectors/rest-registry.ts` and
+`nativeProviderCatalogFor` in `server/src/services/native-provider-catalogs.ts`).
+No loopback or hosted MCP endpoint.
 
-### Recommendation: in-process handler
-
-Call this package as a library inside the gateway, not over a loopback or
-hosted HTTP MCP endpoint.
-
-- **Speed.** Measured locally: about 13 µs of package overhead per call with a
-  stubbed fetch, and 50 to 90 ms to import the built package once (most of it
-  the MCP SDK and zod, which the server already loads). An HTTP hop adds a
-  connection, JSON-RPC framing, the protocol probe and handshake above, and on
-  a hosted endpoint a network round trip, to every call. `tools/list` becomes a
-  static list: no network, no token.
+- **Speed.** Measured locally: about 13 µs of overhead per call with a stubbed
+  fetch. The MCP SDK and zod are already loaded by the server, so there is no
+  extra cold-start cost beyond this folder's own modules. An HTTP hop would
+  add a connection, JSON-RPC framing, and the protocol probe and handshake
+  above to every call. `tools/list` becomes a static list: no network, no token.
 - **Token handling.** The token stays in the server process and goes only to
-  Google. Over HTTP it would cross one more hop, and a hosted endpoint would see
-  every user's Google token.
+  Google.
 - **Self-hosted and Cloud run the same code.** Nothing to deploy, configure or
-  keep alive. A loopback endpoint does not work for authenticated public
-  deployments: `allowPrivateRemoteEndpoints()` refuses private and loopback
-  addresses there, so Cloud stacks would need a hosted service and an exception
-  to the egress guard.
+  publish. A loopback endpoint would not work on authenticated public
+  deployments: `allowPrivateRemoteEndpoints()` refuses loopback addresses there.
 - **Egress stays guarded.** The gateway passes its `guardedRemoteHttpFetch` as
-  this package's `fetch`, so calls to Google go through the same egress policy
-  as today.
+  the `fetch` option, so calls to Google go through the same egress policy as
+  today.
 - **Swap-back is unchanged.** Tool names, inputs and results are Google's, so
   the catalog, policies, approvals and audit records written under
   `paperclip_rest` stay valid under `google_mcp`.
 
-`createGoogleWorkspaceRestServer()` (a standard MCP server) remains available
-for an HTTP or stdio deployment if one is ever needed; it reads the token from
-the transport's auth info.
+`createGoogleWorkspaceRestServer()` (a standard MCP server that reads the token
+from the transport's auth info) stays available if an HTTP or stdio
+deployment is ever needed; the in-process path does not use it.
 
 ### The switch (follow-up PR, not this one)
 
@@ -162,9 +165,9 @@ touches:
 
 - `packages/shared/src/google-workspace-connectors.ts`: the setting above, and
   `transport` on the target.
-- `server/package.json`: depend on `@paperclipai/google-workspace-rest-tools`.
-- One new server adapter, for example
-  `server/src/services/google-workspace-rest-dispatch.ts`: strips `Bearer ` from
+- One new server adapter outside this folder, for example
+  `server/src/services/google-workspace-rest-dispatch.ts`, the only importer of
+  `server/src/google-workspace-rest-tools/index.ts`. It strips `Bearer ` from
   the resolved `Authorization` header, passes the guarded fetch and the call's
   deadline signal, and maps `GoogleWorkspaceAuthError` to the gateway's existing
   outcomes (`unauthenticated` to the forced refresh plus
@@ -176,13 +179,14 @@ touches:
   `dispatchRemote` does), call the adapter, and return through
   `normalizeMcpToolResult(result, "mcp_http", false, sourceTemplateKey)`.
 - `server/src/services/tool-access/catalog/discovery.ts`, the Google branch of
-  `remoteTools`: for a `paperclip_rest` service, use
-  `listGoogleWorkspaceRestTools(service)` instead of an HTTP `tools/list`.
-- `Dockerfile` already copies this package's `package.json`.
+  `remoteTools`: for a `paperclip_rest` service, use the adapter's static tool
+  list instead of an HTTP `tools/list`.
+- `boundary.test.ts`: allow that one adapter as the only importer.
 
-Everything else (picker, scopes, grant checks, allowlist, approval, audit,
-injection screening, risk classification in `catalog/descriptors.ts`) only
-knows tool names and scopes and needs no change.
+No dependency, workspace, Docker or release change is needed. Everything else
+(picker, scopes, grant checks, allowlist, approval, audit, injection
+screening, risk classification in `catalog/descriptors.ts`) only knows tool
+names and scopes and needs no change.
 
 ## Known differences from Google's MCP tools
 
@@ -190,9 +194,8 @@ knows tool names and scopes and needs no change.
   fields and annotations follow Google's reference. Until a tool lands here,
   descriptions do not mention it: Google's text points to `get_thread` and
   `list_labels`, ours points to `get_message` and does not name a label tool.
-  A test fails if any description names a tool this package does not list. A contract test against a
-  recorded `tools/list` from Google's servers is planned once a listing is
-  recorded on the enrolled internal account.
+  A contract test against a recorded `tools/list` from Google's servers is
+  planned once a listing is recorded on the enrolled internal account.
 - **Result envelope.** Results carry the object both as `structuredContent`
   and as JSON text. Google's exact envelope has not been recorded yet.
 - **`date`** is the UTC calendar date of Gmail's `internalDate`. Google does
@@ -216,22 +219,23 @@ knows tool names and scopes and needs no change.
   are dropped.
 - **`search_threads`** makes one `threads.list` call and then one
   `threads.get` per thread (10 at a time), so a 50-thread page is 51 requests.
-  Drafts are excluded by adding `-in:draft` unless the query itself uses
-  `in:draft`, `is:draft` or `in:anywhere` outside quoted text;
+  A thread deleted between the two calls is left out. `pageSize` above 50 is
+  capped at 50. Drafts are excluded by adding `-in:draft` unless the query
+  itself uses `in:draft`, `is:draft` or `in:anywhere` outside quoted text;
   `includeTrash` uses `includeSpamTrash` plus `-in:spam`, with the same rule
   for `in:spam`. When terms are added, the caller's query is wrapped in
   parentheses first. Google's reference documents the default exclusions but
-  not how its tool applies them. A thread deleted
-  between the two calls is left out. `pageSize` above 50 is capped at 50.
+  not how its tool applies them.
 - **`create_draft`**: for a reply, the draft is threaded (`threadId`,
   `In-Reply-To`, `References`) and an empty subject becomes `Re: <original>`,
   but the original message is not quoted under the new body as Google's tool
-  does, and recipients are not filled in from the original: pass `to`. The result is built from the request and Google's `drafts.create`
-  answer, without a second read; `date` is the creation date (UTC).
-  Attachments are refused, as Google's tool currently does. Long subjects and
-  recipient lists are folded onto continuation lines (RFC 5322); non-ASCII
-  subjects and single words longer than 900 characters become RFC 2047
-  encoded-words. Google's reference sets no length limits.
+  does, and recipients are not filled in from the original: pass `to`. The
+  result is built from the request and Google's `drafts.create` answer,
+  without a second read; `date` is the creation date (UTC). Attachments are
+  refused, as Google's tool currently does. Long subjects and recipient lists
+  are folded onto continuation lines (RFC 5322); non-ASCII subjects and single
+  words longer than 900 characters become RFC 2047 encoded-words. Google's
+  reference sets no length limits.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
@@ -254,21 +258,17 @@ knows tool names and scopes and needs no change.
 ## Removal procedure
 
 1. Set every service in `GOOGLE_WORKSPACE_TOOL_TRANSPORT` to `google_mcp`.
-2. Delete `packages/google-workspace-rest-tools/`.
-3. Remove its registration: the dependency in `server/package.json`, the server
-   adapter file and its two call sites (gateway and discovery), the project in
-   the root `vitest.config.ts`, its entry in `nonServerProjects` in
-   `scripts/run-vitest-stable.mjs`, its `tsconfig.test.json` in `PROGRAMS` in
-   `scripts/typecheck-test-programs.mjs`, and the `COPY` line in `Dockerfile`.
+2. Delete this folder, `server/src/google-workspace-rest-tools/`.
+3. Delete the server adapter that imports it and its two call sites (gateway
+   and discovery).
 4. Check that the build, typecheck and tests pass, then delete the setting
    itself if nothing else uses it.
 
 ## Development
 
 ```sh
-pnpm --filter @paperclipai/google-workspace-rest-tools test
-pnpm --filter @paperclipai/google-workspace-rest-tools typecheck
+cd server && npx vitest run src/google-workspace-rest-tools
 ```
 
-Test fixtures in `src/**/fixtures/` are synthetic, in the shape of Google's REST
-responses. They contain no real mail, addresses or IDs.
+Test fixtures in `fixtures/` and `gmail/fixtures/` are synthetic, in the shape
+of Google's REST responses. They contain no real mail, addresses or IDs.

@@ -27,7 +27,6 @@ const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
-  "@paperclipai/google-workspace-rest-tools",
   "@paperclipai/db",
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
