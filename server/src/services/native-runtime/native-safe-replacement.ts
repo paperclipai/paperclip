@@ -563,7 +563,8 @@ export async function reconcileSafeNativeReplacements(
             && String(event.payload.executionId ?? event.payload.name) === action);
           const executionId = started?.payload.executionId;
           if (started && executionId != null && executions.some(event => event.eventType === "tool.execution.completed"
-            && event.seq > started.seq && event.payload.executionId === executionId && event.payload.status === "completed"))
+            && event.seq > started.seq && event.payload.executionId === executionId && event.payload.status === "completed"
+            && (event.payload.exitCode == null || event.payload.exitCode === 0) && event.payload.error == null))
             return [];
           if (started && started.payload.transport !== "process" && invocations.some(row => completedInvocation(row)
             && (row.id === executionId || row.correlationId === executionId))) return [];
