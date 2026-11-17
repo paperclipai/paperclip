@@ -27,8 +27,8 @@ function stallReports(warn: { mock: { calls: unknown[][] } }): StallReport[] {
   return warn.mock.calls.filter(call => call[1] === STALL_MESSAGE).map(call => call[0] as StallReport);
 }
 
-afterEach(async () => {
-  await stopRunIntakeStallWatch();
+afterEach(() => {
+  stopRunIntakeStallWatch();
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -82,6 +82,46 @@ describe("run intake stall watch", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(stallReports(warn)).toHaveLength(2);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports pending writes when the database read hangs, and stops without waiting for it", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    const hung = { transaction: () => new Promise(() => undefined), $client: { options: { max: 3 } } } as unknown as Db;
+    installRunIntakeStallWatch(hung, { stallMs: 1_000, reportTimeoutMs: 500, now: () => Date.now() });
+    const done = beginRunIntake("run-hung", "write", "session.started");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stallReports(warn)).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(500);
+    const [report] = stallReports(warn);
+    expect(report!.operations).toEqual([expect.objectContaining({ runId: "run-hung", stage: "write" })]);
+    expect(report!.databaseReadError).toBe("database session read timed out after 500 ms");
+    done();
+    const second = beginRunIntake("run-later", "write", "turn.started");
+    await vi.advanceTimersByTimeAsync(1_200);
+    stopRunIntakeStallWatch();
+    second();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(stallReports(warn)).toHaveLength(2);
+  });
+
+  it("names every stalled run across reports when more runs stall than one report lists", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    const unreachable = { transaction: () => Promise.reject(new Error("database unreachable")), $client: {} } as unknown as Db;
+    installRunIntakeStallWatch(unreachable, { stallMs: 1_000, now: () => Date.now() });
+    const runIds = Array.from({ length: 25 }, (_, index) => `run-${index}`);
+    const pending = runIds.map(runId => beginRunIntake(runId, "write", "item.completed"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stallReports(warn)).toHaveLength(1);
+    expect(stallReports(warn)[0]!.operations).toHaveLength(20);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const reports = stallReports(warn);
+    expect(reports).toHaveLength(2);
+    expect(reports[1]!.operations).toHaveLength(5);
+    expect(reports.flatMap(report => report.operations.map(operation => operation.runId)).sort()).toEqual([...runIds].sort());
+    for (const done of pending) done();
   });
 
   it("keeps no timer once no run write is pending", async () => {

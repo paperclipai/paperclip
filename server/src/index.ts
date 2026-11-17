@@ -759,7 +759,7 @@ async function startServerWithDatabaseTeardown(
   // by the fail-loud startup path, so no exit leaves pooled backends behind.
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
-    await stopRunIntakeStallWatch();
+    stopRunIntakeStallWatch();
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
     await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5), closeDedicatedDbConnections(db, 5)]);
   };

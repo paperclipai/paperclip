@@ -3,6 +3,7 @@ import { logger } from "../middleware/logger.js";
 import { readDatabaseSessionReport } from "./database-session-waits.js";
 
 export const RUN_INTAKE_STALL_MS = 30_000;
+export const RUN_INTAKE_REPORT_TIMEOUT_MS = 10_000;
 const REPORTED_OPERATIONS_MAX = 20;
 const REPORTED_RUNS_MAX = 20;
 
@@ -13,6 +14,7 @@ type Operation = { runId: string; stage: RunIntakeStage; label: string; startedA
 type Watch = {
   db: Db;
   stallMs: number;
+  reportTimeoutMs: number;
   now: () => number;
   operations: Map<number, Operation>;
   nextToken: number;
@@ -26,19 +28,20 @@ let watch: Watch | null = null;
 
 const settled = () => undefined;
 
-export function installRunIntakeStallWatch(db: Db, options: { stallMs?: number; now?: () => number } = {}): void {
+export function installRunIntakeStallWatch(db: Db,
+  options: { stallMs?: number; reportTimeoutMs?: number; now?: () => number } = {}): void {
   if (watch?.timer) clearTimeout(watch.timer);
-  watch = { db, stallMs: options.stallMs ?? RUN_INTAKE_STALL_MS, now: options.now ?? Date.now, operations: new Map(),
+  watch = { db, stallMs: options.stallMs ?? RUN_INTAKE_STALL_MS, reportTimeoutMs: options.reportTimeoutMs ?? RUN_INTAKE_REPORT_TIMEOUT_MS,
+    now: options.now ?? Date.now, operations: new Map(),
     nextToken: 0, timer: null, dueAtMs: 0, lastReportAtMs: null, report: null };
 }
 
-export async function stopRunIntakeStallWatch(): Promise<void> {
+export function stopRunIntakeStallWatch(): void {
   const current = watch;
   watch = null;
   if (!current) return;
   if (current.timer) clearTimeout(current.timer);
   current.timer = null;
-  await current.report;
 }
 
 export function beginRunIntake(runId: string, stage: RunIntakeStage, label: string): () => void {
@@ -90,8 +93,9 @@ function check(current: Watch) {
   for (const operation of current.operations.values()) {
     if (operation.stalled) continue;
     if (now - operation.startedAtMs < current.stallMs) break;
+    if (stalledRuns.has(operation.runId)) { operation.stalled = true; continue; }
+    if (newlyStalled.length >= REPORTED_OPERATIONS_MAX) break;
     operation.stalled = true;
-    if (stalledRuns.has(operation.runId)) continue;
     stalledRuns.add(operation.runId);
     newlyStalled.push(operation);
   }
@@ -129,18 +133,23 @@ function pendingByRun(current: Watch, now: number) {
 
 async function reportStall(current: Watch, stalled: Operation[], eventLoopLagMs: number) {
   const now = current.now();
-  const listed = stalled.slice(0, REPORTED_OPERATIONS_MAX);
-  for (const operation of listed) operation.listed = true;
-  const operations = listed.map(operation => ({ runId: operation.runId, stage: operation.stage, label: operation.label,
+  for (const operation of stalled) operation.listed = true;
+  const operations = stalled.map(operation => ({ runId: operation.runId, stage: operation.stage, label: operation.label,
     pendingMs: now - operation.startedAtMs }));
   const client = current.db.$client as { options?: { max?: unknown } } | undefined;
   const pool = { maxConnections: typeof client?.options?.max === "number" ? client.options.max : null,
     pendingIntake: current.operations.size, dedicated: dedicatedDbConnectionStats(current.db) };
   const runs = pendingByRun(current, now);
-  const database = await readDatabaseSessionReport(current.db).then(
+  let expire: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    expire = setTimeout(() => reject(new Error(`database session read timed out after ${current.reportTimeoutMs} ms`)),
+      current.reportTimeoutMs);
+    expire.unref?.();
+  });
+  const database = await Promise.race([readDatabaseSessionReport(current.db), expired]).then(
     report => ({ ...report, error: null as string | null }),
     error => ({ sessions: [], waits: [], error: error instanceof Error ? error.message.slice(0, 160) : "unknown" }),
-  );
+  ).finally(() => clearTimeout(expire));
   logger.warn({ stallThresholdMs: current.stallMs, eventLoopLagMs, operations, runs, pool, sessions: database.sessions,
     waits: database.waits, ...(database.error ? { databaseReadError: database.error } : {}) },
   "runner event intake stalled; pending run writes, database sessions and lock waits");
