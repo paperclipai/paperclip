@@ -10,8 +10,10 @@ function ActiveChatReferences({ children }: { children: ReactNode }) {
   const { chats, agents } = useAgentChatNavigation();
   const references = useMemo(() => {
     const result = new Map<string, ChatReference>();
+    // Index the agents once: a person can have hundreds of agents and hundreds of chats.
+    const agentsById = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
     for (const chat of chats.data ?? []) {
-      const agent = agents.data?.find(candidate => candidate.id === chat.conversationAgentId);
+      const agent = chat.conversationAgentId ? agentsById.get(chat.conversationAgentId) : undefined;
       if (!agent) continue;
       // A secondary chat has its own route; the agent route opens the default chat.
       const href = `/chats/${encodeURIComponent(agentRouteRef(agent))}${chat.conversationDefault === false ? `/${encodeURIComponent(chat.id)}` : ""}`;
