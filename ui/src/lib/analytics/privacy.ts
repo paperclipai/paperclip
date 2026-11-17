@@ -1,9 +1,9 @@
 // Shared privacy markers for browser product analytics (PostHog).
 //
 // Session replay masks ALL text and ALL input values by default. Only UI
-// chrome that opts in with `ANALYTICS_UNMASK_PROPS` (fixed sidebar labels,
-// form labels, tabs, empty states, and buttons that pass `analyticsChrome`)
-// shows its text. A surface nobody marked stays
+// chrome that opts in shows its text: sidebar items with a fixed label, and
+// any shared `Button`, `Label`, `TabsTrigger` or `EmptyState` whose caller
+// passes `analyticsChrome` because its text is fixed product copy. A surface nobody marked stays
 // masked. Autocapture never records element text or attribute values at all
 // (see `product-analytics.ts`).
 //

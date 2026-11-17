@@ -76,10 +76,10 @@ Masking is deny by default. A surface that nobody marked stays masked.
 
 - Session replay masks every input value and every text node.
   `maskReplayText` in `ui/src/lib/analytics/privacy.ts` shows text only inside
-  elements with `ANALYTICS_UNMASK_PROPS`: the shared `Label`, `TabsTrigger`
-  and `EmptyState` components, sidebar items whose label is a fixed string
-  (`analyticsChrome`), and a `Button` only when it passes `analyticsChrome`.
-  Buttons do not opt in by default, because many render customer names.
+  elements with `ANALYTICS_UNMASK_PROPS`: sidebar items whose label is a fixed
+  string, and a shared `Button`, `Label`, `TabsTrigger` or `EmptyState` only
+  when its caller passes `analyticsChrome`. None of them opts in by default,
+  because they also render customer text such as agent names and titles.
 - Replay also masks attribute values (`maskReplayAttribute`): only layout
   attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
   rrweb metadata and stylesheet links keep their values. `title`,
