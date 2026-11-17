@@ -172,3 +172,37 @@ export async function prepareClaudePromptBundle(input: {
     instructionsFilePath,
   };
 }
+
+/**
+ * Mount the selected skills into `<configDir>/skills` so Claude discovers them
+ * at user scope.
+ *
+ * Managed AI connections run Claude with `--setting-sources user` so workspace
+ * `.claude/settings*.json` cannot override the managed credential. That flag
+ * also turns off project-scope skill discovery, which includes
+ * `<--add-dir>/.claude/skills`, so the prompt bundle's skills silently never
+ * reach the Skill tool ("Unknown skill"). The managed config dir is a
+ * disposable per-execution home, so linking skills there is scoped to this run
+ * and keeps the user-only settings boundary intact.
+ */
+export async function mountClaudeUserScopeSkills(input: {
+  configDir: string;
+  skills: SkillEntry[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const { configDir, skills, onLog } = input;
+  if (configDir.trim().length === 0 || skills.length === 0) return;
+  const skillsHome = path.join(configDir, "skills");
+  await fs.mkdir(skillsHome, { recursive: true });
+  for (const entry of skills) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      await ensurePaperclipSkillSymlink(entry.source, target);
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to mount Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+}
