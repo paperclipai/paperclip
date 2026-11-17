@@ -373,8 +373,11 @@ export async function createInstructionApplyTask(
             eq(issues.originKind, INSTRUCTION_APPLY_ORIGIN_KIND),
             eq(issues.originId, agentId),
             eq(issues.originFingerprint, fingerprint),
-            // Reuse only within the same privacy scope, so an approval never links to a task outside it
-            scope.parentId ? eq(issues.parentId, scope.parentId) : isNull(issues.parentId),
+            // Reuse only within the same privacy scope, so an approval never links to a task outside it.
+            // Match the saved privacy parent: depth flattening can place the task beside a nested source.
+            scope.parentId
+              ? eq(issues.privacyParentIssueId, scope.parentId)
+              : and(isNull(issues.privacyParentIssueId), isNull(issues.privacyRootIssueId)),
             isNull(issues.hiddenAt),
             notInArray(issues.status, APPLY_TASK_TERMINAL_STATUSES),
           ),

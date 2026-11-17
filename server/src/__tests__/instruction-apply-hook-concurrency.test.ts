@@ -87,4 +87,41 @@ describePostgres("instruction apply task under concurrent approvals", () => {
       .where(eq(issues.id, privateResult!.issueId));
     expect(task).toEqual({ parentId: privateIssueId, visibility: "private" });
   });
+
+  it("reuses one apply task for repeated approvals linked to a nested private task", async () => {
+    const rootIssueId = randomUUID();
+    const nestedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: rootIssueId, companyId, title: "Private root", visibility: "private", privacyRootIssueId: rootIssueId,
+    });
+    await db.insert(issues).values({
+      id: nestedIssueId, companyId, title: "Private nested source", parentId: rootIssueId,
+      visibility: "private", privacyRootIssueId: rootIssueId, privacyParentIssueId: rootIssueId,
+    });
+    const payload = { agentId, bundle: { files: [{ path: "AGENTS.md", content: "# Nested approved\n", baseHash: null }] } };
+    const approvalIds = [randomUUID(), randomUUID()];
+    for (const approvalId of approvalIds) {
+      await db.insert(approvals).values({ id: approvalId, companyId, type: "instruction_generation", payload });
+      await db.insert(issueApprovals).values({ companyId, issueId: nestedIssueId, approvalId });
+    }
+
+    const first = await createInstructionApplyTask(db, { companyId, approvalId: approvalIds[0]!, decidedByUserId: "board-user", payload });
+    const second = await createInstructionApplyTask(db, { companyId, approvalId: approvalIds[1]!, decidedByUserId: "board-user", payload });
+
+    expect(first?.created).toBe(true);
+    expect(second).toEqual({ issueId: first!.issueId, created: false });
+    const [task] = await db
+      .select({
+        parentId: issues.parentId,
+        privacyParentIssueId: issues.privacyParentIssueId,
+        visibility: issues.visibility,
+        privacyRootIssueId: issues.privacyRootIssueId,
+      })
+      .from(issues)
+      .where(eq(issues.id, first!.issueId));
+    // Depth flattening does not nest the task under the source; privacy still follows the source.
+    expect(task).toEqual({
+      parentId: null, privacyParentIssueId: nestedIssueId, visibility: "private", privacyRootIssueId: rootIssueId,
+    });
+  });
 });
