@@ -135,7 +135,7 @@ describeEmbeddedPostgres("ADR 033 policy B: agent secret rotation", () => {
 
   type Fixture = Awaited<ReturnType<typeof seedRun>>;
 
-  function createAgentApp(fixture: Fixture) {
+  function createAgentApp(fixture: Fixture, source: "agent_jwt" | "agent_key" = "agent_jwt") {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -144,7 +144,7 @@ describeEmbeddedPostgres("ADR 033 policy B: agent secret rotation", () => {
         agentId: fixture.agentId,
         companyId: fixture.companyId,
         runId: fixture.heartbeatRunId,
-        source: "agent_jwt",
+        source,
         keyScope: { kind: "standard" },
       };
       next();
@@ -909,5 +909,40 @@ describeEmbeddedPostgres("ADR 033 policy B: agent secret rotation", () => {
     expect(response.body.error ?? response.body.message).toContain("does not match the value supplied");
     expect((await readSecret(secret!.id))!.latestVersion).toBe(1);
     expect((await readCurrentVersion(secret!.id))!.fingerprintSha256).toBe(OLD_FP);
+  });
+
+  it("T26: a long-lived agent key cannot rotate or assert, even with an approved proposal", async () => {
+    const fixture = await seedRun();
+    const secret = await seedLiveSecret(fixture, "dev/t26/token", OLD_VALUE);
+    const ready = await readyAgentRotation(fixture, secret.id);
+
+    // An agent key copies X-Paperclip-Run-Id into the actor without checking
+    // it, so "a run id is present" is not proof that a run vouched for this.
+    const assertionFromKey = await request(createAgentApp(fixture, "agent_key"))
+      .post(`/api/secrets/${secret.id}/deployment-assertions`)
+      .send({
+        deploymentLabel: "ingestion-service/prod",
+        expectedLatestVersion: 1,
+        valueFingerprintSha256: NEW_FP,
+        previousValueFingerprintSha256: OLD_FP,
+      });
+    expect(assertionFromKey.status).toBe(403);
+    expect(assertionFromKey.body.error ?? assertionFromKey.body.message).toContain("run-bound agent token");
+
+    const rotationFromKey = await request(createAgentApp(fixture, "agent_key"))
+      .post(`/api/secrets/${secret.id}/rotate`)
+      .send({
+        value: ready.value,
+        expectedLatestVersion: ready.expectedLatestVersion,
+        valueFingerprintSha256: NEW_FP,
+        authorizationProposalId: ready.proposalId,
+        deploymentAssertionId: ready.assertionId,
+      });
+    expect(rotationFromKey.status).toBe(403);
+    expect(rotationFromKey.body.error ?? rotationFromKey.body.message).toContain("run-bound agent token");
+
+    expect((await readSecret(secret.id))!.latestVersion).toBe(1);
+    expect((await readCurrentVersion(secret.id))!.fingerprintSha256).toBe(OLD_FP);
+    expect((await db.select().from(companySecretDeploymentAssertions))[0]).toMatchObject({ status: "pending" });
   });
 });

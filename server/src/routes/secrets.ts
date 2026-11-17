@@ -108,6 +108,19 @@ type SecretRotationDeps = {
   proposals: Pick<ReturnType<typeof createSecretProposalsService>, "getById">;
 };
 
+// `agent_jwt` takes the run from verified token claims (auth.ts loads it with
+// loadAgentRunAuthentication). `agent_key` copies the X-Paperclip-Run-Id
+// header straight into req.actor.runId without checking it, so a long-lived
+// key can name any run it likes. Any write that treats "a run id is present"
+// as "a run vouched for this" must therefore refuse agent keys, task-bridge
+// scopes and skill-test scopes — the same line the proposal gate already
+// draws.
+function isVerifiedRunBoundAgent(req: Parameters<typeof assertBoard>[0]) {
+  return req.actor.source === "agent_jwt"
+    && req.actor.keyScope?.kind !== "task_bridge"
+    && req.actor.keyScope?.kind !== "skill_test";
+}
+
 async function assertSecretRotationWrite(
   deps: SecretRotationDeps,
   req: Parameters<typeof assertBoard>[0],
@@ -117,6 +130,9 @@ async function assertSecretRotationWrite(
   if (req.actor.type === "board") return { mode: "board" };
   if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
     throw forbidden("Run-bound agent authentication required to rotate a secret");
+  }
+  if (!isVerifiedRunBoundAgent(req)) {
+    throw forbidden("Secret rotation requires a verified run-bound agent token");
   }
   if (req.actor.companyId !== secret.companyId) {
     throw forbidden("Agent key cannot access another company");
@@ -227,9 +243,12 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     };
   }
 
+  // Any write that treats "a run id is present" as "a run vouched for this"
+  // must refuse agent keys, task-bridge scopes and skill-test scopes. The
+  // shared predicate lives at module scope next to the rotation guard.
   async function proposalAgentContext(req: Parameters<typeof assertBoard>[0]) {
     const context = agentSecretContext(req);
-    if (req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test") {
+    if (!isVerifiedRunBoundAgent(req)) {
       throw forbidden("Secret proposals require a verified run-bound agent token");
     }
     const decision = await access.decide({
@@ -1218,6 +1237,9 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     if (req.actor.type === "agent") {
       if (!req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
         throw forbidden("Run-bound agent authentication required to assert a deployment");
+      }
+      if (!isVerifiedRunBoundAgent(req)) {
+        throw forbidden("Deployment assertions require a verified run-bound agent token");
       }
       if (req.actor.companyId !== existing.companyId) {
         throw forbidden("Agent key cannot access another company");
