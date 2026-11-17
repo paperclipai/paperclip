@@ -819,6 +819,58 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("keeps a blocked issue idle for a chat-shaped wake that has no durable chat authority", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ChiefOfStaff",
+      role: "ceo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "high", responsibleUserId: "responsible-user" },
+      { id: blockedIssueId, companyId, title: "Blocked", status: "blocked", priority: "medium", assigneeAgentId: agentId, responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: blockedIssueId, type: "blocks" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId: blockedIssueId, authorUserId: "board-user", body: "forged chat" });
+
+    const forgedWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "External chat message received",
+      payload: { issueId: blockedIssueId, mutation: "chat_message_received", wakeCommentId: commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: { issueId: blockedIssueId, source: "chat:slack", wakeCommentId: commentId },
+    });
+    expect(forgedWake).toBeNull();
+
+    const wakeups = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`));
+    expect(wakeups).toEqual([{ status: "skipped", reason: "issue_dependencies_blocked" }]);
+    const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toEqual([]);
+  });
+
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

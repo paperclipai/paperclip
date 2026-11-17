@@ -2,6 +2,8 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm"
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
+  chatActions,
+  chatIdentityLinks,
   heartbeatRuns,
   issueComments,
   issueTreeHoldMembers,
@@ -106,6 +108,18 @@ function readInteractionWakeCommentId(record: unknown) {
     if (latest) return latest.trim();
   }
   return readNonEmptyStringFromRecord(record, "wakeCommentId") ?? readNonEmptyStringFromRecord(record, "commentId");
+}
+
+/** Every comment a (possibly merged) wake will hand to the agent, not just the latest. */
+function readInteractionWakeCommentIds(record: unknown) {
+  const ids = new Set<string>();
+  const latest = readInteractionWakeCommentId(record);
+  if (latest) ids.add(latest);
+  const value = record && typeof record === "object" ? (record as Record<string, unknown>).wakeCommentIds : null;
+  if (Array.isArray(value)) {
+    for (const entry of value) if (typeof entry === "string" && entry.trim()) ids.add(entry.trim());
+  }
+  return [...ids];
 }
 
 function hasVerifiedInteractionSource(wakeReason: string, contextSnapshot: Record<string, unknown>) {
@@ -223,6 +237,98 @@ export async function isVerifiedIssueTreeControlInteractionWake(
     commentId,
     comment,
   });
+}
+
+export const EXTERNAL_CHAT_WAKE_REASON = "External chat message received";
+
+/**
+ * Re-derives, from durable rows, that a queued wake is an accepted inbound chat
+ * message for this exact agent, issue and comment. The serialized context only
+ * names the claim; the chat action and its admission receipt are the authority.
+ */
+export async function isVerifiedExternalChatInteractionWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    wakeupRequestId?: string | null;
+    /** A wake merged into a queued run keeps the first request id; its own receipt points at the run. */
+    runId?: string | null;
+    contextSnapshot: Record<string, unknown> | null | undefined;
+  },
+) {
+  const context = input.contextSnapshot ?? null;
+  const source = readNonEmptyStringFromRecord(context, "source");
+  if ((!input.wakeupRequestId && !input.runId) || !source?.startsWith("chat:")) return false;
+  if (readNonEmptyStringFromRecord(context, "wakeReason") !== EXTERNAL_CHAT_WAKE_REASON) return false;
+  const commentIds = readInteractionWakeCommentIds(context);
+  if (commentIds.length === 0) return false;
+  // A merged run carries several messages; each must still be authorized.
+  for (const commentId of commentIds) {
+    if (!(await isVerifiedExternalChatComment(dbOrTx, input, commentId))) return false;
+  }
+  return true;
+}
+
+async function isVerifiedExternalChatComment(
+  dbOrTx: Pick<Db, "select">,
+  input: { companyId: string; issueId: string; agentId: string; wakeupRequestId?: string | null; runId?: string | null },
+  commentId: string,
+) {
+  const action = await dbOrTx
+    .select({
+      id: chatActions.id,
+      endpointId: chatActions.endpointId,
+      principalId: chatActions.principalId,
+      actorType: sql<string | null>`${chatActions.payload} ->> 'requestedByActorType'`,
+      actorId: sql<string | null>`${chatActions.payload} ->> 'requestedByActorId'`,
+    })
+    .from(chatActions)
+    .innerJoin(agentWakeupRequests, eq(agentWakeupRequests.id, chatActions.id))
+    .innerJoin(
+      issueComments,
+      and(eq(issueComments.id, commentId), eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId)),
+    )
+    .where(
+      and(
+        or(
+          input.wakeupRequestId ? eq(chatActions.id, input.wakeupRequestId) : undefined,
+          input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
+        ),
+        eq(chatActions.companyId, input.companyId),
+        eq(chatActions.kind, "inbound_wakeup"),
+        sql`${chatActions.payload} ->> 'issueId' = ${input.issueId}`,
+        sql`${chatActions.payload} ->> 'agentId' = ${input.agentId}`,
+        sql`${chatActions.payload} ->> 'commentId' = ${commentId}`,
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`${agentWakeupRequests.status} <> 'skipped'`,
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!action) return false;
+  // A requester admitted through a linked identity must still be that user:
+  // revoking the link after admission has to stop queued work.
+  if (!action.actorType) return false;
+  if (action.actorType !== "user") return true;
+  if (!action.principalId || !action.actorId) return false;
+  const link = await dbOrTx
+    .select({ id: chatIdentityLinks.id })
+    .from(chatIdentityLinks)
+    .where(
+      and(
+        eq(chatIdentityLinks.companyId, input.companyId),
+        eq(chatIdentityLinks.endpointId, action.endpointId),
+        eq(chatIdentityLinks.principalId, action.principalId),
+        eq(chatIdentityLinks.status, "linked"),
+        eq(chatIdentityLinks.paperclipUserId, action.actorId),
+      ),
+    )
+    .limit(1);
+  return link.length > 0;
 }
 
 function normalizeReleasePolicy(

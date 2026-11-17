@@ -10,6 +10,7 @@ import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, ch
 import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
+import { EXTERNAL_CHAT_WAKE_REASON } from "../../issue-tree-control.js";
 import { isGitHubAutomaticDelivery, acknowledgeGitHubWakeup } from "../github/wake-authority.js";
 import type { createInboundWakeAuthority } from "./wakeup-authorization.js";
 import type { createInboundAttachments } from "../inbound-attachments.js";
@@ -355,7 +356,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       await queueIssueAssignmentWakeup({
         heartbeat: options.heartbeat,
         issue: context.issue,
-        reason: "External chat message received",
+        reason: EXTERNAL_CHAT_WAKE_REASON,
         mutation: "chat_message_received",
         contextSource: `chat:${context.endpoint.provider}`,
         requestedByActorType: request.requestedByActorType,

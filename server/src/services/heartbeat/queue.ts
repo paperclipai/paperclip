@@ -112,7 +112,7 @@ import {
   asBoolean,
   asNumber,
 } from "../../adapters/utils.js";
-import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
+import { authorizeChatConversationForBoundRun, isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
@@ -135,6 +135,7 @@ import { logActivity } from "../activity-log.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "../issue-dependency-wakeups.js";
 import {
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  isVerifiedExternalChatInteractionWake,
   isVerifiedIssueTreeControlInteractionWake,
 } from "../issue-tree-control.js";
 import {
@@ -1119,12 +1120,46 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
+      const chatBlockedInteraction =
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(
+          context,
+          ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+        ) &&
+        (await isVerifiedExternalChatInteractionWake(db, {
+          companyId: run.companyId,
+          issueId,
+          agentId: run.agentId,
+          wakeupRequestId: run.wakeupRequestId,
+          runId: run.id,
+          contextSnapshot: context,
+        }));
+      let chatBlockedInteractionAuthorized = false;
+      if (chatBlockedInteraction) {
+        // The run may have queued behind another run; pause, revocation and
+        // blockers can all change after admission, so re-check them live.
+        try {
+          await authorizeChatConversationForBoundRun(
+            db,
+            { companyId: run.companyId, issueId, runId: run.id, agentId: run.agentId },
+            { ...context, paperclipExternalChatExecutionBound: true },
+            "read",
+          );
+          chatBlockedInteractionAuthorized = true;
+        } catch (error) {
+          logger.warn(
+            { runId: run.id, issueId, err: error },
+            "claimQueuedRun: blocked chat interaction no longer authorized",
+          );
+        }
+      }
       if (
         unresolvedBlockerCount > 0 &&
         !allowsIssueInteractionWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-        )
+        ) &&
+        !chatBlockedInteractionAuthorized
       ) {
         await cancelQueuedRunForBlockedDependencies(
           run,
@@ -1136,6 +1171,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           "claimQueuedRun: cancelled blocked queued run",
         );
         return null;
+      }
+
+      if (chatBlockedInteractionAuthorized) {
+        // Bound the run to the blockers present now, whether or not they
+        // existed when it was admitted.
+        context.dependencyBlockedInteraction = true;
+        context.unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
+        context.unresolvedBlockerCount = unresolvedBlockerCount;
+        context.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
+          db,
+          run.companyId,
+          issueId,
+          readiness?.unresolvedBlockerIssueIds ?? [],
+        );
+        await db
+          .update(heartbeatRuns)
+          .set({ contextSnapshot: context })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
       }
 
       const staleness = await runDispatch.cancelStaleQueuedRun({
@@ -3647,10 +3700,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const blockedInteractionWake =
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
+            (allowsIssueInteractionWake(
               enrichedContextSnapshot,
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-            );
+            ) ||
+              // Bound to this agent, issue, comment and actor, and re-authorized
+              // against the live endpoint earlier in this transaction.
+              (durableRequest !== undefined &&
+                !durableRequest.failedRunRetry &&
+                durableRequest.commentId === wakeCommentId));
 
           if (blockedInteractionWake) {
             enrichedContextSnapshot.dependencyBlockedInteraction = true;
