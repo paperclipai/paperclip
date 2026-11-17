@@ -525,29 +525,34 @@ shares with an app". So with `drive.file`:
 | Anything else (PDF, Office, images, video) | not supported | the stored bytes |
 
 `exportMimeType` picks the export format for Google files and is ignored for
-other files, as in Google's reference. `download_file_content` returns
+other files, as in Google's reference. It must be one of the formats Google's
+export table lists for that file type (`EXPORT_FORMATS` in
+`drive/content.ts`, from
+<https://developers.google.com/workspace/drive/api/guides/ref-export-formats>);
+anything else is refused before a request is sent. Every request uses the
+`fileId` the caller passed, never an ID taken from Google's answer. `download_file_content` returns
 `{ id, title, mimeType, content }`: `content` is base64 and `mimeType` is the
 type of the returned bytes (the export format for Google files).
 "Not supported" means `fileContent: ""` with `textFormattingNotSupported:
 true`, the field Google's result has for this case. Text that is not valid
 UTF-8 is also not supported.
 
-**Size cap.** Both content tools read at most 1 MB of content
-(`MAX_CONTENT_BYTES` in `drive/file.ts`), and the whole result may be at most
-3 MB (`MAX_RESULT_BYTES`). The result is limited by what an agent can receive:
-the smallest MCP response limit among Paperclip's agent runtimes is 4 MB (Pi),
-and a result carries its content twice (`structuredContent` and its JSON
-text), base64 adds a third for downloads, and JSON escaping can add more for
-text. 1 MB of bytes gives a download result of about 2.7 MB. Both limits are
-well under Google's 10 MB export limit ("the exported content is limited to 10
-MB",
-<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
-and the 20 MB `MAX_RESPONSE_BYTES`. A stored file whose metadata size is over
-the cap is refused before any download. Exports and revisions are read through
-`GoogleHttp.download`, which stops at the cap, and the finished result is
-measured before it is returned. Either way the tool returns a `too_large`
-error that says nothing was returned; it never returns cut-short content.
-Google's `exportSizeLimitExceeded` answer gives the same kind of error. `create_file`
+**Size cap.** Every Drive read bounds its final serialized result (the whole
+`CallToolResult`, which carries the payload twice: as `structuredContent` and
+as its JSON text) to 250,000 bytes (`MAX_RESULT_BYTES` in `drive/file.ts`,
+checked by `boundedStructuredResult` in `tool.ts`). That is about 90 KB of file
+bytes for `download_file_content` (base64 adds a third) and about 120 KB of
+plain text for `read_file_content`. Content is also never read past 250,000
+bytes (`MAX_CONTENT_BYTES`), since more could never fit: a stored file whose
+metadata size is larger is refused before any download, and exports and
+revisions are read through `GoogleHttp.download`, which stops at the cap. Both
+limits are far under Google's 10 MB export limit
+(<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
+and the 20 MB `MAX_RESPONSE_BYTES`. A refused result is an error that says
+nothing was returned and how to ask for less (a smaller `pageSize`, no
+`includeRichMetadata` or `includeComments`, another export format, or
+`read_file_content` for a Google file's text). It never returns cut-short
+content. Google's `exportSizeLimitExceeded` answer gives a similar error. `create_file`
 uploads at most 5 MB, the limit for one multipart upload.
 
 **Redirects.** `files.export` and `alt=media` downloads are answered by

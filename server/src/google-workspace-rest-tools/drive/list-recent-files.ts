@@ -1,9 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { GoogleRequest } from "../google-http.js";
-import { defineTool, structuredResult } from "../tool.js";
+import { defineTool } from "../tool.js";
 import {
   assertSnippetArgs,
+  boundedResult,
+  READ_LESS,
   DRIVE_BASE,
   DRIVE_HOST,
   fileListSchema,
@@ -48,7 +50,7 @@ export function listRecentFilesRequest(input: ListRecentFilesArgs): GoogleReques
 }
 
 export function listRecentFilesResult(list: RestFileList): CallToolResult {
-  return structuredResult(listResult(list));
+  return boundedResult(listResult(list), READ_LESS.list);
 }
 
 export const listRecentFiles = defineTool({

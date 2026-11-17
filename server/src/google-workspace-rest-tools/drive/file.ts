@@ -2,14 +2,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
-import { compact } from "../tool.js";
+import { boundedStructuredResult, compact } from "../tool.js";
 
 export const DRIVE_HOST = "www.googleapis.com" as const;
 export const DRIVE_BASE = "/drive/v3";
 export const DRIVE_UPLOAD_BASE = "/upload/drive/v3";
 
-export const MAX_CONTENT_BYTES = 1024 * 1024;
-export const MAX_RESULT_BYTES = 3 * 1024 * 1024;
+export const MAX_RESULT_BYTES = 250_000;
+export const MAX_CONTENT_BYTES = MAX_RESULT_BYTES;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_PAGE_SIZE = 10;
 export const MAX_PAGE_SIZE = 100;
@@ -172,11 +172,20 @@ export function listResult(list: RestFileList, rich = false): Record<string, unk
   });
 }
 
-export function boundedResult(result: CallToolResult): CallToolResult {
-  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_RESULT_BYTES) {
-    throw new GoogleToolError("too_large", `The result would be larger than ${MAX_RESULT_BYTES / (1024 * 1024)} MB, the most this tool returns. Nothing was returned.`);
-  }
-  return result;
+export const READ_LESS = {
+  download: "This tool cannot return part of a file. For a Google Docs, Sheets or Slides file, read its text with read_file_content or choose a smaller export format with exportMimeType.",
+  read: "This tool cannot return part of a file. Read it without includeComments if that was set; larger files cannot be read with these tools.",
+  list: "Ask for fewer files with a smaller pageSize, or leave out includeRichMetadata.",
+  metadata: "Leave out includeRichMetadata.",
+  permissions: "This file has too many permissions to list with this tool.",
+} as const;
+
+export function tooLargeMessage(bytes: number, advice: string): string {
+  return `The result is ${bytes} bytes, more than the ${MAX_RESULT_BYTES} bytes this tool returns, so nothing was returned. ${advice}`;
+}
+
+export function boundedResult(value: Record<string, unknown>, advice: string): CallToolResult {
+  return boundedStructuredResult(value, MAX_RESULT_BYTES, (bytes) => tooLargeMessage(bytes, advice));
 }
 
 export function isGoogleType(mimeType: string | undefined): boolean {

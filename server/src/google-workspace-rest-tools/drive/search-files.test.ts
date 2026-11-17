@@ -103,6 +103,14 @@ describe("search_files tool", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses a page whose result is over 250,000 bytes and says how to ask for less", async () => {
+    const files = Array.from({ length: 100 }, (_, index) => ({ ...DOC, id: `doc${index}`, description: "d".repeat(2_000) }));
+    const { fetch } = fakeGoogle(() => json({ files }));
+    const result = await searchFiles.call({ pageSize: 100 }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/more than the 250000 bytes this tool returns, so nothing was returned\. Ask for fewer files with a smaller pageSize/);
+  });
+
   it("returns an empty list when nothing matches", async () => {
     const { fetch } = fakeGoogle(() => json({}));
     const result = await searchFiles.call({ query: "starred = true" }, createGoogleHttp({ accessToken: "t", fetch }));

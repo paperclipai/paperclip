@@ -1,5 +1,5 @@
 import { GoogleToolError } from "../errors.js";
-import { formatBytes, type GoogleHttp, type GoogleRequest } from "../google-http.js";
+import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import {
   DRIVE_HOST,
   filePath,
@@ -16,12 +16,22 @@ import {
 
 export const CONTENT_META_FIELDS = "id,name,mimeType,size";
 
-export const DEFAULT_DOWNLOAD_EXPORTS: Readonly<Record<string, string>> = {
-  [GOOGLE_DOC]: "text/plain",
-  [GOOGLE_SHEET]: "text/csv",
-  [GOOGLE_SLIDES]: "text/plain",
-  [GOOGLE_DRAWING]: "image/svg+xml",
-  [GOOGLE_SCRIPT]: "application/vnd.google-apps.script+json",
+const PDF = "application/pdf";
+export const EXPORT_FORMATS: Readonly<Record<string, readonly string[]>> = {
+  [GOOGLE_DOC]: [
+    "text/plain", "text/markdown", "text/html", "application/rtf", PDF, "application/epub+zip", "application/zip",
+    "application/vnd.oasis.opendocument.text", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ],
+  [GOOGLE_SHEET]: [
+    "text/csv", "text/tab-separated-values", PDF, "application/zip",
+    "application/vnd.oasis.opendocument.spreadsheet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ],
+  [GOOGLE_SLIDES]: [
+    "text/plain", PDF, "application/vnd.oasis.opendocument.presentation",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ],
+  [GOOGLE_DRAWING]: ["image/svg+xml", "image/png", "image/jpeg", PDF],
+  [GOOGLE_SCRIPT]: ["application/vnd.google-apps.script+json"],
 };
 
 export interface ContentPlan {
@@ -42,26 +52,34 @@ export function mediaRequest(id: string, revision?: string): GoogleRequest {
   return { method: "GET", host: DRIVE_HOST, path, query: { alt: "media", supportsAllDrives: revision ? undefined : true } };
 }
 
-export function assertWithinCap(file: RestFile): void {
-  const size = Number(file.size ?? "0");
-  if (size > MAX_CONTENT_BYTES) {
-    throw new GoogleToolError(
-      "too_large",
-      `This file is ${size} bytes, larger than ${formatBytes(MAX_CONTENT_BYTES)}, the most this tool returns. Nothing was returned.`,
-    );
-  }
+export function tooLargeContent(advice: string, size?: number): GoogleToolError {
+  const what = size === undefined ? "This file's content is" : `This file is ${size} bytes,`;
+  return new GoogleToolError("too_large", `${what} more than the ${MAX_CONTENT_BYTES} bytes this tool returns, so nothing was returned. ${advice}`);
 }
 
-export function downloadPlan(file: RestFile, exportMimeType: string | undefined, revision: string | undefined): ContentPlan {
-  const id = file.id ?? "";
+export function assertWithinCap(file: RestFile, advice: string): void {
+  const size = Number(file.size ?? "0");
+  if (size > MAX_CONTENT_BYTES) throw tooLargeContent(advice, size);
+}
+
+export function exportFormat(mimeType: string, requested: string | undefined): string {
+  const formats = EXPORT_FORMATS[mimeType];
+  if (!formats) throw new GoogleToolError("unsupported", `Files of type ${mimeType} have no content to download.`);
+  if (requested === undefined) return formats[0]!;
+  if (!formats.includes(requested)) {
+    throw new GoogleToolError("invalid_argument", `This file cannot be exported as ${requested}. Use one of: ${formats.join(", ")}.`);
+  }
+  return requested;
+}
+
+export function downloadPlan(id: string, file: RestFile, exportMimeType: string | undefined, revision: string | undefined, advice: string): ContentPlan {
   const mimeType = file.mimeType ?? "application/octet-stream";
   if (isGoogleType(mimeType)) {
-    const target = exportMimeType ?? DEFAULT_DOWNLOAD_EXPORTS[mimeType];
-    if (!target) throw new GoogleToolError("unsupported", `Files of type ${mimeType} have no content to download.`);
+    const target = exportFormat(mimeType, exportMimeType);
     if (revision) throw new GoogleToolError("unsupported", "Earlier revisions of Google Docs, Sheets, Slides and other Google files cannot be downloaded with this tool. Omit revisionId to export the current version.");
     return { request: exportRequest(id, target), contentType: target };
   }
-  if (!revision) assertWithinCap(file);
+  if (!revision) assertWithinCap(file, advice);
   return { request: mediaRequest(id, revision), contentType: mimeType };
 }
 
@@ -69,6 +87,11 @@ export async function readContentMeta(id: string, http: GoogleHttp): Promise<Res
   return http.send<RestFile>(contentMetaRequest(id));
 }
 
-export async function fetchContent(plan: ContentPlan, http: GoogleHttp): Promise<Buffer> {
-  return (await http.download(plan.request, MAX_CONTENT_BYTES)).data;
+export async function fetchContent(plan: ContentPlan, http: GoogleHttp, advice: string): Promise<Buffer> {
+  try {
+    return (await http.download(plan.request, MAX_CONTENT_BYTES)).data;
+  } catch (error) {
+    if (error instanceof GoogleToolError && error.kind === "too_large" && error.httpStatus !== 403) throw tooLargeContent(advice);
+    throw error;
+  }
 }

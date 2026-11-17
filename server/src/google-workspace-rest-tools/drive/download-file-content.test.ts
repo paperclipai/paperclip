@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import { GoogleToolError } from "../errors.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
+import { serializedResultBytes } from "../tool.js";
 import { downloadPlan } from "./content.js";
 import { downloadFileContent } from "./download-file-content.js";
-import { MAX_CONTENT_BYTES, MAX_RESULT_BYTES, type RestFile } from "./file.js";
+import { MAX_CONTENT_BYTES, MAX_RESULT_BYTES, READ_LESS, type RestFile } from "./file.js";
 import { DOC, DRAWING, FOLDER, FORM, HUGE_PDF, PDF, SHEET, SLIDES, TEXT_FILE } from "./fixtures/drive-rest.js";
 
+const plan = (file: RestFile, exportMimeType?: string, revision?: string) => downloadPlan(file.id!, file, exportMimeType, revision, READ_LESS.download);
 const target = (file: RestFile, exportMimeType?: string, revision?: string) => {
-  const plan = downloadPlan(file, exportMimeType, revision);
-  return `${plan.request.path}?${new URLSearchParams(Object.entries(plan.request.query ?? {}).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)])).toString()} as ${plan.contentType}`;
+  const planned = plan(file, exportMimeType, revision);
+  const query = Object.entries(planned.request.query ?? {}).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]);
+  return `${planned.request.path}?${new URLSearchParams(query).toString()} as ${planned.contentType}`;
 };
 
 describe("download plan", () => {
@@ -20,6 +23,7 @@ describe("download plan", () => {
     [DRAWING, undefined, undefined, "/drive/v3/files/draw0001synthetic/export?mimeType=image%2Fsvg%2Bxml as image/svg+xml"],
     [DOC, "application/pdf", undefined, "/drive/v3/files/doc0001synthetic/export?mimeType=application%2Fpdf as application/pdf"],
     [DOC, "text/markdown", undefined, "/drive/v3/files/doc0001synthetic/export?mimeType=text%2Fmarkdown as text/markdown"],
+    [SHEET, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", undefined, "/drive/v3/files/sheet0001synthetic/export?mimeType=application%2Fvnd.openxmlformats-officedocument.spreadsheetml.sheet as application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
     [PDF, undefined, undefined, "/drive/v3/files/pdf0001synthetic?alt=media&supportsAllDrives=true as application/pdf"],
     [PDF, "text/plain", undefined, "/drive/v3/files/pdf0001synthetic?alt=media&supportsAllDrives=true as application/pdf"],
     [TEXT_FILE, undefined, "rev0001", "/drive/v3/files/text0001synthetic/revisions/rev0001?alt=media as text/plain"],
@@ -29,13 +33,21 @@ describe("download plan", () => {
   });
 
   it.each([
-    [FOLDER, undefined, /have no content to download/],
-    [FORM, undefined, /have no content to download/],
-    [DOC, "rev0001", /Earlier revisions/],
-    [HUGE_PDF, undefined, /larger than 1 MB/],
-  ] as const)("%#: refuses %s", (file, revision, message) => {
-    expect(() => downloadPlan(file, undefined, revision)).toThrow(GoogleToolError);
-    expect(() => downloadPlan(file, undefined, revision)).toThrow(message);
+    [FOLDER, undefined, undefined, /have no content to download/],
+    [FORM, undefined, undefined, /have no content to download/],
+    [DOC, undefined, "rev0001", /Earlier revisions/],
+    [HUGE_PDF, undefined, undefined, /This file is 10485761 bytes, more than the 250000 bytes/],
+    [DOC, "image/png", undefined, /cannot be exported as image\/png. Use one of: text\/plain/],
+    [SHEET, "text/plain", undefined, /cannot be exported as text\/plain/],
+    [SLIDES, "application/x-anything", undefined, /cannot be exported/],
+  ] as const)("%#: refuses %s", (file, exportMimeType, revision, message) => {
+    expect(() => plan(file, exportMimeType, revision)).toThrow(GoogleToolError);
+    expect(() => plan(file, exportMimeType, revision)).toThrow(message);
+  });
+
+  it("always addresses the file the caller named, not an ID from Google's answer", () => {
+    expect(downloadPlan("callerFile1", { ...PDF, id: "otherFile9" }, undefined, undefined, "").request.path).toBe("/drive/v3/files/callerFile1");
+    expect(downloadPlan("callerFile1", { ...DOC, id: "otherFile9" }, undefined, undefined, "").request.path).toBe("/drive/v3/files/callerFile1/export");
   });
 });
 
@@ -52,6 +64,13 @@ describe("download_file_content tool", () => {
     expect(result.structuredContent).toEqual({ id: PDF.id, title: "report.pdf", mimeType: "application/pdf", content: bytes.toString("base64") });
   });
 
+  it("downloads only the file the caller named, even if Google's metadata names another", async () => {
+    const { fetch, calls } = fakeGoogle(({ url }) => (url.searchParams.get("alt") === "media" ? new Response("x") : json({ ...TEXT_FILE, id: "otherFile9" })));
+    const result = await downloadFileContent.call({ fileId: "callerFile1" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls.map((call) => call.url.pathname)).toEqual(["/drive/v3/files/callerFile1", "/drive/v3/files/callerFile1"]);
+    expect(result.structuredContent).toMatchObject({ id: "callerFile1" });
+  });
+
   it("exports a Google Doc as plain text by default and reports the export type", async () => {
     const { fetch, calls } = fakeGoogle(({ url }) => (url.pathname.endsWith("/export") ? new Response("Hello\n") : json(DOC)));
     const result = await downloadFileContent.call({ fileId: DOC.id }, createGoogleHttp({ accessToken: "t", fetch }));
@@ -59,12 +78,11 @@ describe("download_file_content tool", () => {
     expect(result.structuredContent).toMatchObject({ mimeType: "text/plain", content: Buffer.from("Hello\n").toString("base64") });
   });
 
-  it("refuses a file whose stored size is over the cap without downloading it", async () => {
+  it("refuses a file whose stored size is over the cap without downloading it, and says what to do instead", async () => {
     const { fetch, calls } = fakeGoogle(() => json(HUGE_PDF));
     const result = await downloadFileContent.call({ fileId: HUGE_PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(calls).toHaveLength(1);
-    expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/^This file is 10485761 bytes, larger than 1 MB/);
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file is 10485761 bytes, more than the 250000 bytes this tool returns, so nothing was returned. ${READ_LESS.download}` }] });
   });
 
   it("refuses an export that streams past the cap, and never returns a cut-short result", async () => {
@@ -78,18 +96,25 @@ describe("download_file_content tool", () => {
       }))
       : json(SHEET)));
     const result = await downloadFileContent.call({ fileId: SHEET.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 1 MB, the most this tool returns. Nothing was returned." }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file's content is more than the 250000 bytes this tool returns, so nothing was returned. ${READ_LESS.download}` }] });
   });
 
-  it("keeps the whole result of a file at the cap under 4 MB, the smallest response an agent runtime accepts", async () => {
-    const { fetch } = fakeGoogle(({ url }) => (url.searchParams.get("alt") === "media"
-      ? new Response(new Uint8Array(MAX_CONTENT_BYTES).fill(0xff))
-      : json({ ...PDF, size: String(MAX_CONTENT_BYTES) })));
-    const result = await downloadFileContent.call({ fileId: PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result.isError).toBeUndefined();
-    const size = Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
-    expect(size).toBeLessThanOrEqual(MAX_RESULT_BYTES);
-    expect(size).toBeLessThan(4 * 1024 * 1024);
+  it("bounds the final serialized result: the largest file that fits is returned, one byte more is refused", async () => {
+    const run = async (size: number) => {
+      const { fetch } = fakeGoogle(({ url }) => (url.searchParams.get("alt") === "media"
+        ? new Response(new Uint8Array(size).fill(0xff))
+        : json({ ...PDF, size: String(size) })));
+      return downloadFileContent.call({ fileId: PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
+    };
+    let largest = 0;
+    for (let step = 1 << 17; step >= 1; step >>= 1) {
+      if (!(await run(largest + step)).isError) largest += step;
+    }
+    const fits = await run(largest);
+    expect(serializedResultBytes(fits)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(serializedResultBytes(fits)).toBeGreaterThan(MAX_RESULT_BYTES - 16);
+    const over = await run(largest + 3);
+    expect((over.content[0] as { text: string }).text).toMatch(/^The result is \d+ bytes, more than the 250000 bytes this tool returns, so nothing was returned\. This tool cannot return part of a file/);
   });
 
   it("reports Google's export size limit as too large", async () => {

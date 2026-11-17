@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fakeGoogle, json, type RecordedCall } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
-import type { RestFile } from "./file.js";
+import { serializedResultBytes } from "../tool.js";
+import { MAX_CONTENT_BYTES, MAX_RESULT_BYTES, READ_LESS, type RestFile } from "./file.js";
 import { DOC, DRAWING, FOLDER, HUGE_PDF, JSON_FILE, PDF, SHEET, SLIDES, TEXT_FILE } from "./fixtures/drive-rest.js";
 import { decodeText, readFileContent, readPlan, SHEET_NOTE, toCommentThread } from "./read-file-content.js";
 
@@ -14,7 +15,7 @@ describe("read plan", () => {
     [JSON_FILE, "/drive/v3/files/json0001synthetic", "application/json"],
     [{ id: "x1", mimeType: "application/ld+json", size: "3" }, "/drive/v3/files/x1", "application/ld+json"],
   ] as const)("%#: reads %s from %s as %s", (file, path, contentType) => {
-    const plan = readPlan(file);
+    const plan = readPlan(file.id!, file);
     expect(plan?.request.path).toBe(path);
     expect(plan?.contentType).toBe(contentType);
   });
@@ -22,12 +23,12 @@ describe("read plan", () => {
   it.each([PDF, FOLDER, DRAWING, { id: "i1", mimeType: "image/png" }, { id: "w1", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }])(
     "%#: has no text version of %s",
     (file: RestFile) => {
-      expect(readPlan(file)).toBeNull();
+      expect(readPlan(file.id!, file)).toBeNull();
     },
   );
 
   it("refuses a text file over the cap before downloading", () => {
-    expect(() => readPlan({ ...HUGE_PDF, mimeType: "text/plain" })).toThrow(/larger than 1 MB/);
+    expect(() => readPlan("big1", { ...HUGE_PDF, mimeType: "text/plain" })).toThrow(/more than the 250000 bytes/);
   });
 
   it("decodes UTF-8, drops a byte order mark, and rejects bytes that are not UTF-8", () => {
@@ -105,21 +106,27 @@ describe("read_file_content tool", () => {
   });
 
   it("refuses content that grows past the cap while streaming", async () => {
-    const { fetch } = route(SLIDES, new Uint8Array(1024 * 1024 + 1));
+    const { fetch } = route(SLIDES, new Uint8Array(MAX_CONTENT_BYTES + 1));
     const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 1 MB, the most this tool returns. Nothing was returned." }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: `This file's content is more than the 250000 bytes this tool returns, so nothing was returned. ${READ_LESS.read}` }] });
   });
 
-  it("refuses text whose escaped result would pass 3 MB, even under the content cap", async () => {
-    const { fetch } = route(SLIDES, "\u0001".repeat(1024 * 1024));
+  it("bounds the final serialized result, including JSON escaping, with advice on reading less", async () => {
+    const { fetch } = route(SLIDES, "\u0001".repeat(30_000));
     const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The result would be larger than 3 MB, the most this tool returns. Nothing was returned." }] });
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toMatch(/^The result is \d+ bytes, more than the 250000 bytes this tool returns, so nothing was returned\. /);
+    expect(text.endsWith(READ_LESS.read)).toBe(true);
+    expect(Number(/\d+/.exec(text)![0])).toBeGreaterThan(2 * 6 * 30_000);
   });
 
-  it("returns 1 MB of ordinary text within the result limit", async () => {
-    const { fetch } = route(SLIDES, "a".repeat(1024 * 1024));
-    const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result.isError).toBeUndefined();
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(3 * 1024 * 1024);
+  it("returns the largest text that fits and refuses one byte more", async () => {
+    const run = async (size: number) => readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch: route(SLIDES, "a".repeat(size)).fetch }));
+    let largest = 0;
+    for (let step = 1 << 17; step >= 1; step >>= 1) if (!(await run(largest + step)).isError) largest += step;
+    expect(serializedResultBytes(await run(largest))).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(serializedResultBytes(await run(largest))).toBeGreaterThan(MAX_RESULT_BYTES - 4);
+    expect((await run(largest + 1)).isError).toBe(true);
   });
 });

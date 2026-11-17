@@ -2,9 +2,11 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
-import { defineTool, structuredResult } from "../tool.js";
+import { defineTool } from "../tool.js";
 import {
   assertSnippetArgs,
+  boundedResult,
+  READ_LESS,
   DRIVE_BASE,
   DRIVE_HOST,
   fileListSchema,
@@ -56,7 +58,7 @@ export function searchFilesRequest(input: SearchFilesArgs): GoogleRequest {
 }
 
 export function searchFilesResult(list: RestFileList, rich: boolean): CallToolResult {
-  return structuredResult(listResult(list, rich));
+  return boundedResult(listResult(list, rich), READ_LESS.list);
 }
 
 const QUERY_HELP = [
