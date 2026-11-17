@@ -1,12 +1,5 @@
 // @vitest-environment jsdom
 
-// Links written outside the app (onboarding emails, docs pages) cannot carry a
-// reader's company prefix. They only resolve if the surface they name is
-// registered as an unprefixed redirect route in <App>; otherwise the first path
-// segment is parsed as a company prefix ("APPS") and the page 404s. This drives
-// the real <App> route table for the core surfaces such links point at, so
-// removing one of those routes fails loudly.
-
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -14,10 +7,6 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-// jsdom's CSS parser rejects the custom-property marker rule stitches inserts
-// (`--sxs{--sxs:N}`), pulled into <App>'s eager import graph transitively via
-// @codesandbox/sandpack-react. Substitute a benign, valid rule on parse failure
-// so stitches' index bookkeeping stays intact and the module graph evaluates.
 vi.hoisted(() => {
   const sheetProto = window.CSSStyleSheet.prototype as unknown as {
     insertRule: (rule: string, index?: number) => number;
@@ -40,8 +29,6 @@ vi.hoisted(() => {
   }
 });
 
-// Real Layout renders the full authenticated shell (sidebar, data queries). For
-// routing we only need it to resolve :companyPrefix and render nested routes.
 vi.mock("./components/Layout", async () => {
   const { Outlet } = await import("react-router-dom");
   return { Layout: () => <Outlet /> };
@@ -51,19 +38,16 @@ vi.mock("./components/ProductionLayout", async () => {
   return { ProductionLayout: () => <Outlet /> };
 });
 
-// Rendered by <App> outside <Routes>; irrelevant to the route table.
 vi.mock("./components/PageLoadTracker", () => ({ PageLoadTracker: () => null }));
 vi.mock("./components/OnboardingWizardVariant", () => ({
   OnboardingWizardVariant: () => null,
 }));
 
-// Cloud access is unrelated to the route table. Let it fall through.
 vi.mock("./components/CloudAccessGate", async () => {
   const { Outlet } = await import("react-router-dom");
   return { CloudAccessGate: () => <Outlet /> };
 });
 
-// Sentinel pages so we can assert *which* route resolved.
 vi.mock("./pages/Dashboard", () => ({ Dashboard: () => <div>DASHBOARD_PAGE</div> }));
 vi.mock("./pages/apps/Browse", () => ({ Browse: () => <div>CONNECTORS_PAGE</div> }));
 vi.mock("./pages/apps/AppsConnect", () => ({ AppsConnect: () => <div>CONNECT_APP_PAGE</div> }));
@@ -137,18 +121,20 @@ describe("App deep-link routing for links written outside the app", () => {
 
   it("keeps the query string, so a docs link can open one connector", async () => {
     const root = await renderAppAt(container, "/apps/connect?source=notion");
-    await vi.waitFor(() => expect(currentLocation(container)).toMatch(/^\/PAP\/apps/));
-    // The prefixed route decides whether this reader may open the connect
-    // page; either way the reader lands inside their own company.
-    const landed = currentLocation(container);
-    expect(["/PAP/apps/connect?source=notion", "/PAP/apps"]).toContain(landed);
+    await vi.waitFor(() => expect(container.textContent).toContain("CONNECT_APP_PAGE"));
+    expect(currentLocation(container)).toBe("/PAP/apps/connect?source=notion");
+    flushSync(() => root.unmount());
+  });
+
+  it("sends a connect link with no connector to the Connectors list", async () => {
+    const root = await renderAppAt(container, "/apps/connect");
+    await vi.waitFor(() => expect(container.textContent).toContain("CONNECTORS_PAGE"));
+    expect(currentLocation(container)).toBe("/PAP/apps");
     flushSync(() => root.unmount());
   });
 
   it("forwards unprefixed /inbox into the reader's company", async () => {
     const root = await renderAppAt(container, "/inbox");
-    // Inbox resolves to its last tab, or to the matching Tasks view when the
-    // combined Inbox + Tasks surface is on. Both live under the company prefix.
     await vi.waitFor(() => expect(currentLocation(container)).toMatch(/^\/PAP\/(inbox\/|issues\?)/));
     flushSync(() => root.unmount());
   });
