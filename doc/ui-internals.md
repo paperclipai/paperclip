@@ -26,6 +26,8 @@ contextual navigation beneath a qualifying parent.
 
 Local human actions advance recency. Passive visits and background title, status
 and readiness refreshes preserve the recorded time and never promote a task.
+New passive candidates enter below existing history without using server update
+time. A successful sidebar rename records explicit local human activity.
 Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay
 current during that delay.
@@ -35,7 +37,9 @@ using bounded parallel chunks for long histories. Viewer participation and unrea
 facts are session data and are never trusted from browser storage. Passive refreshes do not fetch
 full task details or inspect workspaces. Successful omissions remove unavailable
 tasks and nonparticipants; failed batch reads retain saved history and any
-previously confirmed session state. Unverified history stays out of the visible list.
+previously confirmed session state, including after a change to the candidate batch.
+These confirmed facts never cross account or company scopes. Unverified history
+stays out of the visible list and does not affect the activity reorder delay.
 Existing full-detail cache data
 can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching

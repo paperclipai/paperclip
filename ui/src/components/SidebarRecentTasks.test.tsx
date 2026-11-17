@@ -214,7 +214,7 @@ describe("SidebarRecentTasks", () => {
       projectId: null,
       updatedAt: new Date(id),
     }));
-    tasks.forEach((task) => recordRecentTask(task, "user-1"));
+    tasks.forEach((task) => recordRecentTask(task, "user-1", task.updatedAt.getTime()));
     mockIssuesApi.get.mockImplementation(async (id: string) => tasks.find((task) => task.id === id));
     const queryClient = await render();
     const order = () => Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
@@ -250,15 +250,15 @@ describe("SidebarRecentTasks", () => {
       id, companyId: "company-1", title: id, identifier: id,
       status: "todo" as const, updatedAt: new Date(recordedAt),
     });
-    recordRecentTask(task("first", 1), "user-1");
-    recordRecentTask(task("second", 2), "user-1");
+    recordRecentTask(task("first", 1), "user-1", 1);
+    recordRecentTask(task("second", 2), "user-1", 2);
     mockIssuesApi.get.mockImplementation(async (id: string) => task(id, 0));
     const queryClient = await render();
     vi.useFakeTimers();
     act(() => recordRecentTask(task("first", 3), "user-1", 3));
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/second");
     await act(async () => {
-      recordRecentTask(task("new", 4), "user-1");
+      recordRecentTask(task("new", 4), "user-1", 4);
       await vi.advanceTimersByTimeAsync(10);
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
@@ -359,8 +359,10 @@ describe("SidebarRecentTasks", () => {
       updatedAt: new Date(1),
     };
     const renamedIssue = { ...issue, title: "New title", updatedAt: new Date(2) };
-    recordRecentTask(issue, "user-1");
-    mockIssuesApi.get.mockResolvedValue(issue);
+    const newer = { ...issue, id: "issue-2", identifier: "PAP-2", title: "Newer work" };
+    recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(newer, "user-1", 20);
+    mockIssuesApi.get.mockImplementation(async (id: string) => id === issue.id ? issue : newer);
     mockIssuesApi.update.mockResolvedValue(renamedIssue);
 
     const queryClient = await render();
@@ -384,6 +386,10 @@ describe("SidebarRecentTasks", () => {
     });
 
     expect(mockIssuesApi.update).toHaveBeenCalledWith("issue-1", { title: "New title" });
+    const stored = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    expect(stored.map(entry => entry.id)).toEqual(["issue-1", "issue-2"]);
+    expect(stored[0]?.recordedAt).toBeGreaterThan(20);
+    expect(stored[0]?.title).toBe("New title");
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.issues.activity("issue-1"),
     });

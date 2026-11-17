@@ -71,7 +71,6 @@ export function useRecentTasks({
   }, [companyId, storageKey]);
 
   const queryIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
-  const membership = JSON.stringify(queryIds);
   const scope = JSON.stringify([storageKey, queryIds]);
   const summaryKey = queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, queryIds);
   // A cached omission predates IDs that the user has just added back. Only a
@@ -113,10 +112,18 @@ export function useRecentTasks({
   const fetchingSummaries = summaryQuery.isFetching;
   const updateCount = queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0;
   const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
-  // A failed background refresh must not flatten already loaded task groups.
-  // Only successful responses below may update/prune the stored history.
-  const confirmed = useMemo(() => new Map((summaryQuery.data ?? []).filter((issue) => issue.companyId === companyId)
-    .map((issue) => [issue.id, issue])), [summaryQuery.data, companyId]);
+  const [lastConfirmed, setLastConfirmed] = useState<{
+    storageKey: string | null;
+    summaries: IssueSummary[];
+  } | null>(null);
+  useEffect(() => {
+    if (summaries && !summaryQuery.isPlaceholderData) setLastConfirmed({ storageKey, summaries });
+  }, [summaries, summaryQuery.isPlaceholderData, storageKey]);
+  // Placeholder data disappears when a new batch fails. Keep the last successful
+  // authenticated batch for this scope, without admitting any new candidates.
+  const confirmedRows = summaryQuery.data ?? (lastConfirmed?.storageKey === storageKey ? lastConfirmed.summaries : undefined);
+  const confirmed = useMemo(() => new Map((confirmedRows ?? []).filter((issue) => issue.companyId === companyId)
+    .map((issue) => [issue.id, issue])), [confirmedRows, companyId]);
   // A visit is only a candidate. Neither imported provenance nor a persisted
   // browser snapshot proves personal participation for the current account.
   const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.filter(entry => confirmed.get(entry.id)?.isParticipantForMe === true).map((entry) => {
@@ -171,8 +178,9 @@ export function useRecentTasks({
     });
   }, [companyId, queryClient, summaries, storageKey]);
 
-  const [settledOrder, setSettledOrder] = useState(() => entries.map((entry) => entry.id));
-  const activityRevision = JSON.stringify(entries.map((entry) => [entry.id, entry.recordedAt]));
+  const [settledOrder, setSettledOrder] = useState(() => refreshedEntries.map((entry) => entry.id));
+  const membership = JSON.stringify(refreshedEntries.map((entry) => entry.id).sort());
+  const activityRevision = JSON.stringify(refreshedEntries.map((entry) => [entry.id, entry.recordedAt]));
   useEffect(() => {
     const latestOrder = (JSON.parse(activityRevision) as Array<[string, number]>).map(([id]) => id);
     // Additions and removals are immediate. Only activity-driven moves wait for quiet.

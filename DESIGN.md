@@ -714,8 +714,9 @@ Task entries require the viewer's own participation under the Mine inbox rule,
 regardless of inbox archive state. Automated provenance, account ownership and
 read-only visits do not establish participation. A qualifying task's title and
 status stay current, but passive visits and background updates do not promote it
-above newer user activity. Readable subtasks remain contextual navigation under
-a qualifying parent.
+above newer user activity. A first passive visit places a qualifying candidate
+below existing history. Readable subtasks remain contextual navigation under a
+qualifying parent.
 
 ### Reuse collection behavior as well as appearance
 

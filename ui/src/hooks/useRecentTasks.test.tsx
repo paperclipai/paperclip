@@ -203,6 +203,51 @@ describe("recent task synchronization", () => {
     expect(summaries).not.toHaveBeenCalled();
   });
 
+  it.each(["account", "company"])("retains confirmed rows after a new batch fails, without crossing %s scopes", async (change) => {
+    const personal = task(10, "My work");
+    recordRecentTask(personal, "user-1", 10);
+    summaries.mockResolvedValue([personal]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+
+    summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
+    await act(async () => { recordRecentTask({ ...task(20, "Unverified"), id: "unknown" }, "user-1"); });
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(2);
+
+    const companyId = change === "company" ? "company-2" : "company-1";
+    const userId = change === "account" ? "user-2" : "user-1";
+    recordRecentTask({ ...personal, companyId, title: "Unverified other scope" }, userId);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" companyId={companyId} userId={userId} /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("");
+  });
+
+  it("debounces personal reorders even when storage contains an unverified candidate", async () => {
+    const older = task(10, "Older");
+    const newer = { ...task(20, "Newer"), id: "newer" };
+    const unknown = { ...task(30, "Unverified"), id: "unknown", isParticipantForMe: undefined };
+    [older, newer, unknown].forEach((issue, index) => recordRecentTask(issue, "user-1", index + 1));
+    summaries.mockResolvedValue([older, newer, unknown]);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="debounced" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("Newer:todo,Older:todo");
+    vi.useFakeTimers();
+    try {
+      await act(async () => { recordRecentTask(older, "user-1", 100); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.textContent).toBe("Older:todo,Newer:todo");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hides unverified visits and removes automated history only after a successful participation read", async () => {
     const personal = { ...task(10, "My work"), isParticipantForMe: true };
     const automated = { ...task(20, "Routine scan"), id: "routine", isParticipantForMe: false };

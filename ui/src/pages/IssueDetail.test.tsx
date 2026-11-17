@@ -3185,7 +3185,7 @@ describe("IssueDetail", () => {
           id: "issue-1",
           title: "Initial recent title",
           status: "todo",
-          recordedAt: 100,
+          recordedAt: 0,
         }),
       ]);
     });
@@ -3208,7 +3208,7 @@ describe("IssueDetail", () => {
     ).toMatchObject({
       title: "Snapshot refresh title",
       status: "in_progress",
-      recordedAt: 100,
+      recordedAt: 0,
     });
   });
 

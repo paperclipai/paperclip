@@ -153,10 +153,11 @@ export function recordRecentTask(
   const existing = current.find((candidate) => candidate.id === issue.id);
   const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
   // Passive reads can seed a candidate, but only explicit local human actions
-  // advance its recency. A newer task version alone is not personal activity.
+  // advance its recency. New passive candidates go below existing history;
+  // their server update times are not personal activity.
   const activityAt = recordedAt !== undefined && Number.isFinite(recordedAt)
     ? recordedAt
-    : existing?.recordedAt ?? (Number.isFinite(snapshotUpdatedAt) ? snapshotUpdatedAt : Date.now());
+    : existing?.recordedAt ?? Math.min(0, (current.at(-1)?.recordedAt ?? 1) - 1);
   const snapshot: RecentTaskEntry = existing ? mergeRecentTaskSnapshot(existing, issue) : {
     id: issue.id,
     companyId: issue.companyId,
