@@ -100,13 +100,37 @@ const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileI
   "workspace-search.read": def("google-workspace-search", "https://workspacemcp.googleapis.com/mcp/v1", [auth("gmail.readonly"), auth("drive.readonly"), auth("calendar.readonly"), auth("chat.messages.readonly")]),
 };
 
+/**
+ * The scopes submitted for Google's verification of Paperclip's own OAuth
+ * client. The unified connection never requests, stores or refreshes anything
+ * else, on the managed or the customer-owned path. Written out so a registry
+ * change cannot add a scope without a deliberate edit here.
+ */
+export const GOOGLE_WORKSPACE_SUBMITTED_SCOPES: readonly string[] = Object.freeze([
+  "gmail.readonly", "gmail.compose",
+  "drive.readonly", "drive.file",
+  "documents.readonly", "documents",
+  "spreadsheets.readonly", "spreadsheets",
+  "presentations.readonly", "presentations",
+  "calendar.calendarlist.readonly", "calendar.events.readonly", "calendar.events.freebusy", "calendar.events",
+].map(auth));
+
 /** One consent request, containing only scopes already reviewed for our services. */
 export const GOOGLE_WORKSPACE_CONNECTOR_PROFILES = {
   ...SERVICE_PROFILES,
-  "workspace.all": def("google-workspace", "https://workspacemcp.googleapis.com/mcp/v1",
-    // Keep the original broker/envelope contract stable as legacy profiles evolve.
-    [...new Set(Object.entries(SERVICE_PROFILES).filter(([id]) => id !== "gmail.archive").flatMap(([, profile]) => profile.scopes))]),
+  // The signed broker request and the sealed-envelope binding for refresh use
+  // this set; the broker accepts any nonempty subset of its own registry.
+  "workspace.all": def("google-workspace", "https://workspacemcp.googleapis.com/mcp/v1", GOOGLE_WORKSPACE_SUBMITTED_SCOPES),
 };
+
+/**
+ * Whether Paperclip's own Google client may start consent for this profile.
+ * Profiles outside the submitted scopes stay defined only so saved
+ * connections keep resolving, refreshing and running.
+ */
+export function googleWorkspaceProfileWithinSubmittedScopes(profile: GoogleWorkspaceConnectorProfileId): boolean {
+  return GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
+}
 
 export const GOOGLE_WORKSPACE_SERVICES = {
   gmail: "gmail.draft", drive: "drive.write", docs: "docs.write", sheets: "sheets.write",
@@ -176,9 +200,9 @@ export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly stri
   return Boolean(target && target.requiredScopes.every((alternatives) => alternatives.some((scope) => scopes.includes(scope))));
 }
 
+/** A unified-connection request or grant: nonempty and inside the submitted scopes. */
 export function isGoogleWorkspaceScopeGrant(scopes: readonly string[]): boolean {
-  const allowed = GOOGLE_WORKSPACE_CONNECTOR_PROFILES["workspace.all"].scopes;
-  return scopes.length > 0 && scopes.every((scope) => allowed.includes(scope));
+  return scopes.length > 0 && scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
 }
 
 export function googleWorkspaceServiceGranted(service: GoogleWorkspaceService, scopes: readonly string[]): boolean {

@@ -20,6 +20,7 @@ import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
+  googleWorkspaceProfileWithinSubmittedScopes,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -521,6 +522,9 @@ export function createPaperclipCloudConnector(input: {
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
+      if (!paperclipCloudConnectorConsentAllowed(profile)) {
+        throw new PaperclipCloudConnectorError("This permission set is not offered through Paperclip's Google app", "CONNECTOR_CONFIG_INVALID");
+      }
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
@@ -735,7 +739,8 @@ export function appWithPaperclipCloudConnectorAvailability(
   const enabledProfiles = new Set(profiles);
   const methods = app.methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
+      && paperclipCloudConnectorConsentAllowed(method.connectorProfile))
   );
   return {
     ...app,
@@ -746,6 +751,15 @@ export function appWithPaperclipCloudConnectorAvailability(
       platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
     },
   };
+}
+
+/**
+ * Whether new consent may start for a managed profile. Google profiles must
+ * stay inside the scopes submitted for verification of Paperclip's Google
+ * client; saved connections on other profiles keep refreshing.
+ */
+export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
+  return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;

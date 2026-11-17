@@ -131,6 +131,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       ...(profile.id === "workspace.all" && stateRow.requestedScopes ? { scopes: stateRow.requestedScopes } : {}),
     });
     if (profile.id === "workspace.all") {
+      if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });
       const requested = normalizeOauthScopes(stateRow.requestedScopes);
       credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
       if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });

@@ -148,6 +148,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 profile: profile.id,
                 refreshToken: refreshSecret.value,
               });
+              if (profile.id === "workspace.all" && !isGoogleWorkspaceScopeGrant(credentials.scopes)) {
+                throw new PaperclipCloudConnectorError("Google returned permissions outside Google Workspace's supported services", "REAUTHORIZATION_REQUIRED");
+              }
               if (profile.id === "workspace.all") {
                 const requested = normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes);
                 credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);

@@ -75,11 +75,23 @@ client pair; that client's Cloud project must have every applicable MCP API and
 preview enrollment. Do not remove legacy enabled profiles while their grants are
 in use. This code change does not enable the broker profile or deploy any stack.
 
-The signed request and envelope authentication bind the exact selected request;
-the legacy 21-scope profile remains supported for old clients. The encrypted
-credential payload preserves Google's actual nonempty
-subset. Missing scope evidence and scopes outside that reviewed union fail closed
-on authorization and refresh. Individual legacy profiles retain exact matching.
+The signed request and envelope authentication bind the exact selected request.
+Refresh binds the 14 scopes submitted for Google verification
+(`GOOGLE_WORKSPACE_SUBMITTED_SCOPES`), which the broker accepts as a subset of
+its registry. The encrypted credential payload preserves Google's actual
+nonempty subset. Missing scope evidence and any scope outside the 14 fail closed
+on authorization, callback and refresh, for both managed and customer-owned
+OAuth. A saved grant that reports one of the former Chat, Contacts, Directory,
+profile or `calendar.readonly` scopes needs reconnecting. Individual legacy
+profiles retain exact matching.
+
+Paperclip's own Google client never starts consent for a profile outside the
+14: `gmail.archive` (`gmail.modify`), `chat.read`, `chat.write`, `people.read`
+and `workspace-search.read`. Their Apps methods are no longer offered for new
+setup even when the broker advertises them, and reconnecting a saved connection
+on one of them is refused. Saved connections keep resolving their method,
+refreshing and running. Customer-owned OAuth methods for those services are
+unchanged.
 For the new `google/workspace.all` profile only, HKDF info is SHA-256(AAD) to
 remain below Node's 1024-byte limit. AES-GCM still authenticates the complete AAD;
 legacy envelope key derivation is unchanged.
