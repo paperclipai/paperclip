@@ -96,7 +96,7 @@ type ReattachWatch = {
   worker: ReattachWorker | null;
   stopListening: () => void;
   claim?: (runIds: string[]) => Promise<unknown>;
-  stallReport: ReattachPhaseSummary | null;
+  stallReports: Set<Promise<void>>;
 };
 
 let watch: ReattachWatch | null = null;
@@ -163,12 +163,6 @@ async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
     await claimJoinedRuns(current, observeLeases(current, rows));
   }
   if (pendingReattachRunIds().length > 0) await settleFinishedReattachRuns(current.db);
-  const stalled = current.stallReport;
-  if (stalled && watch === current) {
-    current.stallReport = null;
-    await reportStalledReattach(current.db, stalled)
-      .catch(error => logger.warn({ err: error }, "reattach phase could not read database session waits"));
-  }
 }
 
 export function noteReattachRunsClaimed(runIds: readonly string[], now = Date.now()): void {
@@ -225,14 +219,16 @@ export function registerReattachPhaseWork(
   enableReattachPhase(capMs);
   const stopEndListener = options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined;
   const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(), initialized: false,
-    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim, stallReport: null,
+    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim, stallReports: new Set(),
     stopListening: () => undefined };
   const stopStallReport = onReattachPhaseEnd(summary => {
     if (watch !== current || !stalledReattach(summary)) return;
-    current.stallReport = summary;
-    current.worker?.wake();
+    const report: Promise<void> = reportStalledReattach(db, summary)
+      .catch(error => logger.warn({ err: error }, "reattach phase could not read database session waits"))
+      .finally(() => { current.stallReports.delete(report); });
+    current.stallReports.add(report);
   });
-  current.stopListening = () => { stopEndListener(); stopStallReport(); current.stallReport = null; };
+  current.stopListening = () => { stopEndListener(); stopStallReport(); };
   watch = current;
   const release = () => {
     if (watch !== current) return;
@@ -242,7 +238,7 @@ export function registerReattachPhaseWork(
   current.worker = coordinator.register(DELIVERY_QUEUES.reattachPhase, {
     retryMs: options.recheckMs ?? REATTACH_PHASE_RECHECK_MS,
     run: () => reconcileReattachWatch(current),
-    hasPending: async () => watch === current && (pendingReattachRunIds().length > 0 || current.stallReport !== null),
+    hasPending: async () => watch === current && pendingReattachRunIds().length > 0,
     nextRunAt: () => watch === current && current.watching ? nextReattachLeaseDeadline(current.leases.values()) : null,
     onSettled: () => { current.notified = true; },
     onStop: release,
@@ -317,4 +313,5 @@ export async function stopReattachWatch(): Promise<void> {
   watch = null;
   current.stopListening();
   await current.worker?.stop();
+  await Promise.all(current.stallReports);
 }

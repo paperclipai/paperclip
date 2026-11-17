@@ -616,28 +616,32 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       expect(ended).toEqual([expect.objectContaining({ reason: "nothing_to_reattach", gatedStarts: false })]);
     });
 
-    it("names the database sessions that hold an authenticated run's row when the phase ends at the cap without reaching it", async () => {
+    it("names the database sessions that hold an authenticated run's row when the phase ends at the cap, even with the main pool stalled", async () => {
       await retireEarlierRuns();
       const { run } = await seed("RPS");
       const stalled = await run("running", liveLease());
+      const stalledDb = createDb(external ?? database!.connectionString, { maxConnections: 2 });
       const warn = vi.spyOn(logger, "warn");
       let release!: () => void;
       const held = new Promise<void>(resolve => { release = resolve; });
       let locked!: (pid: number) => void;
       const holderPid = new Promise<number>(resolve => { locked = resolve; });
-      const holder = db.transaction(async tx => {
+      const holder = stalledDb.transaction(async tx => {
         const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
         await tx.execute(sql.raw(`select id from heartbeat_runs where id = '${stalled}' and next_event_seq >= 0 for update`));
         locked(Number(backend.pid));
         await held;
       });
       const holderBackend = await holderPid;
-      const waiter = db.transaction(async tx => {
+      const waiter = stalledDb.transaction(async tx => {
         await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stalled)).for("no key update");
       });
+      let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
       try {
         const ended: ReattachPhaseSummary[] = [];
-        await startReattachPhase(db, { capMs: 300, bootId: "incoming-boot", recheckMs: 20, onEnd: summary => ended.push(summary) });
+        coordinator = createDeliveryWorkCoordinator({ owner: stalledDb, canRun: () => true, onError: () => undefined });
+        registerReattachPhaseWork(coordinator, stalledDb, { capMs: 300, bootId: "incoming-boot", recheckMs: 20,
+          onEnd: summary => ended.push(summary) });
         joinReattachPhase([{ runId: stalled, reason: "lease_expired", claimableAt: Date.now() }]);
         markReattachAuthenticated(stalled);
         await vi.waitFor(() => expect(ended.some(summary => summary.reason === "cap_reached")).toBe(true), { timeout: 2_000, interval: 10 });
@@ -655,7 +659,11 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
         release();
         await holder;
         await waiter;
+        await stopReattachWatch();
+        await coordinator?.stop();
         warn.mockRestore();
+        await closeLivenessDb(stalledDb, 1);
+        await stalledDb.$client.end();
       }
     });
   });
