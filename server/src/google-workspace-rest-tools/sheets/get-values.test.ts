@@ -3,7 +3,8 @@ import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { EMPTY_VALUES, FORMATTED_VALUES, SPREADSHEET_ID } from "./fixtures/sheets-rest.js";
 import { getValues, getValuesRequest, getValuesResult } from "./get-values.js";
-import { MAX_CELLS_PER_CALL } from "./spreadsheet.js";
+import { serializedResultBytes } from "../tool.js";
+import { boundedReadResult, MAX_CELLS_PER_CALL, MAX_RESULT_BYTES } from "./spreadsheet.js";
 
 const text = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
 
@@ -35,14 +36,31 @@ describe("get_values result", () => {
 
   it.each([
     ["too many cells", [Array.from({ length: MAX_CELLS_PER_CALL + 1 }, () => "")], /50,001 cells; the limit is 50,000/],
-    ["too many characters", [["x".repeat(500_000)]], /characters; the limit is 450,000/],
+    ["too many bytes", [["x".repeat(250_000)]], /bytes; the limit is 400,000 per call\. Ask for a narrower range/],
   ])("refuses %s instead of cutting the result", (_name, values, message) => {
     expect(() => getValuesResult({ range: "Sheet1!A1:Z", values })).toThrow(message);
   });
 
-  it("accepts exactly the cell limit", () => {
-    const values = [Array.from({ length: MAX_CELLS_PER_CALL }, () => "")];
-    expect(getValuesResult({ range: "Sheet1!A1", values }).isError).toBeUndefined();
+  it.each([["x"], ["é"], ["\""]])("bounds the whole serialized result, text and structured content together, for cells of %j", (unit) => {
+    const sized = (count: number) => ({ range: "Sheet1!A1:B2", values: [[unit.repeat(count)], ["tail"]] });
+    const bytes = (count: number) => serializedResultBytes({ content: [{ type: "text", text: JSON.stringify(sized(count)) }], structuredContent: sized(count) });
+    let largest = 0;
+    for (let step = 1 << 20; step >= 1; step >>= 1) if (bytes(largest + step) <= MAX_RESULT_BYTES) largest += step;
+    const near = getValuesResult(sized(largest));
+    expect(serializedResultBytes(near)).toBe(bytes(largest));
+    expect(serializedResultBytes(near)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(serializedResultBytes(near)).toBeGreaterThan(MAX_RESULT_BYTES - 16);
+    expect(bytes(largest + 1)).toBeGreaterThan(MAX_RESULT_BYTES);
+    expect(() => getValuesResult(sized(largest + 1))).toThrow(/bytes; the limit is 400,000 per call\. Ask for a narrower range/);
+  });
+
+  it("keeps the limit under the runner's 500,000-byte inline tool result", () => {
+    expect(MAX_RESULT_BYTES).toBeLessThan(500_000);
+  });
+
+  it("accepts exactly the cell limit and refuses one more", () => {
+    expect(boundedReadResult({ range: "Sheet1!A1" }, MAX_CELLS_PER_CALL, "narrow").isError).toBeUndefined();
+    expect(() => boundedReadResult({ range: "Sheet1!A1" }, MAX_CELLS_PER_CALL + 1, "narrow")).toThrow(/50,001 cells/);
   });
 });
 
@@ -52,13 +70,13 @@ describe("get_values tool", () => {
     const { fetch } = fakeGoogle(() => json({ range: "Sheet1!A1:AX1001", values }));
     const result = await getValues.call({ spreadsheetId: SPREADSHEET_ID, range: "Sheet1" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.isError).toBe(true);
-    expect(text(result)).toMatch(/Ask for a smaller range/);
+    expect(text(result)).toMatch(/Ask for a narrower range/);
   });
 
   it("turns Google's too-large response into the same narrowing error", async () => {
     const { fetch } = fakeGoogle(() => new Response("{}", { status: 200, headers: { "content-length": String(21 * 1024 * 1024) } }));
     const result = await getValues.call({ spreadsheetId: SPREADSHEET_ID, range: "Sheet1" }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(text(result)).toMatch(/too large to return\. Ask for a smaller range/);
+    expect(text(result)).toMatch(/too large to return\. Ask for a narrower range/);
   });
 
   it.each([

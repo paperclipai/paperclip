@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { SPREADSHEET_ID, SPREADSHEET_METADATA, SPREADSHEET_WITH_GRID } from "./fixtures/sheets-rest.js";
+import { serializedResultBytes } from "../tool.js";
+import { MAX_RESULT_BYTES } from "./spreadsheet.js";
 import { getSpreadsheet, getSpreadsheetRequest, getSpreadsheetResult, gridCellCount } from "./get-spreadsheet.js";
 
 const text = (result: { content: unknown[] }) => (result.content[0] as { text: string }).text;
@@ -73,9 +75,16 @@ describe("get_spreadsheet result", () => {
     expect(gridCellCount(SPREADSHEET_WITH_GRID)).toBe(3);
   });
 
+  it("bounds the whole serialized result in bytes and asks for fewer or narrower ranges", () => {
+    const sheet = (note: string) => ({ properties: { title: note } });
+    const near = getSpreadsheetResult({ sheets: [sheet("x".repeat(199_900))] });
+    expect(serializedResultBytes(near)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(() => getSpreadsheetResult({ sheets: [sheet("x".repeat(200_000))] })).toThrow(/bytes; the limit is 400,000 per call\. Pass fewer or narrower ranges/);
+  });
+
   it("refuses a result over the cell limit instead of cutting it", () => {
     const big = { sheets: [{ data: [{ rowData: Array.from({ length: 1_001 }, () => ({ values: Array.from({ length: 50 }, () => ({})) })) }] }] };
-    expect(() => getSpreadsheetResult(big)).toThrow(/50,050 cells; the limit is 50,000 per call\. Pass ranges/);
+    expect(() => getSpreadsheetResult(big)).toThrow(/50,050 cells; the limit is 50,000 per call\. Pass fewer or narrower ranges/);
   });
 });
 

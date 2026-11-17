@@ -47,11 +47,11 @@ export type GetSpreadsheetArgs = z.infer<typeof args>;
 interface RestGridData { rowData?: Array<{ values?: unknown[] }> }
 export interface RestSpreadsheet {
   spreadsheetId?: string;
-  sheets?: Array<{ data?: RestGridData[] }>;
+  sheets?: Array<{ data?: RestGridData[]; [key: string]: unknown }>;
   [key: string]: unknown;
 }
 
-const NARROW = "Pass ranges to read part of the spreadsheet, leave includeGridData off, or ask for fewer fields; read the rest in further calls.";
+const NARROW = "Pass fewer or narrower ranges (for example one sheet, or Sheet1!A1:Z1000), leave includeGridData off, or ask for fewer fields; read the rest in further calls.";
 
 export function getSpreadsheetRequest(input: GetSpreadsheetArgs): GoogleRequest {
   if (input.commentsIncluded) {

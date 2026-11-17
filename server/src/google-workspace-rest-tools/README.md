@@ -528,11 +528,20 @@ made" warning.
   Reads count the cells Google returns (`values` rows, or `rowData` values in
   grid data); writes count the cells sent (`values`/`formulas`, or the rows of
   `updateCells` and `appendCells`).
-- A read result is at most **450,000 characters** of JSON; the result is sent
-  twice (structured and as text), which keeps it under the gateway's 1 MB
-  response limit. A write request body is at most 1,000,000 characters.
+- A read's whole tool result is at most **400,000 bytes** of UTF-8 JSON
+  (`MAX_RESULT_BYTES`, checked by `boundedStructuredResult` in `tool.ts`). The
+  measure is the final result, which carries the value twice (as
+  `structuredContent` and as JSON text, since MCP clients read either). The
+  binding limit is the runner's: a tool result over 500,000 bytes
+  (`RUNNER_TOOL_RESULT_MAX_BYTES` in
+  `server/src/services/native-runtime/runner-tool-results.ts`) is saved as an
+  artifact and the agent gets a pointer instead of the values. The gateway's
+  limit for a remote MCP response is 1,000,000 bytes
+  (`MAX_REMOTE_MCP_RESPONSE_BYTES` in `server/src/services/tool-gateway.ts`).
+  A write request body is at most 1,000,000 characters.
 - Over a limit, a read returns an error that starts with the size and asks for
-  a smaller range, `ranges`, or fewer `fields`; a write sends nothing. Nothing
+  a narrower range, fewer or narrower `ranges`, or fewer `fields`, to read in
+  smaller pieces; a write sends nothing. Nothing
   is ever cut short and presented as complete. A Google answer over the 20 MB
   transport limit gets the same narrowing message.
 - Server-side operations in `update_spreadsheet` (for example `repeatCell`,

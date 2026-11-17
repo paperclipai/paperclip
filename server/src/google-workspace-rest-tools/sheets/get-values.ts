@@ -23,7 +23,7 @@ export interface RestValueRange {
   values?: unknown[][];
 }
 
-const NARROW = "Ask for a smaller range, for example fewer rows (Sheet1!A1:Z1000), and read the rest in further calls.";
+const NARROW = "Ask for a narrower range, with fewer rows or columns (for example Sheet1!A1:Z1000), and read the rest in further calls.";
 
 export function getValuesRequest(input: GetValuesArgs): GoogleRequest {
   return {
