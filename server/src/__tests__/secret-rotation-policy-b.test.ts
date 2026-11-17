@@ -820,13 +820,15 @@ describeEmbeddedPostgres("ADR 033 policy B: agent secret rotation", () => {
       .where(eq(companySecretBindings.secretId, userSecret.id));
     expect(binding.length).toBeGreaterThanOrEqual(0);
 
-    await db.update(userSecretDefinitions)
-      .set({ status: "retired" })
-      .where(eq(userSecretDefinitions.id, definition.id));
+    // Propose while the definition is still active, then retire it: the
+    // approval, not the proposal, is what must reject an inactive definition.
     const secondBinding = await proposeBinding(fixture, {
       sourceConfigPath: "access.T23_SOURCE",
       configPath: "access.T23_SECOND",
     });
+    await db.update(userSecretDefinitions)
+      .set({ status: "retired" })
+      .where(eq(userSecretDefinitions.id, definition.id));
     const rejected = await approveProposal(fixture, secondBinding);
     expect(rejected.status).toBe(409);
     expect(rejected.body.error ?? rejected.body.message).toContain("not active");
