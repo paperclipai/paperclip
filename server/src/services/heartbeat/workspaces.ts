@@ -2128,7 +2128,7 @@ const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
   SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
 ]);
 
-const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
+export const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
 
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
   "adapter",
@@ -3034,6 +3034,7 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
   existingWorkspaceMetadata: Record<string, unknown> | null | undefined;
   inferredMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
   nextMetadata: EffectiveRunWorkspaceConfigMetadata | null;
+  providerOwnedStorage?: boolean;
 }): ExecutionWorkspaceConfigFreshnessDecision {
   if (!input.hasExistingWorkspace) {
     return {
@@ -3138,8 +3139,10 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
     previous: previous.categoryFingerprints,
     next: input.nextMetadata.categoryFingerprints,
   });
-  const replacementRequired = changedCategories.some((category) =>
-    WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES.has(category),
+  const replacementRequired = changedCategories.some(
+    (category) =>
+      WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES.has(category) &&
+      !(input.providerOwnedStorage && category === "environment"),
   );
   const action: WorkspaceConfigFreshnessDecisionAction = replacementRequired
     ? "replace"

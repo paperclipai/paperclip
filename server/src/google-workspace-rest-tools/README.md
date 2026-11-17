@@ -8,9 +8,11 @@ It lives in this one folder, `server/src/google-workspace-rest-tools/`, inside
 the server package. It is not a separate npm package, so nothing new is
 published.
 
-This release has three Gmail tools: `get_message`, `search_threads` and
-`create_draft`. There is no send tool, and none may be added. It also has all
-nine allowlisted Calendar tools (see "Calendar tools" below).
+Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
+`search_threads`, `list_threads`, `search_messages`, `get_draft`,
+`list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
+There is no send, trash, delete or label-changing tool, and none may be added.
+It also has all nine allowlisted Calendar tools (see "Calendar tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -27,9 +29,9 @@ so they can be deleted cleanly when that happens.
   only files in this folder, Node built-ins, `@modelcontextprotocol/sdk` and
   `zod` (both existing server dependencies). Test files and `fixtures/` may
   also import `vitest` and `@paperclipai/shared`. Nothing in this folder
-  imports other server code. In this release nothing else in the server
-  imports this folder; the test also checks that, and the switch PR relaxes
-  that one check.
+  imports other server code. The only server file that imports this folder
+  is the gateway adapter `server/src/services/google-workspace-rest-dispatch.ts`,
+  through `index.ts`; the test checks that too.
 - **Same tools as Google's MCP servers.** Same tool names, same input fields,
   same result shape. Names, field names, types and enums come from Google's
   published reference (Gmail:
@@ -81,139 +83,117 @@ so they can be deleted cleanly when that happens.
 Token problems are thrown, not returned, so a caller can refresh the token or
 ask the user to reconnect exactly as it does for Google's MCP servers.
 
-## How it plugs in (seam trace)
+## How it plugs in
 
-Traced on `origin/master` at `ca34aca777`.
+The gateway calls this folder in process. There is no loopback or hosted MCP
+endpoint. `createGoogleWorkspaceRestServer()` (a standard MCP server that reads
+the token from the transport's auth info) stays available if an HTTP or stdio
+deployment is ever needed; the gateway does not use it.
 
-### Today's dispatch path
+### The switch
 
-1. **Tool name to target.** `googleWorkspaceToolTarget(name)` in
-   `packages/shared/src/google-workspace-connectors.ts` turns `gmail__get_message`
-   into `{ service, upstreamName, leaf, serverUrl, appSlug, requiredScopes, write }`.
-   `serverUrl` comes from the closed `SERVICE_PROFILES` registry.
-2. **Discovery (`tools/list`).** `remoteTools()` in
-   `server/src/services/tool-access/catalog/discovery.ts` (Google branch near
-   line 130) lists each granted service by calling itself with
-   `profile.serverUrl`, prefixes names with `googleWorkspaceToolName(service, …)`,
-   and filters by the granted scopes. It speaks MCP over HTTP through
-   `requestRemoteHttpEndpoint`, negotiating a protocol era per endpoint
-   (`mcpEraKey`, saved on the connection by `saveMcpNegotiation` in
-   `server/src/services/tool-access/mcp-protocol-config.ts`).
-3. **Call (`tools/call`).** `executeRemoteHttpTool()` in
-   `server/src/services/tool-gateway.ts` (near line 7784) computes
-   `workspaceTarget`, refuses a tool whose scopes are not granted
-   (`oauth_insufficient_scope`), sets `endpoint = workspaceTarget.serverUrl`,
-   builds headers with the user's `Authorization: Bearer <token>` from
-   `resolveCredentialHeaders`, rechecks the grant before every dispatch, and
-   posts JSON-RPC through `guardedRemoteHttpFetch`
-   (`server/src/services/remote-http-fetch.ts`, behind
-   `server/src/services/tool-access/remote-http.ts`). A 401 forces a token
-   refresh and asks for an explicit retry; `isInsufficientConnectionScope`
-   (`server/src/services/connection-permission-errors.ts`) maps a scope
-   failure. The MCP result goes through `completeRemoteMcpCall` →
-   `normalizeMcpToolResult`. Prompt-injection screening, audit and invocation
-   records happen in the caller of `executeRemoteHttpTool`, so they apply to any
-   result it returns.
-4. **MCP Tasks.** The background task path (near line 7578) also reads
-   `workspaceTarget.serverUrl`. It only runs for calls a remote server turned
-   into a task; REST calls never do.
+One setting per service, `GOOGLE_WORKSPACE_TOOL_TRANSPORT` in
+`packages/shared/src/google-workspace-connectors.ts`:
 
-The gateway speaks MCP `2026-07-28` (stateless) first, then the legacy
-handshake versions `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`
-(`server/src/services/mcp-http.ts`). The MCP SDK the server uses (1.31) speaks
-the legacy versions only, so over HTTP every new session would pay a failed
-modern probe plus an `initialize` round trip.
+- `google_mcp` (every service today): calls go to Google's hosted MCP server
+  for that service, exactly as before this folder existed.
+- `paperclip_rest`: calls go to this folder.
 
-### Recommendation: call it in process
+`googleWorkspaceToolTarget(name)` returns the setting as `transport`. It is a
+plain constant: no environment variable, instance setting or database row.
 
-The code already runs in the server process, so the gateway calls
-`callGoogleWorkspaceRestTool()` and `listGoogleWorkspaceRestTools()` directly,
-the way it already runs other REST-backed tool sets (`restConnectorFor` in
-`server/src/services/connectors/rest-registry.ts` and
-`nativeProviderCatalogFor` in `server/src/services/native-provider-catalogs.ts`).
-No loopback or hosted MCP endpoint.
+### Where the gateway branches
 
-- **Speed.** Measured locally: about 13 µs of overhead per call with a stubbed
-  fetch. The MCP SDK and zod are already loaded by the server, so there is no
-  extra cold-start cost beyond this folder's own modules. An HTTP hop would
-  add a connection, JSON-RPC framing, and the protocol probe and handshake
-  above to every call. `tools/list` becomes a static list: no network, no token.
-- **Token handling.** The token stays in the server process and goes only to
-  Google.
-- **Self-hosted and Cloud run the same code.** Nothing to deploy, configure or
-  publish. A loopback endpoint would not work on authenticated public
-  deployments: `allowPrivateRemoteEndpoints()` refuses loopback addresses there.
-- **Egress stays guarded.** The gateway passes its `guardedRemoteHttpFetch` as
-  the `fetch` option, so calls to Google go through the same egress policy as
-  today.
-- **Swap-back is unchanged.** Tool names, inputs and results are Google's, so
-  the catalog, policies, approvals and audit records written under
-  `paperclip_rest` stay valid under `google_mcp`.
+- **Adapter.** `server/src/services/google-workspace-rest-dispatch.ts` is the
+  only server file that imports this folder. It takes the gateway's resolved
+  credential headers (it keeps only the bearer token), the call's cancellation
+  signal and the gateway's egress-guarded fetch, and returns either the MCP
+  result or a token problem (`unauthenticated` or `insufficient_scope`).
+- **Calls.** `executeRemoteHttpTool()` in `server/src/services/tool-gateway.ts`.
+  The REST branch runs after everything the MCP path runs first: the
+  experimental-feature gate, per-caller grant selection, the allowlist and
+  grant scope check. It then rechecks the current grant, calls the adapter with
+  the call's deadline (and the run's stop signal when there is one), and
+  returns through the same result handling as an MCP result. Approval, audit,
+  invocation records and prompt-injection screening run in the callers of
+  `executeRemoteHttpTool`, so they apply unchanged. Token problems map to the
+  MCP path's outcomes: `insufficient_scope` to `oauth_insufficient_scope`;
+  `unauthenticated` to a forced token refresh and `oauth_refreshed_retry_required`
+  (never an automatic replay), or `mcp_remote_status` when the connection cannot
+  refresh. This folder turns a cancelled or timed-out request into a tool
+  error result; the gateway checks its own signal after the call and reports
+  `tool_timeout`, as on the MCP path. The audit record names the protocol
+  `Google Workspace REST`.
+- **Discovery and health.** The Google branch of `remoteTools()` in
+  `server/src/services/tool-access/catalog/discovery.ts`. For a
+  `paperclip_rest` service it runs this folder's probe
+  (`probeGoogleWorkspaceRestService`) with the caller's token and granted
+  scopes, then lists this folder's tools under the same `service__tool` names,
+  filtered by the granted scopes. The probe replaces Google's `tools/list` as
+  the proof that the token works. `GOOGLE_WORKSPACE_REST_PROBES` in `probe.ts`
+  gives each service an ordered list of cheap reads, each with the scopes that
+  allow it, and the probe uses the first one the grant allows:
 
-`createGoogleWorkspaceRestServer()` (a standard MCP server that reads the token
-from the transport's auth info) stays available if an HTTP or stdio
-deployment is ever needed; the in-process path does not use it.
+  | Service | Read | Allowed by |
+  | --- | --- | --- |
+  | Gmail | `users.getProfile` | `gmail.readonly` |
+  | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
+  | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
+  | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
 
-### The switch (follow-up PR, not this one)
+  A grant that allows none of them (for example compose-only Gmail) is listed
+  without a probe. An insufficient-scope answer to a probe never makes a
+  service unavailable. A 401 refreshes the token and probes once more; a
+  second 401 on a managed grant marks it `needs_reauthorization`, as the MCP
+  path does. Any other probe failure makes that one service unavailable while
+  the others stay usable. Health checks use the same branch.
 
-One per-service setting in `packages/shared/src/google-workspace-connectors.ts`:
+MCP Tasks, MCP resources and elicitation only exist on the `google_mcp` path.
 
-```ts
-export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, "google_mcp" | "paperclip_rest"> = {
-  gmail: "paperclip_rest", drive: "google_mcp", /* … */
-};
-```
+Measured with a stubbed fetch, the adapter adds about 15 µs per call. A full
+`gmail__get_message` through `executeTool` (policy, records, screening) took a
+median of 18.2 ms on either transport.
 
-`googleWorkspaceToolTarget()` returns it as `transport`. Files the follow-up
-touches:
+### Flipping a service
 
-- `packages/shared/src/google-workspace-connectors.ts`: the setting above, and
-  `transport` on the target.
-- One new server adapter outside this folder, for example
-  `server/src/services/google-workspace-rest-dispatch.ts`, the only importer of
-  `server/src/google-workspace-rest-tools/index.ts`. It strips `Bearer ` from
-  the resolved `Authorization` header, passes the guarded fetch and the call's
-  deadline signal, and maps `GoogleWorkspaceAuthError` to the gateway's existing
-  outcomes (`unauthenticated` to the forced refresh plus
-  `oauth_refreshed_retry_required`; `insufficient_scope` to
-  `oauth_insufficient_scope`).
-- `server/src/services/tool-gateway.ts`, `executeRemoteHttpTool`: after the
-  grant checks and before `endpoint` is chosen, when
-  `workspaceTarget.transport === "paperclip_rest"`, recheck the grant (as
-  `dispatchRemote` does), call the adapter, and return through
-  `normalizeMcpToolResult(result, "mcp_http", false, sourceTemplateKey)`.
-- `server/src/services/tool-access/catalog/discovery.ts`, the Google branch of
-  `remoteTools`: for a `paperclip_rest` service, use the adapter's static tool
-  list instead of an HTTP `tools/list`.
-- `boundary.test.ts`: allow that one adapter as the only importer.
+1. Implement every tool in that service's allowlist (`toolScopes` in the
+   shared file) in this folder, plus its probe reads and their scopes in `probe.ts` and the service's
+   API host in `google-http.ts`.
+2. Set the service to `paperclip_rest` in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`.
 
-No dependency, workspace, Docker or release change is needed. Everything else
-(picker, scopes, grant checks, allowlist, approval, audit, injection
-screening, risk classification in `catalog/descriptors.ts`) only knows tool
-names and scopes and needs no change.
+`googleWorkspaceRestTransportGaps()` in the adapter, run by
+`google-workspace-rest-dispatch.test.ts`, fails while any service set to
+`paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
 
 ## Known differences from Google's MCP tools
 
 - **Descriptions** are our own wording; names, fields, types, enums, required
-  fields and annotations follow Google's reference. Until a tool lands here,
-  descriptions do not mention it: Google's text points to `get_thread` and
-  `list_labels`, ours points to `get_message` and does not name a label tool.
-  A contract test against a recorded `tools/list` from Google's servers is
-  planned once a listing is recorded on the enrolled internal account.
+  fields and annotations follow Google's reference. Descriptions name only
+  tools this folder implements (`allowlist.test.ts` checks this), so
+  `list_labels` points to `list_threads` rather than to Google's label-changing
+  tools. A contract test against a recorded `tools/list` from Google's servers
+  is planned once a listing is recorded on the enrolled internal account.
 - **Result envelope.** Results carry the object both as `structuredContent`
   and as JSON text. Google's exact envelope has not been recorded yet.
 - **`date`** is the UTC calendar date of Gmail's `internalDate`. Google does
   not say which time zone it uses.
 - **`sender` and recipients** are plain addresses parsed from the headers;
   display names are dropped. Bodies are decoded as UTF-8.
+- **Same message everywhere.** `get_message`, `get_thread`, `search_threads`,
+  `list_threads` and `search_messages` all map messages with `toMcpMessage` in
+  `gmail/message.ts`, so one message looks the same from any of them at the
+  same format. `get_draft` and `list_drafts` share `toMcpDraft`.
 - **Large bodies.** Gmail can store a body part separately and return only
-  its `attachmentId`. With `FULL_CONTENT`, `get_message` reads those bytes
-  (`users.messages.attachments.get`) before it answers. The first `text/plain`
-  and first `text/html` body parts are found depth first through nested
-  multiparts. If a body part cannot be read, the call returns a tool error that
-  starts with "Could not read the full body of this message"; it never returns
-  a result without the body. Google's reference does not say what its tool
-  does here.
+  its `attachmentId`. Whenever bodies are returned (`FULL_CONTENT` for
+  `get_message`, `get_thread` and `search_messages`; `DRAFT_VIEW_FULL` for
+  `get_draft` and `list_drafts`), the tool reads those bytes
+  (`users.messages.attachments.get`, 10 at a time) before it answers. The first
+  `text/plain` and first `text/html` body parts are found depth first through
+  nested multiparts. If any body part cannot be read, the whole call returns a
+  tool error that starts with "Could not read the full body of this message";
+  it never returns a result, or a page, with a body missing. One call reads at
+  most 20 such bodies (see "Google requests per call"). Google's reference
+  does not say what its tools do here.
 - **Addresses** come from `gmail/address.ts`, a small single-pass tokenizer
   over RFC 5322 address lists. It tracks quoted strings with escapes, nested
   comments, angle brackets and square-bracket domain literals (so
@@ -225,6 +205,12 @@ names and scopes and needs no change.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.
+- **`label:` in search queries.** Google's `search_threads` reference says its
+  query accepts label IDs, not display names. Gmail search (the `q` parameter
+  that REST passes to Gmail) uses label names, with spaces written as hyphens,
+  as in Gmail's own search operators (`label:friends`). REST parameters named
+  `labelIds` take IDs. Our query descriptions describe the REST behavior, and
+  `allowlist.test.ts` checks that no description says `label:` takes IDs.
 - **`search_threads`** makes one `threads.list` call and then one
   `threads.get` per thread (10 at a time), so a 50-thread page is 51 requests.
   A thread deleted between the two calls is left out. `pageSize` above 50 is
@@ -244,9 +230,92 @@ names and scopes and needs no change.
   are folded onto continuation lines (RFC 5322); non-ASCII subjects and single
   words longer than 900 characters become RFC 2047 encoded-words. Google's
   reference sets no length limits.
+- **`get_thread`** makes one `threads.get` call (`format=full`, or summary
+  headers only for `MINIMAL` and `METADATA_ONLY`), then reads separately stored
+  bodies. Messages keep Gmail's order, oldest first.
+- **`list_drafts`** makes one `drafts.list` call and then one `drafts.get` per
+  draft (10 at a time). A draft deleted between the two calls is left out.
+  The query is passed to Gmail unchanged. `pageSize` above 50 is capped at 50.
+  Google's annotation `idempotentHint: false` is copied as published.
+- **`list_labels`** makes one `labels.list` call. Gmail's REST list has no
+  paging, so `pageSize` (default 100, maximum 500, neither set by Google) and
+  `pageToken` (a position in the list sorted by name, then ID) are applied in
+  this folder. `threadsTotal` and `threadsUnread` are left out: REST returns
+  them only from `labels.get`, one request per label. A label with only one
+  of its two colors set is returned without `color`.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
+
+### Google requests per call
+
+Reads that fan out run at most 10 at a time; the first failure stops new
+requests. The 20 s timeout in `google-http.ts` applies to each request
+attempt, not to the whole call, so a call that fans out can take longer than
+20 s. Every request also stops when the caller's `signal` aborts; a caller
+that needs a bound on the whole call passes a signal with that deadline (the
+gateway passes its call deadline).
+Each read may be retried once by `google-http.ts`, which the counts below do
+not include. "Bodies" are separately stored bodies (at most two per message,
+plain and HTML, and none for most mail). One call reads at most 20 of them
+(`MAX_SEPARATE_BODIES_PER_CALL` in `gmail/message.ts`). When the messages in a
+call need more, the call reads none and returns a tool error that starts with
+"Could not read the full body of every message" and says to ask for fewer
+results or to use `get_message`.
+
+Quota units come from Gmail's published per-method costs
+(<https://developers.google.com/workspace/gmail/api/reference/quota>, recorded
+2026-11-17): `messages.get` and `drafts.get` 20 (60 with `format=full`),
+`threads.get` 40 (120 with `format=full`), `messages.attachments.get` 20,
+`threads.list` 10, `messages.list` and `drafts.list` 5, `labels.list` 1,
+`drafts.create` 10. Gmail allows 6,000 units per user per minute.
+
+| Tool | Requests at the maximum page size | Worst-case quota units |
+| --- | --- | --- |
+| `get_message` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `get_thread` | 1 + up to 20 bodies = 21 | 120 + 400 = 520 |
+| `search_threads` | 1 + 50 = 51 | 10 + 50 × 40 = 2,010 |
+| `list_threads` | 1 + 50 = 51 | 2,010 |
+| `search_messages` | 51; with `FULL_CONTENT` 1 + 50 + 20 = 71 | 1,005; with `FULL_CONTENT` 5 + 50 × 60 + 400 = 3,405 |
+| `get_draft` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `list_drafts` | 51; with `DRAFT_VIEW_FULL` (the default) 71 | 1,005; with `DRAFT_VIEW_FULL` 3,405 |
+| `list_labels` | 1 | 1 |
+| `create_draft` | 1, or 2 for a reply | 10, or 30 for a reply |
+
+The worst single call (3,405 units) fits inside the 6,000-unit per-user
+minute. At the default page size of 20 the worst is 1,605 units. Concurrency
+does not change the total: the 10 parallel reads only spread one call's fixed
+units over less time. A second maximal call in the same minute can exceed the
+per-user quota; Google then answers 429, which becomes the `rate_limited` tool
+error ("Google is rate limiting requests. Try again shortly."). Gmail's quota
+page states no per-user concurrency limit.
+
+### Not verified against Google's servers
+
+The allowlist in `toolScopes` names `get_draft`, `list_threads` and
+`search_messages`, but Google's published Gmail MCP reference does not list
+them (it lists `create_draft`, `get_message`, `get_thread`, `label_message`,
+`label_thread`, `list_drafts`, `list_labels`, `search_threads`,
+`unlabel_message` and `unlabel_thread`). Their inputs and results are our
+design, built from the documented sibling tools, and may not match what
+Google's servers return if they ever expose tools with these names:
+
+- **`get_draft`**: input `draftId` (required) and `view` (`DraftView` from
+  `list_drafts`); result is one `Draft`, the shape `list_drafts` and
+  `create_draft` return. One `drafts.get`, plus bodies.
+- **`list_threads`**: input `pageSize`, `pageToken`, `includeTrash` and `view`
+  as in `search_threads`, plus `labelIds` (at most 20; a thread must have all
+  of them) instead of `query`; result is `search_threads`'s. Drafts are
+  excluded unless `DRAFT` is among the labels; spam and trash are included
+  when `SPAM` or `TRASH` is among them.
+- **`search_messages`**: input as `search_threads`, with `messageFormat` from
+  `get_message` instead of `view`; result is `{ messages, nextPageToken,
+  resultCountEstimate }` with `get_message`'s `Message`. Unlike `get_message`,
+  the default (and `MESSAGE_FORMAT_UNSPECIFIED`) is `MINIMAL`, so a search does
+  not pull every body. One `messages.list`, then one `messages.get` per message,
+  plus bodies with `FULL_CONTENT`.
+
+A switch back to `google_mcp` would drop these three unless Google adds them.
 
 ## Calendar tools
 
@@ -390,20 +459,10 @@ earliest first; working hours and out-of-office settings are not read.
 
 ## Open questions
 
-- The Gmail allowlist in `toolScopes` names `get_draft`, `list_threads` and
-  `search_messages`, which Google's published Gmail MCP reference does not list
-  (it lists `create_draft`, `get_message`, `get_thread`, `label_message`,
-  `label_thread`, `list_drafts`, `list_labels`, `search_threads`,
-  `unlabel_message` and `unlabel_thread`). Those three have no Google schema to
-  copy, so they would not survive a switch back to `google_mcp`.
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
 - Each Google Cloud project behind a connection needs the REST APIs enabled
   (Gmail now; Drive, Docs, Sheets, Slides and Calendar as their tools land).
   Without that, calls return the `api_disabled` tool error.
-- With `paperclip_rest`, `tools/list` no longer proves the token works. A live
-  health check needs a cheap REST probe (for example Gmail `users.getProfile`).
-  Calendar has `probeCalendar()` in `calendar/index.ts` (one
-  `calendarList.list` with `maxResults=1`), not yet exported from `index.ts`.
 - `freeBusy.query` does not accept `calendar.events`, and the read & write
   Calendar selection grants `calendar.calendarlist.readonly` and
   `calendar.events` only (the `calendar.events` → `calendar.events.freebusy`
@@ -416,10 +475,14 @@ earliest first; working hours and out-of-office settings are not read.
 
 1. Set every service in `GOOGLE_WORKSPACE_TOOL_TRANSPORT` to `google_mcp`.
 2. Delete this folder, `server/src/google-workspace-rest-tools/`.
-3. Delete the server adapter that imports it and its two call sites (gateway
-   and discovery).
+3. Delete `server/src/services/google-workspace-rest-dispatch.ts` and its
+   test, and the two call sites: the `paperclip_rest` branch in
+   `executeRemoteHttpTool` (`server/src/services/tool-gateway.ts`) and
+   `googleWorkspaceRestTools` in
+   `server/src/services/tool-access/catalog/discovery.ts`. Delete
+   `server/src/__tests__/google-workspace-rest-transport.test.ts`.
 4. Check that the build, typecheck and tests pass, then delete the setting
-   itself if nothing else uses it.
+   and `transport` itself if nothing else uses them.
 
 ## Development
 

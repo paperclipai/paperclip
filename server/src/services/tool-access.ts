@@ -84,6 +84,7 @@ import { stableHash } from "./tool-catalog-hash.js";
 
 import { NATIVE_PROVIDER_SLUGS, nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { connectorToolPolicy } from "./connectors/tool-policy.js";
+import { loadPluginAppCatalog, pluginAppCatalogFor } from "./plugin-app-catalog.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
@@ -110,7 +111,7 @@ import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
-import { getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { connectionSourceSlug, isPluginAppSlug, parsePluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -785,6 +786,40 @@ export function toolAccessService(
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
   const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect });
   const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow });
+  /**
+   * Connection setup resolves connector definitions synchronously. Refresh the
+   * plugin-provided part of the catalog from the plugins table first, so a
+   * plugin enabled or disabled through another process is seen here too.
+   */
+  /**
+   * A setup step that finishes after its plugin became unavailable reports the
+   * connector as gone. If the plugin was uninstalled, its cleanup may already
+   * have run, so this connection (and the credential just stored) is removed
+   * through the normal removal too.
+   */
+  async function retireIfPluginAppUnavailable<Result extends { connectionId: string; connection: { companyId: string; config?: Record<string, unknown> | null } }>(
+    result: Result,
+    actor?: ActorInfo,
+  ): Promise<Result> {
+    const source = result.connection.config?.sourceTemplateKey;
+    const pluginKey = parsePluginAppSlug(source)?.pluginKey;
+    if (!pluginKey || (await loadPluginAppCatalog(db)).isAvailable(source as string)) return result;
+    // Disabled: keep the saved setup (hidden) so re-enabling restores it.
+    // Uninstalled (or deleted): its cleanup may already have passed, so
+    // remove this connection the same way.
+    const [plugin] = await db.select({ status: plugins.status }).from(plugins).where(eq(plugins.pluginKey, pluginKey));
+    if (!plugin || plugin.status === "uninstalled") {
+      await removeConnection(result.connectionId, result.connection.companyId, actor);
+    }
+    throw notFound("Tool app gallery entry not found");
+  }
+
+  function withPluginApps<Args extends unknown[], Result>(fn: (...args: Args) => Promise<Result>) {
+    return async (...args: Args): Promise<Result> => {
+      await loadPluginAppCatalog(db);
+      return fn(...args);
+    };
+  }
   const credentialStore = createOAuthCredentialStore(db, secrets);
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
@@ -817,7 +852,14 @@ export function toolAccessService(
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
-  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  const publishCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  // Every catalog refresh (setup, scheduled discovery, or a read that
+  // refreshes) classifies tools from the connector definition, so make sure
+  // plugin-provided definitions are current first.
+  const refreshCatalog: typeof publishCatalog = async (...args) => {
+    await loadPluginAppCatalog(db);
+    return publishCatalog(...args);
+  };
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
   const listAppsNeedingAttention = createToolAppAttention(db, now);
   const aggregatorAccounts = createAggregatorAccounts(db, { options, secrets, audit, credentials: credentialAccess, getConnectionRow, requestRemoteHttpEndpoint, remoteTools: catalogDiscovery.remoteTools });
@@ -3852,7 +3894,7 @@ export function toolAccessService(
       if (!current) throw forbidden("Your GitHub connection was revoked. Connect it again.");
       return { githubUserId: String(identity.id), login: identity.login, avatarUrl: identity.avatar_url ?? null, connectionId, grantId: grant.id };
     },
-    preflightGalleryAppMetadata,
+    preflightGalleryAppMetadata: withPluginApps(preflightGalleryAppMetadata),
     approvedStdioTemplates: async (
       companyId: string,
     ): Promise<ToolStdioCommandTemplate[]> => {
@@ -3932,9 +3974,10 @@ export function toolAccessService(
     },
     ...aggregatorAccounts,
 
-    connectGalleryApp,
+    connectGalleryApp: withPluginApps(async (companyId: string, input: ConnectToolApp, actor?: ActorInfo) =>
+      retireIfPluginAppUnavailable(await connectGalleryApp(companyId, input, actor), actor)),
 
-    finishGalleryAppConnection,
+    finishGalleryAppConnection: withPluginApps(finishGalleryAppConnection),
 
     createMachineSignIn: clientCredentials.createMachineSignIn,
     testMachineSignIn: clientCredentials.testMachineSignIn,
@@ -3942,11 +3985,11 @@ export function toolAccessService(
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
 
-    reconnectGalleryApp,
+    reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 
     storeConnectorOAuthSecret: createOrRotateOAuthSecret,
     resolveConnectorOAuthGrantSecret: resolveOAuthGrantSecret,
-    startOAuth,
+    startOAuth: withPluginApps(startOAuth),
 
     startAuthorizationForAgent: async (input: {
       companyId: string;
@@ -3991,11 +4034,12 @@ export function toolAccessService(
 
     peekOAuthState,
 
-    completePaperclipCloudConnectorCallback,
+    completePaperclipCloudConnectorCallback: withPluginApps(completePaperclipCloudConnectorCallback),
 
     completeVercelConnectCallback,
 
-    completeOAuthCallback,
+    completeOAuthCallback: withPluginApps(async (...args: Parameters<typeof completeOAuthCallback>) =>
+      retireIfPluginAppUnavailable(await completeOAuthCallback(...args), args[0].actor)),
     refreshOAuthGrantCredentials,
     finalizeOAuthAccess,
 
@@ -4179,7 +4223,10 @@ export function toolAccessService(
         .from(toolApplications)
         .where(eq(toolApplications.companyId, companyId))
         .orderBy(desc(toolApplications.updatedAt));
-      return rows.map(toApplication);
+      // A disabled plugin's connectors leave the Connectors page; their rows
+      // stay so re-enabling restores them unchanged.
+      const pluginApps = await pluginAppCatalogFor(db, rows);
+      return rows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row))).map(toApplication);
     },
 
     createApplication: async (
@@ -4525,11 +4572,13 @@ export function toolAccessService(
       companyId: string,
       viewerUserId?: string,
     ): Promise<ToolConnection[]> => {
-      const rows = await db
+      const allRows = await db
         .select()
         .from(toolConnections)
         .where(eq(toolConnections.companyId, companyId))
         .orderBy(desc(toolConnections.updatedAt));
+      const pluginApps = await pluginAppCatalogFor(db, allRows);
+      const rows = allRows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row)));
       const connections = rows.map(toConnection);
       if (connections.length === 0) return connections;
       const installRows = await db

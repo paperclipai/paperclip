@@ -126,6 +126,14 @@ export const GOOGLE_WORKSPACE_SERVICES = {
 } as const;
 export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SERVICES;
 
+export type GoogleWorkspaceToolTransport = "google_mcp" | "paperclip_rest";
+
+export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, GoogleWorkspaceToolTransport> = {
+  gmail: "google_mcp", drive: "google_mcp", docs: "google_mcp", sheets: "google_mcp",
+  slides: "google_mcp", calendar: "google_mcp", chat: "google_mcp",
+  people: "google_mcp", search: "google_mcp",
+};
+
 // Each inner group is a set of authorization alternatives; every group is required.
 // Keep the reviewed tool allowlist closed, even when upstream adds tools.
 const one = (...scopes: string[]) => [scopes.map(auth)];
@@ -179,7 +187,12 @@ export function googleWorkspaceToolTarget(name: string) {
   if (!Object.hasOwn(toolScopes[service], leaf)) return null;
   const profile = SERVICE_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
   return { service, upstreamName, leaf, serverUrl: profile.serverUrl, appSlug: profile.appSlug,
-    requiredScopes: toolScopes[service][leaf]!, write: profile.writeTools.some((tool) => tool === leaf) };
+    requiredScopes: toolScopes[service][leaf]!, write: profile.writeTools.some((tool) => tool === leaf),
+    transport: GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] };
+}
+
+export function googleWorkspaceServiceToolNames(service: GoogleWorkspaceService): string[] {
+  return Object.keys(toolScopes[service]);
 }
 
 export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly string[]): boolean {
