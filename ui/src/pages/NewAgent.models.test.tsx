@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, click, container, render, settle } from "./NewAgent.test-support";
+import { api, click, container, managedApi, render, settle } from "./NewAgent.test-support";
 import { ModelDropdown } from "@/components/AgentConfigForm";
 import * as modelUtils from "@/lib/model-utils";
 
@@ -68,6 +68,30 @@ describe("New agent OpenRouter model selection", () => {
     await click("Finish setup");
     expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterConfig: expect.objectContaining({ model: "openrouter/company/new-model" }),
+    }));
+  });
+
+  it("searches routed OpenRouter models for a single-provider harness", async () => {
+    const model = "anthropic/claude-sonnet-4.6";
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", canManageConnections: true, connections: [{
+      id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022",
+      companyId: "company-1", provider: "openrouter", method: "api_key", name: "Company OpenRouter",
+      ownership: "shared", isDefault: false, status: "connected",
+      routing: { kind: "openrouter", protocol: "messages", auth: "bearer", models: [{ id: model, label: "Routed Claude Sonnet" }] },
+    }] } as any);
+    await render("claude_local");
+    await click("AdvancedCustom Gateway");
+    const connection = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => connection.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    await selectModel("Company OpenRouter");
+    await click("Use connection");
+    await searchModels("Routed Claude");
+    await selectModel(model);
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model }),
+      runtimeConfig: expect.objectContaining({ aiConnection: expect.objectContaining({ provider: "openrouter" }) }),
     }));
   });
 
