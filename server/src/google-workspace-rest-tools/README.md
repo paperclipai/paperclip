@@ -272,7 +272,15 @@ one each REST call accepts among those `toolScopes.calendar` allows.
 `events.list` and `events.get` accept `calendar.events.freebusy`,
 `calendar.events.readonly` and `calendar.events`, so the time zone read works
 for every grant. `freeBusy.query` does not accept `calendar.events`, which is
-why `suggest_time` has a fallback (see open questions).
+why `suggest_time` has a fallback (see open questions). Google's reference
+for `freeBusy.query`
+(<https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query>,
+recorded 2026-11-17) says: "This request allows authorization with at least
+one of the following scopes:" and lists only
+`https://www.googleapis.com/auth/calendar.readonly`,
+`https://www.googleapis.com/auth/calendar`,
+`https://www.googleapis.com/auth/calendar.events.freebusy` and
+`https://www.googleapis.com/auth/calendar.freebusy`.
 
 ### Time handling
 
@@ -354,10 +362,20 @@ earliest first; working hours and out-of-office settings are not read.
 - **`create_event`** does not add the signed-in user as an attendee when
   others are invited (Google's tool does on the primary calendar); learning
   the user's address needs a scope outside the allowlist.
-- **`delete_event`** returns the event as read before deleting, with
-  `status: cancelled`. It deletes one event ID per call. A recurring series'
-  ID deletes the whole series, as REST does; the description says to pass an
-  occurrence ID (from `list_events`) to delete one occurrence.
+- **`delete_event` refuses a whole recurring series (deliberate).** REST
+  `events.delete` and Google's tool delete the whole series when given the
+  series' ID. Here, if the event read before deletion has `recurrence` and no
+  `recurringEventId`, the tool returns an error asking for one occurrence's
+  ID (from `list_events`) and sends no delete. The person approving the call
+  sees only an event ID, and a whole series is a much larger change than it
+  looks. Single events and single occurrences are deleted as usual, one ID per
+  call, and the result is the event as read before deleting, with
+  `status: cancelled`.
+- **`update_event` and `respond_to_event` on a recurring event.** A series'
+  ID changes (or responds for) the whole series; one occurrence's ID changes
+  only that occurrence. Both descriptions say so, and the result shows which:
+  a series has `recurrence` and no `recurringEventId`; an occurrence has
+  `recurringEventId`.
 - **`update_event` and `respond_to_event`** read the event first and patch
   with `If-Match`. If the event changed in between, nothing is changed and the
   tool says so. `update_event` with no changes returns the event without

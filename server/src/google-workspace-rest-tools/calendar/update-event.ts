@@ -210,7 +210,7 @@ export function updateEventResult(event: RestEvent): CallToolResult {
 export const updateEvent = defineTool({
   definition: {
     name: "update_event",
-    description: "Changes an event on a calendar and returns the updated event. Fields that are not set are left as they are. By default Google emails the change to every attendee (notificationLevel ALL); pass notificationLevel NONE to change it silently. Passing a recurring series' ID changes every occurrence; pass one occurrence's ID (from list_events) to change only that one.",
+    description: "Changes an event on a calendar and returns the updated event. Fields that are not set are left as they are. By default Google emails the change to every attendee (notificationLevel ALL); pass notificationLevel NONE to change it silently. Passing a recurring series' ID changes the whole series (every occurrence that has not been changed on its own); passing one occurrence's ID (from list_events) changes only that occurrence. The result shows which: a series has recurrence and no recurringEventId; one occurrence has recurringEventId.",
     inputSchema: {
       type: "object",
       properties: {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
-import { INVITED_EVENT } from "./fixtures/calendar-rest.js";
+import { INVITED_EVENT, RECURRING_INSTANCE, RECURRING_SERIES } from "./fixtures/calendar-rest.js";
 import { respondToEvent, respondToEventRequest } from "./respond-to-event.js";
 
 describe("respond_to_event request", () => {
@@ -49,6 +49,18 @@ describe("respond_to_event tool", () => {
     const result = await respondToEvent.call({ eventId: "evt0005invite", responseStatus: "declined" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(calls.map((call) => call.method)).toEqual(["GET", "PATCH"]);
     expect((result.structuredContent as { attendees: Array<{ self?: boolean; responseStatus?: string }> }).attendees.find((item) => item.self)?.responseStatus).toBe("declined");
+  });
+
+  it.each([
+    ["a series ID responds for the whole series", RECURRING_SERIES, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"] }, "recurringEventId"],
+    ["an occurrence ID responds for that occurrence only", RECURRING_INSTANCE, { recurringEventId: "evt0003series" }, "recurrence"],
+  ] as const)("%s, and the result shows which", async (_name, event, shows, absent) => {
+    const invited = { ...event, attendees: [{ email: "avery@example.test", self: true, responseStatus: "needsAction" }] };
+    const { fetch, calls } = fakeGoogle(({ method, body }) => json(method === "GET" ? invited : { ...invited, ...(body as object) }));
+    const result = await respondToEvent.call({ eventId: event.id!, responseStatus: "accepted" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls.map((call) => `${call.method} ${call.url.pathname.split("/").at(-1)}`)).toEqual([`GET ${event.id}`, `PATCH ${event.id}`]);
+    expect(result.structuredContent).toMatchObject(shows);
+    expect(result.structuredContent).not.toHaveProperty(absent);
   });
 
   it("does not write when the user is not invited, and rejects needsAction", async () => {

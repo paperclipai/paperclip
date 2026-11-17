@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import type { RestEvent } from "./event.js";
-import { ALL_DAY_EVENT, TIMED_EVENT } from "./fixtures/calendar-rest.js";
+import { ALL_DAY_EVENT, RECURRING_INSTANCE, RECURRING_SERIES, TIMED_EVENT } from "./fixtures/calendar-rest.js";
 import { updatedAttachments, updatedAttendees, updatedTimes, updateEvent, updateEventRequest, updateNeedsTimeZone } from "./update-event.js";
 
 const NY = "America/New_York";
@@ -113,6 +113,17 @@ describe("update_event tool", () => {
       end: { dateTime: "2026-11-19T10:00:00-05:00", timeZone: NY, date: null },
     });
     expect(result.structuredContent).toMatchObject({ summary: "Moved" });
+  });
+
+  it.each([
+    ["a series ID changes the whole series", RECURRING_SERIES, { recurrence: ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"] }, "recurringEventId"],
+    ["an occurrence ID changes that occurrence only", RECURRING_INSTANCE, { recurringEventId: "evt0003series" }, "recurrence"],
+  ] as const)("%s, and the result shows which", async (_name, event, shows, absent) => {
+    const { fetch, calls } = fakeGoogle(({ method }) => json(method === "GET" ? event : { ...event, summary: "Renamed" }));
+    const result = await updateEvent.call({ eventId: event.id!, summary: "Renamed" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls.map((call) => `${call.method} ${call.url.pathname.split("/").at(-1)}`)).toEqual([`GET ${event.id}`, `PATCH ${event.id}`]);
+    expect(result.structuredContent).toMatchObject({ ...shows, summary: "Renamed" });
+    expect(result.structuredContent).not.toHaveProperty(absent);
   });
 
   it("returns the event unchanged without writing when nothing is asked", async () => {

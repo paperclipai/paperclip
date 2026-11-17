@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { deleteEvent, deleteEventRequest } from "./delete-event.js";
-import { RECURRING_INSTANCE, TIMED_EVENT } from "./fixtures/calendar-rest.js";
+import { RECURRING_INSTANCE, RECURRING_SERIES, TIMED_EVENT } from "./fixtures/calendar-rest.js";
 
 describe("delete_event request", () => {
   it.each([
@@ -28,6 +28,23 @@ describe("delete_event tool", () => {
       "DELETE /calendar/v3/calendars/primary/events/evt0003series_20261118T150000Z",
     ]);
     expect(result.structuredContent).toMatchObject({ id: RECURRING_INSTANCE.id, status: "cancelled", recurringEventId: "evt0003series" });
+  });
+
+  it("deletes a single, non-recurring event", async () => {
+    const { fetch, calls } = fakeGoogle(({ method }) => (method === "GET" ? json(TIMED_EVENT) : new Response(null, { status: 204 })));
+    const result = await deleteEvent.call({ eventId: "evt0001timed" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls.map((call) => call.method)).toEqual(["GET", "DELETE"]);
+    expect(result.structuredContent).toMatchObject({ id: "evt0001timed", status: "cancelled" });
+  });
+
+  it("refuses a whole recurring series and sends no delete", async () => {
+    const { fetch, calls } = fakeGoogle(() => json(RECURRING_SERIES));
+    const result = await deleteEvent.call({ eventId: "evt0003series" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
+    expect(result).toEqual({
+      isError: true,
+      content: [{ type: "text", text: "This ID is a whole recurring series. This tool deletes single events or single occurrences only. Pass one occurrence's ID (from list_events). Nothing was deleted." }],
+    });
   });
 
   it("deletes nothing when the event cannot be read", async () => {
