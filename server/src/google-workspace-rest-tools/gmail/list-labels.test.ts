@@ -48,4 +48,10 @@ describe("list_labels tool", () => {
     expect((await listLabels.call({ pageToken: "abc" }, http)).isError).toBe(true);
     expect(calls).toHaveLength(1);
   });
+
+  it("treats an empty page token as the first page", async () => {
+    const { fetch } = fakeGoogle(() => json(LABEL_LIST));
+    const result = await listLabels.call({ pageToken: "", pageSize: 1 }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.structuredContent).toEqual({ labels: [{ labelId: "Label_42", name: "Projects" }], nextPageToken: "1" });
+  });
 });

@@ -8,7 +8,7 @@ export const MAX_LABEL_PAGE_SIZE = 500;
 
 const args = z.object({
   pageSize: z.number().int().positive().optional(),
-  pageToken: z.string().regex(/^\d{1,6}$/, "Must be the nextPageToken from a previous call").optional(),
+  pageToken: z.string().regex(/^\d{0,6}$/,"Must be the nextPageToken from a previous call").optional(),
 });
 export type ListLabelsArgs = z.infer<typeof args>;
 

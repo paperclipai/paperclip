@@ -267,8 +267,12 @@ names and scopes and needs no change.
 
 ### Google requests per call
 
-Reads that fan out run at most 10 at a time, each under the shared deadline
-and the caller's cancellation signal; the first failure stops new requests.
+Reads that fan out run at most 10 at a time; the first failure stops new
+requests. The 20 s timeout in `google-http.ts` applies to each request
+attempt, not to the whole call, so a call that fans out can take longer than
+20 s. Every request also stops when the caller's `signal` aborts; a caller
+that needs a bound on the whole call passes a signal with that deadline (the
+gateway passes its call deadline).
 Each read may be retried once by `google-http.ts`, which the counts below do
 not include. "Bodies" counts separately stored bodies, at most two per message
 (plain and HTML) and none for most mail.
