@@ -92,7 +92,7 @@ export function AreaControl({
           />
         </DropdownMenuContent>
       </DropdownMenu>
-      {move.isError ? (
+      {move.error ? (
         <span role="alert" className="text-xs text-destructive">
           Couldn’t move it. {describeError(move.error).body}
         </span>

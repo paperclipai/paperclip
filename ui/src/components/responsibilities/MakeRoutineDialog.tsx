@@ -349,7 +349,7 @@ export function MakeRoutineDialog({
             )}
           </p>
 
-          {create.isError ? (
+          {create.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t make the routine. {describeError(create.error).body}
             </p>

@@ -296,7 +296,7 @@ function SetVisualizations({
           />
         ))}
       </div>
-      {showAs.isError ? (
+      {showAs.error ? (
         <p role="alert" className="text-xs text-destructive">Couldn’t change how it is shown. {describeError(showAs.error).body}</p>
       ) : null}
       <AlertDialog open={removing !== null} onOpenChange={(open) => { if (!open) setRemoving(null); }}>
@@ -305,7 +305,7 @@ function SetVisualizations({
             <AlertDialogTitle>Remove “{removing?.title}”?</AlertDialogTitle>
             <AlertDialogDescription>Its readings are kept.</AlertDialogDescription>
           </AlertDialogHeader>
-          {remove.isError ? (
+          {remove.error ? (
             <p role="alert" className="text-sm text-destructive">Couldn’t remove it. {describeError(remove.error).body}</p>
           ) : null}
           <AlertDialogFooter className="items-center sm:justify-between">
@@ -417,7 +417,7 @@ export function BarModule({
           </Link>
         </p>
       ) : null}
-      {conversation.start.isError ? (
+      {conversation.start.error ? (
         <p role="alert" className="text-sm text-destructive">Couldn’t start the conversation. {describeError(conversation.start.error).body}</p>
       ) : null}
       {body}

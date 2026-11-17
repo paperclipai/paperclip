@@ -214,7 +214,7 @@ export function Responsibilities() {
         </div>
       </header>
 
-      {restore.isError ? (
+      {restore.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t restore the area. {describeError(restore.error).body}
         </p>

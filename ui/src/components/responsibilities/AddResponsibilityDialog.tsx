@@ -156,7 +156,7 @@ export function AddResponsibilityDialog({
             ) : null}
           </div>
           <ResponsibilityBarFields draft={draft} onChange={setDraft} missing={missing} invalid={invalid} problems={problems} showCurrent />
-          {create.isError ? (
+          {create.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t add the responsibility. {describeError(create.error).body}
             </p>

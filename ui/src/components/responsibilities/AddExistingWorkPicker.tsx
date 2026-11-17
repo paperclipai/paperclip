@@ -157,7 +157,7 @@ export function AddExistingWorkPicker({
           <CommandList>
             {source.isPending ? (
               <p className="px-3 py-4 text-sm text-muted-foreground" role="status">Loading…</p>
-            ) : source.isError ? (
+            ) : !source.data && source.error ? (
               <p className="px-3 py-4 text-sm text-destructive" role="alert">
                 Couldn’t load {NOUN[kind]}s. {describeError(source.error).body}
               </p>
@@ -182,7 +182,7 @@ export function AddExistingWorkPicker({
               </>
             )}
           </CommandList>
-          {link.isError ? (
+          {link.error ? (
             <p role="alert" className="border-t border-border px-3 py-2 text-sm text-destructive">
               {describeLinkError(link.error, kind)}
             </p>

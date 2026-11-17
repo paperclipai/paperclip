@@ -402,7 +402,7 @@ export function StatusReportDialog({
               onChange={(event) => setDetail(event.target.value)}
             />
           </label>
-          {save.isError ? (
+          {save.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t save the status. {describeError(save.error).body}
             </p>
@@ -519,7 +519,7 @@ function AgentStatusBody({
         ) : null}
       </Card>
 
-      {ask.isError ? (
+      {ask.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t ask for an update. {describeError(ask.error).body}
         </p>

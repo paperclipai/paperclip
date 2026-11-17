@@ -65,7 +65,7 @@ export const ResponsibilityRow = memo(function ResponsibilityRow({
         {signals.length > 0 ? (
           <WorkSignalList signals={signals} size="xs" responsibilityHref={responsibilityPath} className="pt-1" />
         ) : null}
-        {move.isError ? (
+        {move.error ? (
           <p role="alert" className="text-xs text-destructive">Couldn’t move it. {describeError(move.error).body}</p>
         ) : null}
       </div>

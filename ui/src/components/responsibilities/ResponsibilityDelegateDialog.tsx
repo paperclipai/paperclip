@@ -208,7 +208,7 @@ export function ResponsibilityDelegateDialog({
                 triggerAriaLabel="Agent"
                 disablePortal
               />
-              {agentsQuery.isError ? (
+              {!agentsQuery.data && agentsQuery.error ? (
                 <p role="alert" className="text-sm text-destructive">
                   Couldn’t load agents. {describeError(agentsQuery.error).body}
                 </p>
@@ -253,7 +253,7 @@ export function ResponsibilityDelegateDialog({
               />
             </label>
 
-            {delegate.isError ? (
+            {delegate.error ? (
               <p role="alert" className="text-sm text-destructive">
                 Couldn’t create the task. {describeError(delegate.error).body}
               </p>

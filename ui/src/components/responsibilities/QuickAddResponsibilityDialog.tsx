@@ -104,7 +104,7 @@ export function QuickAddResponsibilityDialog({
               </NativeSelect>
             </label>
           ) : null}
-          {create.isError ? (
+          {create.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t add the responsibility. {describeError(create.error).body}
             </p>

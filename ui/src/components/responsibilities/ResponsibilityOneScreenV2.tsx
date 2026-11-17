@@ -365,7 +365,7 @@ export function ResponsibilityOneScreenV2({
         ) : responsibility.status === "dismissed" ? (
           <p className="text-sm text-muted-foreground">You dismissed this.</p>
         ) : null}
-        {move.isError ? <p role="alert" className="text-sm text-destructive">Couldn’t move it. {describeError(move.error).body}</p> : null}
+        {move.error ? <p role="alert" className="text-sm text-destructive">Couldn’t move it. {describeError(move.error).body}</p> : null}
         {notices}
       </header>
 
@@ -490,12 +490,12 @@ export function ResponsibilityOneScreenV2({
           section="runs"
           title={SECTION_TITLE.runs}
           add={runsAdd}
-          empty={runs.isError ? (
+          empty={!runs.data && runs.error ? (
             <span role="alert" className="text-destructive">Couldn’t load the runs. {describeError(runs.error).body}</span>
           ) : !runs.data ? (
             <span role="status">Loading…</span>
           ) : runs.data.runs.length === 0 ? "None yet." : null}
-          footer={runNow.isError ? (
+          footer={runNow.error ? (
             <SectionTableNote alert>Couldn’t start the run. {describeError(runNow.error).body}</SectionTableNote>
           ) : null}
         >

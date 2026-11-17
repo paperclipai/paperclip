@@ -408,7 +408,7 @@ function StandingCheckActions({ routineId, title, paused }: { routineId: string;
       >
         <Trash2 aria-hidden="true" />
       </Button>
-      {change.isError ? <span role="alert" className="sr-only">Couldn’t change it. {describeError(change.error).body}</span> : null}
+      {change.error ? <span role="alert" className="sr-only">Couldn’t change it. {describeError(change.error).body}</span> : null}
     </span>
   );
 }

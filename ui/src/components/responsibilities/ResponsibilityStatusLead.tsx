@@ -33,7 +33,6 @@ export function useResponsibilityStatusReport(responsibilityId: string, enabled 
     queryKey: queryKeys.responsibilities.statusReport(responsibilityId),
     queryFn: () => responsibilitiesApi.statusReport(responsibilityId),
     enabled,
-    retry: false,
     staleTime: 30_000,
   });
 }
@@ -120,7 +119,7 @@ export function ResponsibilityStatusBlock({
               {ask.isPending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <MessageSquare aria-hidden="true" />}
               {requested ? `Asked ${reporterName} for an update` : `Ask ${reporterName} for an update`}
             </Button>
-            {ask.isError ? (
+            {ask.error ? (
               <p role="alert" className="text-xs text-destructive">Couldn’t ask. {describeError(ask.error).body}</p>
             ) : null}
           </div>

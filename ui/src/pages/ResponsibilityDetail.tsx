@@ -138,7 +138,7 @@ function ResponsibilityView({ responsibility, companyId }: { responsibility: Res
 
   const notices = (
     <>
-      {update.isError ? (
+      {update.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t save the change. {describeError(update.error).body}
         </p>
@@ -151,12 +151,12 @@ function ResponsibilityView({ responsibility, companyId }: { responsibility: Res
           </Button>
         </div>
       ) : null}
-      {unlink.isError ? (
+      {unlink.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t remove it from this responsibility. {describeError(unlink.error).body}
         </p>
       ) : null}
-      {relink.isError ? (
+      {relink.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t put it back. {describeError(relink.error).body}
         </p>
@@ -225,7 +225,7 @@ function ResponsibilityView({ responsibility, companyId }: { responsibility: Res
               stay. To stop owning it but keep its history, let it go instead.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {remove.isError ? (
+          {remove.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t delete it. {describeError(remove.error).body}
             </p>

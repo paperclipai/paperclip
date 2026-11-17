@@ -179,19 +179,19 @@ function VersionsDialog({
           <DialogTitle>Previous versions</DialogTitle>
           <DialogDescription className="sr-only">Saved versions of your dashboard, newest first.</DialogDescription>
         </DialogHeader>
-        {query.isError ? (
-          <p role="alert" className="text-sm text-destructive">Couldn’t load the versions. {describeError(query.error).body}</p>
-        ) : query.data ? (
+        {query.data ? (
           <DashboardVersionList
             list={query.data}
             agentsById={agentsById}
             restoringId={restore.isPending ? restore.variables ?? null : null}
             onRestore={(versionId) => restore.mutate(versionId)}
           />
+        ) : query.error ? (
+          <p role="alert" className="text-sm text-destructive">Couldn’t load the versions. {describeError(query.error).body}</p>
         ) : (
           <Loader2 aria-label="Loading" className="size-4 animate-spin text-muted-foreground" />
         )}
-        {restore.isError ? (
+        {restore.error ? (
           <p role="alert" className="text-sm text-destructive">Couldn’t restore it. {describeError(restore.error).body}</p>
         ) : null}
       </DialogContent>
@@ -338,7 +338,7 @@ export function DashboardEditModule({ companyId, ownerUserId, empty, agentsById,
         starting={start.isPending}
         startError={start.error}
         undoing={restore.isPending && !versionsOpen}
-        undoError={restore.isError && !versionsOpen ? restore.error : null}
+        undoError={versionsOpen ? null : restore.error}
         onStart={() => start.mutate(empty ? "create" : "edit")}
         onUndo={(versionId) => restore.mutate(versionId)}
         onAddArea={onAddArea}

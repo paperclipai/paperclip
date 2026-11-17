@@ -346,7 +346,7 @@ export function ResponsibilityMetrics({
               metrics, talk the bar through with an agent.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {remove.isError ? (
+          {remove.error ? (
             <p role="alert" className="text-sm text-destructive">Couldn’t remove it. {describeError(remove.error).body}</p>
           ) : null}
           <AlertDialogFooter className="items-center sm:justify-between">

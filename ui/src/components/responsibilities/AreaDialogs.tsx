@@ -96,7 +96,7 @@ export function AddAreaDialog({
               onChange={(event) => setTitle(event.target.value)}
             />
           </label>
-          {create.isError ? (
+          {create.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t add the area. {describeError(create.error).body}
             </p>
@@ -159,7 +159,7 @@ export function RenameAreaDialog({
             <span className="font-medium text-foreground">Name</span>
             <Input autoFocus value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} />
           </label>
-          {rename.isError ? (
+          {rename.error ? (
             <p role="alert" className="text-sm text-destructive">
               Couldn’t rename the area. {describeError(rename.error).body}
             </p>
@@ -218,7 +218,7 @@ export function ArchiveAreaDialog({
             You can restore it later.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {archive.isError ? (
+        {archive.error ? (
           <p role="alert" className="text-sm text-destructive">
             Couldn’t archive the area. {describeError(archive.error).body}
           </p>

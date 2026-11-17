@@ -102,7 +102,7 @@ export function RecordReading({ responsibility }: { responsibility: Responsibili
       },
     });
   };
-  const failed = update.isError ? (
+  const failed = update.error ? (
     <p role="alert" className="text-xs text-destructive">Couldn’t record it. {describeError(update.error).body}</p>
   ) : null;
   if (responsibility.metricKind === "yes_no") {
@@ -196,7 +196,7 @@ export function EditBarDialog({
             <DialogDescription>How is success measured for {responsibility.title}? The status follows from the reading, by the kind of measure you choose.</DialogDescription>
           </DialogHeader>
           <ResponsibilityBarFields draft={draft} onChange={setDraft} missing={missing} invalid={invalid} problems={problems} />
-          {update.isError ? (
+          {update.error ? (
             <p role="alert" className="text-sm text-destructive">Couldn’t save the bar. {describeError(update.error).body}</p>
           ) : null}
           <DialogFooter className="items-center sm:justify-between">
@@ -328,7 +328,7 @@ function StatusOverride({ responsibility }: { responsibility: ResponsibilityDeta
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
-      {update.isError ? (
+      {update.error ? (
         <p role="alert" className="text-xs text-destructive">Couldn’t change the status. {describeError(update.error).body}</p>
       ) : null}
     </div>
@@ -399,7 +399,7 @@ export function ResponsibilityBarCard({
           </div>
         ) : null}
       </div>
-      {conversation.start.isError ? (
+      {conversation.start.error ? (
         <p role="alert" className="text-sm text-destructive">
           Couldn’t start the conversation. {describeError(conversation.start.error).body} You can still edit the bar by hand.
         </p>
