@@ -58,7 +58,7 @@ import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
-import { appendTaskMarkdownNote, prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
+import { appendTaskMarkdownNoteWhenPresent, prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace, RetryWorkspaceRefused } from "./heartbeat/workspace-preparation.js";
@@ -3376,7 +3376,7 @@ export function heartbeatService(
         hints: workspaceHints,
         sharedCheckout: effectiveExecutionWorkspaceMode === "shared_workspace",
       });
-      if (repositoryNote) appendTaskMarkdownNote(context, repositoryNote);
+      if (repositoryNote) appendTaskMarkdownNoteWhenPresent(context, repositoryNote);
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
       // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts

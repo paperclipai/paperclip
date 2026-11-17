@@ -475,3 +475,13 @@ export function appendTaskMarkdownNote(context: Record<string, unknown>, note: s
     context.paperclipTaskMarkdownAssignmentCompact = append(context.paperclipTaskMarkdownAssignmentCompact);
   }
 }
+
+/**
+ * Like `appendTaskMarkdownNote`, but only for a run that has task markdown. A run without an issue has
+ * none, and adapters read a non-empty `paperclipTaskMarkdown` as "a task is assigned", so the note must
+ * not create the field.
+ */
+export function appendTaskMarkdownNoteWhenPresent(context: Record<string, unknown>, note: string): void {
+  if (typeof context.paperclipTaskMarkdown !== "string") return;
+  appendTaskMarkdownNote(context, note);
+}
