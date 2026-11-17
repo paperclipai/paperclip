@@ -627,7 +627,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const holderPid = new Promise<number>(resolve => { locked = resolve; });
       const holder = db.transaction(async tx => {
         const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
-        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stalled)).for("update");
+        await tx.execute(sql.raw(`select id from heartbeat_runs where id = '${stalled}' and next_event_seq >= 0 for update`));
         locked(Number(backend.pid));
         await held;
       });
@@ -649,6 +649,8 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
           expect.objectContaining({ pid: holderBackend }),
           expect.objectContaining({ waitEventType: "Lock", blockedBy: [holderBackend] }),
         ]));
+        expect(JSON.stringify(fields.waits)).not.toContain(stalled);
+        expect(fields.waits.find(wait => wait.pid === holderBackend)?.query).toContain("where id = ? and next_event_seq >= ? for update");
       } finally {
         release();
         await holder;

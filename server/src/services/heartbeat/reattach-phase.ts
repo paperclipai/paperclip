@@ -96,6 +96,7 @@ type ReattachWatch = {
   worker: ReattachWorker | null;
   stopListening: () => void;
   claim?: (runIds: string[]) => Promise<unknown>;
+  stallReport: ReattachPhaseSummary | null;
 };
 
 let watch: ReattachWatch | null = null;
@@ -162,6 +163,12 @@ async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
     await claimJoinedRuns(current, observeLeases(current, rows));
   }
   if (pendingReattachRunIds().length > 0) await settleFinishedReattachRuns(current.db);
+  const stalled = current.stallReport;
+  if (stalled && watch === current) {
+    current.stallReport = null;
+    await reportStalledReattach(current.db, stalled)
+      .catch(error => logger.warn({ err: error }, "reattach phase could not read database session waits"));
+  }
 }
 
 export function noteReattachRunsClaimed(runIds: readonly string[], now = Date.now()): void {
@@ -217,13 +224,15 @@ export function registerReattachPhaseWork(
   if (watch) void stopReattachWatch();
   enableReattachPhase(capMs);
   const stopEndListener = options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined;
-  const stopStallReport = onReattachPhaseEnd(summary => {
-    void reportStalledReattach(db, summary)
-      .catch(error => logger.warn({ err: error }, "reattach phase could not read database session waits"));
-  });
   const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(), initialized: false,
-    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim,
-    stopListening: () => { stopEndListener(); stopStallReport(); } };
+    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim, stallReport: null,
+    stopListening: () => undefined };
+  const stopStallReport = onReattachPhaseEnd(summary => {
+    if (watch !== current || !stalledReattach(summary)) return;
+    current.stallReport = summary;
+    current.worker?.wake();
+  });
+  current.stopListening = () => { stopEndListener(); stopStallReport(); current.stallReport = null; };
   watch = current;
   const release = () => {
     if (watch !== current) return;
@@ -233,7 +242,7 @@ export function registerReattachPhaseWork(
   current.worker = coordinator.register(DELIVERY_QUEUES.reattachPhase, {
     retryMs: options.recheckMs ?? REATTACH_PHASE_RECHECK_MS,
     run: () => reconcileReattachWatch(current),
-    hasPending: async () => watch === current && pendingReattachRunIds().length > 0,
+    hasPending: async () => watch === current && (pendingReattachRunIds().length > 0 || current.stallReport !== null),
     nextRunAt: () => watch === current && current.watching ? nextReattachLeaseDeadline(current.leases.values()) : null,
     onSettled: () => { current.notified = true; },
     onStop: release,
@@ -266,7 +275,7 @@ export async function readDatabaseSessionWaits(db: Db): Promise<DatabaseSessionW
       select pid, application_name, state, wait_event_type, wait_event, blocked_by,
         extract(epoch from clock_timestamp() - xact_start)::int as transaction_seconds,
         extract(epoch from clock_timestamp() - state_change)::int as state_seconds,
-        left(query, 160) as query
+        left(regexp_replace(regexp_replace(query, '''(?:[^'']|'''')*''', '?', 'g'), '\\m[0-9][0-9.]*\\M', '?', 'g'), 160) as query
       from sessions
       where cardinality(blocked_by) > 0 or pid in (select pid from blockers)
         or state like 'idle in transaction%'
@@ -291,9 +300,12 @@ function authenticatedButUnreached(summary: ReattachPhaseSummary): string[] {
   return summary.runs.filter(run => run.outcome === "outstanding" && run.authenticatedMs !== null).map(run => run.runId);
 }
 
+function stalledReattach(summary: ReattachPhaseSummary): boolean {
+  return summary.reason === "cap_reached" && authenticatedButUnreached(summary).length > 0;
+}
+
 async function reportStalledReattach(db: Db, summary: ReattachPhaseSummary): Promise<void> {
   const runIds = authenticatedButUnreached(summary);
-  if (summary.reason !== "cap_reached" || runIds.length === 0) return;
   const waits = await readDatabaseSessionWaits(db);
   logger.warn({ runIds, pool: dedicatedDbConnectionStats(db), waits },
     "reattach phase ended with authenticated runs that were never reached; database sessions waiting or holding locks");
