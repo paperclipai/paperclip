@@ -263,10 +263,14 @@ no broker call and leaves the token in place.
 Order for removing one grant: read the token, commit the grant revocation,
 call the broker, then delete the grant's refresh-token secret.
 
-Deletion is compare-and-delete: in one transaction that locks the grant row
-(the lock the managed sign-in callback takes before it writes a token) and the
-secret row, the secret is deleted only if the grant is still revoked and the
-secret still has the `latestVersion` that was read. A sign-in that finishes
+Deletion is compare-and-delete. Whether the connection owns the secret is
+checked first, outside any transaction. Then one short transaction locks the
+grant row (the lock the managed sign-in callback takes before it writes a
+token) and the secret row, and marks the secret deleted only if the grant is
+still revoked and the secret still has the `latestVersion` that was read. That
+transaction runs only its own queries. After it commits, the secret store
+finishes the deletion. The broker call never runs inside a transaction or
+while a row lock is held. A sign-in that finishes
 during the broker call re-activates the grant and writes a new version, so its
 token is kept, and a later removal sends that new token. During a whole-
 connection removal a sign-in cannot complete after the teardown: the teardown

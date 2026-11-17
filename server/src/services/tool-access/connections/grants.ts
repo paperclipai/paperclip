@@ -511,7 +511,7 @@ replaceConnectionGrantMembers: async (
       const providerAccessRemoval = await managedGoogleAccess.prepare(connection, [currentGrant], actor, {
         grantId: currentGrant.id,
         removingConnection: false,
-        removeSecret: (secretId, tx) => secretService(tx).remove(secretId),
+        removeSecret: (secretId) => secretService(db).remove(secretId),
       });
       if (
         connection.credentialSource === "vercel_connect" &&

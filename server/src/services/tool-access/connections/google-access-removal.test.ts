@@ -17,6 +17,7 @@ function fakeDb(rows: { grants?: unknown[]; connections?: unknown[] } = {}) {
         : "status" in columns ? [{ status: "revoked" }] : []);
   const db: Record<string, unknown> = {
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({ set: () => ({ where: async () => undefined }) })),
     select: vi.fn((columns: Record<string, unknown>) => ({
       from: () => ({
         where: () => {

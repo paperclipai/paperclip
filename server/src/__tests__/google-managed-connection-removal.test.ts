@@ -492,6 +492,43 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     });
   }
 
+  it.each(["connection", "grant"] as const)("completes a %s removal on a database pool of one connection", async (path) => {
+    const fixture = await connectManagedGmail();
+    const single = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = {
+          type: "board", userId: fixture.userId, sessionId: `session-${randomUUID()}`, userName: "Owner", userEmail: null,
+          isInstanceAdmin: false, source: "session", companyIds: [fixture.company.id],
+          memberships: [{ companyId: fixture.company.id, membershipRole: "owner", status: "active" }],
+        };
+        next();
+      });
+      app.use("/api", toolAccessRoutes(single, {
+        paperclipCloudConnector: fixture.connector as unknown as PaperclipCloudConnector,
+        remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+        remoteHttpRequest: async (url, init) => fetch(url, init),
+      }));
+      app.use(errorHandler);
+      const url = path === "connection"
+        ? `/api/tool-connections/${fixture.connectionId}`
+        : `/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`;
+      const outcome = await Promise.race([
+        request(app).delete(url).then((response) => response.status),
+        new Promise((resolve) => setTimeout(() => resolve("timed out"), 15_000)),
+      ]);
+      expect(outcome).toBe(200);
+      expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+      const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+      const [refresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(eq(companySecrets.id, refreshSecretId), isNull(companySecrets.deletedAt)));
+      expect(refresh).toBeUndefined();
+    } finally {
+      await single.$client.end({ timeout: 1 });
+    }
+  }, 30_000);
+
   it("keeps the new token when the user signs in again while Paperclip Cloud answers a grant removal", async () => {
     const fixture = await connectManagedGmail();
     let finishSignIn: (() => Promise<unknown>) | null = null;

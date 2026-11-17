@@ -26,7 +26,8 @@ export type PreparedGoogleAccessRemoval = {
 export type GoogleAccessRemovalScope = {
   grantId?: string;
   removingConnection: boolean;
-  removeSecret(secretId: string, tx: Db): Promise<unknown>;
+  canRemoveSecret?(secretId: string): Promise<boolean>;
+  removeSecret(secretId: string): Promise<unknown>;
 };
 
 function refreshSecretId(grant: RemovedGrant): string | null {
@@ -176,16 +177,27 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
   ) {
     for (const { secretId, grantId, version } of sent) {
       try {
-        await db.transaction(async (tx) => {
+        if (scope.canRemoveSecret && !(await scope.canRemoveSecret(secretId))) continue;
+        const claimed = await db.transaction(async (tx) => {
           const [grant] = await tx.select({ status: connectionGrants.status }).from(connectionGrants)
             .where(and(eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.id, grantId)))
             .for("update");
-          const [secret] = await tx.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets)
+          const [secret] = await tx.select({ key: companySecrets.key, name: companySecrets.name, latestVersion: companySecrets.latestVersion })
+            .from(companySecrets)
             .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, secretId), isNull(companySecrets.deletedAt)))
             .for("update");
-          if (!secret || secret.latestVersion !== version || grant?.status !== "revoked") return;
-          await scope.removeSecret(secretId, tx as unknown as Db);
+          if (!secret || secret.latestVersion !== version || grant?.status !== "revoked") return false;
+          const now = new Date();
+          await tx.update(companySecrets).set({
+            key: `${secret.key}__deleted__${secretId}`,
+            name: `${secret.name}__deleted__${secretId}`,
+            status: "deleted",
+            deletedAt: now,
+            updatedAt: now,
+          }).where(eq(companySecrets.id, secretId));
+          return true;
         });
+        if (claimed) await scope.removeSecret(secretId);
       } catch (error) {
         logger.warn(
           { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
