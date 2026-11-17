@@ -104,7 +104,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .try_into()
         .map_err(|_| "lifetime fence requires three ports")?;
     // Only the receiver-admission fixture writes this task-owned command journal.
-    let mut admission_journal = if matches!(mode, "admission-tool" | "admission-tool-oversized") {
+    let mut admission_journal = if matches!(
+        mode,
+        "admission-tool" | "admission-tool-oversized" | "admission-tool-burst"
+    ) {
         let path = args
             .windows(2)
             .find(|pair| pair[0] == "--journal")
@@ -641,7 +644,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(journal) = admission_journal.as_mut() {
             write_json(journal, &json!({"request":request}))?;
-            let response = if command == "tool.resolve" {
+            let response = if command == "tool.resolve" && mode == "admission-tool-burst" {
+                json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":true,"result":{"resolved":true}})
+            } else if command == "tool.resolve" {
                 json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                     "id":id,"ok":true,"result":{"resolved":
                         request["params"]["callId"] == "call-admission"
@@ -660,7 +666,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             };
             write_json(&mut stdout, &response)?;
-            if command == "turn.start" {
+            if command == "turn.start" && mode == "admission-tool-burst" {
+                for index in 0..11 {
+                    let frame = json!({
+                        "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.tool_called",
+                        "runId":"run-1","turnId":request["params"]["turnId"],
+                        "payload":{"callId":format!("call-burst-{index}"),"operationId":"issues.read",
+                            "input":{"id":format!("issue-{index}")}},
+                    });
+                    write_json(journal, &json!({"emitted":frame}))?;
+                    write_json(&mut stdout, &frame)?;
+                    next_sequence += 1;
+                }
+            } else if command == "turn.start" {
                 let frame = json!({
                     "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                     "sequence":next_sequence,"eventType":"runtime.tool_called",

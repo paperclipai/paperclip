@@ -24,11 +24,18 @@ and Slides have their respective editor scopes. Gmail uses `gmail.compose`
 for draft creation; Google permits sending under that scope, but Paperclip's
 closed tool allowlist still excludes sending.
 
+Every selectable combination stays inside the 14 scopes submitted for Google
+verification, kept as an explicit list in `GOOGLE_WORKSPACE_SUBMITTED_SCOPES`.
+The server rejects an authorization request that carries any other scope. On
+callback and refresh it ignores any other scope Google reports, on both the
+managed and the customer-owned path.
+
 Both customer OAuth and managed Cloud OAuth bind the request to durable OAuth
 state. The broker must support nonempty `workspace.all` scope subsets, preserve
 them in the provider URL and encrypted claim binding, and reject unknown scopes.
-Other managed profiles retain their exact-set contract. Ship that broker change
-before updating tenant apps; an older broker rejects narrowed requests safely.
+Refresh now signs the 14 as its binding, so the app must be deployed before the
+broker narrows its `workspace.all` registry to the 14. Other managed profiles
+retain their exact-set contract.
 
 Only provider-reported consent enables tools. Callback and refresh cap effective
 permissions to the saved request, including read-only implications of broader

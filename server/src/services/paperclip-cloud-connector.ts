@@ -20,6 +20,8 @@ import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
+  googleWorkspaceProfileWithinSubmittedScopes,
+  googleWorkspaceSubmittedScopesIn,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -396,6 +398,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
+    if (profile === "workspace.all") credentials.scopes = googleWorkspaceSubmittedScopesIn(credentials.scopes);
     if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
@@ -521,6 +524,9 @@ export function createPaperclipCloudConnector(input: {
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
+      if (!paperclipCloudConnectorConsentAllowed(profile)) {
+        throw new PaperclipCloudConnectorError("This permission set is not offered through Paperclip's Google app", "CONNECTOR_CONFIG_INVALID");
+      }
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
@@ -735,7 +741,8 @@ export function appWithPaperclipCloudConnectorAvailability(
   const enabledProfiles = new Set(profiles);
   const methods = app.methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
+      && paperclipCloudConnectorConsentAllowed(method.connectorProfile))
   );
   return {
     ...app,
@@ -746,6 +753,10 @@ export function appWithPaperclipCloudConnectorAvailability(
       platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
     },
   };
+}
+
+export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
+  return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;

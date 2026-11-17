@@ -63,6 +63,11 @@ endpoints remain separate. Paperclip namespaces actions by service and routes th
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
+Google results are untrusted content. The prompt-injection guard checks them
+before an agent receives them; see
+[Google Workspace content](../prompt-injection-prevention.md#google-workspace-content)
+for what it covers and what it does not.
+
 The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
@@ -75,11 +80,26 @@ client pair; that client's Cloud project must have every applicable MCP API and
 preview enrollment. Do not remove legacy enabled profiles while their grants are
 in use. This code change does not enable the broker profile or deploy any stack.
 
-The signed request and envelope authentication bind the exact selected request;
-the legacy 21-scope profile remains supported for old clients. The encrypted
-credential payload preserves Google's actual nonempty
-subset. Missing scope evidence and scopes outside that reviewed union fail closed
-on authorization and refresh. Individual legacy profiles retain exact matching.
+The signed request and envelope authentication bind the exact selected request.
+Refresh binds the 14 scopes submitted for Google verification
+(`GOOGLE_WORKSPACE_SUBMITTED_SCOPES`), which the broker accepts as a subset of
+its registry. The encrypted credential payload preserves Google's actual
+nonempty subset. An authorization request with any scope outside the 14 is
+rejected. Callback and refresh use one contract on both managed and
+customer-owned OAuth: Paperclip caps Google's reported scopes to the 14 and to
+the saved request, and continues. A scope outside the 14 (for example a former
+Chat, Contacts, Directory, profile or `calendar.readonly` grant) is ignored and
+never enables an action. Only missing scope evidence or an empty result needs
+reconnecting, and reconnecting with a new service choice always works.
+Individual legacy profiles retain exact matching.
+
+Paperclip's own Google client never starts consent for a profile outside the
+14: `gmail.archive` (`gmail.modify`), `chat.read`, `chat.write`, `people.read`
+and `workspace-search.read`. Their Apps methods are no longer offered for new
+setup even when the broker advertises them, and reconnecting a saved connection
+on one of them is refused. Saved connections keep resolving their method,
+refreshing and running. Customer-owned OAuth methods for those services are
+unchanged.
 For the new `google/workspace.all` profile only, HKDF info is SHA-256(AAD) to
 remain below Node's 1024-byte limit. AES-GCM still authenticates the complete AAD;
 legacy envelope key derivation is unchanged.

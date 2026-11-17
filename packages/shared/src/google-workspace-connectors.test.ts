@@ -5,7 +5,9 @@ import {
   googleWorkspaceGrantedScopes, googleWorkspaceToolTarget, isGoogleWorkspaceToolGranted,
   googleWorkspaceServiceGranted, isGoogleWorkspaceScopeGrant,
   googleWorkspaceSelectedScopes, googleWorkspaceEffectiveScopes, GOOGLE_WORKSPACE_DEFAULT_SELECTION,
-  googleWorkspaceDraftRequestedScopes,
+  googleWorkspaceDraftRequestedScopes, GOOGLE_WORKSPACE_SERVICE_GROUPS, GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, googleWorkspaceProfileWithinSubmittedScopes,
+  type GoogleWorkspaceServiceSelection,
 } from "./google-workspace-connectors.js";
 
 const scope = (value: string) => `https://www.googleapis.com/auth/${value}`;
@@ -43,23 +45,51 @@ describe("combined Google Workspace consent", () => {
     expect(isGoogleWorkspaceToolGranted("docs__read_doc", effective)).toBe(true);
     expect(googleWorkspaceEffectiveScopes([scope("documents")], [scope("documents.readonly")])).toEqual([scope("documents.readonly")]);
   });
-  it("requests the existing union with one profile and preserves legacy definitions", () => {
-    const expected = [...new Set(Object.entries(profiles).filter(([key]) => key !== "workspace.all" && key !== "gmail.archive").flatMap(([, value]) => value.scopes))];
-    expect(profiles["workspace.all"].scopes).toEqual(expected);
-    expect(expected).toHaveLength(21);
-    expect(expected).not.toContain(scope("gmail.modify"));
+  it("limits every selectable service combination to the 14 scopes submitted for Google verification", () => {
+    const submitted = [
+      "gmail.readonly", "gmail.compose",
+      "drive.readonly", "drive.file",
+      "documents.readonly", "documents",
+      "spreadsheets.readonly", "spreadsheets",
+      "presentations.readonly", "presentations",
+      "calendar.calendarlist.readonly", "calendar.events.readonly", "calendar.events.freebusy", "calendar.events",
+    ].map(scope);
+    expect([...GOOGLE_WORKSPACE_SUBMITTED_SCOPES].sort()).toEqual([...submitted].sort());
+    let selections: GoogleWorkspaceServiceSelection[] = [{}];
+    for (const group of GOOGLE_WORKSPACE_SERVICE_GROUPS) {
+      selections = selections.flatMap((selection) => [selection, { ...selection, [group.id]: "read" }, { ...selection, [group.id]: "write" }]);
+    }
+    expect(selections).toHaveLength(27);
+    const union = new Set<string>();
+    for (const selection of selections) {
+      const selected = googleWorkspaceSelectedScopes(selection);
+      for (const value of selected) expect(submitted, JSON.stringify(selection)).toContain(value);
+      selected.forEach((value) => union.add(value));
+    }
+    expect([...union].sort()).toEqual([...submitted].sort());
+    expect([...profiles["workspace.all"].scopes].sort()).toEqual([...submitted].sort());
     const app = getConnectableAppDefinition("google-workspace")!;
     expect(app.methods).toHaveLength(2);
     expect(app.methods.filter((method) => method.connectorProfile)).toHaveLength(1);
-    for (const method of app.methods) expect(method.defaults?.scopesHint).toEqual(expected.filter(scope => !/chat|contacts|directory|userinfo|\/calendar.readonly$/.test(scope)));
+    for (const method of app.methods) expect([...method.defaults!.scopesHint!].sort()).toEqual([...submitted].sort());
     for (const profile of Object.values(GOOGLE_WORKSPACE_SERVICES)) expect(getConnectableAppDefinition(profiles[profile].appSlug)).not.toBeNull();
+  });
+
+  it("marks only profiles inside the submitted scopes as usable with Paperclip's Google client", () => {
+    const outside = GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter((profile) => !googleWorkspaceProfileWithinSubmittedScopes(profile));
+    expect(outside).toEqual(["gmail.archive", "chat.read", "chat.write", "people.read", "workspace-search.read"]);
   });
 
   it("accepts a nonempty subset but not missing or unrequested permissions", () => {
     expect(isGoogleWorkspaceScopeGrant([scope("documents")])).toBe(true);
+    expect(isGoogleWorkspaceScopeGrant(GOOGLE_WORKSPACE_SUBMITTED_SCOPES)).toBe(true);
     expect(isGoogleWorkspaceScopeGrant([])).toBe(false);
     expect(isGoogleWorkspaceScopeGrant([scope("chat.memberships.readonly")])).toBe(false);
     expect(isGoogleWorkspaceScopeGrant([scope("gmail.send")])).toBe(false);
+    for (const legacy of ["chat.spaces.readonly", "chat.messages.readonly", "chat.messages.create", "directory.readonly",
+      "userinfo.profile", "contacts.readonly", "calendar.readonly", "gmail.modify"]) {
+      expect(isGoogleWorkspaceScopeGrant([scope("documents"), scope(legacy)]), legacy).toBe(false);
+    }
   });
 
   it("declining Gmail leaves Drive available without enabling Gmail or Docs", () => {

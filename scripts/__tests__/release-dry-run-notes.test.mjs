@@ -46,6 +46,7 @@ list_public_package_info() {
 package_publish_tool() { printf 'pnpm\\n'; }
 next_stable_version() { printf '2026.710.0\\n'; }
 next_prerelease_version() { printf '2026.710.0-%s.0\\n' "$1"; }
+next_canary_version_from_source() { next_prerelease_version canary "$3"; }
 release_notes_file() { printf '%s/releases/v%s.md\\n' "$REPO_ROOT" "$1"; }
 stable_tag_name() { printf 'v%s\\n' "$1"; }
 prerelease_tag_name() { printf '%s/v%s\\n' "$1" "$2"; }

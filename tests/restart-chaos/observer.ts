@@ -543,6 +543,8 @@ export class TaskObserver {
       }
     }
     if (this.record.deadlineAt !== null && now > this.record.deadlineAt && !this.supervisor.faultInProgress) {
+      if (this.restCandidateSince !== null && this.restCandidateSince <= this.record.deadlineAt
+        && now - this.restCandidateSince < REST_CONFIRM_MS) return;
       this.record.timedOut = true;
       this.record.finalStatus = sample.issueStatus ?? this.record.finalStatus;
       this.done = true;
