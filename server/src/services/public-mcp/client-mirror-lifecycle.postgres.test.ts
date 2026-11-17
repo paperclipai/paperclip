@@ -19,6 +19,7 @@ import {deleteCompany} from "../company-deletion.js";
 import {createPublicMcpOAuth,DEVICE_GRANT} from "./oauth.js";
 import {startMcpRevocationIndexSync} from "./revocation-index-sync.js";
 import {startMcpClientMirrorSync} from "./client-mirror-sync.js";
+import {museReceiver} from "../muse-receiver.js";
 import {githubConnectionEventService} from "../github-connection-events.js";
 import {registerGitHubConnectionEventWork} from "../github-connection-work.js";
 import {hasConnectionEventWakeReceiver} from "../connection-event-wake.js";
@@ -386,5 +387,83 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect((await db.select().from(devices).where(eq(devices.clientId,legacy.client.client_id)))[0].expiresAt).toEqual(expiry);
     await quiet();
   },90_000);
+
+  for(const disposition of ["commit","rollback","stop"] as const)it(`holds Muse admission through the normal mirror cutover ${disposition}`,async()=>{
+    await instanceSettingsService(db).updateExperimental({enableMuse:true,enableNativeRunner:true});remoteAvailable=true;
+    const receiver=museReceiver(db),blocker=createDb(configured!,{maxConnections:1});receiver.start();
+    const held=Promise.withResolvers<void>(),release=Promise.withResolvers<void>(),cutoverIssued=Promise.withResolvers<void>();
+    const constraint=`muse_cutover_${randomUUID().replaceAll("-","")}`;
+    let hold:Promise<unknown>|undefined,starting:ReturnType<typeof start>|undefined,stopping:Promise<unknown>|undefined;
+    let afterRemoteComplete=false,primary:unknown;
+    const priorDebug=db.$client.options.debug;
+    db.$client.options.debug=(connection,query,parameters,types)=>{
+      if(typeof priorDebug==="function")priorDebug(connection,query,parameters,types);
+      if(afterRemoteComplete&&/from\s+"mcp_oauth_client_mirror_state"[\s\S]*for update/i.test(query))cutoverIssued.resolve();
+    };
+    const completeWithMuse=async(value:McpClientMirrorRequest)=>{
+      const result=await publish(value);
+      if(value.operation!=="complete"||!value.museReceivers)return result;
+      if(!hold){
+        hold=blocker.transaction(async tx=>{
+          await tx.select().from(state).where(eq(state.id,"public")).for("update");held.resolve();await release.promise;
+        });
+        // Attach a handler immediately; normal finally joins the original actor.
+        void hold.catch(()=>{});
+        await Promise.race([held.promise,hold.then(()=>{throw new Error("Owned mirror blocker finished before acquiring its row");})]);
+      }
+      const receipt={...result.receipt!,museReceivers:value.museReceivers};receipt.generation=mcpClientMirrorGeneration(receipt);ack=receipt;
+      afterRemoteComplete=true;return{complete:true,receipt};
+    };
+    try {
+      if(disposition==="rollback")await db.execute(sql`alter table ${state} add constraint ${sql.identifier(constraint)} check (receipt is null)`);
+      starting=start(instanceId,completeWithMuse);
+      await Promise.race([cutoverIssued.promise,starting.then(()=>{throw new Error("Normal mirror missed its actual cutover row-lock frontier");})]);
+      expect(ack?.museReceivers).toBeDefined();expect((await current())?.receipt).toBeNull();
+      const queriesBefore=queryCount;let blocked:unknown;
+      try {await receiver.signal(randomUUID(),origin+"/api/muse");}catch(error){blocked=error;}
+      console.info("MUSE_REAL_CUTOVER_FRONTIER",JSON.stringify({disposition,controlledPublicationPortCompleteAck:true,
+        actualCutoverStatementIssued:true,localReceiptStillNull:true,signalStatus:(blocked as {status?:number})?.status,
+        queriesBefore,queriesAfter:queryCount}));
+      expect(blocked).toMatchObject({status:503});expect(queryCount).toBe(queriesBefore);
+      if(disposition==="stop"){
+        // Abort the real worker while its callback owns a blocked transaction.
+        // Its fence must remain until that transaction actually settles.
+        stopping=coordinator!.stop();
+        await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:503});
+        await receiver.stop();
+      }
+      release.resolve();await hold;await starting;
+      if(disposition==="rollback"){
+        const sqlFailures=errors.flatMap(error=>{
+          let current:unknown=error;const seen=new Set<unknown>();
+          while(current&&typeof current==="object"&&!seen.has(current)){
+            seen.add(current);const failure=current as {code?:string;constraint_name?:string;cause?:unknown};
+            if(failure.code)return[{code:failure.code,constraint:failure.constraint_name}];current=failure.cause;
+          }
+          return[];
+        });
+        expect(sqlFailures).toContainEqual({code:"23514",constraint});expect((await current())?.receipt).toBeNull();
+        await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:410});
+        await db.execute(sql`alter table ${state} drop constraint ${sql.identifier(constraint)}`);
+        // The existing pending worker retries normally; no fake ACK or direct receipt write.
+        const recovered=await acknowledged();expect(recovered.deviceCutoverAt).toBeTruthy();
+        expect(recovered.receipt?.museReceivers).toBeDefined();
+      }else{
+        await stopping;const committed=await acknowledged();expect(committed.deviceCutoverAt).toBeTruthy();
+        expect(committed.receipt?.museReceivers).toBeDefined();
+        if(disposition==="stop")await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:503});
+        else await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:410});
+      }
+    }catch(error){primary=error;}
+    finally {
+      release.resolve();const joined=await Promise.allSettled([...(hold?[hold]:[]),...(starting?[starting]:[]),...(stopping?[stopping]:[])]);
+      const failures=joined.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      db.$client.options.debug=priorDebug;
+      for(const close of [()=>coordinator?.stop(),()=>receiver.stop(),()=>db.execute(sql`alter table ${state} drop constraint if exists ${sql.identifier(constraint)}`),()=>blocker.$client.end({timeout:1})]){
+        try {await close();}catch(error){failures.push(error);}
+      }
+      if(primary||failures.length)throw new AggregateError([...(primary?[primary]:[]),...failures],"Muse normal cutover original and cleanup failures");
+    }
+  },30_000);
 
 });

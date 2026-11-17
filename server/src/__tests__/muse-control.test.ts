@@ -3950,4 +3950,140 @@ describe("personal Muse control plane",()=>{
     expect((await dot.authenticate(dotTokens.access_token)).actor).toMatchObject({type:"agent",agentId:agent.id});const [dotRefresh]=await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash,hashMcpSecret(dotTokens.refresh_token!)));expect(dotRefresh.expiresAt).toBeNull();
   });
 
+  it("bounds a managed public signal burst before SQL while coalescing and durably counting every accepted contact",async()=>{
+    const f=await actualReadyContact();await museReceiver(f.receiverOwner).stop();
+    const reset=await applyActualManagedContactIdentity();
+    const captured=Promise.withResolvers<void>(),release=Promise.withResolvers<void>(),authorities=Promise.withResolvers<void>();
+    let transactions=0,queries=0,primary:unknown,fakeIntervals=false;
+    const priorDebug=f.receiverOwner.$client.options.debug;
+    f.receiverOwner.$client.options.debug=(connection,query,parameters,types)=>{
+      queries++;if(typeof priorDebug==="function")priorDebug(connection,query,parameters,types);
+    };
+    const owner=new Proxy(f.receiverOwner,{get(target,key,receiver){
+      if(key!=="transaction")return Reflect.get(target,key,receiver);
+      return async(...args:Parameters<typeof db.transaction>)=>{
+        const ordinal=++transactions;
+        // A real ready signal's first transaction is authority; its second is
+        // the first contact batch. Park that batch before normal SQL begins.
+        if(ordinal===2){captured.resolve();await release.promise;}
+        const result=await Reflect.apply(target.transaction,target,args);
+        if(ordinal===5)authorities.resolve();return result;
+      };
+    }});
+    const receiver=museReceiver(owner),app=express();app.use(museTransportRoutes(owner,oauthOrigin));app.use(errorHandler);
+    const server=createServer(app),contacts:Promise<request.Response>[]=[];
+    const read=()=>db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
+    const total=(rows:Awaited<ReturnType<typeof read>>)=>rows.reduce((sum,row)=>sum+row.contacts,0);
+    try {
+      const origin=await listenMuseHttp(server),before=await read();
+      const poll=()=>request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id).then(response=>response);
+      contacts.push(poll());
+      await Promise.race([captured.promise,contacts[0].then(response=>{throw new Error(`Initial managed signal missed the persistence gate: HTTP ${response.status}`);})]);
+      for(let i=0;i<3;i++)contacts.push(poll());
+      await Promise.race([authorities.promise,...contacts.slice(1).map(contact=>contact.then(response=>{
+        throw new Error(`Burst signal settled before its owned persistence gate: HTTP ${response.status}`);
+      }))]);release.resolve();
+      const first=await Promise.all(contacts);expect(first.map(response=>response.status)).toEqual([200,200,200,200]);
+      const initialSharedTransactions=transactions;
+      expect(initialSharedTransactions).toBe(6); // Four real authority transactions, two shared persistence batches.
+      expect(total(await read())-total(before)).toBe(4);
+      for(let i=4;i<60;i++)expect((await poll()).status).toBe(200);
+      const queriesBefore=queries,limited=await poll(),saved=await read();
+      console.info("MUSE_SIGNAL_RESOURCE_FRONTIER",JSON.stringify({initialAccepted:60,limitedStatus:limited.status,
+        queriesBefore,queriesAfter:queries,durableDelta:total(saved)-total(before),initialSharedTransactions}));
+      expect(limited.status).toBe(429);expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+      expect(queries).toBe(queriesBefore);expect(total(saved)-total(before)).toBe(60);
+      // No permission or signal result is cached, and empty normal interval
+      // callbacks do not write. This is a fake interval/real SQL control, not
+      // physical wall-clock quiet qualification.
+      vi.useFakeTimers({toFake:["setInterval","clearInterval"]});fakeIntervals=true;
+      receiver.start();const quietQueries=queries;
+      await vi.advanceTimersByTimeAsync(60_000);expect(queries).toBe(quietQueries);
+      await receiver.stop();expect(await read()).toEqual(saved);
+    }catch(error){primary=error;}
+    finally {
+      release.resolve();const settled=await Promise.allSettled(contacts);
+      const errors=settled.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      for(const close of [()=>receiver.stop(),()=>closeMuseHttp(server),()=>reset(),()=>f.receiverOwner.$client.end({timeout:1})]){
+        try {await close();}catch(error){errors.push(error);}
+      }
+      f.receiverOwner.$client.options.debug=priorDebug;if(fakeIntervals)vi.useRealTimers();
+      if(primary||errors.length)throw new AggregateError([...(primary?[primary]:[]),...errors],"Muse resource burst original and cleanup failures");
+    }
+  },30_000);
+
+  it("checks current Muse authority again after a managed accepted public signal",async()=>{
+    const f=await actualReadyContact(),reset=await applyActualManagedContactIdentity(),receiver=museReceiver(f.receiverOwner);
+    const app=express();app.use(museTransportRoutes(f.receiverOwner,oauthOrigin));app.use(errorHandler);
+    const server=createServer(app);let primary:unknown;
+    try {
+      const origin=await listenMuseHttp(server),poll=()=>request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);
+      expect((await poll()).status).toBe(200);
+      const saved=await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
+      const current=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
+      await f.broker.revoke(f.company.id,f.agent.id,f.operatorId,{bindingId:f.binding.id,generation:f.binding.generation,expectedRevision:current.revision});
+      expect((await poll()).status).toBe(410);
+      expect(await db.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id))).toEqual(saved);
+    }catch(error){primary=error;}
+    finally {
+      const errors:unknown[]=[];
+      for(const close of [()=>receiver.stop(),()=>closeMuseHttp(server),()=>reset(),()=>f.receiverOwner.$client.end({timeout:1})]){
+        try {await close();}catch(error){errors.push(error);}
+      }
+      if(primary||errors.length)throw new AggregateError([...(primary?[primary]:[]),...errors],"Muse current authority original and cleanup failures");
+    }
+  },15_000);
+
+  it("shares one in-flight Muse admission ceiling across bindings and keeps stop closed after a finite handoff",async()=>{
+    const first=await actualReadyContact();let second:Awaited<ReturnType<typeof actualReadyContact>>|undefined;
+    let reset:(()=>Promise<void>)|undefined,primary:unknown,receiver:ReturnType<typeof museReceiver>|undefined,server:Server|undefined;
+    const release=Promise.withResolvers<void>(),allEntered=Promise.withResolvers<void>(),extraIngress=Promise.withResolvers<void>();
+    const contacts:Promise<request.Response>[]=[];let handoff:Promise<void>|undefined,stopping:Promise<void>|undefined;
+    let entered=0,candidateReads=0,requests=0,readsAtExtra=-1;
+    try {
+      second=await actualReadyContact();await museReceiver(first.receiverOwner).stop();await museReceiver(second.receiverOwner).stop();
+      reset=await applyActualManagedContactIdentity();
+      const owner=new Proxy(first.receiverOwner,{get(target,key,proxy){
+        if(key==="select")return (...args:Parameters<typeof db.select>)=>{candidateReads++;return Reflect.apply(target.select,target,args);};
+        if(key!=="transaction")return Reflect.get(target,key,proxy);
+        return async(...args:Parameters<typeof db.transaction>)=>{if(++entered===32)allEntered.resolve();await release.promise;return Reflect.apply(target.transaction,target,args);};
+      }});
+      receiver=museReceiver(owner);const app=express();
+      app.use((_req,_res,next)=>{if(++requests===33)extraIngress.resolve();next();});
+      app.use(museTransportRoutes(owner,oauthOrigin));app.use(errorHandler);server=createServer(app);
+      const origin=await listenMuseHttp(server),ids=[first.binding.id,second.binding.id];
+      const before=await db.select().from(museReceiverContactBuckets).where(inArray(museReceiverContactBuckets.bindingId,ids));
+      const total=(rows:typeof before)=>rows.reduce((sum,row)=>sum+row.contacts,0);
+      const poll=(id:string)=>request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",id).then(response=>response);
+      for(let i=0;i<32;i++)contacts.push(poll(ids[i%2]));
+      await Promise.race([allEntered.promise,...contacts.map(contact=>contact.then(response=>{
+        throw new Error(`Admitted signal missed its real transaction frontier: HTTP ${response.status}`);
+      }))]);
+      const extra=poll(first.binding.id);contacts.push(extra);
+      await Promise.race([extraIngress.promise,extra.then(response=>{throw new Error(`Excess signal missed owned HTTP ingress: ${response.status}`);})]);
+      readsAtExtra=candidateReads;
+      handoff=receiver.prepareHostedHandoff(new AbortController().signal);
+      const afterFence=poll(second.binding.id);contacts.push(afterFence);stopping=receiver.stop();
+      release.resolve();const replies=await Promise.all(contacts);await handoff;await stopping;
+      console.info("MUSE_SIGNAL_INFLIGHT_FRONTIER",JSON.stringify({initialAdmitted:32,bindings:2,readsAtExtra,
+        excessStatus:replies[32].status,fencedStatus:replies[33].status,allActorsJoined:true}));
+      expect(readsAtExtra).toBe(32);expect(replies.slice(0,32).map(response=>response.status)).toEqual(Array(32).fill(200));
+      expect(replies[32].status).toBe(503);expect(replies[33].status).toBe(503);
+      const saved=await db.select().from(museReceiverContactBuckets).where(inArray(museReceiverContactBuckets.bindingId,ids));
+      expect(total(saved)-total(before)).toBe(32);
+      await expect(receiver.signal(first.binding.id)).rejects.toMatchObject({status:503});
+      receiver.start();expect((await poll(first.binding.id)).status).toBe(200);await receiver.stop();
+      expect(total(await db.select().from(museReceiverContactBuckets).where(inArray(museReceiverContactBuckets.bindingId,ids)))-total(before)).toBe(33);
+    }catch(error){primary=error;}
+    finally {
+      release.resolve();const joined=await Promise.allSettled([...contacts,...(handoff?[handoff]:[]),...(stopping?[stopping]:[])]);
+      const errors=joined.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      for(const close of [()=>receiver?.stop(),()=>museReceiver(first.receiverOwner).stop(),()=>second?museReceiver(second.receiverOwner).stop():undefined,
+        ()=>closeMuseHttp(server),()=>reset?.(),()=>first.receiverOwner.$client.end({timeout:1}),()=>second?.receiverOwner.$client.end({timeout:1})]){
+        try {await close();}catch(error){errors.push(error);}
+      }
+      if(primary||errors.length)throw new AggregateError([...(primary?[primary]:[]),...errors],"Muse finite frontier original and cleanup failures");
+    }
+  },30_000);
+
 });
