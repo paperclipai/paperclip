@@ -2,7 +2,6 @@ import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
-import { logActivity } from "../services/activity-log.js";
 import { workloadIdentityService } from "../services/workload-identity.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -57,21 +56,14 @@ export function workloadIdentityRoutes(db: Db) {
     const companyId = companyIdSchema.parse(req.params.companyId);
     assertCompanyAccess(req, companyId);
     const { step } = req.body as z.infer<typeof rotationSchema>;
+    const { actorType, actorId } = getActorInfo(req);
+    // The service writes the activity entry in the same transaction as the key change.
+    const actor = { actorType, actorId };
     const result = step === "begin"
-      ? await service.beginRotation(companyId)
+      ? await service.beginRotation(companyId, actor)
       : step === "complete"
-        ? await service.completeRotation(companyId)
-        : await service.emergencyRotation(companyId);
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      action: `workload_identity.rotation_${step}`,
-      entityType: "company",
-      entityId: companyId,
-      details: { keyId: result.keyId },
-    });
+        ? await service.completeRotation(companyId, actor)
+        : await service.emergencyRotation(companyId, actor);
     res.json({ step, ...result, state: await service.describe(companyId) });
   });
   return router;

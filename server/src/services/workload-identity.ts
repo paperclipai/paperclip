@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, randomUUID, sign, type KeyObject } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gt, inArray, lte, or } from "drizzle-orm";
 import {
   companies,
   companyWorkloadIdentityKeys,
@@ -8,6 +8,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { persistActivity, publishActivity, type LogActivityInput } from "./activity-log.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { generateClientKeyPair, jwkThumbprint } from "./tool-access/oauth/client-credentials.js";
@@ -78,10 +79,11 @@ function isPublished(row: KeyRow, now: Date): boolean {
     && now.getTime() - row.statusChangedAt.getTime() < WORKLOAD_IDENTITY_RETIRING_GRACE_MS;
 }
 
-const privateKeyCache = new Map<string, KeyObject>();
+/** Only each company's current signing key is held decrypted; a rotated-out key is dropped. */
+const signingKeyCache = new Map<string, { keyId: string; privateKey: KeyObject }>();
 
 export function resetWorkloadIdentityKeyCacheForTests() {
-  privateKeyCache.clear();
+  signingKeyCache.clear();
 }
 
 function base64Url(value: Buffer | string): string {
@@ -132,9 +134,8 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
   }
 
   async function privateKeyFor(row: KeyRow): Promise<KeyObject> {
-    const cacheKey = `${row.companyId}:${row.keyId}`;
-    const cached = privateKeyCache.get(cacheKey);
-    if (cached) return cached;
+    const cached = signingKeyCache.get(row.companyId);
+    if (cached?.keyId === row.keyId) return cached.privateKey;
     const pem = await localEncryptedProvider.resolveVersion({ material: row.privateKeyMaterial, externalRef: null });
     const privateKey = createPrivateKey(pem);
     // Fail closed on corruption or a wrong master key; never sign with a key that isn't the published one.
@@ -142,15 +143,58 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
       || jwkThumbprint(createPublicKey(privateKey).export({ format: "jwk" })) !== row.keyId) {
       throw new Error("Workload identity private key does not match its published key");
     }
-    privateKeyCache.set(cacheKey, privateKey);
+    signingKeyCache.set(row.companyId, { keyId: row.keyId, privateKey });
     return privateKey;
   }
 
+  /** Published keys only, filtered in SQL so reads stay bounded however many rotations happened. */
   async function keysFor(companyId: string): Promise<KeyRow[]> {
+    const graceStart = new Date(now().getTime() - WORKLOAD_IDENTITY_RETIRING_GRACE_MS);
     return db.select().from(companyWorkloadIdentityKeys).where(and(
       eq(companyWorkloadIdentityKeys.companyId, companyId),
-      inArray(companyWorkloadIdentityKeys.status, ["next", "active", "retiring"]),
+      or(
+        inArray(companyWorkloadIdentityKeys.status, ["next", "active"]),
+        and(eq(companyWorkloadIdentityKeys.status, "retiring"),
+          gt(companyWorkloadIdentityKeys.statusChangedAt, graceStart)),
+      ),
     ));
+  }
+
+  /** Retiring keys past their grace period become retired, so they leave every view. */
+  async function settleRetiring(tx: Db, companyId: string, at: Date) {
+    await tx.update(companyWorkloadIdentityKeys).set({ status: "retired", statusChangedAt: at }).where(and(
+      eq(companyWorkloadIdentityKeys.companyId, companyId),
+      eq(companyWorkloadIdentityKeys.status, "retiring"),
+      lte(companyWorkloadIdentityKeys.statusChangedAt, new Date(at.getTime() - WORKLOAD_IDENTITY_RETIRING_GRACE_MS)),
+    ));
+  }
+
+  type RotationActor = Pick<LogActivityInput, "actorType" | "actorId">;
+
+  /** Runs one rotation step and its activity entry in one transaction; publishes the entry after commit. */
+  async function rotate(
+    companyId: string,
+    actor: RotationActor,
+    step: "begin" | "complete" | "emergency",
+    work: (tx: Db, at: Date) => Promise<{ keyId: string; created?: boolean }>,
+  ) {
+    const { result, publication } = await db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      await lockCompany(tx, companyId);
+      const at = now();
+      await settleRetiring(tx, companyId, at);
+      const result = await work(tx, at);
+      const { publication } = await persistActivity(tx, {
+        companyId, ...actor,
+        action: `workload_identity.rotation_${step}`,
+        entityType: "company", entityId: companyId,
+        details: { keyId: result.keyId },
+      });
+      return { result, publication };
+    });
+    publishActivity(publication);
+    if (step !== "begin") signingKeyCache.delete(companyId);
+    return result;
   }
 
   async function lockCompany(tx: Db, companyId: string) {
@@ -213,10 +257,15 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
           code: "workload_identity_issuer_changed",
         });
       }
-      const [connection] = await db.select({ id: toolConnections.id }).from(toolConnections).where(and(
-        eq(toolConnections.id, input.connectionId), eq(toolConnections.companyId, input.companyId),
-      ));
+      const [connection] = await db.select({ status: toolConnections.status, enabled: toolConnections.enabled })
+        .from(toolConnections).where(and(
+          eq(toolConnections.id, input.connectionId), eq(toolConnections.companyId, input.companyId),
+        ));
       if (!connection) throw notFound("Connection not found");
+      // Disabling a connection must stop new cloud credentials at once.
+      if (!connection.enabled || connection.status !== "active") {
+        throw unprocessable("This connection is not active.", { code: "workload_identity_connection_inactive" });
+      }
 
       const key = await ensureActiveKey(input.companyId);
       const privateKey = await privateKeyFor(key);
@@ -269,9 +318,8 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
     },
 
     /** Step 1 of a planned rotation: publish a `next` key alongside the active one. */
-    async beginRotation(companyId: string) {
-      return db.transaction(async (tx) => {
-        await lockCompany(tx as unknown as Db, companyId);
+    async beginRotation(companyId: string, actor: RotationActor) {
+      return rotate(companyId, actor, "begin", async (tx) => {
         const rows = await tx.select().from(companyWorkloadIdentityKeys).where(and(
           eq(companyWorkloadIdentityKeys.companyId, companyId),
           inArray(companyWorkloadIdentityKeys.status, ["next", "active"]),
@@ -283,20 +331,18 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
         if (pending) return { keyId: pending.keyId, created: false };
         const [created] = await tx.insert(companyWorkloadIdentityKeys)
           .values(await newKeyValues(companyId, "next")).returning();
-        return { keyId: created.keyId, created: true };
+        return { keyId: created!.keyId, created: true };
       });
     },
 
     /** Step 2: once the `next` key has been published long enough, it signs; the old key stays published for a grace period. */
-    async completeRotation(companyId: string) {
-      return db.transaction(async (tx) => {
-        await lockCompany(tx as unknown as Db, companyId);
+    async completeRotation(companyId: string, actor: RotationActor) {
+      return rotate(companyId, actor, "complete", async (tx, at) => {
         const [next] = await tx.select().from(companyWorkloadIdentityKeys).where(and(
           eq(companyWorkloadIdentityKeys.companyId, companyId),
           eq(companyWorkloadIdentityKeys.status, "next"),
         ));
         if (!next) throw conflict("Start a rotation first.", { code: "workload_identity_no_rotation" });
-        const at = now();
         const readyAt = new Date(next.createdAt.getTime() + WORKLOAD_IDENTITY_PUBLISH_BEFORE_USE_MS);
         if (readyAt > at) {
           throw conflict("The new key must be published for 24 hours before it can sign.", {
@@ -314,17 +360,15 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
     },
 
     /** For a key believed exposed: stop publishing every current key and sign with a fresh one immediately. */
-    async emergencyRotation(companyId: string) {
-      return db.transaction(async (tx) => {
-        await lockCompany(tx as unknown as Db, companyId);
-        const at = now();
+    async emergencyRotation(companyId: string, actor: RotationActor) {
+      return rotate(companyId, actor, "emergency", async (tx, at) => {
         await tx.update(companyWorkloadIdentityKeys).set({ status: "retired", statusChangedAt: at }).where(and(
           eq(companyWorkloadIdentityKeys.companyId, companyId),
           inArray(companyWorkloadIdentityKeys.status, ["next", "active", "retiring"]),
         ));
         const [created] = await tx.insert(companyWorkloadIdentityKeys)
           .values(await newKeyValues(companyId, "active")).returning();
-        return { keyId: created.keyId };
+        return { keyId: created!.keyId };
       });
     },
   };

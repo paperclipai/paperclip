@@ -17,6 +17,8 @@ import {
   toolConnections,
   type Db,
 } from "@paperclipai/db";
+import { generateClientKeyPair } from "../services/tool-access/oauth/client-credentials.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -30,6 +32,7 @@ import {
 } from "../services/workload-identity.js";
 
 const ORIGIN = "https://acme.paperclip.app";
+const actor = { actorType: "user" as const, actorId: "board-user" };
 const externalDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKLOAD_IDENTITY_TEST_DATABASE_URL");
 
 function decode(token: string) {
@@ -67,14 +70,15 @@ describe("company workload identity issuer", () => {
     return id;
   }
 
-  async function connection(companyId: string) {
+  async function connection(companyId: string, state: { status?: "draft" | "active" | "disabled"; enabled?: boolean } = {}) {
     const [application] = await db.insert(toolApplications).values({
-      companyId, applicationKey: `aws-${randomUUID()}`, name: "AWS", type: "mcp_http", status: "active",
+      companyId, applicationKey: `aws-${randomUUID()}`, name: `AWS ${randomUUID().slice(0, 8)}`, type: "mcp_http", status: "active",
     }).returning();
     const [row] = await db.insert(toolConnections).values({
       companyId, applicationId: application!.id, name: `AWS ${randomUUID().slice(0, 6)}`,
       uid: `aws-${randomUUID()}`, connectionKind: "managed", ownership: "customer",
-      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "shared", status: "active", enabled: true,
+      transport: "mcp_remote", authKind: "oauth", credentialPolicy: "shared",
+      status: state.status ?? "active", enabled: state.enabled ?? true,
     }).returning();
     return row!.id;
   }
@@ -137,7 +141,7 @@ describe("company workload identity issuer", () => {
   it("never publishes private key members (AWS rejects the set and the key counts as exposed)", async () => {
     const companyId = await company();
     await service().ensureActiveKey(companyId);
-    await service().beginRotation(companyId);
+    await service().beginRotation(companyId, actor);
     const keySet = await service().publicKeySet(companyId);
     expect(keySet!.keys).toHaveLength(2);
     for (const key of keySet!.keys) {
@@ -200,16 +204,16 @@ describe("company workload identity issuer", () => {
     const companyId = await company();
     const connectionId = await connection(companyId);
     const original = await service().ensureActiveKey(companyId);
-    const begun = await service().beginRotation(companyId);
+    const begun = await service().beginRotation(companyId, actor);
     expect(begun.created).toBe(true);
-    expect((await service().beginRotation(companyId)).created).toBe(false);
-    await expect(service().completeRotation(companyId))
+    expect((await service().beginRotation(companyId, actor)).created).toBe(false);
+    await expect(service().completeRotation(companyId, actor))
       .rejects.toMatchObject({ status: 409, details: { code: "workload_identity_rotation_not_ready" } });
     expect((await service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" })).keyId)
       .toBe(original.keyId);
 
     clock = new Date(clock.getTime() + WORKLOAD_IDENTITY_PUBLISH_BEFORE_USE_MS);
-    await service().completeRotation(companyId);
+    await service().completeRotation(companyId, actor);
     const afterSwap = await service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" });
     expect(afterSwap.keyId).toBe(begun.keyId);
     expect((await service().publicKeySet(companyId))!.keys.map((key) => key.kid).sort())
@@ -217,13 +221,56 @@ describe("company workload identity issuer", () => {
 
     clock = new Date(clock.getTime() + WORKLOAD_IDENTITY_RETIRING_GRACE_MS);
     expect((await service().publicKeySet(companyId))!.keys.map((key) => key.kid)).toEqual([begun.keyId]);
+    expect((await service().describe(companyId)).keys.map((key) => key.keyId)).toEqual([begun.keyId]);
+    await service().beginRotation(companyId, actor);
+    const [settled] = await db.select().from(companyWorkloadIdentityKeys).where(and(
+      eq(companyWorkloadIdentityKeys.companyId, companyId), eq(companyWorkloadIdentityKeys.keyId, original.keyId),
+    ));
+    expect(settled!.status).toBe("retired");
 
-    const emergency = await service().emergencyRotation(companyId);
+    const emergency = await service().emergencyRotation(companyId, actor);
     const published = (await service().publicKeySet(companyId))!.keys.map((key) => key.kid);
     expect(published).toEqual([emergency.keyId]);
     const next = await service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" });
     expect(next.keyId).toBe(emergency.keyId);
     expect(verifiesAgainst(afterSwap.token, (await service().publicKeySet(companyId))!.keys)).toBe(false);
+  });
+
+  it("refuses to sign when the stored private key is not the published one", async () => {
+    const companyId = await company();
+    const connectionId = await connection(companyId);
+    const key = await service().ensureActiveKey(companyId);
+    const other = await generateClientKeyPair("ES256");
+    const { material } = await localEncryptedProvider.createSecret({ value: other.privateKeyPem });
+    await db.update(companyWorkloadIdentityKeys).set({ privateKeyMaterial: material })
+      .where(eq(companyWorkloadIdentityKeys.id, key.id));
+    resetWorkloadIdentityKeyCacheForTests();
+    await expect(service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" }))
+      .rejects.toThrow(/does not match its published key/);
+    expect(await db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.companyId, companyId), eq(toolAccessAuditEvents.action, "workload_identity.token_issued"),
+    ))).toHaveLength(0);
+  });
+
+  it("stops issuing tokens for a disabled, draft or switched-off connection", async () => {
+    const companyId = await company();
+    for (const state of [{ status: "disabled" as const }, { status: "draft" as const }, { enabled: false }]) {
+      const connectionId = await connection(companyId, state);
+      await expect(service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" }))
+        .rejects.toMatchObject({ status: 422, details: { code: "workload_identity_connection_inactive" } });
+    }
+  });
+
+  it("writes a rotation's activity entry only when the key change commits", async () => {
+    const companyId = await company();
+    await expect(service().beginRotation(companyId, actor)).rejects.toMatchObject({ status: 409 });
+    const entries = () => db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId), eq(activityLog.action, "workload_identity.rotation_begin"),
+    ));
+    expect(await entries()).toHaveLength(0);
+    await service().ensureActiveKey(companyId);
+    await service().beginRotation(companyId, actor);
+    expect(await entries()).toHaveLength(1);
   });
 
   it("limits status and rotation to the board and logs each rotation", async () => {

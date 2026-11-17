@@ -26,7 +26,8 @@ Responses are cacheable for five minutes.
 
 The issuer is `https://{instance}/oidc/companies/{companyId}`. Tokens have
 `sub` set to `connection:{connectionId}`, an `aud` chosen by the connection
-type, and a lifetime of five minutes.
+type, and a lifetime of five minutes. Only an enabled, active connection can get a token,
+so disabling a connection stops new tokens at once.
 
 ## Board endpoints
 
@@ -47,5 +48,6 @@ The rotation body is `{ "step": "begin" | "complete" | "emergency" }`:
 - `emergency` stops publishing every current key and signs with a fresh one
   immediately. Use it when a key may be exposed.
 
-Each step writes an activity log entry. Responses never include private key
+Each step writes its activity log entry in the same transaction as the key
+change. Responses never include private key
 material.
