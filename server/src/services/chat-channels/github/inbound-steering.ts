@@ -58,7 +58,8 @@ async function consumeSteeredWake(db: Db, action: Action, request: DurableChatWa
     if (!run || !identity || boundRunIssueId(run) !== request.issueId ||
         run.contextSnapshot?.chatConversationId !== action.conversationId) return false;
     await acceptSteeredIdentity(tx, identity);
-    if (task.executionRunId && task.executionRunId !== run.id) await tx.update(issues)
+    if ((task.executionRunId && task.executionRunId !== run.id) ||
+        (task.continuationIdentityContextId !== run.activeIdentityContextId && task.continuationIdentityContextId !== identity.id)) await tx.update(issues)
       .set({ continuationIdentityContextId: task.continuationIdentityContextId }).where(eq(issues.id, task.id));
     const [comment] = await tx.select({ updatedAt: issueComments.updatedAt, body: issueComments.body }).from(issueComments)
       .where(and(eq(issueComments.id, request.commentId), eq(issueComments.companyId, request.companyId)));

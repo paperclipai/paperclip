@@ -374,7 +374,7 @@ describe("GitHub inbound steering", () => {
     } finally { schedule.mockRestore(); }
   });
 
-  it("keeps a successor run's task lineage when an earlier run's acknowledgement is recovered", async () => {
+  it.each(["running", "succeeded"] as const)("keeps a %s successor run's task lineage when an earlier acknowledgement is recovered", async status => {
     const f = await fixture();
     steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
     await f.owner.processInboundWakeup(f.delivery.id);
@@ -387,7 +387,8 @@ describe("GitHub inbound steering", () => {
         wakeCommentId: next.comment.id, wakeCommentIds: [next.comment.id] } }).returning();
     const current = await initializeRunIdentity(db, { companyId: f.companyId, runId: successor.id, issueId: f.issue.id,
       responsibleUserId: f.userId, messageIds: [next.comment.id], cause: "instruction" });
-    await db.update(issues).set({ executionRunId: successor.id }).where(eq(issues.id, f.issue.id));
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, successor.id));
+    await db.update(issues).set({ executionRunId: status === "running" ? successor.id : null }).where(eq(issues.id, f.issue.id));
     f.restart();
     const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
     try {
