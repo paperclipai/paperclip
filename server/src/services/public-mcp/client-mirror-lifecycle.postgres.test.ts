@@ -120,9 +120,37 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     let mirror:ReturnType<typeof startMcpClientMirrorSync>["worker"]|undefined;
     let ordinary:ReturnType<typeof registerGitHubConnectionEventWork>|undefined;
     let primary:unknown;
+    let diagnosticPhase="old-owner-device";
+    const mutationStatements:Array<{ordinal:number;phase:string;statement:string;connection:number|null}>=[];
+    let mutationOverflow=0,publicationOverflow=0,diagnosticErrors=0;
+    const publications:Array<{phase:string;ordinal:number;operation:string;revision:number;baseRevision:number|null}>=[];
+    const observedPublish=(value:McpClientMirrorRequest)=>{
+      try{if(publications.length<192)publications.push({phase:diagnosticPhase,ordinal:queryCount,operation:value.operation,revision:value.revision,baseRevision:value.baseRevision});else publicationOverflow++;}catch{diagnosticErrors++;}
+      return publish(value);
+    };
+    const previousDebug=db.$client.options.debug;
+    if(typeof previousDebug!=="function")throw new Error("Existing mirror query observer is unavailable");
+    const debug=function(this:unknown,...args:unknown[]){
+      const result=Reflect.apply(previousDebug,this,args);
+      try {
+        const query=typeof args[1]==="string"?args[1]:"";
+        const mirror=/\bmcp_oauth_client_mirror_state\b/.test(query);
+        const statement=mirror&&/^\s*update\b/i.test(query)&&/"revision"\s*=.*"revision"\s*\+\s*1/i.test(query)?"mirror-revision-increment":
+          mirror&&/^\s*update\b/i.test(query)&&/"receipt"\s*=/i.test(query)?"mirror-receipt-update":
+          mirror&&/^\s*insert\b/i.test(query)?"mirror-state-insert":
+          /pg_advisory_xact_lock\(736721042\)/.test(query)?"mirror-advisory-lock":undefined;
+        if(statement){if(mutationStatements.length<192)mutationStatements.push({ordinal:queryCount,phase:diagnosticPhase,statement,connection:typeof args[0]==="number"?args[0]:null});else mutationOverflow++;}
+      }catch{diagnosticErrors++;}
+      return result;
+    };
+    Reflect.set(db.$client.options,"debug",debug);
+    const diagnostic=(frontier:string)=>{
+      try {console.info("MCP_OLD_CAPABILITY_REVISION_FRONTIER",JSON.stringify({frontier,phase:diagnosticPhase,
+        publications,publicationOverflow,mutationStatements,mutationOverflow,diagnosticErrors}));}catch{diagnosticErrors++;}
+    };
     try {
     await device();const [originalClient]=await db.select().from(clients),[originalDevice]=await db.select().from(devices);
-    mirror=await start();
+    diagnosticPhase="old-owner-start";mirror=await start(instanceId,observedPublish);
     // Real production registration and service lifecycle, with its normal no-consumer
     // disposition. The separate signed-loopback caller control owns pending HTTP enrollment.
     ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
@@ -131,7 +159,7 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
     const old=await acknowledged();expect(old.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
     const outageStart=sent.length;
-    remoteAvailable=true;failures=100;
+    remoteAvailable=true;failures=100;diagnosticPhase="old-owner-stop";
     // First stop the actual metadata owner. Its cleanup must not dispose the
     // ordinary owner sharing this same coordinator/connection-event registry.
     await mirror.stop();
@@ -141,9 +169,11 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     // its existing whole-owner startup path, never duplicate register/private deletion.
     await ordinary.stop();ordinary=undefined;
     expect(hasConnectionEventWakeReceiver(db)).toBe(false);
-    mirror=await start();const worker=mirror;
+    diagnosticPhase="replacement-start";mirror=await start(instanceId,observedPublish);const worker=mirror;
+    diagnosticPhase="replacement-ready";
     ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
-    await ordinary.ready;const pending=(await current())!;
+    await ordinary.ready;diagnosticPhase="ordinary-ready";const pending=(await current())!;
+    diagnostic("before-original-pending-assertions");
     expect(hasConnectionEventWakeReceiver(db)).toBe(true);
     expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
     const metadataError=errors.find(error=>error instanceof Error&&error.message==="controlled mirror outage");
@@ -151,7 +181,7 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect(pending.revision).toBe(old.revision+1);expect(pending.receipt?.revision).toBe(old.revision);expect(pending.deviceCutoverAt).toBeNull();expect((await inspect()).blocked).toBe(true);
     expect(sent.slice(outageStart).map(value=>({operation:value.operation,revision:value.revision}))).toEqual([{operation:"begin",revision:pending.revision}]);
     const recoveryStart=sent.length;
-    failures=0;worker.wake();const next=await acknowledged();expect(next.revision).toBe(pending.revision+1);expect(next.receipt?.revision).toBe(next.revision);expect(next.receipt?.frontDoor).toBe("tenant-personal-v1");expect(next.deviceCutoverAt).toBeInstanceOf(Date);expect((await inspect()).blocked).toBe(false);
+    diagnosticPhase="explicit-recovery-wake";failures=0;worker.wake();const next=await acknowledged();expect(next.revision).toBe(pending.revision+1);expect(next.receipt?.revision).toBe(next.revision);expect(next.receipt?.frontDoor).toBe("tenant-personal-v1");expect(next.deviceCutoverAt).toBeInstanceOf(Date);expect((await inspect()).blocked).toBe(false);
     const recovery=sent.slice(recoveryStart);
     expect(recovery.map(value=>value.operation)).toEqual(["begin","append","append-device-status","complete"]);
     for(const value of recovery){expect(value.revision).toBe(pending.revision+1);expect(value.baseRevision).toBeNull();expect(value.expectedRecords).toBe(1);expect(value.instanceId).toBe(instanceId);expect(value.origin).toBe(origin);}
@@ -170,9 +200,12 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect(hasConnectionEventWakeReceiver(db)).toBe(true);
     await ordinary.stop();ordinary=undefined;
     expect(hasConnectionEventWakeReceiver(db)).toBe(false);
-    } catch(error) { primary=error;throw error; }
+    } catch(error) { primary=error;diagnostic("original-failure");throw error; }
     finally {
+      diagnosticPhase="owned-stop";
       const joined=await Promise.allSettled([mirror?.stop(),ordinary?.stop()]);
+      diagnostic("owned-actors-joined");
+      Reflect.set(db.$client.options,"debug",previousDebug);
       const cleanup=joined.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
       if(cleanup.length)throw new AggregateError(primary===undefined?cleanup:[primary,...cleanup],"Metadata/ordinary caller cleanup remains incomplete");
     }
