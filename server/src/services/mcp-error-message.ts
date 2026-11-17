@@ -5,11 +5,11 @@ import { ToolContentValidationError, validateToolContent } from "./tool-content-
 
 /** Reuse the URL-vault policy for query keys and the event redactor for headers. */
 export function mcpErrorRequestSecrets(values: Record<string, string> | URLSearchParams): string[] {
-  if (values instanceof URLSearchParams) {
-    return [...values].filter(([key]) => isRemoteUrlSecretParameter(key)).map(([, value]) => value);
-  }
-  return Object.entries(values)
-    .filter(([key, value]) => (redactEventPayload({ [key]: value }) as Record<string, unknown>)[key] !== value
+  const query = values instanceof URLSearchParams;
+  const entries = query ? [...values] : Object.entries(values);
+  return entries
+    .filter(([key, value]) => (query && isRemoteUrlSecretParameter(key))
+      || (redactEventPayload({ [key]: value }) as Record<string, unknown>)[key] !== value
       || /^(key|session|mcp-session-id)$/i.test(key))
     .map(([, value]) => value);
 }

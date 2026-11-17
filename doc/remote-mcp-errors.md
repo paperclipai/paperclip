@@ -15,8 +15,8 @@ screen runs on the redacted, bounded text before it is returned or persisted.
 Flagged text uses the generic fallback while keeping the upstream code and
 remote error status. The same configured classifier and regex fallback apply as
 for successful results. Ordinary header and query values are preserved. Query
-secret names use the same rules as URL-vault storage, including code, state and
-nonce. Once a complete remote error arrives, its call timer stops; screening
+secret names combine the URL-vault and existing request redaction rules,
+including code, state, nonce, session and mcp-session-id. Once a complete remote error arrives, its call timer stops; screening
 uses the classifier's own deadline and cannot turn the received error into a
 remote-call timeout.
 

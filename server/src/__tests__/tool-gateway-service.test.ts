@@ -3001,7 +3001,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId: secret.id,
       configPath: "oauth.access_token", versionSelector: "latest" }] }).where(eq(connectionGrants.connectionId, connection.id));
     await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
-      config: { ...connection.config, url: `${connection.config.url}?key=opaque-query-credential&code=opaque-code-credential&state=opaque-state-credential&nonce=opaque-nonce-credential&page=1&mode=r` } })
+      config: { ...connection.config, url: `${connection.config.url}?key=opaque-query-credential&code=opaque-code-credential&state=opaque-state-credential&nonce=opaque-nonce-credential&session=opaque-session-credential&mcp-session-id=opaque-mcp-session-credential&page=1&mode=r` } })
       .where(eq(toolConnections.id, connection.id));
     const server = createServer(async (req, res) => {
       const chunks: Buffer[] = [];
@@ -3011,7 +3011,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, error: {
         code: -32602,
-        message: `Skill refunds page 1 was not found; ${credential}; opaque-query-credential; opaque-code-credential; opaque-state-credential; opaque-nonce-credential; TOKEN=private-message-credential`,
+        message: `Skill refunds page 1 was not found; ${credential}; opaque-query-credential; opaque-code-credential; opaque-state-credential; opaque-nonce-credential; opaque-session-credential; opaque-mcp-session-credential; TOKEN=private-message-credential`,
         data: { password: "private-data-credential", stack: "private-provider-stack" },
       } }));
     });
@@ -3037,12 +3037,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
       connectionId: connection.id, catalogEntryId: catalogEntry.id,
     });
     expect(response.body).not.toHaveProperty("execution");
-    expect(JSON.stringify(response.body)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
+    expect(JSON.stringify(response.body)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
     expect(provider).toHaveBeenCalledTimes(1);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.connectionId, connection.id));
     expect(invocation).toMatchObject({ status: "failed", errorCode: "remote_mcp_error", errorMessage: response.body.error });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
-    expect(JSON.stringify(events)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
+    expect(JSON.stringify(events)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
   });
 
   it("preserves a received remote error when screening outlasts the remote deadline", async () => {
