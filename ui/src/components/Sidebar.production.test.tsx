@@ -94,15 +94,14 @@ describe("production Sidebar ordering", () => {
     expect(container.querySelector('a[href="/responsibilities"]')).toBeNull();
   });
 
-  it("leads with the new dashboard, then Tasks and Inbox, and moves the classic dashboard into Work", async () => {
+  it("leads with the new dashboard, then Tasks and Inbox, and leaves the classic dashboard out", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: true });
     await renderSidebar();
 
     expect(labels(primaryGroup())).toEqual(["Search", "Dashboard", "Tasks", "Inbox"]);
     expect(container.querySelector('a[href="/responsibilities"]')?.textContent).toContain("Dashboard");
-    expect(labels(workSection())[0]).toBe("Classic dashboard");
     expect(container.querySelectorAll('a[href="/issues"]')).toHaveLength(1);
-    expect(container.querySelectorAll('a[href="/dashboard"]')).toHaveLength(1);
+    expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
     // This shell has no Chat row; none is invented.
     expect(container.querySelector('a[href="/chats"]')).toBeNull();
   });

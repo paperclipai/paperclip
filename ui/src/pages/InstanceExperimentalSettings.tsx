@@ -309,6 +309,18 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
+          title="Areas & Responsibilities dashboard"
+          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
+          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
+          checked={enableResponsibilities}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableResponsibilities"
+          managed={managedKeys.enableResponsibilities}
+          ariaLabel="Toggle Areas & Responsibilities dashboard experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Beta skills"
           description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
           checked={enableBetaSkills}
@@ -540,18 +552,6 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMuse"
           managed={managedKeys.enableMuse}
           ariaLabel="Toggle Muse experimental setting"
-        />
-
-        <ExperimentalToggleCard
-          title="New dashboard"
-          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
-          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
-          checked={enableResponsibilities}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableResponsibilities"
-          managed={managedKeys.enableResponsibilities}
-          ariaLabel="Toggle new dashboard experimental setting"
         />
 
         <ExperimentalToggleCard

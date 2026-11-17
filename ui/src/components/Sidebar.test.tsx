@@ -692,13 +692,14 @@ describe("Sidebar", () => {
     const section = (label: string) =>
       [...container.querySelectorAll("nav > div")].find((candidate) => candidate.textContent?.startsWith(label));
 
-    it("leads with the Responsibilities home named Dashboard, then Chat, Tasks and Inbox, and moves the classic dashboard into Work", async () => {
+    it("leads with the Responsibilities home named Dashboard, then Chat, Tasks and Inbox, and leaves the classic dashboard out", async () => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: true });
       const root = await renderSidebar();
 
       expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Chat", "Tasks", "Inbox"]);
       expect(primaryGroup()?.querySelector('a[href="/responsibilities"] svg')?.classList.contains("lucide-compass")).toBe(true);
-      expect(groupLabels(section("Work"))).toEqual(["Classic dashboard", "Projects", "Routines", "Artifacts"]);
+      expect(groupLabels(section("Work"))).toEqual(["Projects", "Routines", "Artifacts"]);
+      expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
       expect(container.querySelectorAll('a[href="/chats"]')).toHaveLength(1);
       expect(container.querySelectorAll('a[href="/issues"]')).toHaveLength(1);
 
@@ -731,8 +732,7 @@ describe("Sidebar", () => {
       const root = await renderSidebar();
 
       expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Chat", "Tasks", "Inbox"]);
-      expect(groupLabels(section("Work"))[0]).toBe("Classic dashboard");
-      expect(container.querySelectorAll('a[href="/dashboard"]')).toHaveLength(1);
+      expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
 
       flushSync(() => {
         root.unmount();

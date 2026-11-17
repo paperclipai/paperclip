@@ -156,8 +156,8 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
       alert={inboxBadge.failedRuns > 0}
     />
   ) : null;
-  // With Responsibilities as home it takes the "Dashboard" name, so this one is the classic dashboard.
-  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label={responsibilitiesHome ? "Classic dashboard" : "Dashboard"} icon={LayoutDashboard} liveCount={liveRunCount} />;
+  // The classic dashboard. With Responsibilities as home that page takes the "Dashboard" name and this row is not shown.
+  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -248,9 +248,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
           {/* Agent Chat: Chat leads the Work group as a single row — the
               agents you talk to live in the Chat surface's own secondary rail
               (ChatContextualSidebar), not in the primary nav. */}
-          {responsibilitiesHome ? (
-            dashboardItem
-          ) : (
+          {responsibilitiesHome ? null : (
             <>
               {chatRail ? chatItem : null}
               {tasksItem}

@@ -269,7 +269,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableResponsibilities: {
-    title: "New dashboard",
+    title: "Areas & Responsibilities dashboard",
     description:
       "Replace the classic dashboard with the experimental one built on areas and responsibilities, and enable its API: per-person areas with the projects, tasks and routines under them, rolled-up health, agent proposals and delegation.",
     tier: "managed",

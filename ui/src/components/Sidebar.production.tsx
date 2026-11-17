@@ -111,8 +111,8 @@ export function Sidebar() {
   // Dashboard moves down into Work.
   const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
   const tasksItem = <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleDot} />;
-  // With Responsibilities as home it takes the "Dashboard" name, so this one is the classic dashboard.
-  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label={responsibilitiesHome ? "Classic dashboard" : "Dashboard"} icon={LayoutDashboard} liveCount={liveRunCount} />;
+  // The classic dashboard. With Responsibilities as home that page takes the "Dashboard" name and this row is not shown.
+  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -192,7 +192,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
-          {responsibilitiesHome ? dashboardItem : tasksItem}
+          {responsibilitiesHome ? null : tasksItem}
           {showCases ? (
             <SidebarNavItem analyticsChrome to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}

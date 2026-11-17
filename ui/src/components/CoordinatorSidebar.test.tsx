@@ -498,7 +498,7 @@ describe("Coordinator with Responsibilities", () => {
   const primaryLinks = () =>
     [...container.querySelectorAll('nav[aria-label="Workspace navigation"] .design-sidebar-primary.my-2 > a, nav[aria-label="Workspace navigation"] .design-sidebar-primary.my-2 > div > a')]
       .map(link => link.getAttribute("href"));
-  it("leads Chat, Tasks and Inbox with the Responsibilities home, named Dashboard, and keeps the classic dashboard in More", async () => {
+  it("leads Chat, Tasks and Inbox with the Responsibilities home, named Dashboard, and leaves the classic dashboard out of More", async () => {
     fixture.enableResponsibilities = true;
     await renderSidebar();
     expect(primaryLinks()).toEqual(["/responsibilities", "/chats", "/issues", "/decisions"]);
@@ -506,7 +506,8 @@ describe("Coordinator with Responsibilities", () => {
     expect(container.querySelector('a[href="/responsibilities"]')?.textContent).toBe("Dashboard");
     expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
-    expect(document.querySelector('a[href="/dashboard"]')?.textContent).toBe("Classic dashboard");
+    expect(document.querySelector('a[href="/projects"]')).not.toBeNull();
+    expect(document.querySelector('a[href="/dashboard"]')).toBeNull();
   });
   it("keeps Chat first with no Responsibilities row while the flag is off", async () => {
     await renderSidebar();

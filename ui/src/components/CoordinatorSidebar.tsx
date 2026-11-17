@@ -118,11 +118,11 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   // Responsibilities (experimental) is home, named Dashboard, and leads Chat,
-  // Tasks and Inbox. The old dashboard stays in More as "Classic dashboard".
+  // Tasks and Inbox. The classic dashboard leaves More: one Dashboard at a time.
   const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
   const destinations = useMemo(() => {
     const base = responsibilitiesHome
-      ? moreDestinations.map((item) => (item.to === "/dashboard" ? { ...item, label: "Classic dashboard" } : item))
+      ? moreDestinations.filter((item) => item.to !== "/dashboard")
       : moreDestinations;
     return experimental?.enableCases ? [...base, { label: "Cases", to: "/cases", icon: Boxes }] : base;
   }, [experimental?.enableCases, responsibilitiesHome]);
