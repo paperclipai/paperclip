@@ -17,7 +17,8 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking: events carry `stack_id`, and the history join uses link events, not group properties); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | in progress | |
 | Phase 2: browser analytics | subagent | in progress | |
-| Phase 3: workspace-delete cleanup + legacy link backfill script | subagent | in progress | |
+| Phase 3a: workspace-delete cleanup (paperclip-cloud) | subagent | PR open | https://github.com/paperclipai/paperclip-cloud/pull/1603 |
+| Phase 3b: legacy link backfill script (telemetry-backend) | subagent | merged 9c9aaae (operator script, not deployed); run after Phase 1 is live on staging | https://github.com/paperclipai/telemetry-backend/pull/148 |
 | Phase 4: staging rollout + verification | coordinator | pending | |
 
 ### Continuous deployment rule
