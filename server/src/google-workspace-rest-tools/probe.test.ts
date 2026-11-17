@@ -56,4 +56,17 @@ describe("probeGoogleWorkspaceRestService", () => {
       .resolves.toEqual({ ok: true, probed: false });
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("probes Drive with a one-field about.get, which drive.readonly and drive.file both allow", async () => {
+    for (const granted of [["drive.readonly"], ["drive.file"], ["drive.readonly", "drive.file"]]) {
+      const fetch = vi.fn(async () => Response.json({ kind: "drive#about" }));
+      await expect(probeGoogleWorkspaceRestService({ service: "drive", accessToken: "t", grantedScopes: granted.map(scope), fetch }))
+        .resolves.toEqual({ ok: true, probed: true });
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+      expect(new URL(url).pathname).toBe("/drive/v3/about");
+      expect(new URL(url).searchParams.get("fields")).toBe("kind");
+      expect(init.method).toBe("GET");
+    }
+    expect(googleWorkspaceRestProbeFor("drive", [scope("documents")])).toBeNull();
+  });
 });
