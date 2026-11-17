@@ -75,7 +75,7 @@ controls are in `server/src/__tests__/slack-tool-preparation.test.ts`.
 Accepted GitHub messages and automatic PR updates try same-turn steering by
 default after normal wake admission. The active native run must belong to the
 same task, agent, conversation, responsible person, and source trust level.
-Messages with attachments or a fresh-session requirement keep a separate turn.
+Messages with attachments, omitted attachments, or a fresh-session requirement keep a separate turn.
 The message carries the admitted GitHub review instructions.
 
 The durable wake stays pending until the runner acknowledges steering. An
@@ -85,6 +85,17 @@ that run. A rejected or unavailable steer retains ordinary queued delivery.
 Late acknowledgements and retries use the native acknowledgement receipt to
 avoid sending the same update twice. Other chat providers keep their existing
 delivery behavior.
+
+Each GitHub receipt stays separate until steering acknowledges its exact input.
+This prevents ordinary wake coalescing from merging a newer input into an
+uncertain delivery. Steering dispatch does not hold task or conversation locks while it waits for
+the provider. A saved receipt records the run, identity reservation, and exact
+comment revision before dispatch. Deferred delivery recovers an acknowledgement
+after a restart, including when it replays a batch on a closed task. Recovery
+does not consume an edit that the provider did not receive or replace a newer
+requester lineage. An uncertain reservation stays pending while its source run
+can still acknowledge it; recovery rejects it when that run stops without an
+acknowledgement.
 
 ## Chat activity pagination and callback diagnostics
 

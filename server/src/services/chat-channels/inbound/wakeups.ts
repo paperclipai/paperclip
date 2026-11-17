@@ -15,7 +15,7 @@ import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
 import { isGitHubAutomaticDelivery, acknowledgeGitHubWakeup } from "../github/wake-authority.js";
-import { steerGitHubInboundWake } from "../github/inbound-steering.js";
+import { githubInboundWakeAdmission, recoverGitHubSteeredWake, steerGitHubInboundWake } from "../github/inbound-steering.js";
 import { inboundWakeScope, type createInboundWakeAuthority } from "./wakeup-authorization.js";
 import type { createInboundAttachments } from "../inbound-attachments.js";
 import type { IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
@@ -382,6 +382,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         taskKey: context.issue.identifier,
         wakeCommentId: request.commentId,
         chatConversationId: context.conversation.id,
+        ...(context.endpoint.provider === "github" ? githubInboundWakeAdmission : {}),
         attachmentOmissionReasons: claimed.payload.attachmentOmissionReasons as
           | Record<string, number>
           | undefined,
@@ -486,6 +487,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     if (["preparing", "issued", "processing"].includes(source.status)) return sweep ? { retry: "source_pending" } : undefined;
     if (source.status !== "processed" || source.payload.agentId !== scope.agentId ||
         source.payload.issueId !== scope.issueId) return sweep ? { settle: "source_missing" } : undefined;
+    if (await recoverGitHubSteeredWake(db, source)) return;
     let closed = false;
     if (sweep) {
       const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
@@ -496,8 +498,12 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       closed = task.status === "done" || task.status === "cancelled";
       if (closed && receipt.createdAt.getTime() < Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS) return { settle: "task_closed" };
     }
-    const candidates = closed
-      ? (await recentClosedTaskChatWakes(scope, source)).filter(row => row.receipt.id !== receipt.id) : [];
+    const candidates: Awaited<ReturnType<typeof recentClosedTaskChatWakes>> = [];
+    if (closed) {
+      for (const candidate of await recentClosedTaskChatWakes(scope, source)) {
+        if (candidate.receipt.id !== receipt.id && !(await recoverGitHubSteeredWake(db, candidate.action))) candidates.push(candidate);
+      }
+    }
     const authorizeAction = async (tx: Db, saved: typeof chatActions.$inferSelect) => {
       const [current] = await tx.select().from(chatActions).where(and(
         eq(chatActions.id, saved.id), eq(chatActions.companyId, scope.companyId),
@@ -556,6 +562,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
       requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
       wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
+      ...(context.endpoint.provider === "github" ? githubInboundWakeAdmission : {}),
       ...(riders.length ? { wakeCommentIds: batch.map(entry => String(entry.action.payload.commentId)) } : {}),
       attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
       durableChatRequest: request, rethrowOnError: true });

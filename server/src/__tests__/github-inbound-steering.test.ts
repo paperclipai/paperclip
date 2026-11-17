@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents, agentWakeupRequests, authUsers, chatActions, chatConversations, chatDeliveries,
   chatEndpoints, chatExternalPrincipals, chatGitHubReviews, chatMessageLinks, companies, companyMemberships, createDb,
-  heartbeatRuns, heartbeatRunEvents, issueComments, issues, runIdentityContexts, toolApplications, toolConnections,
+  heartbeatRuns, heartbeatRunEvents, issueAttachments, issueComments, issues, runIdentityContexts, toolApplications, toolConnections, assets,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -13,6 +13,7 @@ import { initializeRunIdentity } from "../services/run-identity.js";
 import { NativeSessionSteeringError } from "../services/native-runtime/native-session-executor.js";
 import { chatWakeAuthorityDenied } from "../services/chat-channels/inbound/wakeup-authorization-error.js";
 import { defaultGitHubReviewPolicy, type GitHubReviewEventContext } from "@paperclipai/shared";
+import { resumeDeferredChatWake } from "../services/durable-chat-wakeup.js";
 
 const steer = vi.hoisted(() => vi.fn());
 vi.mock("../services/native-runtime/native-session-executor.js", async importOriginal => ({
@@ -36,6 +37,7 @@ describe("GitHub inbound steering", () => {
     await heartbeat?.drainActiveRunExecutions();
     await db.execute(sql`truncate companies cascade`);
     vi.clearAllMocks();
+    steer.mockReset();
   });
   afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
 
@@ -84,7 +86,7 @@ describe("GitHub inbound steering", () => {
     const errors: string[] = [];
     let authorizationCount = 0;
     const authorization = { denyAfterAdmission: false };
-    const owner = createInboundWakeups(db, {
+    const makeOwner = () => createInboundWakeups(db, {
       authorizeInboundWakeup: async () => { throw new Error("unused"); },
       authorizeInboundWorkStart: async (tx, source) => {
         authorizationCount += 1;
@@ -98,9 +100,15 @@ describe("GitHub inbound steering", () => {
       redactError: error => { errors.push(error instanceof Error ? error.stack! : String(error)); return String(error); },
       fetchImpl: async () => { throw new Error("unused"); }, heartbeat,
     });
-    unregister = owner.unregisterDeferredWakeOwner;
+    const restart = () => {
+      unregister?.();
+      const owner = makeOwner();
+      unregister = owner.unregisterDeferredWakeOwner;
+      return owner;
+    };
+    const owner = restart();
     steer.mockResolvedValue({ turnId: "review-turn" });
-    return { companyId, issue, run, action, followup, owner, errors, original, authorization, delivery, endpoint, conversation, userId };
+    return { companyId, issue, run, action, followup, owner, errors, original, authorization, delivery, endpoint, conversation, userId, restart };
   }
 
   it("steers a new GitHub message into the active review and consumes its saved wake", async () => {
@@ -214,6 +222,207 @@ describe("GitHub inbound steering", () => {
     expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
   });
 
+  it("recovers an acknowledged update from deferred delivery after a server restart", async () => {
+    const f = await fixture();
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    await acknowledge(f);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    f.restart();
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: f.action.id, recoverySweep: true });
+      expect(schedule).not.toHaveBeenCalled();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+      expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
+    } finally { schedule.mockRestore(); }
+  });
+
+  it("allows task and conversation changes while the provider has not acknowledged steering", async () => {
+    const f = await fixture();
+    let release: ((value: { turnId: string }) => void) | undefined;
+    steer.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const processing = f.owner.processInboundWakeup(f.delivery.id);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    try {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '200ms'`);
+        await tx.update(issues).set({ title: "Changed during provider I/O" }).where(eq(issues.id, f.issue.id));
+        await tx.update(chatConversations).set({ externalLabel: "Changed during provider I/O" })
+          .where(eq(chatConversations.id, f.conversation.id));
+      });
+    } finally {
+      release!({ turnId: "review-turn" });
+      await processing;
+    }
+  });
+
+  it("clears an unacknowledged reservation when its source run stops", async () => {
+    const f = await fixture();
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    f.restart();
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: f.action.id, recoverySweep: true });
+      expect(schedule).toHaveBeenCalledTimes(1);
+      const [identity] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, f.followup.id));
+      expect(identity.status).toBe("rejected");
+    } finally { schedule.mockRestore(); }
+  });
+
+  it("retains an edited message for a new turn if it changes before acknowledgement", async () => {
+    const f = await fixture();
+    steer.mockImplementationOnce(async () => {
+      await db.update(issueComments).set({ body: "Review the newer edit" }).where(eq(issueComments.id, f.followup.id));
+      return { turnId: "review-turn" };
+    });
+    await f.owner.processInboundWakeup(f.delivery.id);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    const [identity] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, f.followup.id));
+    expect(identity.status).toBe("accepted");
+  });
+
+  it("retains a GitHub message with a file for a separate turn", async () => {
+    const f = await fixture();
+    const [asset] = await db.insert(assets).values({ companyId: f.companyId, provider: "local_disk", objectKey: randomUUID(),
+      contentType: "text/plain", byteSize: 4, sha256: "a".repeat(64), originalFilename: "review.txt" }).returning();
+    await db.insert(issueAttachments).values({ companyId: f.companyId, issueId: f.issue.id, assetId: asset.id, issueCommentId: f.followup.id });
+    await f.owner.processInboundWakeup(f.delivery.id);
+    expect(steer).not.toHaveBeenCalled();
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+  });
+
+  it("retains a message with an omitted attachment for a separate turn", async () => {
+    const f = await fixture();
+    await db.update(chatActions).set({ payload: { ...f.action.payload,
+      attachmentOmissionReasons: { unsupported_type: 1 } } }).where(eq(chatActions.id, f.action.id));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    expect(steer).not.toHaveBeenCalled();
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+  });
+
+  it("invalidates derived wake projections after an acknowledged update", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.run.contextSnapshot,
+      paperclipWake: { stale: true }, paperclipTaskMarkdown: "Old task", paperclipTurnContext: { stale: true } } })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(run.contextSnapshot?.commentId).toBe(f.followup.id);
+    expect(run.contextSnapshot?.paperclipWake).toBeUndefined();
+    expect(run.contextSnapshot?.paperclipTaskMarkdown).toBeUndefined();
+    expect(run.contextSnapshot?.paperclipTurnContext).toBeUndefined();
+  });
+
+  it("steers messages when attachment processing reports no omissions", async () => {
+    const f = await fixture();
+    await db.update(chatActions).set({ payload: { ...f.action.payload, attachmentOmissionReasons: {} } })
+      .where(eq(chatActions.id, f.action.id));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    expect(steer).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains input that requires a fresh session", async () => {
+    const f = await fixture(), wakeup = heartbeat.wakeup.bind(heartbeat);
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockImplementation((agentId, options) => wakeup(agentId,
+      { ...options, contextSnapshot: { ...options?.contextSnapshot, forceFreshSession: true } }));
+    try {
+      await f.owner.processInboundWakeup(f.delivery.id);
+      expect(steer).not.toHaveBeenCalled();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+      expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    } finally { schedule.mockRestore(); }
+  });
+
+  async function additionalUpdate(f: Awaited<ReturnType<typeof fixture>>) {
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issue.id,
+      authorUserId: f.userId, body: "A newer GitHub update" }).returning();
+    const [delivery] = await db.insert(chatDeliveries).values({ ...f.delivery, id: randomUUID(),
+      providerEventId: randomUUID(), deduplicationKey: randomUUID(), createdAt: new Date() }).returning();
+    const [action] = await db.insert(chatActions).values({ ...f.action, id: randomUUID(), deliveryId: delivery.id,
+      providerActionId: `inbound_wakeup:${delivery.id}`, payload: { ...f.action.payload, commentId: comment.id },
+      createdAt: new Date(), updatedAt: new Date() }).returning();
+    return { comment, delivery, action };
+  }
+
+  it("keeps the latest requester source when an older acknowledgement is recovered", async () => {
+    const f = await fixture();
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    await acknowledge(f);
+    f.restart();
+    const next = await additionalUpdate(f);
+    expect(await f.owner.processInboundWakeup(next.delivery.id), f.errors.join("\n")).toBe(true);
+    expect(steer).toHaveBeenCalledTimes(2);
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: f.action.id, recoverySweep: true });
+      expect(schedule).not.toHaveBeenCalled();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      expect(run.contextSnapshot?.wakeCommentId).toBe(next.comment.id);
+      expect(run.contextSnapshot?.wakeCommentIds).toEqual([f.original.id, f.followup.id, next.comment.id]);
+    } finally { schedule.mockRestore(); }
+  });
+
+  it("keeps a successor run's task lineage when an earlier run's acknowledgement is recovered", async () => {
+    const f = await fixture();
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    await acknowledge(f);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+    const next = await additionalUpdate(f);
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.run.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: f.issue.id, startedAt: new Date(),
+      contextSnapshot: { issueId: f.issue.id, chatConversationId: f.conversation.id,
+        wakeCommentId: next.comment.id, wakeCommentIds: [next.comment.id] } }).returning();
+    const current = await initializeRunIdentity(db, { companyId: f.companyId, runId: successor.id, issueId: f.issue.id,
+      responsibleUserId: f.userId, messageIds: [next.comment.id], cause: "instruction" });
+    await db.update(issues).set({ executionRunId: successor.id }).where(eq(issues.id, f.issue.id));
+    f.restart();
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: f.action.id, recoverySweep: true });
+      expect(schedule).not.toHaveBeenCalled();
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+      expect(task.continuationIdentityContextId).toBe(current.id);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+      expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
+    } finally { schedule.mockRestore(); }
+  });
+
+  it("excludes acknowledged updates from a closed-task replay batch", async () => {
+    const f = await fixture();
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    await f.owner.processInboundWakeup(f.delivery.id);
+    await acknowledge(f);
+    const next = await additionalUpdate(f);
+    steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_unsupported", "Unsupported"));
+    await f.owner.processInboundWakeup(next.delivery.id);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    f.restart();
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: next.action.id, recoverySweep: true });
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(schedule.mock.calls[0][1]?.contextSnapshot?.wakeCommentIds).toBeUndefined();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+      expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
+    } finally { schedule.mockRestore(); }
+  });
+
   it("delivers a burst of GitHub updates to one active review without a wake backlog", async () => {
     const f = await fixture();
     const comments = [f.followup.id];
@@ -224,7 +433,8 @@ describe("GitHub inbound steering", () => {
       const [delivery] = await db.insert(chatDeliveries).values({ ...f.delivery, id: randomUUID(),
         providerEventId: randomUUID(), deduplicationKey: randomUUID() }).returning();
       await db.insert(chatActions).values({ ...f.action, id: randomUUID(), deliveryId: delivery.id,
-        providerActionId: `inbound_wakeup:${delivery.id}`, payload: { ...f.action.payload, commentId: comment.id } });
+        providerActionId: `inbound_wakeup:${delivery.id}`, payload: { ...f.action.payload, commentId: comment.id },
+        createdAt: new Date(), updatedAt: new Date() });
       comments.push(comment.id);
       expect(await f.owner.processInboundWakeup(delivery.id)).toBe(true);
     }

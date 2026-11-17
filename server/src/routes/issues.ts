@@ -72,8 +72,6 @@ import {
   markExecutionReconciliation,
 } from "../services/execution-recovery-resolution.js";
 import {
-  storedSteeringAcknowledgement,
-  reconcileSteeredIdentity,
   reserveSteeredIdentity,
   acceptSteeredIdentity,
   rejectSteeredIdentity,
@@ -424,7 +422,6 @@ import {
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
-  steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
 import {
   buildQueuedCommentQueueSnapshot,
@@ -432,6 +429,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { deliverSteeredMessage, steeringDeliveryIsUncertain } from "../services/queued-comment-steering.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -18205,18 +18203,10 @@ export function issueRoutes(
             commentId, lock: true,
           });
           steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
-              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
-            })) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
+          const acknowledgement = await deliverSteeredMessage(db, {
+            executor: tx, companyId: issue.companyId, runId: locked.activeRun.id,
+            messageId: commentId, message: entry.comment.body, identity: steeringIdentity,
+          });
           // PRP ingestion allocates event sequences on this row. Locking it
           // while awaiting the provider prevents its durable ACK from arriving.
           // Re-read under lock after ACK so concurrent run receipts are retained.
@@ -18284,10 +18274,7 @@ export function issueRoutes(
           });
         });
       } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
+        const uncertain = steeringDeliveryIsUncertain(error, steeringDeliveryAttempted);
         if (steeringIdentity && !uncertain)
           await rejectSteeredIdentity(db, steeringIdentity);
 
