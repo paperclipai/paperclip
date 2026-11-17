@@ -213,6 +213,8 @@ export const nativeRestartContinuationInFlight = runner.nativeRestartContinuatio
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const completeTerminatedRemoteNativeSessionCleanupForTask = runner.completeTerminatedRemoteNativeSessionCleanupForTask;
+export const nativeSessionCleanupRemoteScopes = runner.nativeSessionCleanupRemoteScopes;
 export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
 export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
 export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;
