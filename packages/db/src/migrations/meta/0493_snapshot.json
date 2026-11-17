@@ -1,6 +1,6 @@
 {
-  "id": "2eeb2be6-67bd-48ae-b28e-a5dff12e9306",
-  "prevId": "6149a82c-a562-4bd8-9bb4-eaa0b34b862b",
+  "id": "186c6c2d-e09c-4ad6-9461-986e01ae152c",
+  "prevId": "f1745600-81e0-40d3-b2aa-3ea2f98bbe85",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19073,12 +19073,6 @@
         },
         "security_override": {
           "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "security_override_summary": {
-          "name": "security_override_summary",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -59529,7 +59523,7 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth', 'plugin')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
@@ -70219,6 +70213,112 @@
           "value": "\"prompt_injection_invocations\".\"status\" in ('running', 'succeeded', 'failed', 'unknown')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.plugin_connector_legacy_access": {
+      "name": "plugin_connector_legacy_access",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plugin_key": {
+          "name": "plugin_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "plugin_connector_legacy_access_company_plugin_uq": {
+          "name": "plugin_connector_legacy_access_company_plugin_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plugin_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plugin_connector_legacy_access_company_id_companies_id_fk": {
+          "name": "plugin_connector_legacy_access_company_id_companies_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_connector_legacy_access_connection_id_tool_connections_id_fk": {
+          "name": "plugin_connector_legacy_access_connection_id_tool_connections_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "tool_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

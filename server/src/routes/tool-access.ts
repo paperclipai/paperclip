@@ -1,6 +1,7 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
-import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
 import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
 import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { Router, type Request, type Response } from "express";
@@ -443,6 +444,31 @@ export function toolAccessRoutes(
       }
     }
     return null;
+  }
+
+  // Agents already have this instance's tools built in. Connecting it to itself
+  // only adds a second copy under another name, which is the confusion the
+  // peer-connection naming exists to prevent.
+  function assertNotThisPaperclip(req: Request, link: unknown) {
+    const peer = typeof link === "string" ? paperclipPeerFromMcpUrl(link) : null;
+    if (!peer) return;
+    const requestHost = req.get("host")?.trim();
+    const ownOrigins = [
+      configuredPublicBaseUrl(),
+      options.authPublicBaseUrl,
+      process.env.PAPERCLIP_PUBLIC_URL,
+      trustedBrowserBaseUrl(req),
+      requestLoopbackBaseUrl(req),
+      requestHost ? `${req.protocol}://${requestHost}` : null,
+      // The port this server actually listens on; startup may move off PORT.
+      process.env.PAPERCLIP_LISTEN_PORT ? `http://localhost:${process.env.PAPERCLIP_LISTEN_PORT}` : null,
+    ];
+    if (isSamePaperclipInstance(peer, ownOrigins)) {
+      throw unprocessable(
+        "That address is this Paperclip. Your agents already have its tools, so there is nothing to connect.",
+        { code: "paperclip_self_connection" },
+      );
+    }
   }
 
   function oauthRedirectUri(req: Request, forInitiation = false) {
@@ -890,8 +916,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         : null;
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
+    const pluginApps = (await loadPluginAppCatalog(db)).definitions;
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
+      // Full definitions of plugin-provided connectors. Like the built-in
+      // definitions the board bundles, they keep methods the gallery entry
+      // hides until (for example) Cloud connector enrollment is active.
+      pluginApps,
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
         vercelConnect: {
@@ -908,6 +939,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+      ), ...pluginApps.map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
@@ -967,6 +1000,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           : ORGANIZATION_GRANT_DENIAL_REASON,
       );
     }
+    assertNotThisPaperclip(req, req.body.link);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, connectionRequestActor(req));
       if (result.auth?.kind === "oauth") {

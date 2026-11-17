@@ -98,7 +98,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
   const [assistant, setAssistant] = useState<Assistant>(initialAssistant);
   const setup = useQuery({ queryKey: ["mcp-setup"], queryFn: publicMcpApi.setup, refetchOnWindowFocus: "always", refetchOnMount: "always" });
   const setupView = useQueryView(setup);
-  const connections = useAssistantConnections(setup.data?.enabled === true);
+  const connections = useAssistantConnections(setup.isSuccess);
   const revoke = useMutation({ mutationFn: publicMcpApi.revoke, onSuccess: (_, id) => {
     client.setQueryData<McpConnection[]>(connectionsKey, rows => rows?.filter(row => row.id !== id));
     return client.invalidateQueries({ queryKey: connectionsKey });
@@ -122,12 +122,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
     {setupView.kind === "error" && (setupView.errorKind === "auth" || setupView.errorKind === "not_found"
       ? <div role="alert" className="space-y-3"><p className="text-sm text-destructive">{setupUnavailableCopy(setupView.errorKind)}</p><Button variant="outline" disabled={setupView.isFetching} onClick={setupView.retry}>Try again</Button></div>
       : <QueryErrorState error={setup.error} action="load assistant setup" onRetry={setupView.retry} retrying={setupView.isFetching} />)}
-    {setup.data && !setup.data.enabled && <section className="space-y-3 rounded-lg border border-border bg-muted/30 p-4">
-      <h2 className="text-sm font-semibold">Enable assistant connections</h2>
-      <p className="text-sm text-muted-foreground">An instance administrator must turn on Assistant connections (MCP) in Experimental settings. Then return here to connect your assistant.</p>
-      <Button variant="outline" asChild><Link to="/company/settings/instance/experimental">Open Experimental settings</Link></Button>
-    </section>}
-    {setup.data?.enabled && <>
+    {setup.data && <>
       <section className="space-y-4" aria-label="Invite your assistant">
         <p className="text-sm text-muted-foreground">Paste this invitation into your assistant. It will help set up the connection and ask you to approve access in Paperclip.</p>
         <div className="flex justify-end">

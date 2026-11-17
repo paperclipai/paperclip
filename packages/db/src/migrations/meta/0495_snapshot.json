@@ -1,6 +1,6 @@
 {
-  "id": "a8bc890a-cc97-4b54-b426-5687b134a8b0",
-  "prevId": "dc61c7f3-cf3d-44c5-9296-86973e5f0925",
+  "id": "10a7cc82-7953-44bc-b9e4-15b72528c160",
+  "prevId": "2c68e691-653e-4c4a-8139-a0731d7a8593",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19071,6 +19071,18 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
+        "security_override": {
+          "name": "security_override",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "security_override_summary": {
+          "name": "security_override_summary",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -19968,6 +19980,87 @@
         "company_skill_repository_snapshots_company_id_companies_id_fk": {
           "name": "company_skill_repository_snapshots_company_id_companies_id_fk",
           "tableFrom": "company_skill_repository_snapshots",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.company_skill_security_approvals": {
+      "name": "company_skill_security_approvals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approval": {
+          "name": "approval",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_skill_security_approvals_company_content_idx": {
+          "name": "company_skill_security_approvals_company_content_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_skill_security_approvals_company_id_companies_id_fk": {
+          "name": "company_skill_security_approvals_company_id_companies_id_fk",
+          "tableFrom": "company_skill_security_approvals",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -20925,6 +21018,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "security_approval_id": {
+          "name": "security_approval_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -20940,6 +21039,22 @@
           ],
           "isUnique": false,
           "where": "\"company_skill_versions\".\"migration_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_versions_security_approval_idx": {
+          "name": "company_skill_versions_security_approval_idx",
+          "columns": [
+            {
+              "expression": "security_approval_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_skill_versions\".\"security_approval_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -21109,6 +21224,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
+          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
+          "tableFrom": "company_skill_versions",
+          "tableTo": "company_skill_security_approvals",
+          "columnsFrom": [
+            "security_approval_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -59417,7 +59545,7 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth', 'plugin')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
@@ -70107,6 +70235,112 @@
           "value": "\"prompt_injection_invocations\".\"status\" in ('running', 'succeeded', 'failed', 'unknown')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.plugin_connector_legacy_access": {
+      "name": "plugin_connector_legacy_access",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plugin_key": {
+          "name": "plugin_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "plugin_connector_legacy_access_company_plugin_uq": {
+          "name": "plugin_connector_legacy_access_company_plugin_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plugin_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plugin_connector_legacy_access_company_id_companies_id_fk": {
+          "name": "plugin_connector_legacy_access_company_id_companies_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_connector_legacy_access_connection_id_tool_connections_id_fk": {
+          "name": "plugin_connector_legacy_access_connection_id_tool_connections_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "tool_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

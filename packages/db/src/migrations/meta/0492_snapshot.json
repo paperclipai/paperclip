@@ -1,6 +1,6 @@
 {
-  "id": "6149a82c-a562-4bd8-9bb4-eaa0b34b862b",
-  "prevId": "f6d88ce5-9ad8-412f-9c07-c68fce7eb8ac",
+  "id": "f1745600-81e0-40d3-b2aa-3ea2f98bbe85",
+  "prevId": "82234354-6a19-4132-ae58-f545f798bbb7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19991,87 +19991,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.company_skill_security_approvals": {
-      "name": "company_skill_security_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval": {
-          "name": "approval",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_skill_security_approvals_company_content_idx": {
-          "name": "company_skill_security_approvals_company_content_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "content_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_skill_security_approvals_company_id_companies_id_fk": {
-          "name": "company_skill_security_approvals_company_id_companies_id_fk",
-          "tableFrom": "company_skill_security_approvals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.company_skill_stars": {
       "name": "company_skill_stars",
       "schema": "",
@@ -21012,12 +20931,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "security_approval_id": {
-          "name": "security_approval_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -21202,19 +21115,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
-          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
-          "tableFrom": "company_skill_versions",
-          "tableTo": "company_skill_security_approvals",
-          "columnsFrom": [
-            "security_approval_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -59523,7 +59423,7 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth', 'plugin')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
@@ -70213,6 +70113,112 @@
           "value": "\"prompt_injection_invocations\".\"status\" in ('running', 'succeeded', 'failed', 'unknown')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.plugin_connector_legacy_access": {
+      "name": "plugin_connector_legacy_access",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plugin_key": {
+          "name": "plugin_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "plugin_connector_legacy_access_company_plugin_uq": {
+          "name": "plugin_connector_legacy_access_company_plugin_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plugin_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plugin_connector_legacy_access_company_id_companies_id_fk": {
+          "name": "plugin_connector_legacy_access_company_id_companies_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_connector_legacy_access_connection_id_tool_connections_id_fk": {
+          "name": "plugin_connector_legacy_access_connection_id_tool_connections_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "tool_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

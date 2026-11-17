@@ -66,8 +66,8 @@ export function AppsSidebar() {
           Connectors
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
-          <SidebarNavItem
+          <SidebarNavItem analyticsChrome to="/apps" label="Browse" icon={Store} end />
+          <SidebarNavItem analyticsChrome
             to="/apps/review"
             label="Review"
             icon={ShieldQuestion}
@@ -83,7 +83,7 @@ export function AppsSidebar() {
           Advanced setup for developers. Most teams never open this.
         </p>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
+          <SidebarNavItem analyticsChrome to="/apps/connections" label="Connections" icon={AppWindow} end />
           {developerTabs.map((tab) => (
             <SidebarNavItem
               key={tab.key}

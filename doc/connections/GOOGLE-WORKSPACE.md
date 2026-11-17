@@ -16,7 +16,7 @@ Turn the setting on in **Settings → Experimental** to test the built-in connec
 
 The combined connection has one credential grant, capability catalog, policy
 profile, audit trail and reconnect lifecycle. It requests only the selected
-groups' scopes (nine scopes for the default selection), not the legacy full
+groups' scopes (ten scopes for the default selection), not the legacy full
 union. Google's consent screen also lets users decline
 permissions; discovery skips services without grants and excludes unsupported
 actions. The gateway checks actual grant scopes again before each call, including
@@ -62,6 +62,23 @@ Google's hosted Workspace MCP servers are Developer Preview services. The app
 endpoints remain separate. Paperclip namespaces actions by service and routes them
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
+
+Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
+(`packages/shared/src/google-workspace-connectors.ts`). `google_mcp` sends calls
+to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
+own tools over Google's REST APIs, in the server process
+(`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
+and results. Every service is on `google_mcp` today. A service can move to
+`paperclip_rest` only when Paperclip implements every tool on its allowlist; a
+test enforces that. On either transport, the same grant scope checks, approvals,
+audit, token refresh and reconnection, prompt-injection screening, cancellation
+and experimental-feature gate apply. On `paperclip_rest`, discovery and health
+checks prove the token with one cheap REST read per service that the granted
+scopes allow (for example, Gmail reads the account profile) instead of Google's
+`tools/list`. A grant that allows no such read is listed without one, and a
+failed check makes only that service unavailable. See the
+folder's `README.md` for how to switch a service and how to remove the REST
+tools.
 
 Google results are untrusted content. The prompt-injection guard checks them
 before an agent receives them; see
@@ -282,9 +299,15 @@ Docs, Sheets, and Slides request only their service's read-only scope in the
 read profile and its read/write scope in the write profile. They do not also
 request `drive.readonly` or `drive.file`: those are authorization alternatives,
 not additional requirements. Drive and Workspace Search retain their separate
-Drive permissions. Calendar write requests `calendar.calendarlist.readonly`
-and `calendar.events`; the latter also authorizes `suggest_time`. Calendar read
-retains `calendar.events.freebusy` alongside list/event read-only access.
+Drive permissions. The per-service Calendar write profile requests
+`calendar.calendarlist.readonly` and `calendar.events`; Google's MCP
+`suggest_time` accepts `calendar.events`. Calendar read retains
+`calendar.events.freebusy` alongside list/event read-only access. The combined
+connection's read & write Calendar selection also requests
+`calendar.events.freebusy` (2026-11-17), because Google's REST
+[`freeBusy.query`](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query)
+does not accept `calendar.events`. The per-service profile keeps its exact
+scope set for the Cloud broker.
 
 References: Google's [Docs read](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc)
 and [update](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/update_doc),
