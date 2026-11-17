@@ -36554,6 +36554,7 @@
             }
           ],
           "isUnique": false,
+          "where": "\"heartbeat_runs\".\"context_snapshot\" ? 'recoveryActionId'",
           "concurrently": true,
           "method": "btree",
           "with": {}

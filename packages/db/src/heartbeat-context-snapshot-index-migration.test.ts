@@ -66,6 +66,13 @@ d("heartbeat context_snapshot expression index migration", () => {
     expect(recoveryIndex?.def).toContain("company_id");
     expect(recoveryIndex?.def).toContain("'recoveryActionId'");
     expect(recoveryIndex?.def).toContain("created_at DESC");
+    expect(recoveryIndex?.def).toContain("WHERE (context_snapshot ? 'recoveryActionId'::text)");
+
+    const recoveryActionPlan = await sql.unsafe(
+      "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot ? 'recoveryActionId' AND context_snapshot ->> 'recoveryActionId' = 'x'",
+    );
+    expect(recoveryActionPlan.map((r) => Object.values(r)[0]).join("\n"))
+      .toContain("heartbeat_runs_company_ctx_recovery_action_created_idx");
 
     // An empty table can use any company-prefix index for the OR. Check the
     // new branch directly here; the populated benchmark proves BitmapOr use.
