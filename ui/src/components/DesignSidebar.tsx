@@ -30,20 +30,20 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
         <nav className="design-sidebar-navigation" aria-label="Main navigation">
           <div className="design-sidebar-primary">
             <Button variant="ghost" className="design-sidebar-new-task" onClick={onNewTask}><CirclePlus aria-hidden />New Task</Button>
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/dashboard`} label="Dashboard" icon={LayoutDashboard} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/chats`} label="Chat" icon={MessageCircle} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/dashboard`} label="Dashboard" icon={LayoutDashboard} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/chats`} label="Chat" icon={MessageCircle} />
           </div>
           <SidebarSection label="Work">
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/issues`} label="Tasks" icon={CircleCheck} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/projects`} label="Projects" icon={FolderOpen} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/routines`} label="Routines" icon={Repeat} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/artifacts`} label="Artifacts" icon={Package} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/issues`} label="Tasks" icon={CircleCheck} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/projects`} label="Projects" icon={FolderOpen} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/routines`} label="Routines" icon={Repeat} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/artifacts`} label="Artifacts" icon={Package} />
           </SidebarSection>
           <SidebarSection label="Org">
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/agents`} label="Agents" icon={Users} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/skills`} label="Skills" icon={Boxes} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/apps`} label="Connectors" icon={Unplug} />
-            <SidebarNavItem className="design-sidebar-item" to={`${root}/activity`} label="Audit" icon={History} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/agents`} label="Agents" icon={Users} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/skills`} label="Skills" icon={Boxes} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/apps`} label="Connectors" icon={Unplug} />
+            <SidebarNavItem analyticsChrome className="design-sidebar-item" to={`${root}/activity`} label="Audit" icon={History} />
           </SidebarSection>
           {companyRecentTasks.length > 0 ? <div className="design-sidebar-recents">
             <SidebarSection label="Recent Tasks">
