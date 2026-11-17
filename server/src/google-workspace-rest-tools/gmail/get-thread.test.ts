@@ -98,6 +98,26 @@ describe("get_thread with bodies Gmail stores separately", () => {
     expect((result.content[0] as { text: string }).text).toMatch(/^Could not read the full body of this message/);
   });
 
+  it("reads at most 20 separately stored bodies per call and fails explicitly beyond that", async () => {
+    const stored = (count: number) => ({
+      id: "th2",
+      messages: Array.from({ length: count }, (_, index) => ({
+        id: `m${index}`,
+        payload: { mimeType: "text/plain", body: { size: 9000, attachmentId: `ANGjdJ_${index}` } },
+      })),
+    });
+    const atLimit = fakeGoogle(({ url }) => (url.pathname.includes("/attachments/") ? json({ data: Buffer.from("body").toString("base64url") }) : json(stored(20))));
+    expect((await getThread.call({ threadId: "th2" }, createGoogleHttp({ accessToken: "t", fetch: atLimit.fetch }))).isError).toBeUndefined();
+    expect(atLimit.calls).toHaveLength(21);
+
+    const overLimit = fakeGoogle(() => json(stored(21)));
+    const result = await getThread.call({ threadId: "th2" }, createGoogleHttp({ accessToken: "t", fetch: overLimit.fetch }));
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect((result.content[0] as { text: string }).text).toMatch(/^Could not read the full body of every message: they need 21 separate body reads/);
+    expect(overLimit.calls).toHaveLength(1);
+  });
+
   it("refuses a separately stored body on a message without a usable ID", async () => {
     const broken = { id: "th1", messages: [{ id: "../x", payload: thread.messages[1]!.payload }] };
     const { fetch, calls } = fakeGoogle(() => json(broken));

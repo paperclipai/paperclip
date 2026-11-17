@@ -216,7 +216,8 @@ names and scopes and needs no change.
   `text/plain` and first `text/html` body parts are found depth first through
   nested multiparts. If any body part cannot be read, the whole call returns a
   tool error that starts with "Could not read the full body of this message";
-  it never returns a result, or a page, with a body missing. Google's reference
+  it never returns a result, or a page, with a body missing. One call reads at
+  most 20 such bodies (see "Google requests per call"). Google's reference
   does not say what its tools do here.
 - **Addresses** come from `gmail/address.ts`, a small single-pass tokenizer
   over RFC 5322 address lists. It tracks quoted strings with escapes, nested
@@ -229,6 +230,12 @@ names and scopes and needs no change.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.
+- **`label:` in search queries.** Google's `search_threads` reference says its
+  query accepts label IDs, not display names. Gmail search (the `q` parameter
+  that REST passes to Gmail) uses label names, with spaces written as hyphens,
+  as in Gmail's own search operators (`label:friends`). REST parameters named
+  `labelIds` take IDs. Our query descriptions describe the REST behavior, and
+  `allowlist.test.ts` checks that no description says `label:` takes IDs.
 - **`search_threads`** makes one `threads.list` call and then one
   `threads.get` per thread (10 at a time), so a 50-thread page is 51 requests.
   A thread deleted between the two calls is left out. `pageSize` above 50 is
@@ -274,23 +281,39 @@ attempt, not to the whole call, so a call that fans out can take longer than
 that needs a bound on the whole call passes a signal with that deadline (the
 gateway passes its call deadline).
 Each read may be retried once by `google-http.ts`, which the counts below do
-not include. "Bodies" counts separately stored bodies, at most two per message
-(plain and HTML) and none for most mail.
+not include. "Bodies" are separately stored bodies (at most two per message,
+plain and HTML, and none for most mail). One call reads at most 20 of them
+(`MAX_SEPARATE_BODIES_PER_CALL` in `gmail/message.ts`). When the messages in a
+call need more, the call reads none and returns a tool error that starts with
+"Could not read the full body of every message" and says to ask for fewer
+results or to use `get_message`.
 
-| Tool | Requests at the maximum page size |
-| --- | --- |
-| `get_message` | 1, plus up to 2 bodies with `FULL_CONTENT` (at most 3) |
-| `get_thread` | 1, plus up to 2 bodies per message with `FULL_CONTENT` |
-| `search_threads` | 1 + 50 = 51 |
-| `list_threads` | 1 + 50 = 51 |
-| `search_messages` | 1 + 50 = 51; with `FULL_CONTENT` up to 1 + 50 + 100 = 151 |
-| `get_draft` | 1, plus up to 2 bodies with `DRAFT_VIEW_FULL` (at most 3) |
-| `list_drafts` | 1 + 50 = 51; with `DRAFT_VIEW_FULL` (the default) up to 1 + 50 + 100 = 151 |
-| `list_labels` | 1 |
-| `create_draft` | 1, or 2 for a reply |
+Quota units come from Gmail's published per-method costs
+(<https://developers.google.com/workspace/gmail/api/reference/quota>, recorded
+2026-11-17): `messages.get` and `drafts.get` 20 (60 with `format=full`),
+`threads.get` 40 (120 with `format=full`), `messages.attachments.get` 20,
+`threads.list` 10, `messages.list` and `drafts.list` 5, `labels.list` 1,
+`drafts.create` 10. Gmail allows 6,000 units per user per minute.
 
-`get_thread` is bounded by the thread's length, which Gmail limits (it starts
-a new conversation after 100 messages), so at most 201 with bodies.
+| Tool | Requests at the maximum page size | Worst-case quota units |
+| --- | --- | --- |
+| `get_message` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `get_thread` | 1 + up to 20 bodies = 21 | 120 + 400 = 520 |
+| `search_threads` | 1 + 50 = 51 | 10 + 50 × 40 = 2,010 |
+| `list_threads` | 1 + 50 = 51 | 2,010 |
+| `search_messages` | 51; with `FULL_CONTENT` 1 + 50 + 20 = 71 | 1,005; with `FULL_CONTENT` 5 + 50 × 60 + 400 = 3,405 |
+| `get_draft` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `list_drafts` | 51; with `DRAFT_VIEW_FULL` (the default) 71 | 1,005; with `DRAFT_VIEW_FULL` 3,405 |
+| `list_labels` | 1 | 1 |
+| `create_draft` | 1, or 2 for a reply | 10, or 30 for a reply |
+
+The worst single call (3,405 units) fits inside the 6,000-unit per-user
+minute. At the default page size of 20 the worst is 1,605 units. Concurrency
+does not change the total: the 10 parallel reads only spread one call's fixed
+units over less time. A second maximal call in the same minute can exceed the
+per-user quota; Google then answers 429, which becomes the `rate_limited` tool
+error ("Google is rate limiting requests. Try again shortly."). Gmail's quota
+page states no per-user concurrency limit.
 
 ### Not verified against Google's servers
 

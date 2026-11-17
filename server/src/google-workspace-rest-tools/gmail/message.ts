@@ -126,8 +126,16 @@ export function bodyAttachmentRequest(messageId: string, attachmentId: string): 
 
 export type MessageBodies = ReadonlyMap<string, ReadonlyMap<string, string>>;
 
+export const MAX_SEPARATE_BODIES_PER_CALL = 20;
+
 export async function readMessageBodies(messages: readonly GmailRestMessage[], http: GoogleHttp): Promise<MessageBodies> {
   const jobs = messages.flatMap((message) => externalBodyIds(message.payload).map((attachmentId) => ({ messageId: message.id ?? "", attachmentId })));
+  if (jobs.length > MAX_SEPARATE_BODIES_PER_CALL) {
+    throw new GoogleToolError(
+      "incomplete",
+      `Could not read the full body of every message: they need ${jobs.length} separate body reads and one call makes at most ${MAX_SEPARATE_BODIES_PER_CALL}. Ask for fewer results, or read the messages one at a time with get_message.`,
+    );
+  }
   const answers = await mapLimited(jobs, async ({ messageId, attachmentId }) => {
     let answer: GmailRestAttachment;
     try {

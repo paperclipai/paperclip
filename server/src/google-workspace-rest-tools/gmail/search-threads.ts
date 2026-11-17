@@ -117,7 +117,7 @@ export const searchThreads = defineTool({
         pageToken: { type: "string", description: "Optional. The nextPageToken from a previous call. Leave empty for the first page." },
         query: {
           type: "string",
-          description: "Optional. A Gmail search query (for example `from:user@example.com newer_than:7d has:attachment`). Convert natural language to Gmail syntax first. `label:` takes label IDs, not display names; list_labels lists them. Without a query, all threads except spam and trash are listed. Drafts are excluded unless the query includes in:draft.",
+          description: "Optional. A Gmail search query (for example `from:user@example.com newer_than:7d has:attachment`). Convert natural language to Gmail syntax first. `label:` takes a label name with spaces written as hyphens (for example `label:client-work`), not a label ID; list_labels lists the names. Without a query, all threads except spam and trash are listed. Drafts are excluded unless the query includes in:draft.",
         },
         includeTrash: { type: "boolean", description: "Optional. Include threads in Trash. Default false." },
         view: {

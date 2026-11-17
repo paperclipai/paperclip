@@ -34,6 +34,19 @@ describe("tool allowlist", () => {
     }
   });
 
+  it("describes the search label: operator as taking label names, never label IDs", () => {
+    const queries = listGoogleWorkspaceRestTools("gmail")
+      .map((tool) => (tool.inputSchema.properties as Record<string, { description?: string }> | undefined)?.query?.description)
+      .filter((text): text is string => typeof text === "string");
+    expect(queries.length).toBeGreaterThanOrEqual(3);
+    expect(queries.filter((item) => item.includes("label:"))).toHaveLength(2);
+    for (const text of queries.filter((item) => item.includes("label:"))) {
+      expect(text).toMatch(/`label:` takes a label name/);
+    }
+    const everything = JSON.stringify(listGoogleWorkspaceRestTools("gmail"));
+    expect(everything).not.toMatch(/label:`? takes label IDs/i);
+  });
+
   it("implements no send tool", () => {
     const names = GOOGLE_WORKSPACE_REST_SERVICES.flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);
