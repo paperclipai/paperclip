@@ -4257,6 +4257,18 @@ export function recoveryService(
         return null;
       }
 
+      if (input.recoveryCause === "configuration_incomplete" && input.latestRun) {
+        const [restored] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, current.companyId),
+          eq(issueRecoveryActions.sourceIssueId, current.id),
+          eq(issueRecoveryActions.cause, "configuration_incomplete"),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "restored"),
+          sql`${issueRecoveryActions.evidence}->>'latestRunId' = ${input.latestRun.id}`,
+        )).limit(1);
+        if (restored) return null;
+      }
+
       // Acceptance holds the same issue lock before writing its successor.
       // An awaiting-release handoff need not change the issue's version or
       // owner, and generic recovery must not cancel that durable successor.
