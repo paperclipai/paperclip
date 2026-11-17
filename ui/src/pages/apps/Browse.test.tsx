@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const aggregatorCatalogMock = vi.hoisted(() => [] as AggregatorAppCatalogEntry[]);
 // Counts identity normalizations made by the page (not by the catalog module itself), as a
@@ -107,8 +108,8 @@ vi.mock("@/api/access", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
-    <a href={to}>{children}</a>
+  Link: ({ children, to, className }: { children: React.ReactNode; to: string; className?: string }) => (
+    <a href={to} className={className}>{children}</a>
   ),
   useNavigate: () => navigateMock,
 }));
@@ -585,6 +586,8 @@ describe("Connectors landing page", () => {
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('“Composio account”');
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Accounts and sign-in are managed in Composio.");
     expect(document.querySelectorAll('[role="dialog"] a[href="/apps/conn-notion/permissions"]')).toHaveLength(1);
+    expect(replayLeaks("Meeting notes", document.querySelector('[role="dialog"]')!)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Composio account", document.querySelector('[role="dialog"]')!)).toEqual({ rendered: true, recorded: false });
     expect(openNewIssueMock).not.toHaveBeenCalled();
   });
 
@@ -1253,8 +1256,11 @@ describe("Connectors landing page", () => {
     expect([...row.querySelectorAll("button")].some(button => /^(Connect|Add connection|Reconnect|Finish setup)$/.test(button.textContent?.trim() ?? ""))).toBe(false);
     await act(() => { row.querySelector<HTMLButtonElement>('button[aria-label^="Manage "]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
+    expect(replayLeaks("Notebook account", row)).toEqual({ rendered: true, recorded: false });
     await act(() => { [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === "Remove connection")!.click(); });
     await flushReact();
+    const removeDialog = document.querySelector('[role="alertdialog"]')!;
+    expect(replayLeaks("Notebook account", removeDialog)).toEqual({ rendered: true, recorded: false });
     await act(() => { [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Remove connection")!.click(); });
     await flushReact();
     expect(archiveConnectionMock).toHaveBeenCalledWith("saved-notebook");

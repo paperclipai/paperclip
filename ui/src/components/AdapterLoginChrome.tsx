@@ -12,6 +12,8 @@ import {
   COPIED_REVEAL_DELAY_MS,
   COPIED_REVEAL_TRAVEL,
 } from "./onboarding/onboarding-motion";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /**
  * Which shell a login panel draws itself in.
@@ -293,7 +295,7 @@ export function OnboardingLoginCodeRow({
 
   return (
     <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <span className={cn("min-w-0 flex-1 truncate text-sm text-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
         {code}
       </span>
       <AnimatePresence initial={false}>
@@ -515,7 +517,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   const ready = login?.status === "ready";
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
-      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{login?.accountLabel ?? provider} is signed in. Click Connect to use this account.</p>
+      <p role="status" className={cn("flex items-center gap-2 text-foreground", ANALYTICS_MASK_CLASS)}><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{login?.accountLabel ?? provider} is signed in. Click Connect to use this account.</p>
       {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>Use a different account</button>}
     </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
     {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">Preparing browser sign-in…</p>}
@@ -537,7 +539,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
       {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
-        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
+        <pre className={cn("min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs", ANALYTICS_NO_CAPTURE_CLASS)}><code>{command}</code></pre>
         <LoginCardCopyButton value={command} label="Copy sign-in command" />
       </div>}
     </>}

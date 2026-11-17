@@ -21,6 +21,7 @@ function NoIcon() {
   return null;
 }
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
@@ -568,7 +569,7 @@ const ActionRow = memo(function ActionRow({
                         <Icon className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">
+                    <TooltipContent className={ANALYTICS_MASK_CLASS} side="top">
                       <span className="font-medium">{option.label}</span> — {option.description}
                     </TooltipContent>
                   </Tooltip>
