@@ -19,6 +19,7 @@ import https from "node:https";
 import { pipeline, Transform } from "node:stream";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { Router, type Request, type Response } from "express";
+import { isPublicIpAddress } from "../lib/ip-address.js";
 import { logger } from "../middleware/logger.js";
 import type { CloudInstanceEnv } from "../services/cloud-instance.js";
 import {
@@ -104,6 +105,17 @@ export function posthogUpstreamUrl(ingestHost: string, method: string, requestUr
   return new URL(`${origin}${path}${query}`);
 }
 
+export function posthogVisitorIp(peerIp: string | undefined, headers: IncomingHttpHeaders): string | undefined {
+  if (peerIp && isPublicIpAddress(peerIp)) return peerIp;
+  const raw = headers["x-forwarded-for"];
+  const entries = (Array.isArray(raw) ? raw.join(",") : raw ?? "").split(",").map((entry) => entry.trim());
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (isPublicIpAddress(entry)) return entry;
+  }
+  return peerIp;
+}
+
 export function posthogForwardRequestHeaders(
   headers: IncomingHttpHeaders,
   clientIp: string | undefined,
@@ -165,7 +177,7 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     const transport = target.protocol === "https:" ? https : http;
     const upstreamReq = transport.request(target, {
       method: req.method,
-      headers: posthogForwardRequestHeaders(req.headers, req.ip, target.host),
+      headers: posthogForwardRequestHeaders(req.headers, posthogVisitorIp(req.ip, req.headers), target.host),
       timeout: UPSTREAM_TIMEOUT_MS,
     });
 

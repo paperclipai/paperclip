@@ -172,6 +172,7 @@ import {
 import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type SkillTreeNode = {
   name: string;
@@ -2027,7 +2028,7 @@ function CatalogDetailPane({
         ) : fileQuery.data.markdown ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{fileQuery.data.content}</code>
           </pre>
         )}
@@ -2743,7 +2744,7 @@ function SkillVersionDiffDialog({
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
                     <span className="select-none px-3 text-center text-muted-foreground">{markerByKind[row.kind]}</span>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">{row.text.length > 0 ? row.text : " "}</pre>
+                    <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit", ANALYTICS_MASK_CLASS)}>{row.text.length > 0 ? row.text : " "}</pre>
                   </div>
                 ))}
               </div>
@@ -3128,7 +3129,7 @@ export function SkillDetailPage({
           ) : file.markdown && viewMode === "preview" ? (
             <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
           ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+            <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
               <code>{file.content}</code>
             </pre>
           )}
@@ -4014,7 +4015,7 @@ function SkillPane({
         ) : file.markdown && viewMode === "preview" ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{file.content}</code>
           </pre>
         )}

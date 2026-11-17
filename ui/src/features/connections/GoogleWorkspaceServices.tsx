@@ -9,6 +9,8 @@ import { NativeSelect } from "@/components/ui/select";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { GOOGLE_WORKSPACE_PRIVACY_POLICY_URL, googleWorkspaceDataUseDisclosure } from "./googleWorkspaceDisclosure";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function GoogleWorkspaceServiceFields({ value, onChange }: {
   value: GoogleWorkspaceServiceSelection;
@@ -70,7 +72,7 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
   const pendingRequests = oauth?.pendingWorkspaceServiceRequests;
   const grants = useQuery({ queryKey: ["workspace-service-consent", existing?.id], queryFn: () => toolsApi.listConnectionGrants(existing!.id), enabled: Boolean(existing) });
   const grantsView = useQueryView(grants);
-  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
+  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent className={ANALYTICS_MASK_CLASS}>
     <DialogTitle>Connect Google Workspace</DialogTitle><DialogDescription>{(grantsView.kind === "error") ? "Could not load your saved service access. Your connection has not changed." : "Loading your saved service access…"}</DialogDescription>
     <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>Cancel</Button>{(grantsView.kind === "error") && <Button onClick={() => void grants.refetch()}>Try again</Button>}</footer>
   </DialogContent></Dialog>;
@@ -121,7 +123,7 @@ function ServicePicker({ onContinue, onCancel, initial = GOOGLE_WORKSPACE_DEFAUL
   const [selection, setSelection] = useState(initial);
   const empty = Object.keys(selection).length === 0;
   return <Dialog open onOpenChange={open => { if (!open) onCancel(selection); }}>
-    <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl">
+    <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl", ANALYTICS_MASK_CLASS)}>
       <DialogHeader className="text-left">
         <div className="flex items-center gap-3"><AppLogo name="Google Workspace" brandKey="google" size={40} /><DialogTitle>Connect Google Workspace</DialogTitle></div>
         <DialogDescription className="sr-only">Choose the Google services to connect.</DialogDescription>

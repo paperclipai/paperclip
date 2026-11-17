@@ -3,7 +3,6 @@ import { NavLink } from "@/lib/router";
 import type { IssueNavigationPrefetchHandlers } from "@/hooks/useIssueNavigationPrefetch";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
-import { ANALYTICS_UNMASK_PROPS } from "@/lib/analytics/privacy";
 import { useSidebar } from "../context/SidebarContext";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +11,6 @@ import { TruncatedText } from "./TruncatedText";
 interface SidebarNavItemProps {
   to: string;
   label: string;
-  /** The label is fixed product copy, so session replay may show it. */
-  analyticsChrome?: boolean;
   icon?: LucideIcon;
   /**
    * Pre-rendered icon element for rows whose icon isn't a plain Lucide
@@ -47,7 +44,6 @@ interface SidebarNavItemProps {
 export function SidebarNavItem({
   to,
   label,
-  analyticsChrome = false,
   icon: Icon,
   iconNode,
   end,
@@ -75,7 +71,6 @@ export function SidebarNavItem({
       to={to}
       state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
-      {...(analyticsChrome ? ANALYTICS_UNMASK_PROPS : {})}
       {...linkHandlers}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>

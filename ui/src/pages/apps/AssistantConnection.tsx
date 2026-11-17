@@ -15,6 +15,8 @@ import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const ASSISTANT_CONNECTION_PATH = "/apps/assistant-connection";
 const connectionsKey = ["mcp-connections"];
@@ -75,7 +77,7 @@ function CopyValue({ value, label }: { value: string; label: string }) {
   useEffect(() => { setCopied(false); setError(false); }, [value]);
   return <div className="space-y-2">
     <div className="flex items-start gap-3 rounded-md border border-border bg-muted/30 p-3">
-      <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{value}</pre>
+      <pre className={cn("min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed", ANALYTICS_MASK_CLASS)}>{value}</pre>
       <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`Copy ${label}`} onClick={async () => {
         try { await copyTextToClipboard(value); setCopied(true); setError(false); }
         catch { setError(true); }
