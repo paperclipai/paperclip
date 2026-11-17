@@ -363,7 +363,7 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
-export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema } from "./validators/app-definition.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema, pluginMethodToolsSchema, PLUGIN_CONNECTOR_TOOL_NAME } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
@@ -1706,6 +1706,8 @@ export type {
   AppDefinition,
   AppPluginSource,
   AppReviewedTools,
+  PluginConnectorToolDef,
+  PluginConnectorTools,
   ConnectionMethodDef,
   FieldDef,
   OAuthRedirectConstraints,

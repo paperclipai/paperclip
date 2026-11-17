@@ -63,6 +63,9 @@ import type { OAuthCredentialStore } from "../oauth/credential-store.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
+import { listPluginConnectionTools, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
+import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
+import { resolveConnectionGrantSecret } from "../../connection-credentials.js";
 import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
 
 const URL_CREDENTIAL_PARAMETER = /token|secret|passw|api[-_]?key|^key$|auth|signature|^sig$|session|credential/i;
@@ -612,6 +615,25 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await agentmailApi(key).whoami();
   }
 
+  /**
+   * The credential a dynamic plugin connector may need to list its tools: the
+   * connection's default grant, resolved for this one call only.
+   */
+  async function pluginListingCredential(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    if (connection.authKind !== "api_key") return undefined;
+    // The same grant selection (and owner checks) as every other credential
+    // read for this connection and caller.
+    const grant = await credentials.vaultGrantForConnection(connection, actor);
+    const ref = grant?.credentialSecretRefs.find((candidate) => candidate.configPath.startsWith("credentials."));
+    if (!grant || !ref) return undefined;
+    const { value } = await resolveConnectionGrantSecret(db, connection, grant, ref, {
+      consumerType: "tool_connection", consumerId: connection.id,
+      actorType: actor?.actorType === "agent" ? "agent" : actor?.actorType === "user" ? "user" : "system",
+      actorId: actor?.actorId ?? null, responsibleUserId: grant.subjectUserId,
+    });
+    return { kind: "api_key" as const, value };
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
@@ -642,6 +664,16 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
       return [];
+    }
+    if (connection.transport === "plugin") {
+      try {
+        return await listPluginConnectionTools(db, connection, await pluginListingCredential(connection, actor));
+      } catch (error) {
+        if (findPluginWorkerUnavailableError(error)) {
+          throw unprocessable(error instanceof Error ? error.message : "This connector's plugin is not running right now.", { code: PLUGIN_CONNECTOR_UNAVAILABLE_CODE, retryable: true });
+        }
+        throw error;
+      }
     }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, listOptions);

@@ -32,6 +32,7 @@ import {
   type AppDefinition,
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { inferToolRisk } from "./tool-risk-inference.js";
 
 export interface PluginAppCatalog {
   /** Catalog entries for every app of every ready plugin, namespaced. */
@@ -42,16 +43,76 @@ export interface PluginAppCatalog {
 
 const parsedDefinitions = new Map<string, AppDefinition[]>();
 
+type PluginManifestFields = {
+  displayName?: string;
+  description?: string;
+  capabilities?: readonly string[];
+  apps?: readonly unknown[];
+  tools?: ReadonlyArray<{ name: string; displayName: string; description: string; parametersSchema?: Record<string, unknown> }>;
+};
+
 const ALL_AVAILABLE: PluginAppCatalog = { definitions: [], isAvailable: () => true };
+
+export const LEGACY_PLUGIN_TOOLS_APP_SLUG = "default";
+
+/**
+ * A plugin that declares agent tools with the legacy top-level manifest
+ * `tools` (and no `apps`) gets one implicit connector. Its tools keep their
+ * original names and handlers; a connection of this connector, installed for
+ * an agent or the whole company, is what gives agents those tools.
+ */
+export function legacyToolsAppDefinition(row: {
+  pluginKey: string;
+  manifestJson: PluginManifestFields | null;
+}): AppDefinition | null {
+  const manifest = row.manifestJson;
+  const tools = Array.isArray(manifest?.tools) ? manifest.tools : [];
+  if (!manifest || tools.length === 0 || (manifest.apps?.length ?? 0) > 0
+    || !manifest.capabilities?.includes("agent.tools.register")) return null;
+  const name = typeof manifest.displayName === "string" && manifest.displayName ? manifest.displayName : row.pluginKey;
+  return {
+    schemaVersion: 1,
+    slug: pluginAppSlug(row.pluginKey, LEGACY_PLUGIN_TOOLS_APP_SLUG),
+    plugin: { pluginKey: row.pluginKey, appSlug: LEGACY_PLUGIN_TOOLS_APP_SLUG, legacyTools: true },
+    name,
+    description: typeof manifest.description === "string" && manifest.description ? manifest.description : `Tools from the ${name} plugin.`,
+    categories: ["other"],
+    branding: { logoUrl: "/brands/apps/api-key-generic.svg" },
+    urlPatterns: [],
+    methods: [{
+      key: LEGACY_PLUGIN_TOOLS_APP_SLUG,
+      label: `Use ${name}`,
+      transport: "plugin",
+      auth: "none",
+      ownershipModes: ["customer"],
+      whenToUse: `Give agents the tools of the ${name} plugin.`,
+      guidanceMd: `The ${name} plugin runs these tools on this Paperclip instance. Choose which agents can use them.`,
+      riskTier: "S2",
+      tools: {
+        kind: "static",
+        list: tools.map((tool) => ({
+          name: tool.name,
+          displayName: tool.displayName,
+          description: tool.description,
+          risk: inferToolRisk(tool.name),
+          parametersSchema: tool.parametersSchema ?? { type: "object" },
+        })),
+      },
+    }],
+  };
+}
 
 /** The apps a ready plugin row contributes. Invalid entries are skipped. */
 export function pluginRowAppDefinitions(row: {
   pluginKey: string;
   status: string;
-  manifestJson: { capabilities?: readonly string[]; apps?: readonly unknown[] } | null;
+  manifestJson: PluginManifestFields | null;
 }): AppDefinition[] {
   const manifest = row.manifestJson;
-  if (row.status !== "ready" || !manifest?.capabilities?.includes("connectors.provide")) return [];
+  if (row.status !== "ready") return [];
+  const legacy = legacyToolsAppDefinition(row);
+  if (legacy) return [legacy];
+  if (!manifest?.capabilities?.includes("connectors.provide")) return [];
   const definitions: AppDefinition[] = [];
   for (const declared of manifest.apps ?? []) {
     // Manifests are validated at install and upgrade; parse again so a row
@@ -73,7 +134,7 @@ export async function loadPluginAppCatalog(db: Db): Promise<PluginAppCatalog> {
     .from(plugins)
     .where(and(
       eq(plugins.status, "ready"),
-      sql`${plugins.manifestJson}->'capabilities' @> '["connectors.provide"]'::jsonb`,
+      sql`(${plugins.manifestJson}->'capabilities' @> '["connectors.provide"]'::jsonb or ${plugins.manifestJson}->'capabilities' @> '["agent.tools.register"]'::jsonb)`,
     ));
   const definitions = rows.flatMap((row) => {
     // Parsing is the costly part; reuse it while the manifest is unchanged.
@@ -147,4 +208,36 @@ export async function retirePluginAppConnections(db: Db, pluginKey: string): Pro
     throw new Error(`Could not remove ${failures.length} connection(s) of this plugin's connectors. Try uninstalling again.`);
   }
   return owned.length;
+}
+
+/**
+ * Refresh the catalogs of a plugin's connector connections after its worker
+ * (re)starts, for example after an upgrade, so tool declarations and risk
+ * labels follow the running code. Best effort per connection; the gateway
+ * also hides catalog entries that no longer match a static declaration.
+ */
+export async function refreshPluginConnectionCatalogs(db: Db, pluginKey: string): Promise<number> {
+  const prefix = `${pluginAppSlug(pluginKey, "x").slice(0, -1)}%`;
+  const rows = await db
+    .select({ id: toolConnections.id, config: toolConnections.config })
+    .from(toolConnections)
+    .where(and(
+      eq(toolConnections.transport, "plugin"),
+      eq(toolConnections.status, "active"),
+      like(sql<string>`${toolConnections.config}->>'sourceTemplateKey'`, prefix),
+    ));
+  const owned = rows.filter((row) => pluginKeyForConnectionSource(connectionSourceSlug(row)) === pluginKey);
+  if (owned.length === 0) return 0;
+  const { toolAccessService } = await import("./tool-access.js");
+  const access = toolAccessService(db);
+  let refreshed = 0;
+  for (const row of owned) {
+    try {
+      await access.refreshCatalog(row.id);
+      refreshed += 1;
+    } catch (error) {
+      logger.warn({ err: error, pluginKey, connectionId: row.id }, "Could not refresh a plugin connector catalog");
+    }
+  }
+  return refreshed;
 }

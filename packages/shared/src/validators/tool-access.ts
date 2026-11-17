@@ -464,6 +464,8 @@ export const connectToolAppSchema = z.object({
   agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(300).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
+  /** Per-connection settings of a plugin-served connector, checked against its `settingsSchema`. */
+  settings: z.record(z.string(), z.unknown()).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),

@@ -217,6 +217,7 @@ export function connectionMethodRequiresConfiguration(method: ConnectionMethodDe
     || visibleTenantFields.length
     || visibleExtensionFields.length
     || method.configRequirements?.atLeastOneOf?.length
+    || Object.keys((method.settingsSchema?.properties as Record<string, unknown> | undefined) ?? {}).length
     // "Use your own OAuth app" is an advanced alternative when DCR/CIMD is
     // available, not a required setup field. Only customer-client-only methods
     // must stop on the configuration screen.

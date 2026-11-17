@@ -1,5 +1,10 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectorToolPolicy } from "../../connectors/tool-policy.js";
+
+function pluginDeclaredRisk(descriptor: { annotations?: Record<string, unknown> | null }) {
+  const declared = descriptor.annotations?.paperclipRisk;
+  return declared === "read" || declared === "write" || declared === "destructive" ? declared : "write";
+}
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
@@ -141,7 +146,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       existingRows.map((entry) => [entry.toolName, entry]),
     );
     const nativeProvider = Boolean(nativeProviderCatalogFor(connection) || restConnectorFor(connection));
-    if (connection.config.sourceTemplateKey === "google-workspace"
+    if (connection.config.sourceTemplateKey === "google-workspace" || connection.transport === "plugin"
       || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
       // The catalog is shared, but discovery uses only the caller's grant. A
@@ -214,7 +219,13 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
-      const riskLevel = classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
+      // A plugin-served connection's tools carry the risk its plugin declared
+      // (statically, or per connection from its worker). Other transports keep
+      // the reviewed classifier; a remote server cannot set this annotation's
+      // effect because it is read only for plugin connections.
+      const riskLevel = connection.transport === "plugin"
+        ? pluginDeclaredRisk(descriptor)
+        : classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
       const hash = descriptorHash(descriptor, riskLevel);
       const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
