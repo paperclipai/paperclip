@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { applyConnectorSkills, isCliSkillFileAdapter, prepareConnectorSkillDelivery } from "../services/connector-runtime.js";
+import { applyConnectorSkills, takesRunScopedMetadataInPrompt, prepareConnectorSkillDelivery } from "../services/connector-runtime.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 
 function slackAssignment(channelId: string, requesterId: string, authorizationRevision: string) {
@@ -32,42 +32,53 @@ describe("connector run-scoped metadata", () => {
     await removeRuntimeAssetTree(home);
   });
 
-  it("keeps one skill bundle across Slack conversations for CLI adapters and sends each conversation's identifiers in the run prompt", async () => {
-    const inPrompt = { runScopedMetadataInPrompt: true };
+  it("keeps one skill bundle across Slack conversations for claude_local and sends each conversation's identifiers in the run prompt", async () => {
+    const inPrompt = { runScopedMetadataInPrompt: takesRunScopedMetadataInPrompt("claude_local", { engine: "cli" }) };
+    expect(inPrompt.runScopedMetadataInPrompt).toBe(true);
     const first = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("D0FIRST", "U0FIRST", "rev-first")], inPrompt);
     const second = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("C0SECOND", "U0SECOND", "rev-second")], inPrompt);
+    const sameAccess = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("C0SECOND", "U0SECOND", "rev-second")], inPrompt);
 
     expect(second.paperclipRuntimeSkills[0].source).toBe(first.paperclipRuntimeSkills[0].source);
-    expect(second.paperclipConnectorSkillDigest).toBe(first.paperclipConnectorSkillDigest);
     const markdown = await readFile(path.join(first.paperclipRuntimeSkills[0].source, "SKILL.md"), "utf8");
     expect(markdown).toContain("T0FIXTURE");
     expect(markdown).toContain("endpoint-1");
     for (const runValue of ["D0FIRST", "U0FIRST", "rev-first"]) expect(markdown).not.toContain(runValue);
 
-    for (const adapterType of ["claude_local", "codex_local", "kimi_local"]) {
-      expect(isCliSkillFileAdapter(adapterType, { engine: "cli" })).toBe(true);
-      const delivery = await prepareConnectorSkillDelivery(second, adapterType);
-      expect(delivery.config.paperclipConnectorRunContext).toBeNull();
-      for (const resumedSession of [false, true]) {
-        const prompt = renderPaperclipWakePrompt({ connectorSkillInstructions: delivery.instructions }, { resumedSession });
-        for (const runValue of ["C0SECOND", "U0SECOND", "rev-second", "endpoint-1"]) expect(prompt).toContain(runValue);
-        expect(prompt).not.toContain("D0FIRST");
-      }
+    // A new requester or authorization revision must still start a fresh session.
+    expect(first.paperclipConnectorSessionKey).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.paperclipConnectorSessionKey).not.toBe(first.paperclipConnectorSessionKey);
+    expect(sameAccess.paperclipConnectorSessionKey).toBe(second.paperclipConnectorSessionKey);
+
+    const delivery = await prepareConnectorSkillDelivery(second, "claude_local");
+    expect(delivery.config.paperclipConnectorRunContext).toBeNull();
+    expect(delivery.config.paperclipConnectorSessionKey).toBe(second.paperclipConnectorSessionKey);
+    for (const resumedSession of [false, true]) {
+      const prompt = renderPaperclipWakePrompt({ connectorSkillInstructions: delivery.instructions }, { resumedSession });
+      for (const runValue of ["C0SECOND", "U0SECOND", "rev-second", "endpoint-1"]) expect(prompt).toContain(runValue);
+      expect(prompt).not.toContain("D0FIRST");
     }
   });
 
-  it("keeps the identifiers in the skill for the runner and shared-home adapters", async () => {
-    for (const adapterType of ["paperclip_runner", "cursor_local"]) {
-      const options = { runScopedMetadataInPrompt: isCliSkillFileAdapter(adapterType, { engine: "cli" }) };
+  it("keeps the identifiers in the skill for every other adapter", async () => {
+    for (const adapterType of ["codex_local", "kimi_local", "paperclip_runner", "cursor_local"]) {
+      const options = { runScopedMetadataInPrompt: takesRunScopedMetadataInPrompt(adapterType, { engine: "cli" }) };
       expect(options.runScopedMetadataInPrompt).toBe(false);
       const first = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("D0FIRST", "U0FIRST", "rev-first")], options);
       const second = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("C0SECOND", "U0SECOND", "rev-second")], options);
       expect(second.paperclipRuntimeSkills[0].source).not.toBe(first.paperclipRuntimeSkills[0].source);
+      expect(second.paperclipConnectorSkillDigest).not.toBe(first.paperclipConnectorSkillDigest);
       expect(second.paperclipConnectorRunContext).toBeNull();
+      expect(second.paperclipConnectorSessionKey).toBeNull();
       const markdown = await readFile(path.join(second.paperclipRuntimeSkills[0].source, "SKILL.md"), "utf8");
       for (const runValue of ["C0SECOND", "U0SECOND", "rev-second"]) expect(markdown).toContain(runValue);
-      const delivery = await prepareConnectorSkillDelivery(second, adapterType);
-      expect(delivery.instructions).toContain("C0SECOND");
+    }
+  });
+
+  it("delivers moved identifiers on every adapter path, so a mismatched caller cannot drop them", async () => {
+    const moved = await applyConnectorSkills({ engine: "cli" }, [], [slackAssignment("C0SECOND", "U0SECOND", "rev-second")], { runScopedMetadataInPrompt: true });
+    for (const adapterType of ["claude_local", "codex_local", "paperclip_runner", "cursor_local"]) {
+      expect((await prepareConnectorSkillDelivery(moved, adapterType)).instructions).toContain("rev-second");
     }
   });
 

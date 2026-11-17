@@ -53,9 +53,9 @@ interface ConnectorDefinition {
   legacySkillKeys?: string[];
   /**
    * Resource metadata that names this run (its conversation, requester or access
-   * revision). For CLI adapters it goes in the run prompt, not the skill bundle:
-   * the bundle is content-addressed, and claude_local puts its path in the
-   * prompt prefix, so every conversation would otherwise start a new prefix.
+   * revision). For claude_local it goes in the run prompt, not the skill bundle:
+   * the bundle is content-addressed and its path is part of Claude's prompt
+   * prefix, so every conversation would otherwise start a new prefix.
    */
   runScopedMetadata?: string[];
   tools: Tool[];
@@ -199,11 +199,13 @@ function splitRunScopedMetadata(resources: Resource[], keys: string[]) {
 }
 
 /**
- * CLI adapters read connector skills from staged files and render the full wake
- * prompt, connector instructions included, on fresh and resumed runs alike.
+ * claude_local's CLI engine caches its prompt prefix by skill bundle path and
+ * renders the full wake prompt, connector instructions included, on fresh and
+ * resumed runs. It takes run-scoped metadata in the prompt and gates session
+ * resume on paperclipConnectorSessionKey instead.
  */
-export function isCliSkillFileAdapter(adapterType: string, config: Record<string, unknown>) {
-  return config.engine === "cli" && ["codex_local", "claude_local", "kimi_local"].includes(adapterType);
+export function takesRunScopedMetadataInPrompt(adapterType: string, config: Record<string, unknown>) {
+  return adapterType === "claude_local" && config.engine === "cli";
 }
 
 /** Runtime-only overlay: never persist automatic assignments into agent preferences. */
@@ -281,6 +283,11 @@ export async function applyConnectorSkills(
     paperclipRuntimeSkills: skills,
     paperclipConnectorSkillDigest: connectorSkillDigest,
     paperclipConnectorRunContext: runContexts.length > 0 ? runContexts.join("\n\n") : null,
+    // Run-scoped values (Slack's requester and authorization revision) still decide
+    // session compatibility once they are out of the content-addressed bundle.
+    paperclipConnectorSessionKey: runContexts.length > 0
+      ? createHash("sha256").update(runContexts.join("\n\n")).digest("hex")
+      : null,
   };
 }
 
@@ -289,20 +296,25 @@ export async function prepareConnectorSkillDelivery(
   config: Record<string, unknown> & Awaited<ReturnType<typeof applyConnectorSkills>>,
   adapterType: string,
 ) {
+  // Run-scoped identifiers kept out of the skill bundle reach the model here.
   const runContext = config.paperclipConnectorRunContext ?? "";
   config = { ...config, paperclipConnectorRunContext: null };
-  if (isCliSkillFileAdapter(adapterType, config)) {
-    // Run-scoped identifiers kept out of the staged skill files.
-    return { config, instructions: runContext };
-  }
-  if (adapterType === "paperclip_runner") {
+  const withRunContext = (instructions: string) =>
+    [instructions, runContext].filter((part) => part.length > 0).join("\n\n");
+  const scopedFiles =
+    adapterType === "paperclip_runner" ||
+    (config.engine === "cli" &&
+      ["codex_local", "claude_local", "kimi_local"].includes(adapterType));
+  if (scopedFiles) {
     // Runner models with semantic tools cannot necessarily read staged skill
     // files. Supply Slack and Speko contracts and verified source IDs in their input;
     // keep the staged bundle for CLI-capable engines and compatibility hashing.
-    const promptSkills = config.paperclipRuntimeSkills.filter(entry => ["paperclipai/paperclip/slack", "paperclipai/paperclip/speko"].includes(entry.key));
+    const promptSkills = adapterType === "paperclip_runner"
+      ? config.paperclipRuntimeSkills.filter(entry => ["paperclipai/paperclip/slack", "paperclipai/paperclip/speko"].includes(entry.key))
+      : [];
     const instructions = (await Promise.all(promptSkills.map(entry =>
       fs.readFile(path.join(entry.source, "SKILL.md"), "utf8")))).join("\n\n");
-    return { config, instructions };
+    return { config, instructions: withRunContext(instructions) };
   }
   const assigned = config.paperclipRuntimeSkills.filter((entry) =>
     isConnectorSkill(entry.key),
@@ -325,7 +337,7 @@ export async function prepareConnectorSkillDelivery(
       ...stripped,
       paperclipConnectorSkillDigest: config.paperclipConnectorSkillDigest,
     },
-    instructions,
+    instructions: withRunContext(instructions),
   };
 }
 
