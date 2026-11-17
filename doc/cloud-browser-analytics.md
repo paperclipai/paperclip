@@ -64,6 +64,19 @@ browser analytics is on. It does not require a session: posthog-js sends some
 events while a page unloads, and the proxy can only reach the two PostHog hosts
 with the public project token, like PostHog's own ingest endpoint.
 
+### Visitor address behind the platform proxy
+
+The per-client limit uses `req.ip`, which comes from the server's trusted proxy
+settings (`TRUST_PROXY`). It never comes from a header the client controls. If
+`TRUST_PROXY` is unset behind a platform proxy, `req.ip` is the proxy's private
+hop, so every visitor behind that hop shares one 16-request limit. Set
+`TRUST_PROXY` to the platform's proxy range so that `req.ip` is the visitor.
+
+The `X-Forwarded-For` value that the proxy sends to PostHog carries the
+visitor's location. When the socket peer is private, the proxy uses the
+rightmost public `X-Forwarded-For` entry, which the platform edge appended.
+This value is used only for location, never for limits.
+
 ## Identity
 
 - After sign-in: `identify(session.userId, { email, name })`. `session.userId`
