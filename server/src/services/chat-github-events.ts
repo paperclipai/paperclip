@@ -33,12 +33,50 @@ const person = z.object({
   type: z.string().optional(),
 });
 
+// GitHub does not notify an account for an @name inside an inline code span or
+// a fenced code block, so neither should start a request. Remove backtick and
+// tilde fences (including list-indented ones; an unclosed fence runs to the end)
+// plus inline code spans before the mention test.
+function stripGitHubCommentCodeSpans(body: string): string {
+  const kept: string[] = [];
+  let fenceChar: string | null = null;
+  let fenceLen = 0;
+  for (const line of body.split("\n")) {
+    const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (fenceChar === null) {
+      if (!run) kept.push(line);
+      else {
+        fenceChar = run[1][0];
+        fenceLen = run[1].length;
+      }
+      continue;
+    }
+    // A closing fence is the marker alone; anything else stays inside the block.
+    if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line))
+      fenceChar = null;
+  }
+  return kept.join("\n").replace(/(`+)[\s\S]*?\1/g, " ");
+}
+
+// The SDK converts the comment to plain text (keeping code content), so the
+// markdown body must come back out of the raw payload for the mention re-test.
+export function githubCommentMarkdownBody(message: { raw?: unknown; text?: string }): string {
+  const raw = message?.raw;
+  if (raw && typeof raw === "object") {
+    const comment = (raw as { comment?: unknown }).comment;
+    if (comment && typeof comment === "object" && typeof (comment as { body?: unknown }).body === "string")
+      return (comment as { body: string }).body;
+  }
+  return message?.text ?? "";
+}
+
 export function githubBodyMentionsBot(body: string, username: string | null): boolean {
   if (!username) return false;
   const name = username.replace(/\[bot\]$/i, "");
   if (!name) return false;
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i").test(body);
+  const mention = new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i");
+  return mention.test(stripGitHubCommentCodeSpans(body));
 }
 
 /**

@@ -34,6 +34,19 @@ describe("explicit GitHub mentions", () => {
   it.each(["@maya-other", "@mayabot", "x@maya", "@someone"])("does not match a different identity: %s", (body) => {
     expect(githubBodyMentionsBot(body, "maya[bot]")).toBe(false);
   });
+  it.each([
+    "Quoting the runbook:\n```\n@maya notes\n```",
+    "See `echo @maya[bot]` in the script",
+    "~~~\n@maya ping\n~~~",
+    "- quoted\n    ```\n    @maya inside list fence\n    ```",
+    "Unclosed fence:\n```\n@maya",
+  ])("ignores a bot mention inside code: %s", (body) => {
+    expect(githubBodyMentionsBot(body, "maya[bot]")).toBe(false);
+  });
+  it("still recognizes a prose mention next to code that names the bot", () => {
+    expect(githubBodyMentionsBot("Log:\n```\n@maya x\n```\n@maya please look", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("`@maya` said to ping @maya", "maya[bot]")).toBe(true);
+  });
   it.each(["issues", "pull_request", "issue_comment", "pull_request_review_comment", "pull_request_review"])("normalizes a %s request into the matching issue or PR thread", (event) => {
     const issue = { ...payload().issue, body: "@maya help" };
     const comment = { id: 123, body: "@maya[bot] help", in_reply_to_id: 99 };

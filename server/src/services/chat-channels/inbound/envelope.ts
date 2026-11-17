@@ -52,6 +52,10 @@ import {
 import {
   githubAttachmentLimitOmissions,
 } from "../../chat-github-attachments.js";
+import {
+  githubBodyMentionsBot,
+  githubCommentMarkdownBody,
+} from "../../chat-github-events.js";
 
 import { chatProviderConversationUrl } from "../../chat-provider-links.js";
 
@@ -87,6 +91,11 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
     const { endpoint, thread, message, trigger, receiptReactionSupported, recoveredProviderUrl, runtimeContext, providerUpdateId, admittedDeliveryId, suppressSetupDestinationActivation, slackSlashControl } = input;
     const githubAutomatic = endpoint.provider === "github" ? githubAutomaticMessages.get(message) : undefined;
     const githubIssue = endpoint.provider === "github" ? githubIssueMessages.get(message) : undefined;
+    // The SDK mention detector reads the plain text and keeps code content;
+    // GitHub itself does not notify for code. Re-test the raw markdown body.
+    if (endpoint.provider === "github" && message.isMention === true
+        && !githubBodyMentionsBot(githubCommentMarkdownBody(message), endpoint.botUsername))
+      message.isMention = false;
     let githubManual = githubManualMessages.get(message);
     if (endpoint.provider === "github" && !githubAutomatic && !githubIssue && !githubManual) {
       const [config] = await db.select().from(chatGitHubConfigurations).where(eq(chatGitHubConfigurations.endpointId, endpoint.id));
