@@ -1,6 +1,6 @@
 import type { heartbeatRuns } from "@paperclipai/db";
 import { parseObject } from "../adapters/utils.js";
-import { isResolvedInteractionContinuationWakeContext } from "../modules/run-dispatch/domain/wake-context.js";
+import { isResolvedInteractionContinuationWakeContext } from "../modules/run-dispatch/index.js";
 import { STORAGE_UNAVAILABLE_CODE } from "../storage/storage-unavailable.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "./environment-provider-unavailable-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "./plugin-worker-unavailable-error.js";
