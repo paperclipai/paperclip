@@ -262,6 +262,21 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
     expect(await db.select().from(issues).where(eq(issues.originId, privateId))).toHaveLength(0);
   });
 
+  it("keeps a private task's conversation private", async () => {
+    const seeded = await seed();
+    const privateId = randomUUID();
+    await db.insert(issues).values({
+      id: privateId, companyId: seeded.company.id, title: "Confidential payroll run", status: "done", priority: "medium",
+      visibility: "private", privacyRootIssueId: privateId, responsibleUserId: OWNER, assigneeUserId: OWNER,
+    });
+    const started = await start(seeded, privateId, { agentId: seeded.agents.analyst.id });
+    expect(started.status).toBe(201);
+    const [conversation] = await db.select().from(issues).where(eq(issues.id, started.body.conversation.issueId));
+    expect(conversation).toMatchObject({ visibility: "private" });
+    const [open] = await db.select().from(issues).where(eq(issues.id, (await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id })).body.conversation.issueId));
+    expect(open).toMatchObject({ visibility: "open" });
+  });
+
   it("lets only the conversation's agent propose, validates, keeps one pending, and creates nothing", async () => {
     const seeded = await seed();
     const started = await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id });

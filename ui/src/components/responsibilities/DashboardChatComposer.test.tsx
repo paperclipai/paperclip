@@ -148,6 +148,25 @@ describe("DashboardChatComposer", () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("resends attachments without uploading them again", async () => {
+    mocks.issues.uploadAttachment.mockResolvedValueOnce({
+      id: "attachment-1", contentPath: "/files/attachment-1", contentType: "text/plain", originalFilename: "notes.txt",
+    });
+    mocks.issues.addComment.mockRejectedValueOnce(new Error("The server is unavailable"));
+    await render([chief]);
+    await type("Read this");
+    const file = new File(["notes"], "notes.txt", { type: "text/plain" });
+    await act(async () => mocks.composer!.creation.onSelectFiles([file]));
+    await flush();
+    await send();
+    await send();
+    expect(mocks.issues.uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(mocks.issues.addComment).toHaveBeenCalledTimes(2);
+    const [first, second] = mocks.issues.addComment.mock.calls;
+    expect(second).toEqual(first);
+    expect(second![4]).toEqual(["attachment-1"]);
+  });
+
   it("saves the chosen model on the chat before the message, as the chat composer does", async () => {
     mocks.issues.getCore.mockResolvedValue({ ...chat, assigneeAdapterOverrides: null });
     mocks.issues.update.mockResolvedValue(chat);

@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, issueThreadInteractions, issues, responsibilities } from "@paperclipai/db";
+import { agents, companies, issueThreadInteractions, issues, projects, responsibilities } from "@paperclipai/db";
 import {
   AUTOMATION_CONVERSATION_ORIGIN_KIND,
   ROUTINE_FROM_TASK_ORIGIN_KIND,
@@ -288,7 +288,14 @@ export function automationConversationService(
         ...(hint ? ["", `Quick suggestion from its title (only a guess): ${hint.why}`] : []),
         ...(backLink ? ["", backLink] : []),
       ].join("\n");
+      // The conversation copies the task's title and identifier, so a private
+      // task's conversation is private too: only the person and the agent see it.
+      const sourceIsPrivate = source.visibility === "private" || source.privacyRootIssueId !== null
+        || (source.projectId !== null && await db.select({ id: projects.id }).from(projects)
+          .where(and(eq(projects.id, source.projectId), eq(projects.companyId, source.companyId), eq(projects.visibility, "private")))
+          .limit(1).then((rows) => rows.length > 0));
       const issue = await issuesSvc.create(source.companyId, {
+        ...(sourceIsPrivate ? { visibility: "private" as const } : {}),
         title: clip(`Automate “${source.title}”`, 200),
         description,
         status: "todo",
@@ -392,12 +399,17 @@ export function automationConversationService(
       await assertEnabled();
       const issue = await loadConversationIssue(issueRef);
       const source = await suggestions.assertCanBeAutomated({ id: issue.originId!, companyId: issue.companyId });
+      const startedAt = Date.now();
       const claimed = await interactions.claimAutomationProposal(issue, interactionId, "accepted", { userId: actor.userId });
       const { payload } = claimed;
       let timezone: string | null = null;
       let created: AutomationFromTask;
       try {
         if (payload.sourceIssueId !== source.id) throw notFound("Interaction not found");
+        const strandedSince = suggestions.tookOverClaim(claimed, startedAt);
+        if (strandedSince) {
+          await suggestions.archiveStrandedAutomations({ id: source.id, companyId: source.companyId }, strandedSince, actor);
+        }
         const trigger = payload.trigger;
         if (trigger.kind === "schedule") timezone = await suggestions.resolveTimeZone(input.timezone, actor.userId);
         const description = trigger.kind === "webhook"

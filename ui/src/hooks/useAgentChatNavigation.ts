@@ -58,10 +58,15 @@ function escapeMarkdownLabel(name: string): string {
  * Start a chat from elsewhere with its first message: the same one-per-agent
  * resolver as opening a chat, then the ordered, idempotent comments endpoint
  * the chat composer uses, then the Chat section on that conversation.
+ *
+ * Files are uploaded once per message: a retry with the same
+ * `clientRequestId` reuses the attachments already uploaded, so it sends the
+ * same body and attachment ids the server may already have saved.
  */
 export function useStartAgentChat(companyId: string | null, userId: string | null) {
   const client = useQueryClient();
   const navigate = useNavigate();
+  const uploads = useRef(new Map<string, Awaited<ReturnType<typeof issuesApi.uploadAttachment>>[]>());
   return useCallback(async ({ agent, body, files = [], runSettings, clientRequestId }: StartAgentChatMessage) => {
     if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
     const chat = await agentChatsApi.ensure(companyId, agent.id);
@@ -74,8 +79,12 @@ export function useStartAgentChat(companyId: string | null, userId: string | nul
       });
       client.setQueryData(queryKeys.issues.detail(chat.id), updated);
     }
-    const uploaded = [];
-    for (const file of files) uploaded.push(await issuesApi.uploadAttachment(companyId, chat.id, file));
+    const uploadKey = `${chat.id}\n${clientRequestId}`;
+    const uploaded = uploads.current.get(uploadKey) ?? [];
+    uploads.current.set(uploadKey, uploaded);
+    for (let index = uploaded.length; index < files.length; index += 1) {
+      uploaded.push(await issuesApi.uploadAttachment(companyId, chat.id, files[index]!));
+    }
     const refLines = uploaded
       .map((attachment, index) => {
         const name = files[index]?.name ?? attachment.originalFilename ?? "attachment";
@@ -87,6 +96,7 @@ export function useStartAgentChat(companyId: string | null, userId: string | nul
     // A finished or blocked conversation picks up again with a new message, as in the chat itself.
     const reopen = chat.status === "done" || chat.status === "cancelled" || chat.status === "blocked" ? true : undefined;
     await issuesApi.addComment(chat.id, fullBody, reopen, undefined, uploaded.map((attachment) => attachment.id), clientRequestId);
+    uploads.current.delete(uploadKey);
     void client.invalidateQueries({ queryKey: queryKeys.issues.comments(chat.id) });
     void client.invalidateQueries({ queryKey: queryKeys.agentChats.list(companyId, userId) });
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);

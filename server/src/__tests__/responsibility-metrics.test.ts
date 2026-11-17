@@ -25,6 +25,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { loadResponsibilityBarGuidance } from "../services/responsibility-bar-guidance.js";
 import { primaryReadings, responsibilityMetricService } from "../services/responsibility-metrics.js";
+import { responsibilityService } from "../services/responsibilities.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -274,6 +275,16 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
       expect(row!.metricCurrent).toBe(13);
       const readings = await read(seeded.app, seeded.id);
       expect(readings.body.metrics[0].readings.map((reading: { value: number }) => reading.value)).toEqual([9, 4, 13]);
+    });
+
+    it("refuses a reading checked against a bar that changed before it saved", async () => {
+      const seeded = await seed();
+      const [stale] = await db.select().from(responsibilities).where(eq(responsibilities.id, seeded.id));
+      await db.update(responsibilities).set({ metricKind: "yes_no", metricTarget: 1, metricCurrent: null, metricUpdatedAt: null })
+        .where(eq(responsibilities.id, seeded.id));
+      await expect(responsibilityService(db).update(stale!, { metricCurrent: 50 }, { type: "board", userId: OWNER })).rejects.toThrow();
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, seeded.id));
+      expect(row).toMatchObject({ metricKind: "yes_no", metricCurrent: null });
     });
 
     it("takes the reading a bar change supplies, even behind a reading dated ahead", async () => {

@@ -2386,6 +2386,24 @@ async function expireStaleRequestConfirmationTarget(
   return expired;
 }
 
+/**
+ * An accept claim on a routine offer or automation proposal holds the card
+ * while its routine is made. When the routine was never recorded (the server
+ * stopped midway), another accept may take the claim over after this long.
+ */
+export const STRANDED_ACCEPT_CLAIM_MS = 2 * 60_000;
+
+function strandedAcceptClaim(
+  current: Pick<IssueThreadInteractionRow, "status" | "result" | "updatedAt">,
+  outcome: "accepted" | "declined",
+  at: Date,
+): boolean {
+  if (outcome !== "accepted" || current.status !== "accepted") return false;
+  const result = current.result as { routineId?: unknown } | null;
+  if (result && typeof result.routineId === "string") return false;
+  return at.getTime() - new Date(current.updatedAt).getTime() >= STRANDED_ACCEPT_CLAIM_MS;
+}
+
 export function issueThreadInteractionService(
   db: Db,
   opts: IssueThreadInteractionServiceOptions = {},
@@ -3538,27 +3556,33 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.issueId, issue.id),
           ));
         if (!current || current.kind !== "suggest_routine") throw interactionNotFoundError();
-        if (current.status !== "pending") throw interactionTerminalError(current);
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
         if (issueRow.status === "cancelled") throw interactionIssueClosedError();
         if (!isRoutineSuggestionOpenOnIssue(current, issueRow.status)) {
           throw conflict("This offer opens once the task is done", { code: "routine_suggestion_task_not_done" });
         }
         assertInteractionResolutionAllowed(current, actor);
-        const resolvedAt = now();
         const result: SuggestRoutineResult = { version: 1, outcome };
+        // Taking over a stranded claim keeps its first resolvedAt, so the caller can find what it left behind.
         const [row] = await tx
           .update(issueThreadInteractions)
-          .set({
-            status: outcome === "accepted" ? "accepted" : "rejected",
-            result,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedByAgentId: null,
-            resolvedAt,
-            updatedAt: resolvedAt,
-          })
+          .set(stranded
+            ? { resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
           .where(and(
             eq(issueThreadInteractions.id, interactionId),
-            eq(issueThreadInteractions.status, "pending"),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
           ))
           .returning();
         if (!row) throw interactionAlreadyResolvedError();
@@ -4145,24 +4169,30 @@ export function issueThreadInteractionService(
           ))
           .for("update");
         if (!current || current.kind !== "propose_automation") throw interactionNotFoundError();
-        if (current.status !== "pending") throw interactionTerminalError(current);
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
         if (!isAutomationProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
         assertInteractionResolutionAllowed(current, actor);
-        const resolvedAt = now();
         const result: ProposeAutomationResult = { version: 1, outcome };
+        // Taking over a stranded claim keeps its first resolvedAt, so the caller can find what it left behind.
         const [row] = await tx
           .update(issueThreadInteractions)
-          .set({
-            status: outcome === "accepted" ? "accepted" : "rejected",
-            result,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedByAgentId: null,
-            resolvedAt,
-            updatedAt: resolvedAt,
-          })
+          .set(stranded
+            ? { resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
           .where(and(
             eq(issueThreadInteractions.id, interactionId),
-            eq(issueThreadInteractions.status, "pending"),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
           ))
           .returning();
         if (!row) throw interactionAlreadyResolvedError();

@@ -18,6 +18,7 @@ import {
   routineTriggers,
   routines,
 } from "@paperclipai/db";
+import { ROUTINE_FROM_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { routineSuggestionRoutes } from "../routes/routine-suggestions.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -368,6 +369,41 @@ describeEmbeddedPostgres("routine suggestions", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, offered.body.id));
     expect(row).toMatchObject({ status: "pending", result: null });
+    expect(await db.select().from(routines).where(eq(routines.companyId, seeded.company.id))).toHaveLength(0);
+  });
+
+  it("finishes an accept that a restart interrupted, leaving one routine", async () => {
+    const seeded = await seed();
+    const offered = await offer(seeded);
+    const claimedAt = new Date(Date.now() - 5 * 60_000);
+    // The interrupted accept claimed the card and made a routine, then stopped before recording it.
+    await db.update(issueThreadInteractions).set({
+      status: "accepted", result: { version: 1, outcome: "accepted" }, resolvedByUserId: OWNER, resolvedAt: claimedAt, updatedAt: claimedAt,
+    }).where(eq(issueThreadInteractions.id, offered.body.id));
+    const [stray] = await db.insert(routines).values({
+      companyId: seeded.company.id, title: "Weekly competitor pricing summary", assigneeAgentId: seeded.agent.id,
+      originKind: ROUTINE_FROM_TASK_ORIGIN_KIND, originId: seeded.issue.id, createdAt: new Date(claimedAt.getTime() + 1_000),
+    }).returning();
+    const res = await request(createApp(boardActor()))
+      .post(`/api/issues/${seeded.issue.id}/routine-suggestions/${offered.body.id}/accept`).send({ timezone: "UTC" });
+    expect(res.status).toBe(200);
+    expect(res.body.interaction.result.routineId).toBe(res.body.routine.id);
+    const live = (await db.select().from(routines).where(eq(routines.companyId, seeded.company.id))).filter((row) => row.status !== "archived");
+    expect(live.map((row) => row.id)).toEqual([res.body.routine.id]);
+    const [archived] = await db.select().from(routines).where(eq(routines.id, stray!.id));
+    expect(archived).toMatchObject({ status: "archived" });
+  });
+
+  it("does not take over an accept that may still be running", async () => {
+    const seeded = await seed();
+    const offered = await offer(seeded);
+    const claimedAt = new Date(Date.now() - 10_000);
+    await db.update(issueThreadInteractions).set({
+      status: "accepted", result: { version: 1, outcome: "accepted" }, resolvedByUserId: OWNER, resolvedAt: claimedAt, updatedAt: claimedAt,
+    }).where(eq(issueThreadInteractions.id, offered.body.id));
+    const res = await request(createApp(boardActor()))
+      .post(`/api/issues/${seeded.issue.id}/routine-suggestions/${offered.body.id}/accept`).send({ timezone: "UTC" });
+    expect(res.status).toBe(409);
     expect(await db.select().from(routines).where(eq(routines.companyId, seeded.company.id))).toHaveLength(0);
   });
 

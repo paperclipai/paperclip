@@ -1484,11 +1484,14 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       }
       if (patch.status === "active" && !existing.confirmedAt) set.confirmedAt = new Date();
       return db.transaction(async (tx) => {
-        const [locked] = await tx.select({ metricCurrent: responsibilities.metricCurrent, metricUpdatedAt: responsibilities.metricUpdatedAt })
-          .from(responsibilities)
+        const [locked] = await tx.select().from(responsibilities)
           .where(and(eq(responsibilities.id, existing.id), eq(responsibilities.companyId, existing.companyId)))
           .for("update");
         if (!locked) throw notFound("Responsibility not found");
+        // The bar may have changed since `existing` was read: check the patch against the row as it is now.
+        if (BAR_INPUT_KEYS.some((key) => String(locked[key] ?? "") !== String(existing[key] ?? ""))) {
+          mergeBarPatch(locked, patch, { complete: nextStatus === "active", allowClear: barOptional });
+        }
         const plainReading = Object.entries(patch).every(([key, value]) => key === "metricCurrent" || value === undefined);
         const olderReading = plainReading && patch.metricCurrent !== undefined && patch.metricCurrent !== null
           && locked.metricCurrent !== null && locked.metricUpdatedAt !== null

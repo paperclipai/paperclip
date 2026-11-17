@@ -1,6 +1,6 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues } from "@paperclipai/db";
+import { issues, routines as routinesTable } from "@paperclipai/db";
 import {
   AUTOMATION_CONVERSATION_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
@@ -363,10 +363,39 @@ export function routineSuggestionService(
     return { routine, trigger, filed };
   }
 
+  /**
+   * Archive what an interrupted accept left behind: live routines made from
+   * this task since that accept claimed its card. The accept that takes the
+   * claim over then makes the routine again, so exactly one remains.
+   */
+  async function archiveStrandedAutomations(
+    issue: { id: string; companyId: string },
+    since: Date,
+    actor: { userId: string; runId: string | null },
+  ) {
+    const stranded = await db.select({ id: routinesTable.id }).from(routinesTable).where(and(
+      eq(routinesTable.companyId, issue.companyId),
+      eq(routinesTable.originKind, ROUTINE_FROM_TASK_ORIGIN_KIND),
+      eq(routinesTable.originId, issue.id),
+      ne(routinesTable.status, "archived"),
+      gte(routinesTable.createdAt, since),
+    ));
+    for (const row of stranded) await routines.update(row.id, { status: "archived" }, actor);
+  }
+
+  /** Whether `claimed` took over an earlier, interrupted accept (its claim predates this request). */
+  function tookOverClaim(claimed: { resolvedAt?: Date | string | null }, startedAt: number): Date | null {
+    if (!claimed.resolvedAt) return null;
+    const at = new Date(claimed.resolvedAt);
+    return at.getTime() < startedAt ? at : null;
+  }
+
   return {
     assertEnabled,
     resolveTimeZone,
     createAutomation,
+    archiveStrandedAutomations,
+    tookOverClaim,
 
     /**
      * Whether a person may automate this task: it exists, is not cancelled,
@@ -435,10 +464,13 @@ export function routineSuggestionService(
       await assertEnabled();
       const issue = await loadIssue(issueRef.id, issueRef.companyId);
       const timezone = await resolveTimeZone(input.timezone, actor.userId);
+      const startedAt = Date.now();
       const claimed = await interactions.claimRoutineSuggestion(issue, interactionId, "accepted", { userId: actor.userId });
       const { payload } = claimed;
       let created: Awaited<ReturnType<typeof createScheduledRoutine>>;
       try {
+        const strandedSince = tookOverClaim(claimed, startedAt);
+        if (strandedSince) await archiveStrandedAutomations(issue, strandedSince, { userId: actor.userId, runId: actor.runId ?? null });
         created = await createScheduledRoutine(issue, {
           title: payload.title,
           description: payload.instructions,
