@@ -420,11 +420,15 @@ export async function prepareManagedAiRuntime(
     // Set by run executions: the physical home removal waits until the run's
     // process group has exited, so detached descendants still holding the home
     // never lose their files. When the gate defers, the run scratch cleanup or
-    // the orphan sweep retries the removal after the group is gone.
+    // the orphan sweep retries the removal after the group is gone. A gate
+    // rejection means liveness could not be verified: it never authorizes the
+    // removal. Only the no-gate default of standalone probes removes blindly.
     let homeRemovalGate: (() => Promise<boolean> | boolean) | undefined;
     const removeHome = async () => {
       if (home) {
-        const removalAllowed = await Promise.resolve(homeRemovalGate?.() ?? true).catch(() => true);
+        const removalAllowed = homeRemovalGate === undefined
+          ? true
+          : await Promise.resolve(homeRemovalGate()).catch(() => false);
         if (!removalAllowed) return;
         // Contained removal: no symlink following, no crossing mount points.
         const removal = await removeRunTempTree(home).catch((error: NodeJS.ErrnoException) => {

@@ -882,6 +882,24 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+/**
+ * Gate consulted before the managed AI home is physically removed at run
+ * teardown. A failed run read must never become removal consent: the error
+ * propagates and the runtime keeps the home, so the run scratch cleanup or
+ * the orphan sweep can retry the removal after the group provably exited.
+ */
+export function createManagedAiHomeRemovalGate(input: {
+  runId: string;
+  getRun: (runId: string) => Promise<{ processGroupId: number | null } | null>;
+  isProcessGroupAlive: (processGroupId: number | null | undefined) => boolean;
+}): () => Promise<boolean> {
+  const { runId, getRun, isProcessGroupAlive } = input;
+  return async () => {
+    const current = await getRun(runId);
+    return !isProcessGroupAlive(current?.processGroupId ?? null);
+  };
+}
+
 export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
@@ -2945,11 +2963,9 @@ export function heartbeatService(
           // The managed AI home now lives inside the per-run scratch directory:
           // its physical removal must wait until the run's process group (including
           // detached descendants) has exited. The scratch cleanup and the orphan
-          // sweep retry the removal once the group is gone.
-          runtime.setHomeRemovalGate(async () => {
-            const current = await getRun(run.id).catch(() => null);
-            return !isProcessGroupAlive(current?.processGroupId ?? null);
-          });
+          // sweep retry the removal once the group is gone. A run read that
+          // cannot be verified defers the removal instead of allowing it.
+          runtime.setHomeRemovalGate(createManagedAiHomeRemovalGate({ runId: run.id, getRun, isProcessGroupAlive }));
         },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));

@@ -391,6 +391,32 @@ describe("managed AI connections", () => {
     }
   });
 
+  it("keeps the managed AI home when the removal gate cannot verify liveness, then completes after verification", async () => {
+    const owner = "scratch-home-gate-error-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-gate-err-"));
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      const home = runtime.home!;
+      // A gate rejection means the run's liveness could not be verified — for
+      // example a failed run read: it must never authorize the removal.
+      runtime.setHomeRemovalGate(() => Promise.reject(new Error("run read failed")));
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(false);
+      await expect(access(home)).resolves.toBeUndefined();
+      // Once verification succeeds and the process group has exited, the
+      // retried cleanup completes the removal.
+      runtime.setHomeRemovalGate(() => true);
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(home)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
     const owner = "copilot-owner";
     const token = "github_pat_fixture_copilot";
