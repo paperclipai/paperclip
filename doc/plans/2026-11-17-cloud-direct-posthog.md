@@ -197,9 +197,10 @@ the collector or directly to PostHog, never both.
 - Keep `deployment_source: "cloud"`, `app`, `version`, `schema_version` and
   `source`, so filters built on today's properties keep working.
 - Request context: an Express middleware reads posthog-js tracing headers
-  (`X-POSTHOG-SESSION-ID`, `X-POSTHOG-WINDOW-ID`, `X-POSTHOG-DISTINCT-ID`). Only
-  on Cloud, it stores them in request-scoped context so events emitted during
-  that request carry `$session_id` and the acting user.
+  (`X-POSTHOG-SESSION-ID`, `X-POSTHOG-WINDOW-ID`). Only on Cloud, it stores
+  them in request-scoped context so events emitted during that request carry
+  `$session_id` and `$window_id`. It ignores `X-POSTHOG-DISTINCT-ID`. The
+  acting user always comes from the authenticated request.
 - `install_hash` on the startup `$groupidentify`, as described above.
 - Flush on shutdown so deploy restarts don't drop queued events.
 - Kill switch: `PAPERCLIP_POSTHOG_DIRECT=0` sends through the collector again.
