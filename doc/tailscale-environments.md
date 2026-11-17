@@ -95,6 +95,12 @@ that used the former home identity can reset once at upgrade. Task files remain
 in their durable SSH workspace. Older CLI sessions without a saved SSH identity
 remain unresumable; Core does not guess their source host.
 
+Pi keeps its JSONL conversation file under `.paperclip/pi/sessions` in the
+durable SSH task workspace. Its temporary credential home is removed after
+each turn. A follow-up uses the saved session file only when the SSH identity
+and the file's workspace header match. Existing readable session paths keep
+working; files already removed by an older release cannot be recovered.
+
 
 Each task receives a private directory below the configured SSH workspace path,
 inside `.paperclip-workspaces`. The task runs in that remote directory. Core

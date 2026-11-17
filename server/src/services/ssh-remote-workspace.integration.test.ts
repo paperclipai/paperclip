@@ -229,10 +229,20 @@ if (process.argv.includes('models')) { console.log(${JSON.stringify(model)}); pr
 if (process.env[${JSON.stringify(authEnv)}] !== 'synthetic-selected-ssh-key') process.exit(91);
 const fs = require('fs'), path = require('path');
 const harness = ${JSON.stringify(adapterType)};
-const history = harness === 'claude_local' ? path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'fixture-history') : path.join(process.cwd(), '.fixture-provider-history');
+const piSession = harness === 'pi_local' ? process.argv[process.argv.indexOf('--session') + 1] : null;
+const history = harness === 'claude_local' ? path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'fixture-history')
+ : piSession || path.join(process.cwd(), '.fixture-provider-history');
 const runTask = (resumed) => {
 if (resumed && !fs.existsSync(history)) throw Error('Missing provider conversation history');
-fs.mkdirSync(path.dirname(history), {recursive:true}); fs.writeFileSync(history, 'provider conversation state');
+fs.mkdirSync(path.dirname(history), {recursive:true});
+if (piSession) {
+ const previous = resumed ? fs.readFileSync(piSession,'utf8') : '';
+ if (resumed && JSON.parse(previous.split('\\n')[0]).cwd !== process.cwd()) throw Error('Invalid Pi session header');
+ if (resumed && !previous.includes('first-turn-history')) throw Error('Missing Pi conversation messages');
+ if (!resumed) fs.writeFileSync(piSession,JSON.stringify({type:'session',version:3,id:'fixture',cwd:process.cwd()})+'\\n');
+ fs.appendFileSync(piSession,JSON.stringify({type:'message',message:{role:'assistant',content:resumed?'continued-history':'first-turn-history'}})+'\\n');
+ fs.writeFileSync('pi-session-path.json',JSON.stringify({session:piSession,home:process.env.HOME}));
+} else fs.writeFileSync(history, 'provider conversation state');
 fs.writeFileSync('continuation.json', JSON.stringify({resumed}));
 require('fs').writeFileSync('hello_world.txt', 'Hello World\\n');
 };
@@ -263,7 +273,7 @@ if (process.argv.includes('--acp-fixture')) {
  const id = '12345678-1234-4abc-9def-123456789012';
  const resumed = ['--resume', 'resume', '-r'].some(arg => process.argv.includes(arg))
   || (harness === 'opencode_local' && process.argv.includes('--session'))
-  || (harness === 'pi_local' && fs.existsSync('hello_world.txt'));
+  || Boolean(piSession && fs.existsSync(piSession) && fs.statSync(piSession).size > 0);
  runTask(resumed);
  const emit = value => console.log(JSON.stringify(value));
  if (harness === 'codex_local') {
@@ -334,6 +344,11 @@ if (process.argv.includes('--acp-fixture')) {
       const authority = finished!.runnerProfileJson!.remoteWorkspace as { workspaceId: string; state: string; remoteCwd: string };
       expect(authority.state).toBe("saved");
       expect(await readFile(path.join(authority.remoteCwd, "hello_world.txt"), "utf8")).toBe("Hello World\n");
+      const piState = adapterType === "pi_local" ? JSON.parse(await readFile(path.join(authority.remoteCwd, "pi-session-path.json"), "utf8")) : null;
+      if (piState) {
+        expect(await readFile(piState.session, "utf8")).toContain("first-turn-history");
+        await expect(fs.stat(piState.home)).rejects.toMatchObject({ code: "ENOENT" });
+      }
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, authority.workspaceId));
       expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ writerRunId: null, dirty: false });
       const comment = await issueService(db).addComment(issueId, "Confirm the file still exists.", { userId });
@@ -348,6 +363,13 @@ if (process.argv.includes('--acp-fixture')) {
       expect(continued).toMatchObject({ status: "succeeded" });
       const continuation = JSON.parse(await readFile(path.join(authority.remoteCwd, "continuation.json"), "utf8"));
       expect(continuation).toEqual({ resumed: true });
+      if (piState) {
+        const next = JSON.parse(await readFile(path.join(authority.remoteCwd, "pi-session-path.json"), "utf8"));
+        expect(next.session).toBe(piState.session);
+        expect(next.home).not.toBe(piState.home);
+        expect(await readFile(next.session, "utf8")).toContain("continued-history");
+        await expect(fs.stat(next.home)).rejects.toMatchObject({ code: "ENOENT" });
+      }
     } finally {
       await heartbeat.drainActiveRunExecutions();
       executing.mockRestore();
