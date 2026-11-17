@@ -3,7 +3,6 @@ import { createGoogleHttp } from "../google-http.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { FULL_MESSAGE, METADATA_MESSAGE } from "./fixtures/gmail-rest.js";
 import { getMessage, getMessageRequest, getMessageResult } from "./get-message.js";
-import { parseAddressList } from "./message.js";
 
 describe("get_message request", () => {
   it("reads the full message by default and for FULL_CONTENT", () => {
@@ -53,25 +52,6 @@ describe("get_message result", () => {
     expect(metadata).not.toHaveProperty("subject");
     expect(metadata).not.toHaveProperty("snippet");
     expect(metadata).not.toHaveProperty("plaintextBody");
-  });
-
-  it("parses address lists with quoted commas and bare addresses", () => {
-    expect(parseAddressList("\"Doe, Drew\" <drew@example.test>, e@example.test, Fay <f@example.test>")).toEqual([
-      "drew@example.test", "e@example.test", "f@example.test",
-    ]);
-    expect(parseAddressList(undefined)).toEqual([]);
-  });
-
-  it("returns the members of RFC 5322 groups, and nothing for an empty group", () => {
-    expect(parseAddressList("Team: a@example.test, Bea <b@example.test>;")).toEqual(["a@example.test", "b@example.test"]);
-    expect(parseAddressList("undisclosed-recipients:;")).toEqual([]);
-    expect(parseAddressList("Team: a@example.test;, c@example.test")).toEqual(["a@example.test", "c@example.test"]);
-    expect(parseAddressList("\"Odd: name\" <d@example.test>")).toEqual(["d@example.test"]);
-  });
-
-  it("drops RFC 5322 comments before taking the address", () => {
-    expect(parseAddressList("Avery <avery@example.test> (work)")).toEqual(["avery@example.test"]);
-    expect(parseAddressList("blake@example.test (Blake, (home)), \"C (x)\" <c@example.test>")).toEqual(["blake@example.test", "c@example.test"]);
   });
 
   it("reads the first plain and HTML bodies from nested multiparts", () => {

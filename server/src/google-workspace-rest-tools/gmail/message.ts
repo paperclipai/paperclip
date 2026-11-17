@@ -2,6 +2,7 @@ import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
 import { compact } from "../tool.js";
+import { parseAddressList } from "./address.js";
 
 export interface GmailHeader { name?: string; value?: string }
 export interface GmailMessagePart {
@@ -49,63 +50,6 @@ const ATTACHMENT_ID = /^[A-Za-z0-9_-]{1,4096}$/;
 export function header(part: GmailMessagePart | undefined, name: string): string | undefined {
   const lower = name.toLowerCase();
   return part?.headers?.find((item) => item.name?.toLowerCase() === lower)?.value;
-}
-
-export function stripComments(value: string): string {
-  let result = "";
-  let quoted = false;
-  let depth = 0;
-  let escaped = false;
-  for (const char of value) {
-    if (escaped) {
-      if (depth === 0) result += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      if (depth === 0) result += char;
-      continue;
-    }
-    if (depth === 0 && char === "\"") quoted = !quoted;
-    if (!quoted && char === "(") {
-      depth += 1;
-      continue;
-    }
-    if (!quoted && char === ")" && depth > 0) {
-      depth -= 1;
-      if (depth === 0) result += " ";
-      continue;
-    }
-    if (depth === 0) result += char;
-  }
-  return result;
-}
-
-export function parseAddressList(value: string | undefined): string[] {
-  if (!value) return [];
-  const entries: string[] = [];
-  let current = "";
-  let quoted = false;
-  let angle = 0;
-  for (const char of stripComments(value)) {
-    if (char === "\"") quoted = !quoted;
-    else if (!quoted && char === "<") angle += 1;
-    else if (!quoted && char === ">") angle = Math.max(0, angle - 1);
-    if (char === ":" && !quoted && angle === 0) {
-      current = "";
-      continue;
-    }
-    if ((char === "," || char === ";") && !quoted && angle === 0) {
-      entries.push(current);
-      current = "";
-    } else current += char;
-  }
-  entries.push(current);
-  return entries.map((entry) => {
-    const bracketed = /<([^<>]*)>/.exec(entry);
-    return (bracketed ? bracketed[1]! : entry).trim().replace(/^"|"$/g, "");
-  }).filter((address) => address.length > 0);
 }
 
 export function isoDate(internalDate: string | undefined): string | undefined {

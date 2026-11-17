@@ -210,10 +210,14 @@ names and scopes and needs no change.
   starts with "Could not read the full body of this message"; it never returns
   a result without the body. Google's reference does not say what its tool
   does here.
-- **Address comments** such as `(work)` are removed before the address is
-  taken. For RFC 5322 groups (`Team: a@example.test, b@example.test;`) the
-  members are returned without the group name; an empty group such as
-  `undisclosed-recipients:;` gives no address.
+- **Addresses** come from `gmail/address.ts`, a small single-pass tokenizer
+  over RFC 5322 address lists. It tracks quoted strings with escapes, nested
+  comments, angle brackets and square-bracket domain literals (so
+  `ops@[IPv6:2001:db8::1]` stays whole), drops comments and display names,
+  returns the members of groups without the group name, and returns nothing
+  for an empty group such as `undisclosed-recipients:;`. Malformed input gives
+  a best-effort list and never throws. Google's reference does not say how its
+  tools parse these headers.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.
