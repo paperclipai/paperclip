@@ -12,12 +12,12 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 
 | Item | Owner | State | Evidence / link |
 | --- | --- | --- | --- |
-| Phase 0 A: install ID stability + Cloud ingest URL source | subagent | in progress | |
+| Phase 0 A: install ID stability + Cloud ingest URL source | subagent | done. Stacks run on Railway with a `/paperclip` volume (state.json persists), except `single-ephemeral` stacks (new ID each boot). Legacy three-service stacks had ephemeral disks, and 126 of 166 live staging stacks are unclaimed warm-pool stacks: this explains the ID churn. No supported way to read state.json per stack. Env vars are set by fleet `env_config` campaigns (drain + restart; fleet keys override per-stack). `PAPERCLIP_TELEMETRY_ENDPOINT` lives in the fleet managed-env store. Staging vs production: separate fleets, and `isCloudStagingInstance()` by host. Production admin returned 401 | paperclip-cloud `src/providers/railway.ts:515-521`, `src/fleet/campaigns.ts:5545-5558`, `src/registry/model.ts:1300-1310` |
 | Phase 0 B: compliance checklist status | subagent | done. Blocker for ANY production token: Terms §8 says telemetry "does not identify individual users" and Privacy §2 says "anonymized". No subprocessor list, no consent banner (website already runs GA4 + X pixel without consent), no SOC 2 program, DPA status unknown. Workspace delete (`paperclip-cloud` `SleepController.deleteStackInner`) makes no PostHog call; no self-serve account deletion | paperclip-website `web/app/terms/page.tsx:146-165`, `web/app/privacy/page.tsx:59-61` |
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking because events also carry `stack_id`); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | in progress | |
 | Phase 2: browser analytics | subagent | in progress | |
-| Phase 3: fleet config + legacy IDs | subagent | waiting on Phase 0 A | |
+| Phase 3: workspace-delete cleanup + legacy group backfill script | subagent | in progress | |
 | Phase 4: staging rollout + verification | coordinator | pending | |
 
 ### Continuous deployment rule
@@ -30,9 +30,10 @@ environment switch is set, and the switches must be set in a safe order:
    unchanged.
 2. Browser analytics turns on only when `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`
    is also set. Production stays off until the compliance checklist is done.
-3. `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID` must be set on every existing stack
-   before its token is set. Otherwise that stack's history breaks.
-4. Order: legacy IDs on all stacks (inert) → token on staging → verify →
+3. Fleet env vars are set with fleet `env_config` campaigns, which drain and
+   restart stacks and rebuild the warm pool. Set all switches for a fleet in
+   one campaign where possible.
+4. Order: token on staging → verify → legacy group backfill →
    browser switch on staging → verify → **policy and terms updated** → token
    on production → browser switch on production after consent approach is in
    place.
@@ -111,28 +112,31 @@ Server events with no acting person keep `$process_person_profile: false`, so
 attach to that user's person record. With `$session_id` attached, those events
 show up in the user's session replay timeline.
 
-### Existing workspaces: one precomputed variable, no secrets in the fleet
+### Existing workspaces: history joined through the workspace group
 
-The only thing that needs the old hashed form is continuity of `distinct_id`
-for workspaces that existed before the switch.
+Phase 0 A showed that most Cloud install IDs already changed over time:
+legacy stacks had ephemeral disks, warm-pool stacks report before anyone
+claims them, and single-ephemeral stacks get a new ID on every boot. There is
+also no supported way to read each stack's install ID, and every per-stack
+env change restarts that stack. So the plan does not keep the old
+`distinct_id` on new events. It joins history through the workspace group:
 
-- A one-time operator script reads each live Cloud stack's
-  `telemetry/state.json` install ID. It computes the old PostHog ID locally,
-  using the signing key from the operator's own environment, and writes it to
-  the stack as `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID`. The key is used on one
-  machine, once, and never stored in the fleet, the stack or Paperclip.
-- On a stack that has the variable, the server:
-  1. Sends `$groupidentify` for group type `workspace`, key `<stackId>`
-     (the raw stack ID, the same key the browser uses), with
-     `legacy_distinct_id`. HogQL can then join pre-switch events to the
-     workspace.
-  2. Keeps sending events with no acting person under the legacy ID, so
-     "unique installs" insights stay continuous. Everything else (group, user,
-     real dimension values) uses real IDs.
-- New stacks never get the variable and use real IDs only.
-- Later, once nobody needs install-level continuity, delete the variable and
-  those stacks switch to `workspace:<stackId>` too. The group mapping keeps the
-  history joinable.
+- On startup the server sends `$groupidentify` for group type `workspace`,
+  key `<stackId>` (the raw stack ID, the same key the browser uses), with
+  `install_hash` = sha256(raw install ID). That value is not secret; it is the
+  canonical install ID the collector already computes.
+- A one-time operator script (in `telemetry-backend`, which owns the hashing)
+  reads `install_hash` for each workspace group from PostHog, computes the old
+  PostHog ID locally with the signing key from the operator's own environment,
+  and writes `legacy_distinct_id` back onto the group with `$groupidentify`.
+  The key never leaves that machine. No env vars, no restarts.
+- HogQL joins pre-switch events (`distinct_id = legacy_distinct_id`) to the
+  workspace. The script can run again after later boots to pick up new
+  hashes.
+- All new events use real IDs only: acting user ID, else `workspace:<stackId>`.
+- Known cost: a one-time step in "unique installs" counts on cutover day,
+  because events with no acting person switch from the old ID to
+  `workspace:<stackId>`.
 
 What doesn't carry over: per-agent and per-task history before the switch,
 because those were hashed. Old `agent_id` and `task_id` values stay hashed;
@@ -166,10 +170,8 @@ the collector or directly to PostHog, never both.
     visitor consents.
   - PostHog access goes through SSO, least privilege, and limited access to
     replays. Retention periods set. PostHog added to the SOC 2 vendor list.
-- [ ] Check whether install IDs survive redeploys on Cloud (999 IDs since
-      2026-09-11, 672 active on one day only). If they don't, legacy continuity
-      is already broken, and the legacy variable is only worth setting for the
-      stable ones.
+- [x] Check whether install IDs survive redeploys on Cloud. Result: mostly
+      yes now, but historically no (see the state table).
 - [ ] Find where Cloud stacks get the Cloud ingest URL (`V2_CLOUD_INGEST_PATH`);
       it is not in `paperclip-cloud` source. The direct sender replaces it.
 - [ ] Check the PostHog plan for group analytics (paid add-on) and session
@@ -191,14 +193,13 @@ the collector or directly to PostHog, never both.
   (`X-POSTHOG-SESSION-ID`, `X-POSTHOG-WINDOW-ID`, `X-POSTHOG-DISTINCT-ID`). Only
   on Cloud, it stores them in request-scoped context so events emitted during
   that request carry `$session_id` and the acting user.
-- Legacy handling as described above, driven by
-  `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID`.
+- `install_hash` on the startup `$groupidentify`, as described above.
 - Flush on shutdown so deploy restarts don't drop queued events.
 - Kill switch: `PAPERCLIP_POSTHOG_DIRECT=0` sends through the collector again.
 - Tests:
   - Self-hosted installs (no Cloud env) never import `posthog-node`, keep
     posting to `/ingest`, and still hash private refs.
-  - On Cloud: real IDs, group, legacy ID used only when the variable is set.
+  - On Cloud: real IDs, group, `install_hash` only on the group.
   - No double sending: one batch goes to exactly one sender.
   - Session headers are ignored on self-hosted installs.
 
@@ -234,13 +235,17 @@ the collector or directly to PostHog, never both.
 - Masking and autocapture defaults never capture input values. Secret and
   credential fields are always excluded (`ph-no-capture`).
 
-### Phase 3: Cloud fleet config and legacy backfill (paperclip-cloud, one PR + one script run)
+### Phase 3: workspace cleanup and legacy group backfill (paperclip-cloud PR + telemetry-backend PR)
 
-- Fleet variables: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`, `PAPERCLIP_POSTHOG_HOST`,
-  `PAPERCLIP_POSTHOG_ENVIRONMENT` (`staging` / `production`). No signing keys.
-- One-time script: for each live stack, read the install ID, compute the legacy
-  ID locally, and set `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID` on that stack.
-  Record how many stacks were set and how many were skipped.
+- paperclip-cloud: workspace deletion deletes that workspace's PostHog group
+  and the events tagged with its stack ID. It never deletes a person. It is
+  inert until a PostHog personal API key is configured in the control plane.
+- telemetry-backend: the legacy group backfill script described above, with a
+  dry-run mode and a count of workspaces matched and skipped.
+- Fleet env vars are set by the coordinator during Phase 4 with fleet
+  `env_config` campaigns: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`,
+  `PAPERCLIP_POSTHOG_HOST`, `PAPERCLIP_POSTHOG_ENVIRONMENT`, and later
+  `PAPERCLIP_POSTHOG_BROWSER_ENABLED`. No signing keys.
 - Keep the Cloud ingest URL setting while the `PAPERCLIP_POSTHOG_DIRECT=0`
   rollback is supported. Rollback relies on it to reach the Cloud path and
   keep the `cloud` label.
@@ -249,8 +254,8 @@ the collector or directly to PostHog, never both.
 
 1. Staging stacks first, for 24 hours:
    - Events show real IDs.
-   - Legacy stacks keep their old `distinct_id` for events with no acting
-     person.
+   - Workspace groups carry `install_hash`, and after the backfill,
+     `legacy_distinct_id` joins pre-switch events.
    - Server events triggered from the UI show up in that user's session replay.
    - No duplicate uuids.
    - Per-hour counts are within normal variance.
@@ -269,10 +274,8 @@ the collector or directly to PostHog, never both.
 - [ ] Given a user ID or stack ID, you can find that user's or workspace's
       events, sessions and replays in PostHog, including server events from
       their session.
-- [ ] Workspaces that existed before the switch keep their `distinct_id` for
-      events with no acting person: no rise in new Cloud IDs on cutover day.
-      Pre-switch events can be joined to the workspace through
-      `legacy_distinct_id`.
+- [ ] For workspaces that existed before the switch, pre-switch events can be
+      joined to the workspace through `legacy_distinct_id` on its group.
 - [ ] No signing key is stored anywhere in Cloud infrastructure.
 - [ ] No duplicate events: `count() = uniq(uuid)` for Cloud events on cutover
       day.
@@ -286,7 +289,7 @@ the collector or directly to PostHog, never both.
 | Risk | Mitigation |
 | --- | --- |
 | Real IDs leak into the OSS path | Direct-path-only code branch; tests that self-hosted output stays hashed |
-| Install IDs aren't stable on Cloud | Phase 0 check; set the legacy variable only where it helps |
+| Install IDs weren't stable on Cloud | History joins through the workspace group; new events use the stack ID, which is stable |
 | Customer content or pasted secrets show up in replays or autocapture | Mask all inputs and content areas by default; exclude credential fields; review sample replays before production |
 | A deletion request leaves PII behind | Email and name only on person profiles; account deletion deletes the PostHog person |
 | An enterprise customer forbids recording | Per-workspace replay and analytics switch |
