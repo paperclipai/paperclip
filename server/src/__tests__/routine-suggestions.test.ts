@@ -23,7 +23,7 @@ import { errorHandler } from "../middleware/index.js";
 import { routineSuggestionRoutes } from "../routes/routine-suggestions.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
-import type { RoutineSuggestionResponsibilityFiling } from "../services/routine-suggestions.js";
+import { routineSuggestionService, type RoutineSuggestionResponsibilityFiling } from "../services/routine-suggestions.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -430,6 +430,26 @@ describeEmbeddedPostgres("routine suggestions", () => {
     await interactions.releaseRoutineSuggestionClaim(issueRef, offered.body.id, "interrupted-claim");
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, offered.body.id)))[0])
       .toMatchObject({ status: "accepted", result: expect.objectContaining({ routineId: res.body.routine.id }) });
+  });
+
+  it("keeps a saved acceptance and its routine when later work fails", async () => {
+    const seeded = await seed();
+    const offered = await offer(seeded);
+    const real = issueThreadInteractionService(db);
+    const failing = {
+      ...real,
+      recordAcceptedRoutineSuggestion: async (...args: Parameters<typeof real.recordAcceptedRoutineSuggestion>) => {
+        await real.recordAcceptedRoutineSuggestion(...args);
+        throw new Error("Could not refresh the task");
+      },
+    };
+    const svc = routineSuggestionService(db, { filing: fakeFiling, interactions: failing });
+    await expect(svc.accept({ id: seeded.issue.id, companyId: seeded.company.id }, offered.body.id, { timezone: "UTC" }, { userId: OWNER }))
+      .rejects.toThrow("Could not refresh the task");
+    const all = await db.select().from(routines).where(eq(routines.companyId, seeded.company.id));
+    expect(all.map((row) => row.status)).toEqual(["active"]);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, offered.body.id)))[0])
+      .toMatchObject({ status: "accepted", result: expect.objectContaining({ routineId: all[0]!.id }) });
   });
 
   it("does not take over an accept that may still be running", async () => {

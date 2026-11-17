@@ -22,7 +22,7 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import type { AuthorizationActor } from "./authorization.js";
-import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { issueThreadInteractionService, isAcceptClaimLost } from "./issue-thread-interactions.js";
 import { issueService } from "./issues.js";
 import { responsibilityService } from "./responsibilities.js";
 import { agentWakesOnItsOwn } from "./routine-standing-checks.js";
@@ -456,9 +456,9 @@ export function automationConversationService(
           responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
         });
       } catch (error) {
-        // Another accept took the card over while this one ran: its routine is the one that stays.
-        await suggestions.archiveRoutine(created.routine.id, actor);
-        throw conflict("Another accept took this over", { code: "accept_claim_taken_over", cause: String(error) });
+        // Only when another accept took the card over is its routine the one that stays.
+        if (isAcceptClaimLost(error)) await suggestions.archiveRoutine(created.routine.id, actor);
+        throw error;
       }
       return { ...created, interaction, timezone };
     },

@@ -28,7 +28,7 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { issueThreadInteractionService, type AcceptClaim } from "./issue-thread-interactions.js";
+import { isAcceptClaimLost, issueThreadInteractionService, type AcceptClaim } from "./issue-thread-interactions.js";
 import { responsibilityService } from "./responsibilities.js";
 import { routineService } from "./routines.js";
 import { workspacePreferenceService } from "./workspace-preferences.js";
@@ -139,10 +139,11 @@ export function routineSuggestionService(
   deps: {
     routines?: ReturnType<typeof routineService>;
     filing?: RoutineSuggestionResponsibilityFiling;
+    interactions?: ReturnType<typeof issueThreadInteractionService>;
   } = {},
 ) {
   const settings = instanceSettingsService(db);
-  const interactions = issueThreadInteractionService(db);
+  const interactions = deps.interactions ?? issueThreadInteractionService(db);
   const routines = deps.routines ?? routineService(db);
   const filing = deps.filing ?? responsibilityFilingForRoutineSuggestions(db);
 
@@ -510,9 +511,9 @@ export function routineSuggestionService(
           responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
         });
       } catch (error) {
-        // Another accept took the card over while this one ran: its routine is the one that stays.
-        await archiveRoutine(created.routine.id, routineActor);
-        throw conflict("Another accept took this over", { code: "accept_claim_taken_over", cause: String(error) });
+        // Only when another accept took the card over is its routine the one that stays.
+        if (isAcceptClaimLost(error)) await archiveRoutine(created.routine.id, routineActor);
+        throw error;
       }
       return { interaction, ...created };
     },

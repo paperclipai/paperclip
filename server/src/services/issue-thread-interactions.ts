@@ -2422,6 +2422,18 @@ function pendingRoutineIdOf(result: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+const ACCEPT_CLAIM_LOST_CODE = "accept_claim_taken_over";
+
+/** The accept no longer holds its claim: another accept took the card over. */
+function acceptClaimLostError() {
+  return conflict("Another accept took this over", { code: ACCEPT_CLAIM_LOST_CODE });
+}
+
+export function isAcceptClaimLost(error: unknown): boolean {
+  const details = (error as { details?: { code?: unknown } } | null)?.details;
+  return (error as { status?: unknown } | null)?.status === 409 && details?.code === ACCEPT_CLAIM_LOST_CODE;
+}
+
 function claimIdMatches(claimId: string) {
   return sql`${issueThreadInteractions.result} ->> 'claimId' = ${claimId}`;
 }
@@ -3644,10 +3656,15 @@ export function issueThreadInteractionService(
           claimIdMatches(claimId),
         ))
         .returning();
-      if (!row) throw interactionNotFoundError();
-      await touchIssue(db, issue.id, issue.companyId);
+      if (!row) throw acceptClaimLostError();
       const interaction = hydrateInteraction(row) as SuggestRoutineInteraction;
-      await emitInteractionResolvedTelemetry(db, interaction);
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
       return interaction;
     },
 
@@ -4316,10 +4333,15 @@ export function issueThreadInteractionService(
           claimIdMatches(claimId),
         ))
         .returning();
-      if (!row) throw interactionNotFoundError();
-      await touchIssue(db, issue.id, issue.companyId);
+      if (!row) throw acceptClaimLostError();
       const interaction = hydrateInteraction(row) as ProposeAutomationInteraction;
-      await emitInteractionResolvedTelemetry(db, interaction);
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
       return interaction;
     },
 
