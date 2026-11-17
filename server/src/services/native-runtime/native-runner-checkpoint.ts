@@ -9,7 +9,7 @@ import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
-import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
 import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };

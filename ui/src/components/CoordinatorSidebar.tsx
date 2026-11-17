@@ -127,9 +127,9 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;
   // Warm opens only while the Recents list is on screen.
-  useRecentTaskOpenWarmup({ companyId, userId, tasks: !rail && session.isSuccess ? recentTasks : NO_RECENT_TASKS });
-  const { openNewIssue } = useDialogActions();
   const location = useLocation();
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: !rail && session.isSuccess ? recentTasks : NO_RECENT_TASKS, navigationKey: location.pathname });
+  const { openNewIssue } = useDialogActions();
   const hierarchy = useMemo(() => recentTaskHierarchy(recentTasks, location.pathname), [recentTasks, location.pathname]);
   const attentionCount = useCoordinatorAttentionCount(companyId);
   const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });

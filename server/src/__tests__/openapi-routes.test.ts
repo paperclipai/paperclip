@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes, applyPluginSettingsVisibility, buildOpenApiDocument } from "../routes/openapi.js";
@@ -338,6 +338,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("describes cached link results with the lookup shape and shared batch bound", () => {
+    const paths = buildOpenApiSpec().paths;
+    const batch = paths["/api/companies/{companyId}/link-previews/cached"].get;
+    expect(batch.description).toContain(`at most ${LINK_PREVIEW_BATCH_LIMIT} URLs`);
+    const lookupResult = paths["/api/companies/{companyId}/link-preview"].get.responses[200].content["application/json"].schema;
+    expect(batch.responses[200].content["application/json"].schema.properties.results.additionalProperties).toEqual(lookupResult);
+    expect(lookupResult.properties).toHaveProperty("preview");
+    expect(lookupResult.properties).toHaveProperty("maxAgeMs");
+  });
   it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
     const paths = buildOpenApiSpec().paths;
     for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
