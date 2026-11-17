@@ -125,7 +125,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
+    persistedExecutionWorkspace: { id: string; companyId?: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: (Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> & {
