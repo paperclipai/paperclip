@@ -3,6 +3,8 @@ import { lstat, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
@@ -13,7 +15,8 @@ import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/work
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH } from "./remote-workspace-archive-io.js";
 
-export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>
+  | (Extract<AdapterExecutionTarget, { transport: "ssh" }> & { runner: CommandManagedRuntimeRunner });
 
 async function transferArchive(target: RemoteWorkspaceTarget, direction: "syncIn" | "syncOut",
   operations: SandboxSyncOperation[], byteSize: number) {
@@ -30,6 +33,9 @@ const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=inp
  await git(['checkout','--detach',selected.stdout.trim()]);}`;
 
 export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | null): RemoteWorkspaceTarget {
+  if (target?.kind === "remote" && target.transport === "ssh") {
+    return { ...target, runner: createSshCommandManagedRuntimeRunner({ spec: { ...target.spec, remoteCwd: target.remoteCwd }, fileSync: true }) };
+  }
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask
     || !target.runner.syncIn || !target.runner.syncOut) throw new Error("remote_workspace_transport_unsupported");
   return target;

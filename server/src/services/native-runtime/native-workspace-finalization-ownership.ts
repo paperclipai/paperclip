@@ -10,8 +10,8 @@ import { nativeSha256 } from "./canonical.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED, NATIVE_WORKSPACE_OWNER_WAIT_NEXT_ACTION } from "./native-workspace-finalization-recovery-state.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recovery-binding.js";
 import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js";
 import {
@@ -105,7 +105,7 @@ export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<strin
  * There is deliberately no wall-clock timeout that can steal a slow export.
  */
 export async function withNativeWorkspaceFinalizationOwnership<T>(
-  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string },
+  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string; remoteWorkspaceId?: string },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
@@ -120,8 +120,20 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     ...(deployment ? { exclusiveVolume: deployment.exclusiveVolume } : {}),
     ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
   };
+  const remoteLegacy = input.remoteWorkspaceId ? and(eq(heartbeatRuns.runtimeMode, "legacy"),
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'`,
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,workspaceId}' = ${input.remoteWorkspaceId}`,
+    sql`exists (select 1 from ${executionWorkspaces} where ${executionWorkspaces.id} = ${input.remoteWorkspaceId}::uuid
+      and ${executionWorkspaces.companyId} = ${heartbeatRuns.companyId}
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace.v1'
+      and (${executionWorkspaces.metadata}#>>'{remoteWorkspace,writerRunId}' = ${heartbeatRuns.id}::text
+        or (${executionWorkspaces.metadata}#>>'{remoteWorkspace,writerRunId}' is null
+          and ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,state}' = 'saved'))
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,epoch}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,epoch}'
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,location,leaseId}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,leaseId}')`) : undefined;
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
+    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"])
+      : or(eq(heartbeatRuns.runtimeMode, "native"), remoteLegacy));
   const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
   const runKey = nativeWorkspaceFinalizationLockKey(input.companyId, input.runId);
   let claimed = false;
