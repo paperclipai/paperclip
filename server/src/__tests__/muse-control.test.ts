@@ -1495,6 +1495,47 @@ describe("personal Muse control plane",()=>{
     expect(getCloudRuntimeIdentity()?.canonicalOrigin).toBe(oauthOrigin);
     return async()=>{await db.delete(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"));resetCloudRuntimeIdentityForTests();};
   }
+  it("invalidates an already-paused Muse receiver when the separate company archive commits",async()=>{
+    const f=await fixture(true),other=await fixture(true);
+    await db.update(agents).set({status:"paused"}).where(eq(agents.id,f.agent.id));
+    const reset=await applyActualManagedContactIdentity();
+    let unsubscribe:(()=>void)|undefined;
+    try{
+      const namespace={stackId:getCloudRuntimeIdentity()!.stackId,instanceId:"archive-muse-producer",origin:oauthOrigin};
+      // Establish an ordinary current revision through the existing owner, not a
+      // fabricated ACK or receiver row. No mirror/lifecycle worker is running.
+      await db.transaction(tx=>museProjectionModule.prepareMuseReceiverAuthorityMutation(tx,{companyId:f.company.id}));
+      const [before]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
+      expect(before).toBeDefined();
+      const initial=await museProjectionModule.readMuseReceiverProjection(db,namespace,before.revision,{enabled:true});
+      if(!initial.complete)throw new Error("Archive receiver premise has no complete current projection");
+      expect(initial.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("idle");
+      expect(initial.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.company.id))).toEqual([]);
+      const [bindingBefore]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+      const signals:string[]=[];
+      unsubscribe=subscribeDatabaseWork(db,DELIVERY_QUEUES.mcpClientMirror,event=>signals.push(event));
+      const archived=await companyService(db).archive(f.company.id);
+      expect(archived?.status).toBe("archived");
+      const [savedAgent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
+      expect(savedAgent.status).toBe("paused");
+      expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0]).toEqual(bindingBefore);
+      const [current]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
+      const projection=await museProjectionModule.readMuseReceiverProjection(db,namespace,current.revision,{enabled:true});
+      if(!projection.complete)throw new Error("Committed archive has no complete current projection");
+      expect(projection.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("retired");
+      expect(projection.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
+      console.info("MUSE_ARCHIVE_MIRROR_PRODUCER_FRONTIER "+JSON.stringify({
+        companyArchived:archived?.status==="archived",agentAlreadyPaused:savedAgent.status==="paused",
+        bindingUnchanged:true,terminalProjection:true,otherReceiverStillIdle:true,
+        beforeRevision:before.revision,afterRevision:current.revision,signals}));
+      expect(current.revision,"Separate archive must invalidate its formerly published receiver").toBeGreaterThan(before.revision);
+      expect(signals).toContain("intent");expect(signals).toContain("settled");
+      // The idempotent already-archived entry does not manufacture another duty.
+      await companyService(db).archive(f.company.id);
+      expect((await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public")))[0].revision).toBe(current.revision);
+    }finally{unsubscribe?.();await reset();}
+  },30_000);
   it.each(["paused", "archived", "archive"] as const)("serializes company %s and real Muse pairing without reversing agent and mirror locks",async(mode)=>{
     const f=await fixture(true);
     await db.update(agents).set({lifecycleState:"ready",lifecycleHolds:[],status:"idle"}).where(eq(agents.id,f.agent.id));
