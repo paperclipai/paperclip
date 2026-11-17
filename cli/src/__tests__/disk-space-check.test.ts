@@ -305,6 +305,38 @@ describe("diskSpaceCheck", () => {
     expect(statfsCalls).not.toContain(path.resolve(missing));
   });
 
+  it("resolves a relative embedded Postgres data dir from the working directory like the server", async () => {
+    const paths = layout("/vol");
+    useHome(paths.home);
+    const configPath = path.join("/config", "config.json");
+    const serverDataDir = path.resolve("db");
+    const healthy = volume(1, 50n * GIB, 25n * GIB);
+    const deps = fakeFs({
+      [serverDataDir]: volume(2, 50n * GIB, 25n * GIB),
+      [path.join("/config", "db")]: healthy,
+      [paths.storage]: healthy,
+      [paths.logs]: healthy,
+      [paths.backups]: healthy,
+      [paths.instance]: healthy,
+    });
+    const statfsCalls: string[] = [];
+    const wrapped: DiskSpaceCheckDeps = {
+      stat: deps.stat,
+      statfs: async (target, opts) => {
+        statfsCalls.push(path.resolve(target));
+        return deps.statfs!(target, opts);
+      },
+    };
+    const result = await diskSpaceCheck(
+      makeConfig(path.join("/vol", "runtime"), { dataDir: "db" }),
+      configPath,
+      wrapped,
+    );
+    expect(result.status).toBe("pass");
+    expect(statfsCalls).toContain(serverDataDir);
+    expect(statfsCalls).not.toContain(path.join("/config", "db"));
+  });
+
   it("skips the embedded Postgres data dir for external Postgres", async () => {
     const paths = layout("/vol");
     useHome(paths.home);

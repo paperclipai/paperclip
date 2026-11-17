@@ -125,7 +125,7 @@ function collectTrackedPaths(config: PaperclipConfig, configPath?: string): Trac
   if (config.database?.mode === "embedded-postgres" && config.database.embeddedPostgresDataDir) {
     tracked.push({
       label: "data",
-      configuredPath: resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath),
+      configuredPath: resolveHomeAwarePath(config.database.embeddedPostgresDataDir),
     });
   }
   if (effectiveStorageProvider(config) === "local_disk") {
