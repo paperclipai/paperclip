@@ -311,6 +311,18 @@ async function callTerminalTool(promptBody, signal) {
     arguments: result,
   }, signal);
   const first = await call();
+  if (blocked && String(prompt.message ?? "").includes("finish-after-block")) {
+    const done = structuredClone(result);
+    done.reportedWorkDisposition = "done";
+    done.summary = "Fake provider recovered and completed the task.";
+    done.completionClaim.objectiveSatisfied = true;
+    done.completionClaim.criteria = done.completionClaim.criteria.map(criterion => ({ ...criterion, status: "satisfied" }));
+    done.completionClaim.remainingWork = [];
+    done.attentionRequests = [];
+    delete done.blocker;
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: done });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-finish-after-block.json"), JSON.stringify(rejected));
+  }
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
     if (first.result?.isError && String(prompt.message ?? prompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) {

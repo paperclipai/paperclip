@@ -757,4 +757,15 @@ describe("native status authority", () => {
     ]);
   });
 
+  it("continues a system environment blocker in a fresh session, bounded, and never for a paused task or chat", () => {
+    const blocked = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+      blocker: { unblockAction: "Retry the run.", boardOwned: false, ownerKind: "system", scope: "task_wide" } });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true })).toMatchObject({ statusAction: "preserve",
+      reasonCode: "native_environment_blocker", effects: [{ kind: "schedule_retry", cause: "native_environment_blocker", agentId: "agent" }] });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true, failureRetryCount: 2 })).toMatchObject({ toStatus: "blocked",
+      reasonCode: "native_environment_blocker_exhausted", unblockDescriptor: { owner: "board" } });
+    for (const held of [{ hasActivePauseHold: true }, { isConversation: true }, { environmentBlocker: false }]) {
+      expect(arbitrate({ assessment: blocked, environmentBlocker: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
 });
