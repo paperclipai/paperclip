@@ -212,7 +212,7 @@ import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
-import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { initTelemetry, getTelemetryClient, shutdownTelemetry } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
@@ -2361,14 +2361,13 @@ async function startServerWithDatabaseTeardown(
       });
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
+    if (getTelemetryClient()) {
       await runBoundedShutdownStep({
         step: "telemetry_flush",
         signal,
         timeoutMs: 5_000,
-        run: () => telemetryClient.flush(),
+        // Flushes queued events, then closes the Cloud PostHog client if any.
+        run: () => shutdownTelemetry(),
         log: logger,
       });
     }
