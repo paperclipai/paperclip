@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertRequestKinds, isRevisionConflict, markdownTable, tableGrid } from "./documents-shared.js";
+import { assertRequestKinds, googleFileUrl, isRevisionConflict, markdownTable, refuseGoogleFileUrl, tableGrid, type RequestKindRules } from "./documents-shared.js";
 import { GoogleToolError, type GoogleErrorDetail } from "./errors.js";
 
 describe("revision conflicts", () => {
@@ -25,16 +25,32 @@ describe("revision conflicts", () => {
 });
 
 describe("request kinds", () => {
-  const blocked = { createSheetsChart: "reads another file." };
+  const rules: RequestKindRules = {
+    insertText: { allowed: true },
+    createImage: { allowed: true, refuse: refuseGoogleFileUrl("url") },
+    createSheetsChart: { allowed: false, reason: "reads another file." },
+  };
 
-  it("refuses blocked kinds by name, once each", () => {
-    expect(() => assertRequestKinds([{ insertText: {} }, { createSheetsChart: {} }, { createSheetsChart: {} }], blocked))
-      .toThrow("createSheetsChart reads another file. This tool only changes the one file it is given. Nothing was changed.");
+  it("names every refused request by position, and says nothing was changed", () => {
+    expect(() => assertRequestKinds([{ insertText: {} }, { createSheetsChart: {} }, { mystery: {} }, { createImage: { url: "https://drive.google.com/uc?id=f1" } }], rules))
+      .toThrow("requests[1].createSheetsChart reads another file. requests[2].mystery is not a request kind this tool accepts. requests[3].createImage takes its picture from a Google Drive or Docs link (url), which is another file. This tool only changes the one file it is given, so nothing was changed.");
   });
 
-  it("allows everything else, including kinds named like object properties", () => {
-    expect(() => assertRequestKinds([{ insertText: {} }, { toString: {} }, { constructor: {} }], blocked)).not.toThrow();
-    expect(() => assertRequestKinds([{ createSheetsChart: {} }], {})).not.toThrow();
+  it("refuses kinds named like object properties, and accepts allowed forms", () => {
+    expect(() => assertRequestKinds([{ toString: {} }], rules)).toThrow(/requests\[0\]\.toString is not a request kind/);
+    expect(() => assertRequestKinds([{ constructor: {} }], rules)).toThrow(/requests\[0\]\.constructor is not a request kind/);
+    expect(() => assertRequestKinds([{ insertText: {} }, { createImage: { url: "https://example.test/a.png" } }, { createImage: "x" }], rules)).not.toThrow();
+  });
+
+  it.each([
+    ["https://drive.google.com/file/d/f1/view", true],
+    ["https://DOCS.google.com/document/d/x", true],
+    ["https://lh3.googleusercontent.com/abc", false],
+    ["https://example.test/drive.google.com.png", false],
+    ["not a url", false],
+    [42, false],
+  ])("treats %s as a Google file link: %s", (value, expected) => {
+    expect(googleFileUrl(value)).toBe(expected);
   });
 });
 

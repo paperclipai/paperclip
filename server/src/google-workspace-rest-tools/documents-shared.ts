@@ -36,10 +36,53 @@ export function isRevisionConflict(error: GoogleToolError): boolean {
   return CONFLICT_MESSAGE.test(error.message);
 }
 
-export function assertRequestKinds(requests: ReadonlyArray<Record<string, unknown>>, blocked: Readonly<Record<string, string>>): void {
-  const refused = [...new Set(requests.map((request) => Object.keys(request)[0]!).filter((kind) => Object.hasOwn(blocked, kind)))];
-  if (refused.length) {
-    throw new GoogleToolError("invalid_argument", `${refused.map((kind) => `${kind} ${blocked[kind]}`).join(" ")} This tool only changes the one file it is given. Nothing was changed.`);
+export type RequestKindRule =
+  | { allowed: true; refuse?: (body: Record<string, unknown>) => string | undefined; example?: Record<string, unknown> }
+  | { allowed: false; reason: string };
+
+export type RequestKindRules = Readonly<Record<string, RequestKindRule>>;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const GOOGLE_FILE_HOSTS = new Set(["drive.google.com", "docs.google.com"]);
+
+export function googleFileUrl(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    return GOOGLE_FILE_HOSTS.has(new URL(value).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+export const refuseGoogleFileUrl = (...path: string[]) => (body: Record<string, unknown>): string | undefined => {
+  let value: unknown = body;
+  for (const key of path) value = isRecord(value) ? value[key] : undefined;
+  return googleFileUrl(value) ? `takes its picture from a Google Drive or Docs link (${path.join(".")}), which is another file.` : undefined;
+};
+
+export function allowedKinds(rules: RequestKindRules): string[] {
+  return Object.entries(rules).filter(([, rule]) => rule.allowed).map(([kind]) => kind);
+}
+
+export function refusedKinds(rules: RequestKindRules): string[] {
+  return Object.entries(rules).filter(([, rule]) => !rule.allowed).map(([kind]) => kind);
+}
+
+export function assertRequestKinds(requests: ReadonlyArray<Record<string, unknown>>, rules: RequestKindRules): void {
+  const problems: string[] = [];
+  for (const [index, request] of requests.entries()) {
+    const kind = Object.keys(request)[0]!;
+    const rule = Object.hasOwn(rules, kind) ? rules[kind] : undefined;
+    if (!rule) problems.push(`requests[${index}].${kind} is not a request kind this tool accepts.`);
+    else if (!rule.allowed) problems.push(`requests[${index}].${kind} ${rule.reason}`);
+    else {
+      const body = request[kind];
+      const reason = rule.refuse?.(isRecord(body) ? body : {});
+      if (reason) problems.push(`requests[${index}].${kind} ${reason}`);
+    }
+  }
+  if (problems.length) {
+    throw new GoogleToolError("invalid_argument", `${problems.join(" ")} This tool only changes the one file it is given, so nothing was changed.`);
   }
 }
 

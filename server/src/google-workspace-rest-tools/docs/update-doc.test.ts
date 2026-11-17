@@ -116,12 +116,6 @@ describe("update_doc tool", () => {
     expect((result.content[0] as { text: string }).text).toBe("Invalid requests[0].updateDocumentStyle: revisions of the page size are not allowed.");
   });
 
-  it("passes every Docs request kind through, since none of them acts outside the document", () => {
-    const requests = ["insertText", "deleteContentRange", "replaceAllText", "insertRichLink", "insertPerson", "insertInlineImage", "deleteTab", "addDocumentTab", "insertComment"]
-      .map((kind) => ({ [kind]: {} }));
-    expect((updateDocRequest({ documentId: "d", requests, writeControl: REVISION }).body as { requests: unknown[] }).requests).toEqual(requests);
-  });
-
   it("passes other rejections through with Google's message", async () => {
     const { fetch } = fakeGoogle(() => json({ error: { code: 400, message: "Invalid requests[0].insertText: Index 99 must be less than the end index of the referenced segment, 12." } }, 400));
     const result = await updateDoc.call({ documentId: "d", requests: [{ insertText: { text: "a", location: { index: 99 } } }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));

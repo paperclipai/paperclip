@@ -604,18 +604,55 @@ Slides (Google's Slides tool lists only `replies`). A write is never retried;
 a failure after it was sent carries the uncertain-outcome warning.
 
 Each request must name exactly one request kind; at most 500 per call.
-Google validates everything else.
 
 The requests can delete or replace content in the one file the call names:
 text (`deleteContentRange`, `deleteText`, `replaceAllText`), tabs
 (`deleteTab`) and slides or page elements (`deleteObject`), as in Google's
 tools. Both update descriptions say so. The tools cannot create, delete, move,
-copy or share files, and there is no tool that can. No Docs request kind acts
-on another file. Three Slides kinds read another file, a Google Sheets
-spreadsheet: `createSheetsChart`, `replaceAllShapesWithSheetsChart` and
-`refreshSheetsChart`. `update_presentation` refuses a batch that contains
-any of them and sends nothing; they also need a Sheets or Drive permission
-that the Slides grant does not include.
+copy or share files, and there is no tool that can.
+
+#### Allowed request kinds
+
+Each update tool accepts only the request kinds in a closed list:
+`DOCS_REQUEST_KINDS` in `docs/request-kinds.ts` and `SLIDES_REQUEST_KINDS` in
+`slides/request-kinds.ts`, built from Google's REST request references
+(<https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request>,
+<https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request>,
+recorded 2026-11-17). A kind is allowed only when it acts within the one file
+being edited. Any kind not on the list, including one Google adds later, is
+refused with an error that names it, and nothing is sent. The same table
+builds the lists in the tool descriptions and drives the tests, and a test
+checks it covers every kind in Google's reference.
+
+Docs, allowed: every `documents.batchUpdate` kind except `insertRichLink`
+(text, styles, bullets, named ranges, tables, images, page and section
+breaks, headers, footers, footnotes, tabs, person and date chips, comments,
+suggestions and dropdowns).
+
+Slides, allowed: every `presentations.batchUpdate` kind except the Sheets chart
+kinds (slides, shapes, tables, text, images, lines, YouTube videos, page and
+element properties, grouping, z-order, alt text and comments).
+
+Refused, because they read another file:
+
+| Tool | Kind | Reason |
+| --- | --- | --- |
+| `update_doc` | `insertRichLink` | A smart chip that points to another file and shows its title. |
+| `update_presentation` | `createSheetsChart`, `replaceAllShapesWithSheetsChart`, `refreshSheetsChart` | Read a chart from a Google Sheets spreadsheet. |
+| `update_presentation` | `importSlides` | Copies slides from another presentation (in Google's MCP tool list, not in REST). |
+| `update_presentation` | `createAudio` | Inserts an audio file from Google Drive (in Google's MCP tool list, not in REST). |
+
+Refused forms of allowed kinds: `createVideo` is accepted only with
+`source: "YOUTUBE"` (a `DRIVE` video is another file). Image kinds
+(`insertInlineImage` and `replaceImage` in Docs; `createImage`, `replaceImage`,
+`replaceAllShapesWithImage` and a `stretchedPictureFill.contentUrl` page
+background in Slides) are allowed with a public image link, since Google
+fetches it without the user's data, but refused when the link is on
+`drive.google.com` or `docs.google.com`, which names another file. Links in
+text styles stay allowed: they only point somewhere and read nothing.
+
+This is a deliberate difference from Google's tools, which accept every
+request kind.
 
 Both update tools are annotated `destructiveHint: true` and
 `idempotentHint: false`, because a batch can delete or overwrite content and
@@ -634,7 +671,8 @@ annotations.
 - `update_doc` is annotated destructive (Google: not destructive).
 - `read_doc` always sets `suggestionsViewMode` and falls back to
   `PREVIEW_WITHOUT_SUGGESTIONS` for users who may not see suggestions.
-- `update_presentation` refuses the three Sheets chart request kinds.
+- Both update tools accept only a closed list of request kinds and refuse
+  kinds and forms that read another file (see "Allowed request kinds").
 - At least one request is required.
 - Descriptions are our own wording. The `documentId` description does not
   name Drive's file ID field, since the Drive tool is not in this folder.

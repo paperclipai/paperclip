@@ -1,10 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertRequestKinds, batchRequestArg, fileIdArg, MAX_BATCH_REQUESTS, revisionIdArg, sendBatchUpdate } from "../documents-shared.js";
+import { allowedKinds, assertRequestKinds, batchRequestArg, fileIdArg, MAX_BATCH_REQUESTS, refusedKinds, revisionIdArg, sendBatchUpdate } from "../documents-shared.js";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
 import { defineTool, structuredResult } from "../tool.js";
 import { presentationPath, SLIDES_HOST, type RestBatchUpdateResponse } from "./presentation.js";
+import { SLIDES_REQUEST_KINDS } from "./request-kinds.js";
 
 const args = z.object({
   presentationId: fileIdArg("Slides presentation"),
@@ -13,15 +14,9 @@ const args = z.object({
 });
 export type UpdatePresentationArgs = z.infer<typeof args>;
 
-const SHEETS_CHART = "reads a chart from a Google Sheets spreadsheet, another file.";
-export const OTHER_FILE_REQUESTS: Readonly<Record<string, string>> = {
-  createSheetsChart: SHEETS_CHART,
-  replaceAllShapesWithSheetsChart: SHEETS_CHART,
-  refreshSheetsChart: SHEETS_CHART,
-};
 
 export function updatePresentationRequest(input: UpdatePresentationArgs): GoogleRequest {
-  assertRequestKinds(input.requests, OTHER_FILE_REQUESTS);
+  assertRequestKinds(input.requests, SLIDES_REQUEST_KINDS);
   const requiredRevisionId = input.writeControl?.requiredRevisionId;
   if (!requiredRevisionId) {
     throw new GoogleToolError("invalid_argument", "writeControl.requiredRevisionId is required: pass content.revisionId from read_presentation, so the edit is applied only to the version you read. Nothing was changed.");
@@ -45,7 +40,9 @@ export const updatePresentation = defineTool({
       "Edits an existing Google Slides presentation with a list of Slides API batchUpdate requests (for example insertText, deleteText, replaceAllText, createSlide, createShape, createTable, updateTextStyle, duplicateObject or deleteObject), and returns one reply per request.",
       "Requests are applied in the order given, all or none: if any request is invalid, nothing is changed.",
       "Each request sees the presentation as changed by the requests before it, so text indices in a shape move after an insertion or deletion in that shape. When making several edits by index in one shape from one read_presentation result, order them from the highest index to the lowest.",
-      "The requests can delete or replace content in this one presentation: deleteObject removes a slide or page element, and replaceAllText and deleteText change text everywhere they match. This tool cannot create, delete, move, copy or share files, and refuses requests that read another file (createSheetsChart, replaceAllShapesWithSheetsChart, refreshSheetsChart).",
+      "The requests can delete or replace content in this one presentation: deleteObject removes a slide or page element, and replaceAllText and deleteText change text everywhere they match. This tool cannot create, delete, move, copy or share files.",
+      `Accepted request kinds: ${allowedKinds(SLIDES_REQUEST_KINDS).join(", ")}. createVideo is accepted only with source YOUTUBE, and images only from links outside drive.google.com and docs.google.com.`,
+      `Refused because they read another file: ${refusedKinds(SLIDES_REQUEST_KINDS).join(", ")}. Any other kind is refused too.`,
       "writeControl.requiredRevisionId is required: pass content.revisionId from read_presentation. If the presentation changed since, nothing is changed and you must read it again. The new revision ID is returned in writeControl.",
     ].join(" "),
     inputSchema: {

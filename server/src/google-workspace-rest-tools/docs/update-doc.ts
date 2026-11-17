@@ -1,10 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { batchRequestArg, fileIdArg, MAX_BATCH_REQUESTS, revisionIdArg, sendBatchUpdate } from "../documents-shared.js";
+import { allowedKinds, assertRequestKinds, batchRequestArg, fileIdArg, MAX_BATCH_REQUESTS, refusedKinds, revisionIdArg, sendBatchUpdate } from "../documents-shared.js";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
 import { compact, defineTool, structuredResult } from "../tool.js";
 import { DOCS_HOST, documentPath, type RestBatchUpdateResponse } from "./document.js";
+import { DOCS_REQUEST_KINDS } from "./request-kinds.js";
 
 const WRITE_MODES = ["WRITE_MODE_UNSPECIFIED", "EDIT", "SUGGEST"] as const;
 
@@ -20,6 +21,7 @@ const args = z.object({
 export type UpdateDocArgs = z.infer<typeof args>;
 
 export function updateDocRequest(input: UpdateDocArgs): GoogleRequest {
+  assertRequestKinds(input.requests, DOCS_REQUEST_KINDS);
   const control = input.writeControl ?? {};
   if (control.targetRevisionId !== undefined) {
     throw new GoogleToolError("invalid_argument", "targetRevisionId is not supported because it can apply edits to a newer version than the one you read. Pass writeControl.requiredRevisionId from read_doc instead. Nothing was changed.");
@@ -49,6 +51,8 @@ export const updateDoc = defineTool({
       "Edits an existing Google Doc with a list of Docs API batchUpdate requests (for example insertText, deleteContentRange, replaceAllText, updateTextStyle, updateParagraphStyle, createParagraphBullets, insertTable or insertInlineImage), and returns one reply per request.",
       "Requests are applied in the order given, all or none: if any request is invalid, nothing is changed.",
       "The requests can delete or replace content in this one document, for example deleteContentRange, replaceAllText or deleteTab. This tool cannot create, delete, move, copy or share files.",
+      `Accepted request kinds: ${allowedKinds(DOCS_REQUEST_KINDS).join(", ")}. Images are accepted only from links outside drive.google.com and docs.google.com.`,
+      `Refused because they read another file: ${refusedKinds(DOCS_REQUEST_KINDS).join(", ")}. Any other kind is refused too.`,
       "Each request sees the document as changed by the requests before it, so indices after an insertion or deletion move. When making several edits by index from one read_doc result, order them from the highest index to the lowest.",
       "Indices are UTF-16 code units from read_doc's content.tabs; the body starts at index 1. Pass tabId in locations and ranges to edit a tab other than the first.",
       "writeControl.requiredRevisionId is required: pass content.revisionId from read_doc. If the document changed since, nothing is changed and you must read it again. The new revision ID is returned in writeControl.",
