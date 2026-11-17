@@ -42,6 +42,13 @@ services:
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       # Independent secret for signed approval-gated tool actions.
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}"
+      # Pin the secrets master key from .env so the server reads it from the
+      # environment instead of lazily creating/reading the on-volume file —
+      # avoids an EACCES race during bootstrap after a volume recreation or
+      # server restart (seen 2026-11-15T03:49:24Z, run 7a7a6b71).
+      PAPERCLIP_SECRETS_MASTER_KEY: "${PAPERCLIP_SECRETS_MASTER_KEY:?PAPERCLIP_SECRETS_MASTER_KEY must be set in .env}"
+      # nenv (NetEnv) secret provider — bearer token for the nenv API (BCR-80)
+      NENV_TOKEN: "${NENV_TOKEN:?NENV_TOKEN must be set in .env}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:

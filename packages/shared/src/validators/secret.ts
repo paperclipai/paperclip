@@ -308,11 +308,43 @@ export const vaultProviderConfigSchema = z.object({
   secretPathPrefix: optionalSafeShortText,
 }).strict();
 
+const nenvBaseUrlSchema = z.preprocess(
+  (value) => typeof value === "string" ? value.trim() : value,
+  z.string().url().superRefine((value, ctx) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return;
+    }
+    const hasPath = url.pathname !== "" && url.pathname !== "/";
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      hasPath
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "nenv base URL must be an origin-only HTTP(S) URL without credentials, path, query, or fragment",
+      });
+    }
+  }).transform((value) => new URL(value).origin),
+);
+
+export const nenvProviderConfigSchema = z.object({
+  baseUrl: nenvBaseUrlSchema,
+  namespace: safeShortText,
+}).strict();
+
 export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("local_encrypted"), config: localEncryptedProviderConfigSchema }),
   z.object({ provider: z.literal("aws_secrets_manager"), config: awsSecretsManagerProviderConfigSchema }),
   z.object({ provider: z.literal("gcp_secret_manager"), config: gcpSecretManagerProviderConfigSchema }),
   z.object({ provider: z.literal("vault"), config: vaultProviderConfigSchema }),
+  z.object({ provider: z.literal("nenv"), config: nenvProviderConfigSchema }),
 ]);
 
 export const createSecretProviderConfigSchema = z.object({
