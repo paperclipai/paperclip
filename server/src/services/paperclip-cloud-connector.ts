@@ -753,11 +753,6 @@ export function appWithPaperclipCloudConnectorAvailability(
   };
 }
 
-/**
- * Whether new consent may start for a managed profile. Google profiles must
- * stay inside the scopes submitted for verification of Paperclip's Google
- * client; saved connections on other profiles keep refreshing.
- */
 export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
   return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
 }

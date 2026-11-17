@@ -46,8 +46,6 @@ describe("combined Google Workspace consent", () => {
     expect(googleWorkspaceEffectiveScopes([scope("documents")], [scope("documents.readonly")])).toEqual([scope("documents.readonly")]);
   });
   it("limits every selectable service combination to the 14 scopes submitted for Google verification", () => {
-    // Written out by hand: this list is what Google reviews. A new scope must
-    // be added here deliberately, never derived from a registry change.
     const submitted = [
       "gmail.readonly", "gmail.compose",
       "drive.readonly", "drive.file",
@@ -88,7 +86,6 @@ describe("combined Google Workspace consent", () => {
     expect(isGoogleWorkspaceScopeGrant([])).toBe(false);
     expect(isGoogleWorkspaceScopeGrant([scope("chat.memberships.readonly")])).toBe(false);
     expect(isGoogleWorkspaceScopeGrant([scope("gmail.send")])).toBe(false);
-    // The former 21-scope union: none of these was submitted for verification.
     for (const legacy of ["chat.spaces.readonly", "chat.messages.readonly", "chat.messages.create", "directory.readonly",
       "userinfo.profile", "contacts.readonly", "calendar.readonly", "gmail.modify"]) {
       expect(isGoogleWorkspaceScopeGrant([scope("documents"), scope(legacy)]), legacy).toBe(false);

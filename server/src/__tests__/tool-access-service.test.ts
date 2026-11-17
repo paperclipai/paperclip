@@ -6014,8 +6014,6 @@ describeEmbeddedPostgres("tool access service", () => {
     const archivePilotGmail = archivePilot.body.apps.find(
       (app: { slug: string }) => app.slug === "gmail",
     );
-    // gmail.modify was not submitted for Google verification, so an advertised
-    // archive profile never offers new setup through Paperclip's Google client.
     expect(archivePilotGmail.ownershipAvailability.platform_shared).toBe(false);
     expect(
       archivePilotGmail.methods.map((method: { key: string }) => method.key),
@@ -8131,7 +8129,6 @@ describeEmbeddedPostgres("tool access service", () => {
     await service.completePaperclipCloudConnectorCallback({
       state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "archive-claim", actor,
     });
-    // Recreate a connection saved while the archive method was still offered.
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     const config = { ...row.config, connectionMethodKey: "paperclip-archive",
       oauth: { ...(row.config.oauth as Record<string, unknown>), connectorProfile: "gmail.archive" } };

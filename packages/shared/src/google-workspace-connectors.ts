@@ -100,12 +100,6 @@ const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileI
   "workspace-search.read": def("google-workspace-search", "https://workspacemcp.googleapis.com/mcp/v1", [auth("gmail.readonly"), auth("drive.readonly"), auth("calendar.readonly"), auth("chat.messages.readonly")]),
 };
 
-/**
- * The scopes submitted for Google's verification of Paperclip's own OAuth
- * client. The unified connection never requests, stores or refreshes anything
- * else, on the managed or the customer-owned path. Written out so a registry
- * change cannot add a scope without a deliberate edit here.
- */
 export const GOOGLE_WORKSPACE_SUBMITTED_SCOPES: readonly string[] = Object.freeze([
   "gmail.readonly", "gmail.compose",
   "drive.readonly", "drive.file",
@@ -118,16 +112,9 @@ export const GOOGLE_WORKSPACE_SUBMITTED_SCOPES: readonly string[] = Object.freez
 /** One consent request, containing only scopes already reviewed for our services. */
 export const GOOGLE_WORKSPACE_CONNECTOR_PROFILES = {
   ...SERVICE_PROFILES,
-  // The signed broker request and the sealed-envelope binding for refresh use
-  // this set; the broker accepts any nonempty subset of its own registry.
   "workspace.all": def("google-workspace", "https://workspacemcp.googleapis.com/mcp/v1", GOOGLE_WORKSPACE_SUBMITTED_SCOPES),
 };
 
-/**
- * Whether Paperclip's own Google client may start consent for this profile.
- * Profiles outside the submitted scopes stay defined only so saved
- * connections keep resolving, refreshing and running.
- */
 export function googleWorkspaceProfileWithinSubmittedScopes(profile: GoogleWorkspaceConnectorProfileId): boolean {
   return GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
 }
@@ -200,7 +187,6 @@ export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly stri
   return Boolean(target && target.requiredScopes.every((alternatives) => alternatives.some((scope) => scopes.includes(scope))));
 }
 
-/** A unified-connection request or grant: nonempty and inside the submitted scopes. */
 export function isGoogleWorkspaceScopeGrant(scopes: readonly string[]): boolean {
   return scopes.length > 0 && scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
 }

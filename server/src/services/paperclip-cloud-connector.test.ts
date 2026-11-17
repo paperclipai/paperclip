@@ -298,14 +298,11 @@ describe("Paperclip Cloud connector", () => {
 
   it("offers new managed Google setup only for methods inside the submitted scopes", () => {
     const submitted = new Set<string>(GOOGLE_WORKSPACE_SUBMITTED_SCOPES);
-    // Kept only so saved connections still resolve their method, refresh and
-    // run. Each requests a scope outside the verification submission, so new
-    // setup and new consent through Paperclip's Google client are refused.
     const savedConnectionsOnly = [
-      "gmail/paperclip-archive", // gmail.modify
-      "google-chat/paperclip-read", "google-chat/paperclip-write", // Chat
-      "google-people/paperclip-read", // Contacts, Directory, profile
-      "google-workspace-search/paperclip-read", // calendar.readonly, Chat
+      "gmail/paperclip-archive",
+      "google-chat/paperclip-read", "google-chat/paperclip-write",
+      "google-people/paperclip-read",
+      "google-workspace-search/paperclip-read",
     ];
     const managedGoogle = APP_DEFINITIONS.flatMap((app) => app.methods
       .filter((method) => method.oauthStrategy === "paperclip_cloud_connector"
