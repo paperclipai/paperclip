@@ -546,8 +546,9 @@ export function pluginLifecycleManager(
 
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
+        // Finish any connector cleanup an earlier uninstall could not complete.
+        await retireConnectorConnections(plugin.pluginKey);
         if (removeData) {
-          await retireConnectorConnections(plugin.pluginKey);
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
@@ -568,15 +569,17 @@ export function pluginLifecycleManager(
       }
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
-      // Connections made from this plugin's connector types stay for audit,
-      // archived, with their grants revoked and owned credentials deleted.
-      // This runs before the status change so a failure leaves the uninstall
-      // retryable instead of reporting success with credentials left behind.
-      await retireConnectorConnections(plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);
+
+      // Connections made from this plugin's connector types stay for audit,
+      // archived, with their grants revoked and owned credentials deleted.
+      // It runs after the status change, so no new setup can start; a setup
+      // already in flight archives its own connection (see tool-access). A
+      // failure is reported, and uninstalling again finishes the cleanup.
+      await retireConnectorConnections(plugin.pluginKey);
 
 
       log.info(

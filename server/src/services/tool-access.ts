@@ -111,7 +111,7 @@ import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
-import { connectionSourceSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { connectionSourceSlug, isPluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -791,6 +791,24 @@ export function toolAccessService(
    * plugin-provided part of the catalog from the plugins table first, so a
    * plugin enabled or disabled through another process is seen here too.
    */
+  /**
+   * A plugin disabled or uninstalled while a setup step ran must not keep a
+   * connection (or the credential just stored) that its cleanup has already
+   * passed: remove it through the normal removal and report the connector as
+   * gone.
+   */
+  async function retireIfPluginAppUnavailable<Result extends { connectionId: string; connection: { companyId: string; config?: Record<string, unknown> | null } }>(
+    result: Result,
+    actor?: ActorInfo,
+  ): Promise<Result> {
+    const source = result.connection.config?.sourceTemplateKey;
+    if (isPluginAppSlug(source) && !(await loadPluginAppCatalog(db)).isAvailable(source as string)) {
+      await removeConnection(result.connectionId, result.connection.companyId, actor);
+      throw notFound("Tool app gallery entry not found");
+    }
+    return result;
+  }
+
   function withPluginApps<Args extends unknown[], Result>(fn: (...args: Args) => Promise<Result>) {
     return async (...args: Args): Promise<Result> => {
       await loadPluginAppCatalog(db);
@@ -3915,7 +3933,8 @@ export function toolAccessService(
     },
     ...aggregatorAccounts,
 
-    connectGalleryApp: withPluginApps(connectGalleryApp),
+    connectGalleryApp: withPluginApps(async (companyId: string, input: ConnectToolApp, actor?: ActorInfo) =>
+      retireIfPluginAppUnavailable(await connectGalleryApp(companyId, input, actor), actor)),
 
     finishGalleryAppConnection: withPluginApps(finishGalleryAppConnection),
 
@@ -3978,7 +3997,8 @@ export function toolAccessService(
 
     completeVercelConnectCallback,
 
-    completeOAuthCallback: withPluginApps(completeOAuthCallback),
+    completeOAuthCallback: withPluginApps(async (...args: Parameters<typeof completeOAuthCallback>) =>
+      retireIfPluginAppUnavailable(await completeOAuthCallback(...args), args[0].actor)),
     refreshOAuthGrantCredentials,
     finalizeOAuthAccess,
 

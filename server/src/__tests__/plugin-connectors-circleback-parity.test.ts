@@ -303,6 +303,36 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.circlebackTools(f.sessions.a.token, "circleback")).length).toBe(core.visibleToA.length);
   });
 
+  it("archives a connection whose plugin was disabled while its setup ran", async () => {
+    const f = await setup();
+    const pluginKey = `${PLUGIN_KEY}-race`;
+    const slug = pluginAppSlug(pluginKey, "circleback");
+    await db.insert(plugins).values({ pluginKey, packageName: "@paperclipai/test-circleback-race", version: fixtureManifest.version,
+      manifestJson: { ...fixtureManifest, id: pluginKey }, status: "ready" });
+    const connected = await f.service.connectGalleryApp(f.company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth" }, actor);
+    await f.service.putConnectionInstalls(connected.connectionId, { installs: [] });
+    const start = await f.service.startOAuth(f.company.id, connected.connectionId, { redirectUri, actor });
+    await f.service.completeOAuthCallback({ state: new URL(start.authorizationUrl).searchParams.get("state")!, code: "race", iss: origin, redirectUri, actor });
+    // The plugin goes away while a second account signs in.
+    const second = await f.service.connectGalleryApp(f.company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", name: "Second account" }, actor);
+    await f.service.putConnectionInstalls(second.connectionId, { installs: [] });
+    const secondStart = await f.service.startOAuth(f.company.id, second.connectionId, { redirectUri, actor });
+    const original = f.provider.fetchFixture.getMockImplementation()!;
+    f.provider.fetchFixture.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/oauth/token")) await db.update(plugins).set({ status: "uninstalled" }).where(eq(plugins.pluginKey, pluginKey));
+      return original(url, init);
+    });
+    await expect(f.service.completeOAuthCallback({ state: new URL(secondStart.authorizationUrl).searchParams.get("state")!, code: "race-2", iss: origin, redirectUri, actor }))
+      .rejects.toMatchObject({ status: 404 });
+    f.provider.fetchFixture.mockImplementation(original);
+    const [secondRow] = await db.select().from(toolConnections).where(eq(toolConnections.id, second.connectionId));
+    expect(secondRow).toMatchObject({ status: "archived", enabled: false });
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, second.connectionId))).every(grant => grant.status === "revoked")).toBe(true);
+    const rows = await db.select().from(toolConnections).where(eq(toolConnections.companyId, f.company.id));
+    expect(rows.filter(row => row.config.sourceTemplateKey === slug && row.status !== "archived").map(row => row.id)).toEqual([connected.connectionId]);
+    await db.delete(plugins).where(eq(plugins.pluginKey, pluginKey));
+  });
+
   // Live check against the real Circleback service. It never runs in CI:
   // set PAPERCLIP_CIRCLEBACK_LIVE=1 to run it. It registers a client with
   // Circleback for both connectors and compares the sign-in requests, up to
