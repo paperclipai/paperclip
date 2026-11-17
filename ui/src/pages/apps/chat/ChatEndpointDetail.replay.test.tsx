@@ -32,7 +32,7 @@ let client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.get.mockResolvedValue({ id: "slack-bot", companyId: "company", provider: "slack", assignedAgentId: "maya", assignedAgentName: "Maya",
-    allowUnlinkedPeople: false, status: "active", setup: { step: "complete" } });
+    allowUnlinkedPeople: false, status: "active", providerAccountLabel: "Globex Workspace", setup: { step: "complete" } });
   mocks.agents.mockResolvedValue([{ id: "maya", name: "Maya", status: "idle" }]);
   mocks.listPrincipals.mockResolvedValue([
     { id: "l1", principalId: "p1", status: "linked", externalLabel: "jane.doe (Globex)", paperclipUserLabel: "Jane Doe" },
@@ -47,6 +47,7 @@ afterEach(async () => { await act(async () => root.unmount()); client.clear(); c
 it("masks linked people and blocks the identity confirmation link in session replay", async () => {
   await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><ChatEndpointDetail /></TooltipProvider></QueryClientProvider>));
   await vi.waitFor(() => expect(container.textContent).toContain("sam@globex.com"), { timeout: 3000 });
+  expect(replayLeaks("Globex Workspace", container)).toEqual({ rendered: true, recorded: false });
   expect(replayLeaks("Jane Doe", container)).toEqual({ rendered: true, recorded: false });
   expect(replayLeaks("jane.doe (Globex)", container)).toEqual({ rendered: true, recorded: false });
   expect(replayLeaks("sam@globex.com", container)).toEqual({ rendered: true, recorded: false });

@@ -111,7 +111,7 @@ export function AiConnectionPicker({
             selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
             choices={[
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
-                <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
+                <span className="block">For you: <span className={ANALYTICS_MASK_CLASS}>{personalDefault?.name ?? "Not connected"}</span></span>
                 <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
               </> },
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({

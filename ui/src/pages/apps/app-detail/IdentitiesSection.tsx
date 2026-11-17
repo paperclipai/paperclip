@@ -509,7 +509,7 @@ export function AudienceDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <DialogContent>
+      <DialogContent className={ANALYTICS_MASK_CLASS}>
         <DialogHeader>
           <DialogTitle>Who can use this identity</DialogTitle>
           <DialogDescription className={ANALYTICS_MASK_CLASS}>
@@ -623,7 +623,7 @@ export function RevokeGrantDialog({
 
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <AlertDialogContent>
+      <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
         <AlertDialogHeader>
           <AlertDialogTitle className={ANALYTICS_MASK_CLASS}>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description ?? body}</AlertDialogDescription>

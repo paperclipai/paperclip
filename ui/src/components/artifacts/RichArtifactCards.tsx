@@ -388,7 +388,7 @@ export interface DocumentCardProps extends ArtifactIdentity {
 export function DocumentCard(props: DocumentCardProps) {
   const patch = props.patch ?? isPatchFile(props.filename);
   const content = (body: string, preview = false) => patch
-    ? <pre className={cn(preview
+    ? <pre className={cn(ANALYTICS_MASK_CLASS, preview
       ? "paperclip-patch-preview m-0 min-w-0 overflow-hidden whitespace-pre font-mono text-xs leading-5"
       : "m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-xs leading-5", ANALYTICS_MASK_CLASS)}><code><PatchLines text={body} /></code></pre>
     : <Markdown body={body} preview={preview} />;

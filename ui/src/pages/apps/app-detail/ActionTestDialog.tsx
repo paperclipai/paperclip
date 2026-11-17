@@ -132,7 +132,7 @@ export function ActionTestDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
+      <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)}>
         <DialogHeader>
           <DialogTitle>Test {title}</DialogTitle>
           <DialogDescription>
@@ -265,7 +265,7 @@ function AgentPicker({
           <ChevronsUpDown className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0" disablePortal>
+      <PopoverContent align="start" className={cn("w-80 p-0", ANALYTICS_MASK_CLASS)} disablePortal>
         <div className="border-b border-border p-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -949,7 +949,7 @@ function PrettyPreview({ value }: { value: unknown }) {
     );
   }
   if (typeof value === "string") {
-    return <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-xs text-foreground">{value}</pre>;
+    return <pre className={cn("max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 text-xs text-foreground", ANALYTICS_MASK_CLASS)}>{value}</pre>;
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return (
@@ -964,7 +964,7 @@ function PrettyPreview({ value }: { value: unknown }) {
     );
   }
   return (
-    <pre className="max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
+    <pre className={cn("max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
       {safeStringify(collapseDeep(value, 2))}
     </pre>
   );
@@ -1037,7 +1037,7 @@ function RawResponseDisclosure({ value, initiallyOpen = false }: { value: unknow
         {showRaw ? "Hide raw response" : "Show raw response"}
       </button>
       {showRaw && (
-        <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground">
+        <pre className={cn("mt-2 max-h-64 overflow-auto rounded-md border border-border bg-background p-3 text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
           {safeStringify(value)}
         </pre>
       )}

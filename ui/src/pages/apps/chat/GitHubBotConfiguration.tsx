@@ -84,7 +84,7 @@ function GitHubHelp({
           <HelpCircle className="size-4" />
         </button>
       </TooltipTrigger>
-      <TooltipContent className="max-w-xs">{children}</TooltipContent>
+      <TooltipContent className={cn("max-w-xs", ANALYTICS_MASK_CLASS)}>{children}</TooltipContent>
     </Tooltip>
   );
 }
@@ -756,7 +756,7 @@ export function GitHubAccessEditor({
                     <MoreHorizontal className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent className={ANALYTICS_MASK_CLASS} align="end">
                   {removable && (
                     <DropdownMenuItem onClick={() => removePerson(person)}>
                       Remove access
@@ -958,7 +958,7 @@ export function GitHubAccessEditor({
           if (!open) setDialog(null);
         }}
       >
-        <DialogContent>
+        <DialogContent className={ANALYTICS_MASK_CLASS}>
           <DialogHeader>
             <DialogTitle>
               {dialog === "member"

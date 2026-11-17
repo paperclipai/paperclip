@@ -317,6 +317,7 @@ export function GitHubChatSetup() {
               ? "Connect your account"
               : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
+      <div className={cn("space-y-6", ANALYTICS_MASK_CLASS)}>
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -613,7 +614,7 @@ export function GitHubChatSetup() {
             <Label htmlFor="github-owner-type">GitHub account</Label>
             <select
               id="github-owner-type"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              className={cn("w-full rounded-md border border-input bg-background px-3 py-2 text-sm", ANALYTICS_MASK_CLASS)}
               value={accountChoice}
               disabled={busy || !!state?.registration}
               onChange={(event) => {
@@ -683,6 +684,7 @@ export function GitHubChatSetup() {
           )}
         </>
       )}
+      </div>
     </div>
   );
 }

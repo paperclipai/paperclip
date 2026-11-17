@@ -21,12 +21,12 @@ export function AggregatorAppManager({ app, connections, initialConnectionId, on
   const [connectionId, setConnectionId] = useState(initialConnectionId ?? connections[0]?.id ?? "");
   const connection = connections.find(candidate => candidate.id === connectionId);
   const provider = connection?.config?.sourceTemplateKey;
-  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent>
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className={ANALYTICS_MASK_CLASS}>
     <DialogHeader><DialogTitle>Manage {app.name}</DialogTitle>
       <DialogDescription>Accounts and sign-in are managed in {isAppAggregator(provider) ? AGGREGATOR_NAMES[provider] : "the provider"}.</DialogDescription>
     </DialogHeader>
     {connections.length > 1 ? <div className="space-y-2"><Label htmlFor="manage-aggregator-gateway">Connection</Label>
-      <select id="manage-aggregator-gateway" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={connectionId} onChange={event => setConnectionId(event.target.value)}>
+      <select id="manage-aggregator-gateway" className={cn("h-9 w-full rounded-md border border-input bg-background px-3 text-sm", ANALYTICS_MASK_CLASS)} value={connectionId} onChange={event => setConnectionId(event.target.value)}>
         {connections.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
       </select></div> : null}
     {connection ? <AccountObservations key={connection.id} app={app} connection={connection} onClose={onClose} /> : <p role="alert">This connection is no longer available.</p>}

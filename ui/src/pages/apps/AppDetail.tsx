@@ -606,6 +606,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
           else setRenaming(false);
         }}
       />
+      <div className={cn("space-y-10", ANALYTICS_MASK_CLASS)}>
 
       {status.tone === "attention" && connection.requiresReauthorization === false && (
         <AccessRetryBanner
@@ -755,6 +756,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
               </>}
             </div>
       )}
+      </div>
     </div>
   );
 }

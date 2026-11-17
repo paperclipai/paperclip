@@ -356,7 +356,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
       tabIndex={0}
       className={cn("paperclip-file-viewer-code min-w-0 flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset", ANALYTICS_MASK_CLASS)}
     >
-      <pre className="m-0 font-mono text-xs leading-5">
+      <pre className={cn("m-0 font-mono text-xs leading-5", ANALYTICS_MASK_CLASS)}>
         {lines.map((lineText, index) => {
           const lineNumber = index + 1;
           const isHighlighted = lineNumber === highlightedLine;

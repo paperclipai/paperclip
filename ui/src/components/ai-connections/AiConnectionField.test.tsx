@@ -252,5 +252,5 @@ it("masks the adoption dialog's account label in session replay", async () => {
   await settle();
   const dialog = document.querySelector('[role="dialog"]')!;
   expect(replayLeaks("solenne.drake@example.test", dialog)).toEqual({ rendered: true, recorded: false });
-  expect(replayLeaks("Adopt Connections for Nova", dialog)).toEqual({ rendered: true, recorded: true });
+  expect(replayLeaks("Adopt Connections for Nova", dialog)).toEqual({ rendered: true, recorded: false });
 });

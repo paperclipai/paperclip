@@ -39,7 +39,7 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
     else setSelected(route);
   }
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <DialogContent>
+    <DialogContent className={ANALYTICS_MASK_CLASS}>
       <DialogHeader>
         <DialogTitle>{provider ? `Connect ${app.name} through ${provider.name}` : `Connect ${app.name}`}</DialogTitle>
         <DialogDescription className={selected?.provider === "composio" ? "sr-only" : undefined}>{selected?.provider === "composio"

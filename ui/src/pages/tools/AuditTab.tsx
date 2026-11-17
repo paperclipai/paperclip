@@ -311,7 +311,7 @@ function ActivityRow({
                 {argumentsText ? (
                   <div className="space-y-1">
                     <span className="text-muted-foreground">Parameters (redacted)</span>
-                    <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+                    <pre className={cn("whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                       {argumentsText}
                     </pre>
                   </div>

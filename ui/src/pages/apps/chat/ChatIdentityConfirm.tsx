@@ -118,7 +118,7 @@ export function ChatIdentityConfirm() {
         <p className="text-sm text-muted-foreground">{identity.companyName}</p>
         <h1 className="mt-1 text-xl font-bold">Link your external identity</h1>
       </div>
-      <dl className="divide-y divide-border border-y border-border">
+      <dl className={cn("divide-y divide-border border-y border-border", ANALYTICS_MASK_CLASS)}>
         <div className="flex items-center justify-between gap-4 py-3">
           <dt className="text-sm text-muted-foreground">Provider</dt>
           <dd className="text-sm font-medium">

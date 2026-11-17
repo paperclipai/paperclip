@@ -606,7 +606,7 @@ export function ConnectionIntentInteractionBody({
                 </Button>
               </DialogTrigger>
               <DialogContent
-                className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
+                className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl", ANALYTICS_MASK_CLASS)}
                 showCloseButton={false}
                 onCloseAutoFocus={(event) => {
                   event.preventDefault();

@@ -20,10 +20,10 @@ export function ComposioAppManager({ app, connections, initialConnectionId, onCl
 }) {
   const [connectionId, setConnectionId] = useState(initialConnectionId ?? connections[0]?.id ?? "");
   const connection = connections.find(candidate => candidate.id === connectionId);
-  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent>
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className={ANALYTICS_MASK_CLASS}>
     <DialogHeader><DialogTitle>Manage {app.name}</DialogTitle><DialogDescription>Accounts and sign-in are managed in Composio.</DialogDescription></DialogHeader>
     {connections.length > 1 ? <div className="space-y-2"><Label htmlFor="composio-manage-gateway">Composio account</Label>
-      <select id="composio-manage-gateway" value={connectionId} onChange={event => setConnectionId(event.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+      <select id="composio-manage-gateway" value={connectionId} onChange={event => setConnectionId(event.target.value)} className={cn("h-9 w-full rounded-md border border-input bg-background px-3 text-sm", ANALYTICS_MASK_CLASS)}>
         {connections.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
       </select></div> : null}
     {connection ? <ComposioAccountObservations key={connection.id} app={app} connection={connection} onClose={onClose} /> : <p role="alert">This Composio connection is no longer available.</p>}

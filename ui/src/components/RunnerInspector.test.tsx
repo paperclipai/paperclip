@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { ConnectivityProvider, createConnectivityStore, type ConnectivityStore } from "@/lib/connectivity";
 import { RunnerInspector } from "./RunnerInspector";
-import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
+import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const accessMock = vi.hoisted(() => vi.fn());
 const eventsMock = vi.hoisted(() => vi.fn());
@@ -322,6 +322,7 @@ describe("RunnerInspector", () => {
       Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent?.includes("Exact trace"))!.click(),
     );
     await flush();
+    expect(replayLeaks("run-1-redacted", document.body)).toEqual({ rendered: true, recorded: false });
     flushSync(() =>
       Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.includes("Reveal exact frame"))!.click(),
     );

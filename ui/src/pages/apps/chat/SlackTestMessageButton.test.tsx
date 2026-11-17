@@ -33,5 +33,5 @@ it("masks Slack account names and ids in session replay", async () => {
   await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Send me a test message")!.click());
   expect(replayLeaks("Delphine Pellworth", document.body)).toEqual({ rendered: true, recorded: false });
   expect(replayLeaks("U0PELLWORTH", document.body)).toEqual({ rendered: true, recorded: false });
-  expect(replayLeaks("Connect your Slack account", document.body)).toEqual({ rendered: true, recorded: true });
+  expect(replayLeaks("Connect your Slack account", document.body)).toEqual({ rendered: true, recorded: false });
 });

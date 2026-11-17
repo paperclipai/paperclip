@@ -569,7 +569,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className={cn("bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100", ANALYTICS_MASK_CLASS)}>
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
             </div>
@@ -577,7 +577,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           {run.resultJson && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className={cn("bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100", ANALYTICS_MASK_CLASS)}>
                 {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
               </pre>
             </div>
@@ -585,7 +585,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
               <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
-              <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
+              <pre className={cn("bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100", ANALYTICS_MASK_CLASS)}>
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
             </div>

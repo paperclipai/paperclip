@@ -57,7 +57,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { useCopyAction } from "@/lib/use-copy-action";
 
 type TraceEntry = Record<string, unknown>;
@@ -490,7 +490,7 @@ function JsonNode({
 function JsonExplorer({ value, label = "Search this JSON" }: { value: unknown; label?: string }) {
   const [query, setQuery] = useState("");
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-muted/20">
+    <div className={cn("overflow-hidden rounded-md border border-border bg-muted/20", ANALYTICS_MASK_CLASS)}>
       <div className="relative border-b border-border bg-background/60">
         <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
         <Input

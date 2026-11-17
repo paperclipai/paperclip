@@ -1983,7 +1983,7 @@ function ToolActionResolution({
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground">{formattedOutput}</pre>
+            <pre className={cn("mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>{formattedOutput}</pre>
           </CollapsibleContent>
         </Collapsible>
       ) : <p className="flex items-center gap-1.5">{status}</p>}
@@ -2075,7 +2075,7 @@ function RequestToolActionCard({
             {preview && !previewIsLine ? <DecisionPanelMarkdown markdown={preview} lead={false} externalReferences={externalReferences} /> : null}
             {isPending ? inspectableArguments ? <details>
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Arguments</summary>
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">{payload.argumentsSummaryJson}</pre>
+              <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>{payload.argumentsSummaryJson}</pre>
               <ToolActionAuditHashCopy hash={payload.argumentsHash} />
             </details> : <p className="text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
             {isPending ? (
@@ -2132,7 +2132,7 @@ function RequestToolActionCard({
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
             Arguments
           </summary>
-          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+          <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
             {payload.argumentsSummaryJson}
           </pre>
           <ToolActionAuditHashCopy hash={payload.argumentsHash} />

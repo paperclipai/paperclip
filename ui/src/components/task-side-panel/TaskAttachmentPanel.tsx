@@ -47,8 +47,8 @@ export function TextAttachmentPreview({ title, text, markdown, html = false, csv
           : renderCsv ? <CsvPreview text={text} title={title} />
           : renderHtml ? <HtmlArtifactPreview html={text} title={title} />
           : markdown && mode === "rendered" ? <MarkdownBody mediaMode="reference">{text}</MarkdownBody>
-          : patch ? <pre className="paperclip-patch-source m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-sm" aria-label={`${title} patch`}><code><PatchLines text={text} /></code></pre>
-          : <pre className="whitespace-pre-wrap wrap-anywhere font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
+          : patch ? <pre className={cn("paperclip-patch-source m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-sm", ANALYTICS_MASK_CLASS)} aria-label={`${title} patch`}><code><PatchLines text={text} /></code></pre>
+          : <pre className={cn("whitespace-pre-wrap wrap-anywhere font-mono text-sm", ANALYTICS_MASK_CLASS)} aria-label={`${title} raw text`}>{text}</pre>}
       </div>
     </div>
   );

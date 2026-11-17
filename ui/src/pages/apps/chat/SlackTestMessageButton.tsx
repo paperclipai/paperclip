@@ -64,7 +64,7 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
       {describeError(send.error).body} <button className="underline" onClick={reset}>Dismiss</button>
     </div>}
     <Dialog open={accounts !== null} onOpenChange={(open) => { if (!open && !send.isPending) setAccounts(null); }}>
-      <DialogContent>
+      <DialogContent className={ANALYTICS_MASK_CLASS}>
         <DialogHeader>
           <DialogTitle>Connect your Slack account</DialogTitle>
           <DialogDescription>Choose your account. Messages to this agent will use your Paperclip permissions.</DialogDescription>

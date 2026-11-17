@@ -35,5 +35,5 @@ it("masks the selected connection in the trigger and the account labels in the o
   expect(document.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
   expect(replayLeaks("ivo.castellan@example.test", document.body)).toEqual({ rendered: true, recorded: false });
   expect(replayLeaks("wren.halloway@example.test", document.body)).toEqual({ rendered: true, recorded: false });
-  expect(replayLeaks("Connect an account", document.body)).toEqual({ rendered: true, recorded: true });
+  expect(replayLeaks("Connect an account", document.body)).toEqual({ rendered: true, recorded: false });
 });

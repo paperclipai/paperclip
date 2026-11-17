@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -87,6 +87,7 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{state.identity.login}" },
   { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{account.login ?? account.name}" },
   { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{legacyIdentity.login}" },
+  { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{knownOrganizations.map(" },
   { file: "pages/AgentDetail.tsx", content: "{person?.user?.name ?? person?.user?.email" },
   { file: "pages/AgentDetail.tsx", content: "{responsibleUserName ?? responsibleUserLabel(null)}" },
   { file: "pages/AgentToolsTab.tsx", content: "{connection.name}</span>" },
@@ -98,6 +99,21 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "components/decision-models/DecisionHistory.tsx", content: "{row.connectionName ??" },
   { file: "components/IssueThreadInteractionCard.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>{connectionName}</span>" },
   { file: "components/ai-connections/AiConnectionField.tsx", content: "For you: ${pendingAccount" },
+  { file: "components/ai-connections/AiConnectionField.tsx", content: "{compatiblePools.map(" },
+  { file: "components/ai-connections/AiConnectionPoolConnector.tsx", content: "{account?.name ?? \"Connection unavailable\"}" },
+  { file: "components/ai-connections/AiConnectionPoolConnector.tsx", content: "{account.name}</span>" },
+  { file: "components/ai-connections/AiConnectionPoolConnector.tsx", content: "Remove {draft.name}?" },
+  { file: "components/TailscaleSshMachine.tsx", content: "{connected.map(connection => <option" },
+  { file: "features/connections/ConnectionInstructions.tsx", content: "{value.text}</p>" },
+  { file: "features/connections/ConnectionInstructions.tsx", content: "{connection.agentInstructions!.text}</p>" },
+  { file: "pages/AgentDetail.tsx", content: "{run.stderrExcerpt}</pre>" },
+  { file: "pages/AgentDetail.tsx", content: "{run.stdoutExcerpt}</pre>" },
+  { file: "pages/ExecutionWorkspaceDetail.tsx", content: "{operation.stderrExcerpt}</div>" },
+  { file: "pages/ExecutionWorkspaceDetail.tsx", content: "{operation.stdoutExcerpt}</div>" },
+  { file: "components/RunnerInspector.tsx", content: "<Search className=\"absolute left-2.5" },
+  { file: "pages/apps/chat/GitHubConnectionComplete.tsx", content: "{endpoint.providerAccountLabel}\n" },
+  { file: "components/chat/AgentChannelsPanel.tsx", content: "{endpoint.botLabel ??" },
+  { file: "pages/apps/Connections.tsx", content: "<table className=\"w-full text-sm\">" },
   { file: "components/skill-studio/SkillSourceConnectionRepair.tsx", content: "<RadioCardGroup ariaLabel=\"GitHub connection\"" },
   { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "{grantAccountLabel(grant)}" },
   { file: "pages/apps/chat/slack/ManagedSlackSetup.tsx", content: "{workspaces[0]!.workspaceName}" },
@@ -209,6 +225,26 @@ function openElementsAt(source: string, index: number): string[] {
   }
   return stack.map((entry) => entry.tag);
 }
+
+const CONNECTION_SURFACE_DIRS = ["pages/apps", "features/connections", "components/ai-connections"];
+const PORTAL_TAG = /<(DialogContent|AlertDialogContent|SelectContent|SelectTrigger|PopoverContent|DropdownMenuContent|SheetContent|TooltipContent)\b/g;
+
+function connectionSurfaceFiles(dir: string): string[] {
+  return readdirSync(join(UI_SRC, dir)).flatMap((name) => {
+    const path = join(dir, name);
+    if (statSync(join(UI_SRC, path)).isDirectory()) return connectionSurfaceFiles(path);
+    return /\.tsx$/.test(name) && !/\.(test|stories)\.tsx$/.test(name) ? [path] : [];
+  });
+}
+
+const CONNECTION_PORTALS = CONNECTION_SURFACE_DIRS.flatMap(connectionSurfaceFiles).flatMap((file) => {
+  const source = readFileSync(join(UI_SRC, file), "utf8");
+  return [...source.matchAll(PORTAL_TAG)].map((match) => ({
+    file,
+    line: source.slice(0, match.index).split("\n").length,
+    tag: source.slice(match.index, tagEnd(source, match.index! + 1) + 1),
+  }));
+});
 
 describe("session replay text masking", () => {
   afterEach(() => {
@@ -340,6 +376,14 @@ describe("session replay text masking", () => {
     const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
     const elements = [...openElementsAt(source, index), contentTag];
     expect(elements.some((tag) => tag.includes("ANALYTICS_MASK_CLASS"))).toBe(true);
+  });
+
+  it("finds the portaled content of connection and account surfaces", () => {
+    expect(CONNECTION_PORTALS.length).toBeGreaterThan(40);
+  });
+
+  it.each(CONNECTION_PORTALS)("masks the portal at $file:$line", ({ tag }) => {
+    expect(tag).toMatch(/ANALYTICS_MASK_CLASS|ANALYTICS_NO_CAPTURE_CLASS/);
   });
 
   it("never lets autocapture record element text or attribute values", () => {

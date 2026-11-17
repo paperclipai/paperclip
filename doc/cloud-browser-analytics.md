@@ -160,6 +160,16 @@ are always masked.
     repositories, Slack workspace names (list and selected value), Slack
     account pickers, chat channels, linked user labels, the external task
     banner and chat identity pages.
+  - Connection and account management surfaces are masked by section, not
+    label by label: the Browse connector list, the App detail body below its
+    header, the Connections table, Tailscale networks, the chat connection
+    detail body and its account subtitle, GitHub chat setup, the AI
+    connection pool editor and the chat identity confirmation. Every dialog,
+    alert dialog, select (trigger and list), popover, dropdown, sheet and
+    tooltip under `pages/apps`, `features/connections` and
+    `components/ai-connections` carries its own mask, because portals escape
+    the page's masked container; `replay-masking.test.tsx` fails when one
+    does not.
   - App action test results (parsed preview and raw response).
   - Inbox and decision rows (subject and detail line), obligation evidence,
     Needs You notes and receipts, decision cards and compact decisions,
@@ -168,8 +178,13 @@ are always masked.
   - Approval payloads, action card input and reason, recovery card headline,
     evidence and options, run ledger retry details and interrupt handoff
     previews.
-  - Run transcripts, run failure details, run events and the run invocation
-    command, notes, prompt, context and environment on the agent page.
+  - Run transcripts, run failure details, run events, run stdout and stderr
+    excerpts (agent page and execution workspace operations), the run
+    invocation command, notes, prompt, context and environment, Runner
+    inspector frames, and every preformatted block that shows run output,
+    tool or webhook payloads, request or response bodies, instructions,
+    skills or package files.
+  - Saved connection instructions for agents.
   - Document and case revision diffs.
   - Search result snippets, toasts (title and body), voice and call
     transcripts, case summaries, files and fields, attachment previews and

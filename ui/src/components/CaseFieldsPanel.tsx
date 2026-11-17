@@ -224,7 +224,7 @@ export function CaseFieldValue({
       );
     }
     return (
-      <pre className="max-w-full whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+      <pre className={cn("max-w-full whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
         {JSON.stringify(value, null, 2)}
       </pre>
     );

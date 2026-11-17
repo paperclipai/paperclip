@@ -343,7 +343,7 @@ export function ChatEndpointDetail() {
             {endpoint.provider === "speko" && <AppLogo name="Speko" brandKey="speko" size={36} />}
             {endpoint.provider === "github" ? (endpoint.botLabel ?? endpoint.assignedAgentName) : endpoint.assignedAgentName}{endpoint.provider === "speko" ? " in Speko" : ""}
           </h1>
-          <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <p className={cn("mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)}>
             {endpoint.provider === "github" ? <><AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" /><Link to={`/agents/${endpoint.assignedAgentId}`} className="hover:underline">{endpoint.assignedAgentName}</Link>{endpoint.providerAccountLabel && <span>· {endpoint.providerAccountLabel}</span>}</> : endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
           </p>
           {endpoint.provider === "github" && <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -381,6 +381,7 @@ export function ChatEndpointDetail() {
           {endpoint.status !== "active" && <StatusBadge status={endpoint.status} className={endpoint.provider === "speko" ? "text-foreground" : undefined} />}
         </div>
       </header>
+      <div className={cn("space-y-6", ANALYTICS_MASK_CLASS)}>
       {endpoint.provider === "github" && <GitHubConnectionRecoveryNotice endpoint={endpoint} />}
       {activeTab === "settings" && endpoint.provider === "speko" && endpoint.status === "active" && <div className="space-y-6"><SpekoPhoneCallback companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoPhoneLine companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoIncomingCalls companyId={endpoint.companyId} endpointId={endpoint.id} agentId={endpoint.assignedAgentId} /></div>}
       {endpoint.provider === "slack" && <SlackTestMessageButton key={endpoint.id} endpointId={endpoint.id} />}
@@ -424,6 +425,7 @@ export function ChatEndpointDetail() {
           onCloseAutoFocus={() => heading.current?.focus()}
         />
       )}
+      </div>
     </div>
   );
 }
@@ -748,7 +750,7 @@ function Access({
         <h2 className="text-lg font-semibold">People</h2>
         {endpoint.provider === "slack" && <Dialog>
           <DialogTrigger asChild><Button>Invite people</Button></DialogTrigger>
-          <DialogContent>
+          <DialogContent className={ANALYTICS_MASK_CLASS}>
             <DialogHeader>
               <DialogTitle>Invite people to talk to {endpoint.assignedAgentName}</DialogTitle>
               <DialogDescription>Share these instructions with someone in your Slack workspace.</DialogDescription>
@@ -1313,7 +1315,7 @@ function Activity({
         open={resolutionItem !== null}
         onOpenChange={(open) => !open && setResolutionItem(null)}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               {resolutionItem?.actionType === "slash_task_start"
@@ -1401,7 +1403,7 @@ function Activity({
         </AlertDialogContent>
       </AlertDialog>
       <AlertDialog open={removeOpen} onOpenChange={setRemoveOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
             <AlertDialogTitle>Remove this connection?</AlertDialogTitle>
             <AlertDialogDescription>

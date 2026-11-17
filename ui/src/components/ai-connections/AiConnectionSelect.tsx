@@ -121,7 +121,7 @@ export function AiConnectionSelect({
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
       >
-        <SelectTrigger id={selectId} aria-label="Connection" title={selected ? aiConnectionDisplayLabel(selected) : undefined} className="w-full">
+        <SelectTrigger id={selectId} aria-label="Connection" title={selected ? aiConnectionDisplayLabel(selected) : undefined} className={cn("w-full", ANALYTICS_MASK_CLASS)}>
           <SelectValue
             placeholder={
               loading ? "Loading connections…" : "Choose a connection"
@@ -134,7 +134,7 @@ export function AiConnectionSelect({
                 : value ? "Unavailable connection" : undefined}
           </SelectValue>
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent className={ANALYTICS_MASK_CLASS}>
           {incompatible && selected && (
             <SelectItem value={selected.id} disabled>
               <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible`} wrap />

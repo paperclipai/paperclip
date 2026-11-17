@@ -406,7 +406,7 @@ export function Connections() {
             </button>
           )}
 
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div className={cn("overflow-hidden rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
@@ -554,7 +554,7 @@ export function Connections() {
           if (!open && !deleteConnection.isPending) setConnectionToDelete(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               Delete {connectionToDelete?.appName ?? "this"} connection?
