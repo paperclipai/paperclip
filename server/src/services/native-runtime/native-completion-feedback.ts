@@ -354,21 +354,23 @@ export async function nativeCompletionFeedback(
     return `Completion report accepted; this task still has unresolved dependencies. Explain the blockers on [this task](${await boardPath(db, run.companyId, `/issues/${issue.identifier ?? issue.id}`)}); do not say the task is done.`;
   }
   const unfinishedWork = !result.completionClaim.objectiveSatisfied || result.completionClaim.remainingWork.some(work => work.blocksCompletion);
+  const recordedBudgetStop = Object.keys(record(record(record(run.resultJson).startupCancellation).budgetEnforcement)).length > 0;
   if (unfinishedWork && result.reportedWorkDisposition === "blocked" &&
       result.blocker?.owner.kind === "agent" && result.blocker.scope === "current_track" &&
       issue.executionRunId === run.id && run.status === "running") {
     const [worker] = await db.select({ name: agents.name }).from(agents).where(and(
       eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
     const owner = result.blocker.owner.name?.trim().toLowerCase();
-    if (worker && owner === worker.name.trim().toLowerCase()) {
-      throw new Error("Your own remaining work is not an external blocker. Continue the authorized work from its saved evidence, complete the remaining source traces and deliverables, and request any required independent review through the existing workflow. Do not park the task or ask the board to perform your remaining work. If work truly cannot continue, report the concrete external dependency, its actual owner, and fresh evidence.");
+    if (worker && owner === worker.name.trim().toLowerCase() && !recordedBudgetStop &&
+        !(await issueTreeControlService(db).getActivePauseHoldGate(run.companyId, issue.id))) {
+      throw new Error("Your own remaining work is not an external blocker. Continue the authorized work from its saved evidence, complete the remaining actions and deliverables, and request any required independent review through the existing workflow. Do not park the task or ask the board to perform your remaining work. If work truly cannot continue, report the concrete external dependency, its actual owner, and fresh evidence.");
     }
   }
   if (unfinishedWork && result.reportedWorkDisposition === "blocked" &&
       result.blocker?.owner.kind === "system" && result.blocker.scope === "current_track" &&
       result.blocker.reasonCode === "budget_exhausted" &&
       issue.executionRunId === run.id && run.status === "running" &&
-      Object.keys(record(record(record(run.resultJson).startupCancellation).budgetEnforcement)).length === 0 &&
+      !recordedBudgetStop &&
       !(await issueTreeControlService(db).getActivePauseHoldGate(run.companyId, issue.id))) {
     throw new Error("Execution budgets are enforced by Paperclip; this active run has no recorded budget stop. Continue the authorized remaining work from its saved evidence. A turn length or self-imposed execution limit is not a task blocker. Do not ask the user to restart or grant more execution. Report a concrete external blocker only when fresh evidence establishes it.");
   }

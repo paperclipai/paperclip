@@ -62,6 +62,13 @@ describe("native final-response feedback", () => {
     await expect(nativeCompletionFeedback(db, value.runId, { ...report,
       blocker: { ...report.blocker!, owner: { kind: "agent", name: "Independent reviewer" } },
     })).resolves.toContain("Blocker report accepted");
+    const [hold] = await db.insert(issueTreeHolds).values({ companyId: value.companyId, rootIssueId: value.issueId, mode: "pause" }).returning();
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+    await db.update(issueTreeHolds).set({ status: "released" }).where(eq(issueTreeHolds.id, hold.id));
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: {
+      budgetEnforcement: { companyId: value.companyId, scopeType: "agent", scopeId: value.agentId },
+    } } }).where(eq(heartbeatRuns.id, value.runId));
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
   });
   async function publishedFileReport(value: Awaited<ReturnType<typeof fixture>>, objective = "Save a document on this task. Export the results as a CSV."): Promise<PrpStructuredRunResult> {
     await db.update(issues).set({ description: objective }).where(eq(issues.id, value.issueId));
