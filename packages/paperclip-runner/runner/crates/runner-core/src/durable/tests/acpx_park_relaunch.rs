@@ -1,7 +1,7 @@
 #[test]
 fn parked_acpx_relaunch_replays_an_interrupted_attachment_before_admitting_work() {
     use crate::acpx_provider_backend::{
-        park_relaunch_tests::parked_claude_fixture, ACPX_PROVIDER_STATE_FILE,
+        park_relaunch_tests::parked_acpx_fixture, ACPX_PROVIDER_STATE_FILE,
     };
     use crate::durable::state::{
         PendingWarmRunTransition, WarmRunIdentity, WarmRunTransition, TRANSITION_STATE_SCHEMA,
@@ -26,7 +26,7 @@ fn parked_acpx_relaunch_replays_an_interrupted_attachment_before_admitting_work(
     }
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let (directory, mut old, mut attach, _, _) = parked_claude_fixture(false);
+    let (directory, mut old, mut attach, _, _) = parked_acpx_fixture("claude", false);
     old.connect_url = format!("ws://{}/api/runner/v1/connect/run-1", listener.local_addr().unwrap());
     old.max_runtime = Duration::from_secs(10);
     old.runner_digest = format!("sha256:{}", "a".repeat(64));

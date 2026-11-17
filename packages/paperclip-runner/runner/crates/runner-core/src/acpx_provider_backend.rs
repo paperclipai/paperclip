@@ -325,6 +325,13 @@ impl AcpxProviderDescriptor {
         })
     }
 
+    fn supports_host_parking(&self) -> bool {
+        matches!(self.agent.as_str(), "codex" | "claude")
+            && self.names_qualified_release()
+            && acpx_release_profile(&self.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+    }
+
     fn validate_session(
         &self,
         context: &AcpxEventProjectionContext,
@@ -1104,7 +1111,7 @@ impl AcpxCommandExecutor {
         self.ensure_persistence_healthy()?;
         self.load_state_without_session()?;
         let settled = self.state.as_ref().is_some_and(|state| {
-            state.descriptor.agent == "claude"
+            state.descriptor.supports_host_parking()
                 && state.descriptor.run_id == self.context.run_id
                 && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
                 && settled_checkpoint_blockers(state).is_empty()
@@ -1118,7 +1125,7 @@ impl AcpxCommandExecutor {
             || self.candidate_admission().is_some()
         {
             return Err(DurableRunnerError::invalid(
-                "parked ACPX recovery requires a settled Claude provider checkpoint",
+                "parked ACPX recovery requires a settled provider checkpoint qualified for host parking",
             )
             .with_classification(crate::durable::PROVIDER_ATTACH_REFUSED));
         }
@@ -3177,7 +3184,7 @@ impl CommandExecutor for AcpxCommandExecutor {
         let Some(state) = self.state.as_ref() else {
             return Ok(false);
         };
-        if !matches!(state.descriptor.agent.as_str(), "codex" | "claude")
+        if !state.descriptor.supports_host_parking()
             || self.session.is_none()
             || state.lifecycle != "session_open"
             || state.provider_exit_unconfirmed
@@ -3187,11 +3194,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_events.is_empty()
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
-            || !state.descriptor.names_qualified_release()
             || state.provider_turn_wait.is_some()
             || self.candidate_admission().is_some()
-            || !acpx_release_profile(&state.descriptor.agent)
-                .is_some_and(|profile| !profile.qualification_pending)
         {
             return Ok(false);
         }
@@ -6676,12 +6680,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    // A settled Claude session saved by one runner build. The next deploy
+    // A settled ACPX session saved by one runner build. The next deploy
     // ships a new sidecar build and provider-pack authority at the same
     // qualified launch paths, and the next run cold-attaches in a new runner.
     #[cfg(unix)]
     pub(super) fn settled_session_after_runner_upgrade(
         label: &str,
+        agent: &str,
     ) -> (PathBuf, DurableRunnerConfig, Value, Vec<u8>) {
         let directory = temporary_directory(label);
         let command = directory.join("node");
@@ -6701,7 +6706,7 @@ mod tests {
         fs::create_dir_all(&workspace).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut value = descriptor("claude");
+        let mut value = descriptor(agent);
         value["runtimeDirectory"] = json!(runtime);
         value["cwd"] = json!(workspace);
         value["sidecarCommand"] = json!(command);
@@ -6764,7 +6769,7 @@ mod tests {
     #[test]
     fn settled_session_rebinds_to_the_upgraded_runner_launch_profile() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("upgrade-rebind");
+            settled_session_after_runner_upgrade("upgrade-rebind", "claude");
         let prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         let current_digest = config
             .acpx_launch_profile
@@ -6828,7 +6833,7 @@ mod tests {
         ];
         for (label, seed) in settled {
             let (directory, config, payload, saved) =
-                settled_session_after_runner_upgrade("upgrade-retired-settled");
+                settled_session_after_runner_upgrade("upgrade-retired-settled", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             seed(&mut prior);
@@ -6872,7 +6877,8 @@ mod tests {
     fn interrupted_turn_after_runner_upgrade(
         label: &str,
     ) -> (PathBuf, DurableRunnerConfig, PathBuf) {
-        let (directory, mut config, _, saved) = settled_session_after_runner_upgrade(label);
+        let (directory, mut config, _, saved) =
+            settled_session_after_runner_upgrade(label, "claude");
         config.run_id = "run-1".to_owned();
         config.turn_id = "turn-1".to_owned();
         config.item_id = "item-1".to_owned();
@@ -7002,7 +7008,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
 
         let (directory, mut config, payload, _) =
-            settled_session_after_runner_upgrade("upgrade-relocated-settled");
+            settled_session_after_runner_upgrade("upgrade-relocated-settled", "claude");
         let (command, args) = relocate_upgraded_install(&directory, &mut config);
         // The controller attaches with the payload it saved, which still names
         // the old install's paths.
@@ -7084,7 +7090,7 @@ mod tests {
             ("acpx_release", ""),
         ] {
             let (directory, mut config, _, saved) =
-                settled_session_after_runner_upgrade("upgrade-strict");
+                settled_session_after_runner_upgrade("upgrade-strict", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             let profile = config.acpx_launch_profile.as_mut().unwrap();
@@ -7166,7 +7172,7 @@ mod tests {
     #[test]
     fn a_settled_session_saved_by_the_previous_acpx_release_continues() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("previous-acpx-settled");
+            settled_session_after_runner_upgrade("previous-acpx-settled", "claude");
         let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
         let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         prior.descriptor.acpx_version = "0.13.1".into();

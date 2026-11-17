@@ -3,7 +3,8 @@ use super::tests::{
 };
 use super::*;
 
-pub(crate) fn parked_claude_fixture(
+pub(crate) fn parked_acpx_fixture(
+    agent: &str,
     active: bool,
 ) -> (
     PathBuf,
@@ -13,7 +14,7 @@ pub(crate) fn parked_claude_fixture(
     AcpxProviderSessionIdentity,
 ) {
     let (directory, mut config, mut payload, before) =
-        settled_session_after_runner_upgrade("claude-park-relaunch");
+        settled_session_after_runner_upgrade("acpx-park-relaunch", agent);
     config.run_id = "run-1".into();
     config.turn_id = "turn-1".into();
     config.item_id = "item-1".into();
@@ -58,9 +59,9 @@ pub(crate) fn parked_claude_fixture(
 }
 
 #[test]
-fn parked_claude_relaunch_checks_dormancy_on_the_only_sidecar() {
-    for active in [false, true] {
-        let (directory, config, attach, before, identity) = parked_claude_fixture(active);
+fn parked_acpx_relaunch_checks_dormancy_on_the_only_sidecar() {
+    for (agent, active) in [("claude", false), ("claude", true), ("codex", false)] {
+        let (directory, config, attach, before, identity) = parked_acpx_fixture(agent, active);
         let marker = directory.join("starts");
         let mut unsettled = AcpxCommandExecutor::with_runner_config(&directory, &config);
         unsettled.recovery_pending_effects = Some(1);
