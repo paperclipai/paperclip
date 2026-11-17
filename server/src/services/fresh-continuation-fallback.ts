@@ -593,7 +593,9 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
     : writer === "ended" && !pastBound() && !refused ? "writer_ended" : "fresh_isolated_workspace";
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
-  const unverified = await unverifiedActions(tx, run);
+  const unconfirmed = object(coordinator?.failureDetail).unconfirmedActions;
+  const unverified = [...new Set([...await unverifiedActions(tx, run),
+    ...(Array.isArray(unconfirmed) ? unconfirmed.filter((name): name is string => typeof name === "string") : [])])].slice(0, 20);
   const created = await createdObjects(tx, run);
   const note = freshContinuationNote({ runId: run.id, unverified, created,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });

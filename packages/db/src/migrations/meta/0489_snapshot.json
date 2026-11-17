@@ -1,5 +1,5 @@
 {
-  "id": "bd85bcde-a29b-4d23-bfcf-b51e86420b54",
+  "id": "dc61c7f3-cf3d-44c5-9296-86973e5f0925",
   "prevId": "8f935a52-5f1e-4afe-8d13-c1770ca33968",
   "version": "7",
   "dialect": "postgresql",
@@ -3929,28 +3929,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_company_pending_issue_key_idx": {
-          "name": "agent_wakeup_requests_company_pending_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"payload\"->>'issueId', \"payload\"->>'taskId', \"payload\"->'_paperclipWakeContext'->>'issueId'))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"agent_wakeup_requests\".\"status\" in ('queued', 'claimed', 'deferred_issue_execution')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -36048,28 +36026,6 @@
           "method": "btree",
           "with": {}
         },
-        "heartbeat_runs_company_unfinished_issue_key_idx": {
-          "name": "heartbeat_runs_company_unfinished_issue_key_idx",
-          "columns": [
-            {
-              "expression": "(coalesce(\"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId', \"native_issue_id\"::text))",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"status\" in ('queued', 'running', 'scheduled_retry')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_company_responsible_user_idx": {
           "name": "heartbeat_runs_company_responsible_user_idx",
           "columns": [
@@ -45108,6 +45064,123 @@
         "labels_company_id_companies_id_fk": {
           "name": "labels_company_id_companies_id_fk",
           "tableFrom": "labels",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.link_previews": {
+      "name": "link_previews",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "viewer_id": {
+          "name": "viewer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_kind": {
+          "name": "resource_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_url": {
+          "name": "canonical_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "checked_at": {
+          "name": "checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "link_previews_scope_url_uq": {
+          "name": "link_previews_scope_url_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "viewer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "canonical_url",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "link_previews_company_id_companies_id_fk": {
+          "name": "link_previews_company_id_companies_id_fk",
+          "tableFrom": "link_previews",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"

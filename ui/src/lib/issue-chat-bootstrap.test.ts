@@ -16,6 +16,7 @@ import {
 } from "./issue-chat-bootstrap";
 import { queryKeys } from "./queryKeys";
 import { ISSUE_CHAT_BOOTSTRAP_FRESH_MS } from "./issueChatBootstrapCache";
+import { recentIssueActivityQueryKey } from "./issue-chat-history-queries";
 
 const chatBootstrap = vi.hoisted(() => vi.fn());
 vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap } }));
@@ -205,6 +206,39 @@ describe("startIssueChatBootstrap", () => {
     const read = vi.fn().mockResolvedValue([]);
     await readFromIssueChatBootstrap(client, ["unread", "ABC-3"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
     expect(read).toHaveBeenCalledOnce();
+  });
+
+  it("opens a task on its own request instead of waiting for a slow preload of ten tasks", async () => {
+    // Recents' preload of ten tasks is still loading (each task costs the server time).
+    let answerBatch!: (value: unknown) => void;
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answerBatch = resolve; }));
+    const batchRefs = Array.from({ length: 10 }, (_, index) => ({ id: idFor(index + 1), identifier: `ABC-${index + 1}` }));
+    void loadIssueChatBootstraps(client, "company-1", batchRefs);
+    await Promise.resolve();
+    // The person opens one of them: the page reads by identifier, a later read by id.
+    startIssueChatBootstrap(client, "company-1", "ABC-4");
+    const ownRead = vi.fn();
+    const byIdentifier = readFromIssueChatBootstrap(client, ["unread", "ABC-4"], "ABC-4", (bootstrap) => bootstrap.recentActivity, ownRead);
+    const byId = readFromIssueChatBootstrap(client, ["unread", idFor(4)], idFor(4), (bootstrap) => bootstrap.issue.identifier, ownRead);
+    await expect(byIdentifier).resolves.toEqual([{ id: "event-4" }]);
+    await expect(byId).resolves.toBe("ABC-4");
+    expect(ownRead).not.toHaveBeenCalled();
+    expect(requestedRefs()).toEqual([batchRefs.map((task) => task.id).join(","), "ABC-4"]);
+    // The preload's later answer seeds the other tasks and does not replace the newer read.
+    answerBatch({ items: batchRefs.map((task) => item(task.id, { recentActivity: [{ id: "stale" }] as never })) });
+    await vi.waitFor(() => expect(client.getQueryData([...queryKeys.issues.detail("ABC-5"), "core"])).toMatchObject({ identifier: "ABC-5" }));
+    expect(client.getQueryData(recentIssueActivityQueryKey("ABC-4"))).toEqual([{ id: "event-4" }]);
+  });
+
+  it("still shares a loading request that was made for this task alone", async () => {
+    let answer!: (value: unknown) => void;
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    startIssueChatBootstrap(client, "company-1", "ABC-7");
+    await Promise.resolve();
+    startIssueChatBootstrap(client, "company-1", "ABC-7");
+    answer(respondWith(["ABC-7"]));
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-7"], "ABC-7", (bootstrap) => bootstrap.issue.identifier, vi.fn())).resolves.toBe("ABC-7");
+    expect(requestedRefs()).toEqual(["ABC-7"]);
   });
 
   it("ignores an early fetch for another task and loads this one through the company endpoint", async () => {
