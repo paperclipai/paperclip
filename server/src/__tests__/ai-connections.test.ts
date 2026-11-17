@@ -1556,11 +1556,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
-  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
-    const owner = "identity-owner";
+  it.each(["anthropic", "openai"] as const)("reads %s identity only for an authorized credential and preserves connected state when profile access is denied", async provider => {
+    const owner = `identity-owner-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const credential = provider === "openai" ? JSON.stringify({ tokens: { access_token: "identity-selected-secret", account_id: "private-account-id" } }) : "identity-selected-secret";
+    const account = await service.save(companyId, owner, { provider, method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
+    const profile = provider === "openai" ? { accounts: [{ id: "private-account-id", name: "Example team", structure: "workspace" }] }
+      : { account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(profile));
     const app = express();
     app.use((req, _res, next) => {
       req.actor = req.header("x-test-anonymous") ? { type: "none" }
@@ -1575,8 +1578,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const result = await request(app).get(url);
       expect(result.status).toBe(200);
       expect(result.headers["cache-control"]).toBe("no-store");
-      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
-      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: provider === "openai" ? null : "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith(provider === "openai" ? "https://chatgpt.com/backend-api/wham/accounts/check" : "https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
       for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
       fetchSpy.mockReset();
       expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
