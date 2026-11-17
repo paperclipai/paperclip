@@ -116,10 +116,11 @@ are always masked.
   element references (`id`, `for`, `aria-labelledby`) are always masked, so
   images record as empty boxes and link targets (for example download links
   with file paths) never leave.
-- Do not set a text masking selector in the PostHog project's replay settings.
-  posthog-js lets that remote setting replace `maskTextSelector`. The
-  `ph-mask` class stays masked in all cases, because it is the posthog-js
-  default `maskTextClass`.
+- The masking options in `posthog.init` take precedence over the PostHog
+  project's "Privacy and masking" settings (posthog-js 1.450). posthog-js
+  ignores the project setting and logs a warning when the two differ. Keep the
+  project masking settings empty, and change masking only in `privacy.ts`. The
+  `ph-mask` class is also the posthog-js default `maskTextClass`.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values and new secret
   values.
