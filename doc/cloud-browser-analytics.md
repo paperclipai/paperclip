@@ -110,5 +110,11 @@ Masking is deny by default. A surface that nobody marked stays masked.
 - Autocapture never records element text or attribute values
   (`mask_all_text`, `mask_all_element_attributes`). It keeps the click, the
   element tree and the page.
+- Connected-account content (Gmail bodies, Calendar events, Slack messages
+  in tasks, chat, tool results and previews) is Google user data or Slack
+  data. No human may read it in a replay (Google API Limited Use). It is never
+  inside the unmask allowlist, and autocapture records no element text at all.
+  `ui/src/lib/analytics/unmask-allowlist.test.ts` pins the allowlist: a new
+  unmask needs a reviewed entry there.
 - The UI never captures an event that the server already sends
   (`PAPERCLIP_EVENTS`); `product-analytics-events.test.ts` enforces this.
