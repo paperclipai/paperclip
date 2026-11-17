@@ -22,7 +22,9 @@ describe("MCP server", () => {
   it("lists the service's tools with input and output schemas", async () => {
     const { client } = await connect(() => json({}));
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["get_message", "search_threads", "create_draft"]);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "get_message", "search_threads", "create_draft", "get_thread", "get_draft", "list_drafts", "list_labels", "list_threads", "search_messages",
+    ]);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe("object");
       expect(tool.outputSchema?.type).toBe("object");

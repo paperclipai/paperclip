@@ -6,7 +6,7 @@ import { compact, defineTool, structuredResult } from "../tool.js";
 import { SUMMARY_HEADERS, toMcpMessage, type GmailRestMessage, type McpGmailMessage, type MessageDetail } from "./message.js";
 import { messageSchema } from "./schemas.js";
 
-const THREAD_VIEWS = ["THREAD_VIEW_UNSPECIFIED", "THREAD_VIEW_MINIMAL", "THREAD_VIEW_METADATA_ONLY"] as const;
+export const THREAD_VIEWS = ["THREAD_VIEW_UNSPECIFIED", "THREAD_VIEW_MINIMAL", "THREAD_VIEW_METADATA_ONLY"] as const;
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 50;
 const THREAD_FETCH_CONCURRENCY = 10;
@@ -20,12 +20,12 @@ const args = z.object({
 });
 export type SearchThreadsArgs = z.infer<typeof args>;
 
-interface GmailThreadList {
+export interface GmailThreadList {
   threads?: Array<{ id?: string }>;
   nextPageToken?: string;
   resultSizeEstimate?: number;
 }
-interface GmailRestThread { id?: string; messages?: GmailRestMessage[] }
+export interface GmailRestThread { id?: string; messages?: GmailRestMessage[] }
 
 export function unquotedOperators(query: string): string {
   return query.replace(/"[^"]*"?/g, " ");
@@ -86,7 +86,7 @@ export function searchThreadsResult(list: GmailThreadList, threads: Array<GmailR
   }));
 }
 
-async function readThreads(ids: string[], http: GoogleHttp): Promise<Array<GmailRestThread | null>> {
+export async function readThreads(ids: string[], http: GoogleHttp): Promise<Array<GmailRestThread | null>> {
   const results: Array<GmailRestThread | null> = new Array(ids.length).fill(null);
   let next = 0;
   let failed = false;
@@ -109,7 +109,7 @@ async function readThreads(ids: string[], http: GoogleHttp): Promise<Array<Gmail
 export const searchThreads = defineTool({
   definition: {
     name: "search_threads",
-    description: "Lists the signed-in user's Gmail threads that match an optional Gmail search query, one page at a time. Returns thread IDs with message summaries, not full bodies; use get_message with a message ID for a full message. A thread matches when any of its messages matches.",
+    description: "Lists the signed-in user's Gmail threads that match an optional Gmail search query, one page at a time. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. A thread matches when any of its messages matches.",
     inputSchema: {
       type: "object",
       properties: {
@@ -117,7 +117,7 @@ export const searchThreads = defineTool({
         pageToken: { type: "string", description: "Optional. The nextPageToken from a previous call. Leave empty for the first page." },
         query: {
           type: "string",
-          description: "Optional. A Gmail search query (for example `from:user@example.com newer_than:7d has:attachment`). Convert natural language to Gmail syntax first. `label:` takes label IDs, not display names. Without a query, all threads except spam and trash are listed. Drafts are excluded unless the query includes in:draft.",
+          description: "Optional. A Gmail search query (for example `from:user@example.com newer_than:7d has:attachment`). Convert natural language to Gmail syntax first. `label:` takes a label name with spaces written as hyphens (for example `label:client-work`), not a label ID; list_labels lists the names. Without a query, all threads except spam and trash are listed. Drafts are excluded unless the query includes in:draft.",
         },
         includeTrash: { type: "boolean", description: "Optional. Include threads in Trash. Default false." },
         view: {

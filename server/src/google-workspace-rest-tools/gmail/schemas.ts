@@ -26,3 +26,18 @@ export const messageSchema = {
     labelIds: stringArray("User label IDs and the system labels INBOX, SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT and CHAT."),
   },
 } as const;
+
+export const draftSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "The draft ID." },
+    subject: { type: "string", description: "The draft's subject line. Not with DRAFT_VIEW_METADATA_ONLY." },
+    threadId: { type: "string", description: "The ID of the thread the draft belongs to." },
+    toRecipients: stringArray("To recipient email addresses."),
+    ccRecipients: stringArray("Cc recipient email addresses."),
+    bccRecipients: stringArray("Bcc recipient email addresses."),
+    plaintextBody: { type: "string", description: "The plain-text body, if any. Not with DRAFT_VIEW_METADATA_ONLY." },
+    date: { type: "string", description: "The draft date, ISO 8601 (YYYY-MM-DD)." },
+    htmlBody: { type: "string", description: "The HTML body, if any. Not with DRAFT_VIEW_METADATA_ONLY." },
+  },
+} as const;
