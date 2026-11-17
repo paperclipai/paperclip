@@ -17,7 +17,7 @@ const serviceMocks = vi.hoisted(() => ({
   spekoToolsForSession: vi.fn(),
 }));
 
-vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
+vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession, spekoAssignedResources: vi.fn() }));
 vi.mock("../chat-github-tools.js", () => ({
   githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));
@@ -42,11 +42,35 @@ import { context as otelContext, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { withRunExecutionTiming } from "../execution-preparation-timing.js";
-import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
+import { buildNativeRuntimeContext, materializeSelectedSkills, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
 let previousInstanceId: string | undefined;
+
+it("reads independent skill files concurrently with a bounded number of pending reads", async () => {
+  const source = path.join(temporaryRoots.at(-1)!, "parallel-skill");
+  await mkdir(source);
+  for (let i = 0; i < 40; i++) await writeFile(path.join(source, `${i}.md`), `skill ${i}`);
+  const originalRead = fs.readFile.bind(fs);
+  let active = 0;
+  let peak = 0;
+  const reads = vi.spyOn(fs, "readFile").mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+    if (!String(args[0]).startsWith(source + path.sep)) return originalRead(...args);
+    peak = Math.max(peak, ++active);
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      return await originalRead(...args);
+    } finally { active--; }
+  });
+  try {
+    const skills = await materializeSelectedSkills({ paperclipSkillSync: { desiredSkills: ["parallel"] } },
+      [{ key: "parallel", runtimeName: "parallel", source }], true);
+    expect(skills[0]!.bundle.fileCount).toBe(40);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+  } finally { reads.mockRestore(); }
+});
 
 async function makeTreeWritable(target: string): Promise<void> {
   const metadata = await lstat(target).catch(() => null);

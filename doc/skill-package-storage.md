@@ -141,11 +141,18 @@ pending delete/existence requests; incomplete cleanup retains the receipt for re
   file are verified before atomic publication. Extraction rejects unexpected entries,
   path escapes, links, duplicate paths, wrong sizes, modes and digests.
 - Warm checks inspect directory entries and file identity/size/mode/mtime/ctime.
-  Unchanged files avoid content reads and hashing. Changed identities are hashed again;
+  On POSIX, unchanged files avoid content reads and hashing. Windows always reads
+  and hashes every file because its change-time metadata is not reliable enough
+  for that shortcut. Changed identities are hashed again;
   altered runtime copies are rebuilt. No marker alone establishes integrity.
 - Native asset packaging also caches manifests and asset references, checking both
   the selected source and delivered asset on reuse. It retains no repository bodies.
   Source edits invalidate the reference; missing or corrupt copies rebuild from verified bytes.
+- Native asset collection and staging process at most eight file payloads concurrently
+  across skills in the process. Staging creates each distinct parent directory once.
+  Failed batches drain their in-flight operations before returning, so cleanup cannot
+  race outstanding writes. Hash checks of both source and delivered copies remain
+  mandatory, including on Windows; the file and byte bounds remain unchanged.
 - Concurrent cold package I/O is limited to two operations, with a queue of at most 32.
   Cached version inventories and file previews have a separate two-reader, 32-waiter
   bound, so slow storage cannot prevent verified local reads. Both queues honor deadlines

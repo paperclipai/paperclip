@@ -34,3 +34,35 @@ it("verifies a freshly materialized package with many files", async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+it("rejects a same-length edit with its original mtime restored, even after a warm verification", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-manifest-edit-"));
+  try {
+    const target = path.join(root, "SKILL.md");
+    await fs.writeFile(target, "original");
+    const original = await fs.stat(target);
+    const manifest = [{ path: "SKILL.md", size: 8, executable: false,
+      sha256: createHash("sha256").update("original").digest("hex") }];
+    expect(await verifyFileManifest(root, manifest)).toBe(true);
+    expect(await verifyFileManifest(root, manifest)).toBe(true);
+    await fs.writeFile(target, "modified");
+    await fs.utimes(target, original.atime, original.mtime);
+    expect(await verifyFileManifest(root, manifest)).toBe(false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it("rejects missing and extra files after successful verification", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-manifest-tree-"));
+  try {
+    const target = path.join(root, "SKILL.md");
+    await fs.writeFile(target, "skill");
+    const manifest = [{ path: "SKILL.md", size: 5, executable: false,
+      sha256: createHash("sha256").update("skill").digest("hex") }];
+    expect(await verifyFileManifest(root, manifest)).toBe(true);
+    await fs.writeFile(path.join(root, "extra.md"), "extra");
+    expect(await verifyFileManifest(root, manifest)).toBe(false);
+    await fs.rm(path.join(root, "extra.md"));
+    await fs.rm(target);
+    expect(await verifyFileManifest(root, manifest)).toBe(false);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

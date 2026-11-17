@@ -35,54 +35,14 @@ import { agentInstructionRevisionService } from "../agent-instruction-revisions.
 import { toolAccessService } from "../tool-access.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import { rehydratePreservedRuntimeSkill } from "./runtime-skill-preservation.js";
+import {
+  collectDirectoryFiles, makeDirectoriesReadOnly, MAX_ASSET_BYTES, MAX_ASSET_FILES,
+  safeRelativePath, writeAssetFiles, type AssetFile,
+} from "./runtime-asset-files.js";
 
-const MAX_ASSET_FILES = 10_000;
-const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown };
-type AssetFile = { path: string; content: Buffer; mode: number };
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-const safeRelativePath = (value: string, label: string) => {
-  const normalized = value.replaceAll("\\", "/");
-  if (!normalized || normalized.includes("\0") || normalized.startsWith("/") || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
-    throw new Error(`${label} must stay within its bundle root`);
-  }
-  return normalized;
-};
-
-async function collectDirectoryFiles(sourceRoot: string): Promise<AssetFile[]> {
-  const root = path.resolve(sourceRoot);
-  const rootStat = await fs.lstat(root).catch(() => null);
-  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) throw new Error(`runtime context source is not a safe directory: ${root}`);
-  const files: AssetFile[] = [];
-  let totalBytes = 0;
-  async function visit(relativeDirectory: string): Promise<void> {
-    const entries = await fs.readdir(relativeDirectory ? path.join(root, relativeDirectory) : root, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of entries) {
-      const relativePath = safeRelativePath(relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name, "runtime context path");
-      const absolutePath = path.join(root, relativePath);
-      const stat = await fs.lstat(absolutePath);
-      if (stat.isSymbolicLink()) throw new Error(`runtime context bundles do not permit symlinks: ${relativePath}`);
-      if (stat.isDirectory()) { await visit(relativePath); continue; }
-      if (!stat.isFile()) throw new Error(`runtime context bundle contains an unsupported file: ${relativePath}`);
-      const content = await fs.readFile(absolutePath);
-      totalBytes += content.byteLength;
-      if (files.length + 1 > MAX_ASSET_FILES || totalBytes > MAX_ASSET_BYTES) throw new Error("runtime context bundle exceeds its bound");
-      files.push({ path: relativePath, content, mode: stat.mode & 0o555 });
-    }
-  }
-  await visit("");
-  if (!files.length) throw new Error(`runtime context source is empty: ${root}`);
-  return files;
-}
-
-async function makeDirectoriesReadOnly(directory: string): Promise<void> {
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory()) await makeDirectoriesReadOnly(path.join(directory, entry.name));
-  }
-  await fs.chmod(directory, 0o555);
-}
 
 async function verifyMaterializedAsset(
   rootPath: string,
@@ -124,12 +84,7 @@ export async function materializeAsset(files: AssetFile[]): Promise<NativeRuntim
       const stagingRoot = path.join(assetsRoot, ".staging", randomUUID());
       await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
       try {
-        for (const file of sorted) {
-          const target = path.join(stagingRoot, file.path);
-          await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-          await fs.writeFile(target, file.content, { mode: file.mode & 0o555 });
-          await fs.chmod(target, file.mode & 0o555);
-        }
+        await writeAssetFiles(stagingRoot, sorted);
         await fs.mkdir(path.dirname(rootPath), { recursive: true, mode: 0o700 });
         let publishedRoot = false;
         await fs.rename(stagingRoot, rootPath).then(() => {
