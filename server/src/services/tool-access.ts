@@ -1785,6 +1785,14 @@ export function toolAccessService(
       input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
       && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
     ));
+    if (galleryEntry && input.link && paperclipPeerFromMcpUrl(input.link)) {
+      // Another Paperclip needs its own name, instructions and tool prefix,
+      // which only the "Connect your own MCP server" path sets up.
+      throw badRequest(
+        `That is a Paperclip address. Connect it with "Connect your own MCP server" instead of ${galleryEntry.name}.`,
+        { code: "paperclip_peer_requires_generic_connection" },
+      );
+    }
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&

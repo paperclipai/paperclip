@@ -965,6 +965,41 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       expect(fetchMock).not.toHaveBeenCalled();
       expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
     });
+
+    it("recognizes this Paperclip by the port it actually listens on", async () => {
+      vi.spyOn(globalThis, "fetch");
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+      vi.stubEnv("BETTER_AUTH_URL", "");
+      vi.stubEnv("BETTER_AUTH_BASE_URL", "");
+      vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "");
+      // Startup moved this server off the requested port, which another instance holds.
+      vi.stubEnv("PORT", "3101");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", "3100");
+      const company = await createCompany(db);
+      const app = createRouteApp(db, { deploymentMode: "local_trusted", deploymentExposure: "private" });
+      const connect = (link: string) => request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .set("Host", "paperclip.internal.test")
+        .send({ link });
+
+      const self = await connect("http://localhost:3100/mcp/paperclip").expect(422);
+      expect(self.body).toMatchObject({ details: { code: "paperclip_self_connection" } });
+      // The instance on the requested port is someone else, so it is not refused as self.
+      const other = await connect("http://localhost:3101/mcp/paperclip");
+      expect(other.body?.details?.code).not.toBe("paperclip_self_connection");
+    });
+
+    it("sends a Paperclip address entered under Executor to the generic connection", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const company = await createCompany(db);
+
+      await expect(toolAccessService(db).connectGalleryApp(company.id, {
+        galleryKey: "executor", connectionMethodKey: "mcp", link: PEER_MCP_URL, authMode: "none",
+      })).rejects.toMatchObject({ status: 400, details: { code: "paperclip_peer_requires_generic_connection" } });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    });
   });
 
   it.each(["organization", "user"] as const)("vaults a credential-bearing MCP URL for %s and never returns or logs its token", async (grantKind) => {

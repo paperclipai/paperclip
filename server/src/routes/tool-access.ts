@@ -989,7 +989,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           : ORGANIZATION_GRANT_DENIAL_REASON,
       );
     }
-    assertNotThisPaperclip(req, req.body.galleryKey ? null : req.body.link);
+    assertNotThisPaperclip(req, req.body.link);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, connectionRequestActor(req));
       if (result.auth?.kind === "oauth") {
