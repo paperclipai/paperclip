@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, issues, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
@@ -87,6 +87,41 @@ describePostgres("agent configuration save latency", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-luna");
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled(); expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("renames generated chat titles for each user while preserving custom titles and other tasks", async () => {
+    const oldTitle = `Chat with ${agent.name}`;
+    const [otherAgent] = await db.insert(agents).values({ companyId: agent.companyId, name: "Other agent" }).returning();
+    const rows = await db.insert(issues).values([
+      ...[userId, randomUUID()].map(conversationUserId => ({ companyId: agent.companyId, title: oldTitle,
+        conversationAgentId: agent.id, assigneeAgentId: agent.id, conversationUserId, conversationState: "waiting" as const, status: "in_review" })),
+      { companyId: agent.companyId, title: "A custom chat title", conversationAgentId: agent.id,
+        assigneeAgentId: agent.id, conversationUserId: randomUUID(), conversationState: "waiting", status: "in_review" },
+      { companyId: agent.companyId, title: oldTitle, assigneeAgentId: agent.id },
+      { companyId: agent.companyId, title: oldTitle, conversationAgentId: otherAgent.id,
+        assigneeAgentId: otherAgent.id, conversationUserId: userId, conversationState: "waiting", status: "in_review" },
+    ]).returning();
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Renamed agent" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const saved = await db.select().from(issues).where(eq(issues.companyId, agent.companyId));
+    expect(rows.map(row => saved.find(issue => issue.id === row.id)?.title)).toEqual([
+      "Chat with Renamed agent", "Chat with Renamed agent", "A custom chat title", oldTitle, oldTitle,
+    ]);
+    expect(saved.filter(row => row.conversationAgentId === agent.id).map(row => row.conversationState))
+      .toEqual(["waiting", "waiting", "waiting"]);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the agent and chat names when a configuration save is rejected", async () => {
+    const title = `Chat with ${agent.name}`;
+    const [chat] = await db.insert(issues).values({ companyId: agent.companyId, title,
+      conversationAgentId: agent.id, assigneeAgentId: agent.id, conversationUserId: userId,
+      conversationState: "waiting", status: "in_review" }).returning();
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Rejected name", runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect((await readAgent()).name).toBe(agent.name);
+    expect((await db.select().from(issues).where(eq(issues.id, chat.id)))[0].title).toBe(title);
   });
 
   it("saves a roster connection edit without a runtime probe and rejects a stale retry", async () => {

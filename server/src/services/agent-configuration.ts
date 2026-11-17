@@ -12,7 +12,7 @@ import { notifySkillVersionPinChange } from "./skill-version-retention-notificat
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
-import { agents, assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
+import { agents, assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, issues, type Db } from "@paperclipai/db";
 import { normalizeAgentUrlKey, extractAgentMentionIds } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -141,6 +141,12 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
 
 export async function completeAgentConfiguration(txDb: Db, existing: AgentConfigurationRecord, updated: AgentConfigurationRecord, normalizedPatch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]) {
   const id = updated.id;
+  if (existing.name !== updated.name) {
+    await txDb.update(issues).set({ title: `Chat with ${updated.name}`, updatedAt: updated.updatedAt }).where(and(
+      eq(issues.companyId, updated.companyId), eq(issues.conversationAgentId, id),
+      eq(issues.title, `Chat with ${existing.name}`),
+    ));
+  }
   const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
   const beforeConfig = shouldRecordRevision
     ? buildConfigSnapshot(agentRecordQueries(txDb).normalizeAgentRow(existing))

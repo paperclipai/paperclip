@@ -32,6 +32,7 @@ type VerificationCommandResult = {
 
 /** Retry only these read-only probes, never provider work or artifact mutations.
  * Each transport call enforces its own 30s timeout; two attempts is the hard cap.
+ * Wait one second before the retry so a fast gateway failure can recover.
  * A completed, failing verifier is incompatible. An interrupted probe proves no
  * incompatibility. Exhaustion holds the original run: reattachment does not
  * spend a new provider attempt, so scheduling another attach could loop.
@@ -42,6 +43,7 @@ export async function runRemoteProviderVerification(
 ): Promise<VerificationCommandResult> {
   let diagnostic = "command unavailable";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (attempt > 1) await new Promise<void>(resolve => setTimeout(resolve, 1_000));
     let result: VerificationCommandResult;
     try {
       result = await execute();
