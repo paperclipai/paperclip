@@ -243,8 +243,6 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
         return { prepared: false as const };
       }
-      // A selected connection that needs sign-in again shares one repair card
-      // with every other task waiting on it.
       const unavailableDetail = readAiConnectionConfigurationFailure(error) === "ai_connection_unavailable"
         && error instanceof HttpError ? parseObject(error.details).connectionId : undefined;
       const unavailableConnectionId = typeof unavailableDetail === "string" ? unavailableDetail : undefined;
