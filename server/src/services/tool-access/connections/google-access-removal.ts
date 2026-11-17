@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { companySecrets, connectionGrants, toolConnections } from "@paperclipai/db";
+import { companySecrets, connectionGrants, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { ManagedGoogleAccessRemoval, ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
 import { logger } from "../../../middleware/logger.js";
@@ -8,6 +8,7 @@ import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type P
 import { managedConnectorConsentSubject, managedConnectorProfile } from "../oauth/client-settings.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import type { ActorInfo } from "../types.js";
+import { actorBinding } from "../actor.js";
 
 export const MANAGED_GOOGLE_REVOKE_TIMEOUT_MS = 5_000;
 
@@ -110,10 +111,37 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     return { refreshSecretIds: [], send: async () => summarizeManagedGoogleAccess(["unexpected_error"]) };
   }
 
+  async function recordAudit(
+    connection: typeof toolConnections.$inferSelect,
+    actor: ActorInfo | undefined,
+    scope: { grantId?: string },
+    providerAccess: ManagedGoogleAccessRemoval,
+  ) {
+    try {
+      const binding = actorBinding(actor);
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        actorType: binding.actorType ?? "system",
+        actorId: binding.actorId,
+        action: "connection.google_access_removal",
+        outcome: providerAccess.result === "not_ended" ? "failure" : "success",
+        reasonCode: providerAccess.result,
+        details: { ...(scope.grantId ? { grantId: scope.grantId } : {}), providerAccess },
+      });
+    } catch (error) {
+      logger.warn(
+        { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
+        "Could not record the Google access result for a removed connection",
+      );
+    }
+  }
+
   async function prepare(
     connection: typeof toolConnections.$inferSelect,
     grants: RemovedGrant[],
     actor: ActorInfo | undefined,
+    scope: { grantId?: string } = {},
   ): Promise<PreparedGoogleAccessRemoval | null> {
     const oauth = oauthConfig(connection);
     if (connection.authKind !== "oauth" || !isPaperclipCloudConnectorStrategy(oauth.strategy)) return null;
@@ -158,15 +186,26 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       return {
         refreshSecretIds,
         send: async () => {
+          let summary: ManagedGoogleAccessRemoval;
           try {
-            return await send(connection, profile.id, revocations);
+            summary = await send(connection, profile.id, revocations);
           } catch (error) {
-            return unexpectedFailure(connection, error).send();
+            summary = await unexpectedFailure(connection, error).send();
           }
+          await recordAudit(connection, actor, scope, summary);
+          return summary;
         },
       };
     } catch (error) {
-      return unexpectedFailure(connection, error);
+      const failed = unexpectedFailure(connection, error);
+      return {
+        refreshSecretIds: [],
+        send: async () => {
+          const summary = await failed.send();
+          await recordAudit(connection, actor, scope, summary);
+          return summary;
+        },
+      };
     }
   }
 

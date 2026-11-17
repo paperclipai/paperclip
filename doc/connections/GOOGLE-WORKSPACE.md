@@ -271,7 +271,12 @@ includes such grants. A removal that failed before step 2 includes the grants
 on retry. A removal that failed after step 4 does not call the broker again.
 
 `providerAccess: { provider, result, outcomes }` is returned with the removal
-and recorded in its activity entry, codes only. The result is judged over the
+and recorded in its activity entry, codes only. Once the broker call settles,
+the connection's audit history also gets a `connection.google_access_removal`
+event with `reasonCode` set to the result and `providerAccess` (plus `grantId`
+for a single grant) in its details. This includes owed revocations sent on a
+retry. If that write fails, the removal still succeeds and the failure is
+logged. The result is judged over the
 distinct tokens sent:
 
 | Outcomes | `result` | Message |

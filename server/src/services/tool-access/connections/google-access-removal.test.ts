@@ -10,6 +10,10 @@ import { logger } from "../../../middleware/logger.js";
 
 const companyId = "company-1";
 
+function fakeDb() {
+  return { insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })) } as unknown as Db;
+}
+
 function connection(oauth: Record<string, unknown>, authKind = "oauth") {
   return { id: "connection-1", companyId, authKind, config: { oauth } } as never;
 }
@@ -59,7 +63,7 @@ describe("managed Google access removal", () => {
 
   it("revokes per-user, per-agent and organization grants each under the subject that consented", async () => {
     const connector = connectorWith(async () => ({ outcome: "revoked" }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [
       grant("user-grant", "user", { subjectUserId: "user-1", consentSubject: "user-1" }),
       grant("agent-grant", "agent", { subjectAgentId: "agent-1", consentSubject: "agent:agent-1" }),
@@ -76,7 +80,7 @@ describe("managed Google access removal", () => {
 
   it("sends a refresh token shared by two grants once", async () => {
     const connector = connectorWith(async () => ({ outcome: "revoked" }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await run(removal, managedGoogle, [
       grant("org-grant", "organization", {}, "shared-refresh"),
       grant("user-grant", "user", { subjectUserId: "org-owner" }, "shared-refresh"),
@@ -95,7 +99,7 @@ describe("managed Google access removal", () => {
       inFlight -= 1;
       return { outcome: outcomes.shift() };
     });
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [
       grant("org-grant", "organization", { consentSubject: "user-1" }),
       grant("user-grant", "user", { subjectUserId: "user-1", consentSubject: "user-1" }),
@@ -111,7 +115,7 @@ describe("managed Google access removal", () => {
   ])("reports access not ended when one token was revoked and another reports %s", async (later) => {
     const outcomes = ["revoked", later];
     const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [
       grant("a", "user", { consentSubject: "user-1" }),
       grant("b", "organization", { consentSubject: "user-1" }),
@@ -124,7 +128,7 @@ describe("managed Google access removal", () => {
     ["a non-OAuth connection", managedGoogle, "api_key"],
   ])("makes no broker call for %s", async (_label, oauth, authKind) => {
     const connector = connectorWith(async () => ({ outcome: "revoked" }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, oauth, [grant("user-grant", "user", { subjectUserId: "user-1" })], authKind)).resolves.toBeNull();
     expect(connector.revoke).not.toHaveBeenCalled();
     expect(resolveConnectionGrantSecret).not.toHaveBeenCalled();
@@ -132,7 +136,7 @@ describe("managed Google access removal", () => {
 
   it("reports access not ended when Paperclip Cloud is not configured or the token is unreadable", async () => {
     resolveConnectionGrantSecret.mockRejectedValueOnce(new Error("missing"));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => null });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => null });
     await expect(run(removal, managedGoogle, [
       grant("user-grant", "user", { subjectUserId: "user-1" }),
       grant("agent-grant", "agent", { subjectAgentId: "agent-1" }),
@@ -140,7 +144,7 @@ describe("managed Google access removal", () => {
   });
 
   it("reports access not ended when creating the Paperclip Cloud client throws", async () => {
-    const removal = createManagedGoogleAccessRemoval({} as Db, {
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), {
       currentCloudConnector: () => { throw new Error("instance key is invalid"); },
     });
     await expect(run(removal, managedGoogle, [grant("user-grant", "user", { subjectUserId: "user-1" })]))
@@ -152,7 +156,7 @@ describe("managed Google access removal", () => {
     const broken = { ...(grant("user-grant", "user", { subjectUserId: "user-1" }) as object) };
     Object.defineProperty(broken, "credentialSecretRefs", { get() { throw new TypeError("token-for-user-grant-refresh"); } });
     const connector = connectorWith(async () => ({ outcome: "revoked" }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [broken as never]))
       .resolves.toEqual({ provider: "google", result: "not_ended", outcomes: ["unexpected_error"] });
     expect(warn).toHaveBeenCalledTimes(1);
@@ -166,7 +170,7 @@ describe("managed Google access removal", () => {
       clock += values.timeoutMs ?? 0;
       return { outcome: "other_connections_remain" };
     });
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector, timeoutMs: 5_000, now: () => clock });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector, timeoutMs: 5_000, now: () => clock });
     await expect(run(removal, managedGoogle, [
       grant("a", "user", { consentSubject: "user-1" }),
       grant("b", "user", { consentSubject: "user-2" }),
@@ -178,7 +182,7 @@ describe("managed Google access removal", () => {
   it("reports a per-agent connection whose last agent grant was revoked as ended but unconfirmed", async () => {
     const outcomes = ["other_connections_remain", "revoked"];
     const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
-    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [
       grant("agent-a", "agent", { subjectAgentId: "a", consentSubject: "agent:a" }),
       grant("agent-b", "agent", { subjectAgentId: "b", consentSubject: "agent:b" }),
@@ -195,5 +199,23 @@ describe("managed Google access removal", () => {
     [["revoked", "other_connections_remain"], "ended_unconfirmed"],
   ] as const)("summarizes %j as %s", (outcomes, result) => {
     expect(summarizeManagedGoogleAccess([...outcomes]).result).toBe(result);
+  });
+  it("records each result, including ended_unconfirmed, as its own audit event", async () => {
+    const values = vi.fn(async () => undefined);
+    const db = { insert: vi.fn(() => ({ values })) } as unknown as Db;
+    const outcomes = ["other_connections_remain", "revoked"];
+    const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
+    const removal = createManagedGoogleAccessRemoval(db, { currentCloudConnector: () => connector });
+    const prepared = await removal.prepare(connection(managedGoogle), [
+      grant("agent-a", "agent", { subjectAgentId: "a", consentSubject: "agent:a" }),
+      grant("agent-b", "agent", { subjectAgentId: "b", consentSubject: "agent:b" }),
+    ], undefined, { grantId: "agent-a" });
+    await prepared!.send();
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      action: "connection.google_access_removal",
+      reasonCode: "ended_unconfirmed",
+      details: { grantId: "agent-a", providerAccess: { provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] } },
+    }));
+    expect(JSON.stringify(values.mock.calls)).not.toContain("token-for");
   });
 });

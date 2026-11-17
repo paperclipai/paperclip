@@ -507,7 +507,7 @@ replaceConnectionGrantMembers: async (
         .limit(1);
       if (!currentGrant) throw notFound("Connection grant not found");
       let providerRevocation = "not_applicable";
-      const providerAccessRemoval = await managedGoogleAccess.prepare(connection, [currentGrant], actor);
+      const providerAccessRemoval = await managedGoogleAccess.prepare(connection, [currentGrant], actor, { grantId: currentGrant.id });
       if (
         connection.credentialSource === "vercel_connect" &&
         connection.externalCredential

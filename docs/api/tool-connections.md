@@ -47,4 +47,4 @@ For a Google connection that Paperclip Cloud manages, the connection response ha
 
 `outcomes` has one code for each refresh token Paperclip sent, in order. The codes are for diagnosis, not for display.
 
-A failure to end access at Google does not undo the local removal. Paperclip removes the grant or connection first, then asks Paperclip Cloud, and never retries in the request. The activity entry for the removal records the same `providerAccess`.
+A failure to end access at Google does not undo the local removal. Paperclip removes the grant or connection first, then asks Paperclip Cloud, and never retries in the request. The activity entry for the removal records the same `providerAccess`, and the connection's audit history gets a `connection.google_access_removal` event with it.

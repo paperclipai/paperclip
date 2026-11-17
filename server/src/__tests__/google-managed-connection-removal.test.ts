@@ -170,6 +170,12 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     return { company: company!, userId, connector, app, service, connectionId: connected.connectionId, grant: grant! };
   }
 
+  async function googleAudit(connectionId: string) {
+    const rows = await db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.connectionId, connectionId), eq(toolAccessAuditEvents.action, "connection.google_access_removal")));
+    return rows.map((row) => ({ reasonCode: row.reasonCode, providerAccess: (row.details as Record<string, unknown>).providerAccess }));
+  }
+
   async function liveSecretCount(companyId: string) {
     return (await db.select({ id: companySecrets.id }).from(companySecrets)
       .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt)))).length;
@@ -202,6 +208,39 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(entry!.details).toMatchObject({ providerAccess: { provider: "google", result, outcomes: [outcome] } });
     expect(JSON.stringify(entry!.details)).not.toContain(REFRESH_TOKEN);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+    expect(await googleAudit(fixture.connectionId)).toEqual([{ reasonCode: result, providerAccess: { provider: "google", result, outcomes: [outcome] } }]);
+  });
+
+  it.each([
+    ["revoked", "ended"],
+    ["other_connections_remain", "other_connections_remain"],
+    ["binding_not_known", "not_ended"],
+  ] as const)("records %s for a single grant in the audit history and keeps the existing audit field", async (outcome, result) => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.revoke.mockResolvedValue({ outcome });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    expect(await googleAudit(fixture.connectionId)).toEqual([{ reasonCode: result, providerAccess: { provider: "google", result, outcomes: [outcome] } }]);
+    const [revoked] = await db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.connectionId, fixture.connectionId), eq(toolAccessAuditEvents.action, "connection_grant.revoked")));
+    expect(revoked!.details).toMatchObject({ providerRevocation: "not_applicable" });
+    expect(revoked!.details).not.toHaveProperty("providerAccess");
+  });
+
+  it("still removes the connection when the audit record of the Google result cannot be written", async () => {
+    const fixture = await connectManagedGmail();
+    const insert = db.insert.bind(db);
+    vi.spyOn(db, "insert").mockImplementation(((table: unknown) => {
+      if (table === toolAccessAuditEvents) throw new Error("audit unavailable");
+      return insert(table as never);
+    }) as never);
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
   });
 
   it.each([
@@ -306,6 +345,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(seen[0]).toBeGreaterThan(0);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
     expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
+    expect(await googleAudit(fixture.connectionId)).toEqual([{ reasonCode: "ended", providerAccess: { provider: "google", result: "ended", outcomes: ["revoked"] } }]);
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
   });
 
@@ -405,6 +445,9 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     const [entry] = await db.select().from(activityLog).where(and(
       eq(activityLog.companyId, fixture.company.id), eq(activityLog.action, "tool_connection.grant_revoked")));
     expect(entry!.details).toMatchObject({ providerAccess: { outcomes: ["other_connections_remain"] } });
+    expect(await googleAudit(fixture.connectionId)).toEqual([
+      { reasonCode: "other_connections_remain", providerAccess: { provider: "google", result: "other_connections_remain", outcomes: ["other_connections_remain"] } },
+    ]);
 
     fixture.connector.revoke.mockResolvedValue({ outcome: "revoked" });
     const removal = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
