@@ -148,9 +148,12 @@ are always masked.
   - Email message cards and email send intents.
   - Connected account names and email addresses (Browse rows and the remove
     dialog, Connections, app detail headers, the app sidebar, connection
-    choice lists, AI connection pickers, connection access and repair cards),
+    choice lists, AI connection pickers, AI account details and controls,
+    subscription quota panels, adapter sign-in status, connection access and
+    repair cards),
     GitHub logins and repositories, Slack workspace names (list and selected
-    value), chat channels, linked user labels and chat identity pages.
+    value), chat channels, linked user labels, the external task banner and
+    chat identity pages.
   - App action test results (parsed preview and raw response).
   - Inbox and decision rows (subject and detail line), obligation evidence,
     Needs You notes and receipts, decision cards and compact decisions,

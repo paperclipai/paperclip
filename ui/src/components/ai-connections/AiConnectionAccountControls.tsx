@@ -8,6 +8,7 @@ import { AI_PROVIDERS, type AiConnectionSummary } from "./model";
 import { describeError } from "@/api/errors";
 import { AiDefaultCrown } from "./AiConnectionDefault";
 import { isOwnAiAccount } from "./useAiConnectionDefaults";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /** AI-only account controls; identity, access and navigation belong to AppDetail. */
 export function AiConnectionAccountControls({
@@ -48,7 +49,7 @@ export function AiConnectionAccountControls({
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 text-sm">
-          <p className="break-words text-xs text-muted-foreground">{account.method === "subscription" ? "Subscription" : "API key"}{account.accountLabel ? ` · ${account.accountLabel}` : ""}</p>
+          <p className={cn("break-words text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>{account.method === "subscription" ? "Subscription" : "API key"}{account.accountLabel ? ` · ${account.accountLabel}` : ""}</p>
         </div>
         {!readOnly && grant.capabilities?.canRevoke && (
           <div className="flex flex-wrap items-center gap-2">

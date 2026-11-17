@@ -776,7 +776,7 @@ function Access({
       <p className="text-sm text-muted-foreground">People with linked accounts use their own Paperclip permissions. <Link className="underline underline-offset-4" to="/company/settings/members">Manage members</Link></p>
       {confirmationUrl && (
         <div className="space-y-2 border-y border-border py-3">
-          <p className="text-sm font-medium">Confirm {confirmationFor ?? "this account"}</p>
+          <p className={cn("text-sm font-medium", ANALYTICS_MASK_CLASS)}>Confirm {confirmationFor ?? "this account"}</p>
           <p className="text-xs text-muted-foreground">Share only with this person. They must sign in and confirm their own account.</p>
           <p className="break-all text-xs text-muted-foreground">
             {confirmationUrl}
