@@ -23,12 +23,18 @@ import {museReceiver} from "../muse-receiver.js";
 import {githubConnectionEventService} from "../github-connection-events.js";
 import {registerGitHubConnectionEventWork} from "../github-connection-work.js";
 import {hasConnectionEventWakeReceiver} from "../connection-event-wake.js";
-import {mcpClientMirrorGeneration,type McpClientMirrorRequest,type McpClientMirrorReceipt} from "./client-mirror-contract.js";
+import {mcpClientMirrorGeneration,mcpClientMirrorReceiptSchema,type McpClientMirrorRequest,type McpClientMirrorReceipt} from "./client-mirror-contract.js";
 import {readIdleMcpClientMirror} from "./idle-client-mirror.js";
 import {readIdleMcpDeviceStatus} from "./idle-device-status.js";
 import {deriveLocalEncryptedInstanceSecret} from "../../secrets/local-encrypted-provider.js";
 import {mcpDeviceStatusFingerprint} from "./device-status-contract.js";
 import {readIdleMcpWakeProof} from "./idle-wake-proof.js";
+
+function deferredVoid(){
+  let resolve!:()=>void;
+  const promise=new Promise<void>(done=>{resolve=done;});
+  return{promise,resolve};
+}
 
 const managed=vi.hoisted(()=>({identity:null as null|{stackId:string;canonicalOrigin:string}}));
 vi.mock("../cloud-runtime-identity.js",async importOriginal=>({...await importOriginal<typeof import("../cloud-runtime-identity.js")>(),getCloudRuntimeIdentity:()=>managed.identity}));
@@ -431,7 +437,7 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
   for(const disposition of ["commit","rollback","stop"] as const)it(`holds Muse admission through the normal mirror cutover ${disposition}`,async()=>{
     await instanceSettingsService(db).updateExperimental({enableMuse:true,enableNativeRunner:true});remoteAvailable=true;
     const receiver=museReceiver(db),blocker=createDb(configured!,{maxConnections:1});receiver.start();
-    const held=Promise.withResolvers<void>(),release=Promise.withResolvers<void>(),cutoverIssued=Promise.withResolvers<void>();
+    const held=deferredVoid(),release=deferredVoid(),cutoverIssued=deferredVoid();
     const constraint=`muse_cutover_${randomUUID().replaceAll("-","")}`;
     let hold:Promise<unknown>|undefined,starting:ReturnType<typeof start>|undefined,stopping:Promise<unknown>|undefined;
     let afterRemoteComplete=false,primary:unknown;
@@ -487,10 +493,10 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
         await db.execute(sql`alter table ${state} drop constraint ${sql.identifier(constraint)}`);
         // The existing pending worker retries normally; no fake ACK or direct receipt write.
         const recovered=await acknowledged();expect(recovered.deviceCutoverAt).toBeTruthy();
-        expect(recovered.receipt?.museReceivers).toBeDefined();
+        expect(mcpClientMirrorReceiptSchema.parse(recovered.receipt).museReceivers).toBeDefined();
       }else{
         await stopping;const committed=await acknowledged();expect(committed.deviceCutoverAt).toBeTruthy();
-        expect(committed.receipt?.museReceivers).toBeDefined();
+        expect(mcpClientMirrorReceiptSchema.parse(committed.receipt).museReceivers).toBeDefined();
         if(disposition==="stop")await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:503});
         else await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:410});
       }

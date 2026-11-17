@@ -68,6 +68,12 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 
+function deferredVoid(){
+  let resolve!:()=>void;
+  const promise=new Promise<void>(done=>{resolve=done;});
+  return{promise,resolve};
+}
+
 /** Real database/transport authority tests; synthetic provider receipts do not
  * count as live Muse/native qualification evidence. */
 describe("personal Muse control plane",()=>{
@@ -3953,7 +3959,7 @@ describe("personal Muse control plane",()=>{
   it("bounds a managed public signal burst before SQL while coalescing and durably counting every accepted contact",async()=>{
     const f=await actualReadyContact();await museReceiver(f.receiverOwner).stop();
     const reset=await applyActualManagedContactIdentity();
-    const captured=Promise.withResolvers<void>(),release=Promise.withResolvers<void>(),authorities=Promise.withResolvers<void>();
+    const captured=deferredVoid(),release=deferredVoid(),authorities=deferredVoid();
     let transactions=0,queries=0,primary:unknown,fakeIntervals=false;
     const priorDebug=f.receiverOwner.$client.options.debug;
     f.receiverOwner.$client.options.debug=(connection,query,parameters,types)=>{
@@ -4037,7 +4043,7 @@ describe("personal Muse control plane",()=>{
   it("shares one in-flight Muse admission ceiling across bindings and keeps stop closed after a finite handoff",async()=>{
     const first=await actualReadyContact();let second:Awaited<ReturnType<typeof actualReadyContact>>|undefined;
     let reset:(()=>Promise<void>)|undefined,primary:unknown,receiver:ReturnType<typeof museReceiver>|undefined,server:Server|undefined;
-    const release=Promise.withResolvers<void>(),allEntered=Promise.withResolvers<void>(),extraIngress=Promise.withResolvers<void>();
+    const release=deferredVoid(),allEntered=deferredVoid(),extraIngress=deferredVoid();
     const contacts:Promise<request.Response>[]=[];let handoff:Promise<void>|undefined,stopping:Promise<void>|undefined;
     let entered=0,candidateReads=0,requests=0,readsAtExtra=-1;
     try {
