@@ -38,7 +38,6 @@ import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { useSidebar } from "../context/SidebarContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
@@ -46,8 +45,7 @@ import { useAttentionBadge } from "../hooks/useAttentionViews";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { cn } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
@@ -68,9 +66,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const [workOpen, setWorkOpen] = useState(true);
   const [organizationOpen, setOrganizationOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
-  const { collapsed, peeking } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -149,33 +145,14 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
       <nav className={primarySidebarStyles.nav}>
         <div className={primarySidebarStyles.group}>
           {/* New Task button aligned with nav items */}
-          {(() => {
-            const newTaskButton = (
-              <button
-                onClick={() => openNewIssue()}
-                data-slot="icon-button"
-                aria-label={rail ? "New Task" : undefined}
-                className={cn(
-                  "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                )}
-              >
-                <SquarePen className="h-4 w-4 shrink-0" />
-                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
-              </button>
-            );
-            return rail ? (
-              <Tooltip>
-                <TooltipTrigger asChild>{newTaskButton}</TooltipTrigger>
-                <TooltipContent side="right">New Task</TooltipContent>
-              </Tooltip>
-            ) : (
-              newTaskButton
-            );
-          })()}
-          {/* Search moved out of the header so the workspace name keeps the
-              width; a nav row also keeps search reachable from the
-              collapsed rail, where the old header icon was dropped entirely.
-              Cmd/Ctrl+K remains the keyboard path (command palette). */}
+          <button
+            onClick={() => openNewIssue()}
+            data-slot="icon-button"
+            className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <SquarePen className="h-4 w-4 shrink-0" />
+            <span className="truncate">New Task</span>
+          </button>
           <SidebarNavItem to="/search" label="Search" icon={Search} />
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           {!combinedInboxTasks ? (

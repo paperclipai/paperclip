@@ -2238,13 +2238,6 @@ export function heartbeatService(
         ? await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
           .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, dispatchIssueId))).then(rows => rows[0] ?? null)
         : null;
-      if (isConversation(conversationIdentity) && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
-        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
-        await finalizeAgentStatus(agent.id, "cancelled");
-        return;
-      }
       if (await deferRunForProviderLimit(run, agent, {
         resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
         conversation: isConversation(conversationIdentity),

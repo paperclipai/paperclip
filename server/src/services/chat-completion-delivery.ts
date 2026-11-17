@@ -6,7 +6,6 @@ import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, ch
   heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { extractIssueReferenceMatches } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
@@ -318,7 +317,6 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (!row || !current(row)) {
         await db.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, id)); return;
       }
-      if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) return;
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, row.handoff.agentId), eq(agents.companyId, claimed.companyId)));
       if (!agent || ["paused", "terminated"].includes(agent.status)) return;
       const key = `chat-completion:${id}:${claimed.attempts}`;
