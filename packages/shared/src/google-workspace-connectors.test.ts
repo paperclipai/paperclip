@@ -7,6 +7,7 @@ import {
   googleWorkspaceSelectedScopes, googleWorkspaceEffectiveScopes, GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   googleWorkspaceDraftRequestedScopes, GOOGLE_WORKSPACE_SERVICE_GROUPS, GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, googleWorkspaceProfileWithinSubmittedScopes,
+  GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
   type GoogleWorkspaceServiceSelection,
 } from "./google-workspace-connectors.js";
 
@@ -122,6 +123,13 @@ describe("combined Google Workspace consent", () => {
     for (const name of ["gmail__send_message", "chat__list_members", "docs__delete_doc", "evil__get_message", "__proto____get_message", "gmail__constructor"])
       expect(googleWorkspaceToolTarget(name)).toBeNull();
     expect(isGoogleWorkspaceToolGranted("gmail__send_message", profiles["workspace.all"].scopes)).toBe(false);
+  });
+
+  it("sends every service to Google's MCP servers by default and reports the transport on each target", () => {
+    expect(Object.keys(GOOGLE_WORKSPACE_TOOL_TRANSPORT).sort()).toEqual(Object.keys(GOOGLE_WORKSPACE_SERVICES).sort());
+    expect(new Set(Object.values(GOOGLE_WORKSPACE_TOOL_TRANSPORT))).toEqual(new Set(["google_mcp"]));
+    expect(googleWorkspaceToolTarget("gmail__get_message")?.transport).toBe("google_mcp");
+    expect(googleWorkspaceServiceToolNames("docs")).toEqual(["read_doc", "update_doc"]);
   });
 
   it("never substitutes requested scopes for actual consent", () => {

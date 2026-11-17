@@ -47,11 +47,12 @@ describe("google-workspace-rest-tools boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("is not imported by any other server code yet", () => {
-    const importers = typescriptFiles(serverSrc)
+  it("is imported only by the gateway's dispatch adapter, and only through index.ts", () => {
+    const imports = typescriptFiles(serverSrc)
       .filter((file) => !file.startsWith(`${folder}${path.sep}`))
-      .filter((file) => importSpecifiers(readFileSync(file, "utf8")).some((specifier) => specifier.includes("google-workspace-rest-tools")))
-      .map((file) => path.relative(serverSrc, file));
-    expect(importers).toEqual([]);
+      .flatMap((file) => importSpecifiers(readFileSync(file, "utf8"))
+        .filter((specifier) => specifier.includes("google-workspace-rest-tools"))
+        .map((specifier) => `${path.relative(serverSrc, file).split(path.sep).join("/")} -> ${specifier}`));
+    expect(imports).toEqual(["services/google-workspace-rest-dispatch.ts -> ../google-workspace-rest-tools/index.js"]);
   });
 });
