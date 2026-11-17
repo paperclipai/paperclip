@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { connectionGrants, projectWorkspaces, type Db } from '@paperclipai/db';
+import { connectionGrants, projectWorkspaces, toolConnections, type Db } from '@paperclipai/db';
 import { forbidden } from '../errors.js';
 import { resolveGitHubOperationCredentials } from './github-operation-credentials.js';
 
@@ -61,8 +61,21 @@ export async function resolveRunProjectGitHubCredentials(db: Db, input: {
   const assertCatalog = async () => {
     const [grant] = await db.select({ tenant: connectionGrants.providerTenant }).from(connectionGrants).where(and(
       eq(connectionGrants.companyId, input.companyId), eq(connectionGrants.id, status.grantId!), eq(connectionGrants.status, 'active')));
+    if (!grant) throw unavailable();
+    const [connection] = await db.select({ authKind: toolConnections.authKind, config: toolConnections.config })
+      .from(toolConnections).where(and(eq(toolConnections.companyId, input.companyId),
+        eq(toolConnections.id, status.connectionId!), eq(toolConnections.enabled, true), eq(toolConnections.status, 'active')));
+    if (!connection) throw unavailable();
+    const personalToken = connection.authKind === 'api_key' && connection.config?.connectionMethodKey === 'mcp-key';
     const allowed = grant?.tenant?.github?.repositories ?? [];
     return repositories.map(repo => {
+      // PAT reach is enforced by GitHub, not an App installation catalog. Keep
+      // any persisted project identity pinned and verify live access below.
+      if (personalToken) {
+        const expected = input.expectedRepositoryIds?.[repo.toLowerCase()];
+        if (input.expectedRepositoryIds && (!expected || !/^\d+$/.test(expected))) throw unavailable();
+        return expected ?? null;
+      }
       const matches = allowed.filter(entry => entry.fullName.toLowerCase() === decodeURIComponent(repo).toLowerCase());
       const ids = [...new Set(matches.map(entry => entry.id))];
       if (ids.length !== 1 || !/^\d+$/.test(ids[0]!)) throw unavailable();
@@ -84,7 +97,8 @@ export async function resolveRunProjectGitHubCredentials(db: Db, input: {
         if (!response.ok) { await response.body?.cancel(); throw unavailable(); }
         const payload = await response.json() as { id?: unknown };
         const index = repositories.indexOf(repository);
-        if ((typeof payload?.id !== 'number' && typeof payload?.id !== 'string') || String(payload.id) !== repositoryIds[index])
+        if ((typeof payload?.id !== 'number' && typeof payload?.id !== 'string') || !/^\d+$/.test(String(payload.id))
+          || (repositoryIds[index] !== null && String(payload.id) !== repositoryIds[index]))
           throw unavailable();
       }
     }));

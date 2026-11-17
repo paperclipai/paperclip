@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { assertRunProjectGitHubAccess } from "./project-run-github-access.js";
 
-function grantDb(fullNames: string[] = ["org/repo"]) {
+vi.mock("./github-operation-credentials.js", () => ({ resolveGitHubOperationCredentials: vi.fn() }));
+
+function grantDb(fullNames: string[] = ["org/repo"], personalToken = false) {
   const rows = [{
-    tenant: { github: { repositories: fullNames.map(fullName => ({ id: "123", fullName })) } },
+    tenant: { github: personalToken ? undefined : { repositories: fullNames.map(fullName => ({ id: "123", fullName })) } },
+    authKind: personalToken ? "api_key" : "oauth",
+    config: { connectionMethodKey: personalToken ? "mcp-key" : "oauth" },
   }];
   const where = vi.fn().mockResolvedValue(rows);
   const from = vi.fn().mockReturnValue({ where });
@@ -15,7 +19,7 @@ function grantDb(fullNames: string[] = ["org/repo"]) {
     from,
     where,
     setRepositoryId(id: string) {
-      rows[0]!.tenant.github.repositories.forEach(repository => { repository.id = id; });
+      rows[0]!.tenant.github?.repositories.forEach(repository => { repository.id = id; });
     },
   };
 }
@@ -36,6 +40,42 @@ const available = () => ({
 const liveRepositoryResponse = (id: number) => ({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ id }) });
 
 describe("run project GitHub access policy", () => {
+  it("authorizes a managed personal token without an App installation catalog", async () => {
+    const { db } = grantDb([], true);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn().mockResolvedValue(liveRepositoryResponse(123)) as unknown as typeof fetch;
+    await expect(assertRunProjectGitHubAccess(db, { ...run, repoUrls: ["https://github.com/org/repo"],
+      expectedRepositoryIds: { "org/repo": "123" } }, resolve, request)).resolves.toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("still rejects a personal token when the pinned repository identity differs", async () => {
+    const { db } = grantDb([], true);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn().mockResolvedValue(liveRepositoryResponse(456)) as unknown as typeof fetch;
+    await expect(assertRunProjectGitHubAccess(db, { ...run, repoUrls: ["https://github.com/org/repo"],
+      expectedRepositoryIds: { "org/repo": "123" } }, resolve, request)).rejects.toThrow(/reconnect/i);
+  });
+
+  it.each([403, 404])("rejects a personal token without live repository access (%i)", async status => {
+    const { db } = grantDb([], true);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn().mockResolvedValue({ ok: false, status }) as unknown as typeof fetch;
+    await expect(assertRunProjectGitHubAccess(db, { ...run, repoUrls: ["https://github.com/org/repo"] }, resolve, request))
+      .rejects.toThrow(/reconnect/i);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat an OAuth grant without an installation catalog as a personal token", async () => {
+    const { db } = grantDb([]);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn() as unknown as typeof fetch;
+    await expect(assertRunProjectGitHubAccess(db, { ...run, repoUrls: ["https://github.com/org/repo"] }, resolve, request))
+      .rejects.toThrow(/reconnect/i);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it.each([
     "https://github.com/org/repo.git",
     "https://www.github.com/org/repo.git",
@@ -139,7 +179,7 @@ describe("run project GitHub access policy", () => {
     const request = vi.fn().mockResolvedValue(liveRepositoryResponse(123)) as unknown as typeof fetch;
     await expect(assertRunProjectGitHubAccess(db, { ...run, repoUrls: ["https://github.com/org/repo.git"] }, resolve, request))
       .rejects.toThrow("Project GitHub authorization is unavailable. Reconnect an authorized connection.");
-    expect(select).toHaveBeenCalledTimes(1);
+    expect(select).toHaveBeenCalledTimes(2);
     expect(request).not.toHaveBeenCalled();
   });
 
