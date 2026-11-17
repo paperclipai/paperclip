@@ -322,7 +322,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         startedAt: new Date("2026-11-16T23:32:58.000Z"), finishedAt: new Date("2026-11-16T23:32:59.200Z") },
     ]);
     await db.insert(issueRelations).values([firstChildId, secondChildId].map((blockerId) => ({
-      companyId, issueId: blockerId, relatedIssueId: parentId, type: "blocks", createdByAgentId: agentId,
+      companyId, issueId: blockerId, relatedIssueId: parentId, type: "blocks" as const, createdByAgentId: agentId,
     })));
     await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date("2026-11-16T23:34:52.374Z") })
       .where(eq(issues.id, parentId));
