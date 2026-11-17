@@ -22,6 +22,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { MarkdownBody } from "./MarkdownBody";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * Presentational card for a single Decisions-v1 decision (PAP-14966 / PAP-14939
@@ -325,6 +326,7 @@ export function DecisionCard({
         SHELL[tone],
         dimmed && "opacity-80",
         className,
+        ANALYTICS_MASK_CLASS,
       )}
       data-decision-state={badgeLabel.toLowerCase()}
     >

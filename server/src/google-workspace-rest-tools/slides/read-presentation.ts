@@ -1,8 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { fileIdArg, readWithComments, sizedResult } from "../documents-shared.js";
+import { fileIdArg, readWithComments } from "../documents-shared.js";
 import type { GoogleRequest } from "../google-http.js";
-import { defineTool } from "../tool.js";
+import { defineTool, structuredResult } from "../tool.js";
 import { presentationPath, SLIDES_HOST, type RestPresentation } from "./presentation.js";
 import { renderPresentation } from "./render.js";
 
@@ -35,10 +35,10 @@ export const COMMENTS_UNAVAILABLE = "Comments are not available for this present
 
 export function readPresentationResult(presentation: RestPresentation, input: ReadPresentationArgs): CallToolResult {
   if (input.fields?.length) {
-    return sizedResult({ content: presentation as Record<string, unknown> }, "presentation", "Ask for fewer fields.");
+    return structuredResult({ content: presentation as Record<string, unknown> });
   }
   const content = renderPresentation(presentation, { commentsRequested: input.commentsIncluded === true });
-  return sizedResult({ content }, "presentation", "Pass fields to read only part of it, for example [\"slides.objectId\", \"slides.pageElements(objectId,shape.text)\"].");
+  return structuredResult({ content });
 }
 
 export const readPresentation = defineTool({
@@ -73,6 +73,7 @@ export const readPresentation = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   args,
+  whenTooLarge: (input) => input.fields?.length ? "Ask for fewer fields." : "Pass fields to read only part of it, for example [\"slides.objectId\", \"slides.pageElements(objectId,shape.text)\"].",
   async run(input, http) {
     const plain = input.commentsIncluded ? readPresentationAccessCheckRequest(input) : undefined;
     return readPresentationResult(await readWithComments<RestPresentation>(http, readPresentationRequest(input), plain, COMMENTS_UNAVAILABLE), input);

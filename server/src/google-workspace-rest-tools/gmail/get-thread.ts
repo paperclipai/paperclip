@@ -58,6 +58,7 @@ export const getThread = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Read it with messageFormat METADATA_ONLY or MINIMAL, which leave out the bodies, then read single messages with get_message.",
   async run(input, http) {
     const thread = await http.send<GmailRestFullThread>(readThreadRequest(input));
     const bodies = messageDetail(input.messageFormat) === "full" ? await readMessageBodies(thread.messages ?? [], http) : undefined;

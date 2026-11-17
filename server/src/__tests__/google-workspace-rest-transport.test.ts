@@ -10,8 +10,9 @@ import {
   type GoogleWorkspaceService, type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import * as restDispatch from "../services/google-workspace-rest-dispatch.js";
+import { captureRunnerToolResult, RUNNER_TOOL_RESULT_MAX_BYTES } from "../services/native-runtime/runner-tool-results.js";
 import { toolAccessService } from "../services/tool-access.js";
-import { createToolGatewayService } from "../services/tool-gateway.js";
+import { createToolGatewayService, GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES } from "../services/tool-gateway.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -300,6 +301,42 @@ const support = await getEmbeddedPostgresTestSupport();
       const [invocation] = await f.invocations();
       expect(invocation).toMatchObject({ status: "failed", errorCode: "prompt_injection_blocked" });
       expect(JSON.stringify(invocation)).not.toContain("ignore all previous instructions");
+    });
+
+    it("delivers a large email that Google's MCP path could also deliver, as a saved result the runner points to", async () => {
+      useTransport("gmail", "paperclip_rest");
+      const f = await connectWorkspace();
+      const body = `${BENIGN_BODY}\n`.repeat(Math.ceil(330_000 / (BENIGN_BODY.length + 1)));
+      f.setMessageBody(body);
+      const result = await f.call("gmail__get_message", { messageId: "msg1" });
+      expect(result.status).toBe("completed");
+      const outcome = await vi.mocked(restDispatch.callGoogleWorkspaceRest).mock.results[0]!.value;
+      const folderBytes = Buffer.byteLength(JSON.stringify(outcome.result), "utf8");
+      const deliveredBytes = Buffer.byteLength(JSON.stringify(result.result), "utf8");
+      expect(folderBytes).toBeLessThanOrEqual(GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES);
+      expect(deliveredBytes).toBeGreaterThan(RUNNER_TOOL_RESULT_MAX_BYTES);
+      expect(deliveredBytes).toBeLessThan(2 * folderBytes);
+      const saved: Buffer[] = [];
+      const pointer = await captureRunnerToolResult(result.result, {
+        saveResponse: vi.fn(async (bytes: Buffer) => { saved.push(bytes); return { artifactId: randomUUID() }; }),
+      } as unknown as Parameters<typeof captureRunnerToolResult>[1]);
+      expect(pointer).toMatchObject({ readWith: { tool: "read_tool_result" } });
+      expect(saved).toHaveLength(1);
+      expect(JSON.parse(saved[0]!.toString("utf8"))).toEqual(result.result);
+      expect((result.result as { data: { structuredContent: { plaintextBody: string } } }).data.structuredContent.plaintextBody).toBe(body);
+    });
+
+    it("refuses an email larger than the gateway's budget with advice to read less, without contacting Google again", async () => {
+      useTransport("gmail", "paperclip_rest");
+      const f = await connectWorkspace();
+      f.setMessageBody(`${BENIGN_BODY}\n`.repeat(Math.ceil(520_000 / (BENIGN_BODY.length + 1))));
+      f.gmailRequests.length = 0;
+      await expect(f.call("gmail__get_message", { messageId: "msg1" })).rejects.toMatchObject({
+        status: 502, reasonCode: "tool_error",
+        message: expect.stringMatching(new RegExp(`more than the ${GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES.toLocaleString("en-US")} bytes this tool can return, so it was not returned\\. Read it with messageFormat METADATA_ONLY or MINIMAL`)),
+      });
+      expect(f.gmailRequests).toHaveLength(1);
+      expect(vi.mocked(restDispatch.callGoogleWorkspaceRest).mock.calls[0]![0].maxResultBytes).toBe(GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES);
     });
 
     it("cancels the Google request when the call's deadline passes", async () => {

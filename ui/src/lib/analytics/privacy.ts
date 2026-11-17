@@ -1,11 +1,10 @@
 // Shared privacy markers for browser product analytics (PostHog).
 //
-// Session replay masks ALL text and ALL input values by default. Only UI
-// chrome that opts in shows its text: sidebar items with a fixed label, and
-// any shared `Button`, `Label`, `TabsTrigger` or `EmptyState` whose caller
-// passes `analyticsChrome` because its text is fixed product copy. A surface nobody marked stays
-// masked. Autocapture never records element text or attribute values at all
-// (see `product-analytics.ts`).
+// Session replay shows text by default and masks ALL input values. Text is
+// masked only inside customer content marked with `ANALYTICS_MASK_CLASS`,
+// inside secrets marked with `ANALYTICS_NO_CAPTURE_CLASS` (blocked entirely)
+// and inside editable content. Autocapture never records element text or
+// attribute values at all (see `product-analytics.ts`).
 //
 // Apply these markers instead of PostHog class names, so `product-analytics.ts`
 // stays the one place that knows about PostHog. They have no effect when
@@ -13,17 +12,9 @@
 
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
-export const ANALYTICS_UNMASK_ATTRIBUTE = "data-analytics-unmask";
-
 /**
- * Spread on shared UI chrome whose text is product copy, never customer
- * content: `<button {...ANALYTICS_UNMASK_PROPS}>`.
- */
-export const ANALYTICS_UNMASK_PROPS = { [ANALYTICS_UNMASK_ATTRIBUTE]: "" } as const;
-
-/**
- * Customer content: task and issue bodies, comments, chat messages, documents
- * and artifacts. Its text stays masked even inside unmasked chrome, and
+ * Customer content: task and issue bodies, comments, chat messages, documents,
+ * artifacts and connected-account data. Session replay masks its text, and
  * autocapture records nothing from inside it.
  */
 export const ANALYTICS_MASK_CLASS = "ph-mask ph-sensitive";
@@ -35,23 +26,11 @@ export const ANALYTICS_MASK_CLASS = "ph-mask ph-sensitive";
  */
 export const ANALYTICS_NO_CAPTURE_CLASS = "ph-no-capture";
 
-/** Session replay sends every text node through `maskReplayText`. */
-export const ANALYTICS_MASK_TEXT_SELECTOR = "*";
-
-const FORCED_MASK_SELECTOR = ".ph-mask, .ph-no-capture, [contenteditable]:not([contenteditable=\"false\"])";
-const UNMASK_SELECTOR = `[${ANALYTICS_UNMASK_ATTRIBUTE}]`;
-
-/** True only for text inside opted-in chrome and outside customer content. */
-export function isReplayTextRevealed(element: Element | null | undefined): boolean {
-  if (!element || typeof element.closest !== "function") return false;
-  if (element.closest(FORCED_MASK_SELECTOR)) return false;
-  return element.closest(UNMASK_SELECTOR) !== null;
-}
-
-/** Session replay `maskTextFn`: keeps whitespace so the layout stays readable. */
-export function maskReplayText(text: string, element?: HTMLElement | null): string {
-  return isReplayTextRevealed(element) ? text : text.replace(/\S/g, "*");
-}
+/** Session replay masks text only inside these markers. */
+export const ANALYTICS_MASK_TEXT_SELECTOR = [
+  ...ANALYTICS_MASK_CLASS.split(" "),
+  ANALYTICS_NO_CAPTURE_CLASS,
+].map((name) => `.${name}`).concat("[contenteditable]:not([contenteditable=\"false\"])").join(", ");
 
 /**
  * Attributes that only describe layout, state or structure. Every other
@@ -67,7 +46,7 @@ const LAYOUT_ATTRIBUTES = new Set([
   "aria-hidden", "aria-expanded", "aria-selected", "aria-checked", "aria-current", "aria-disabled",
   "aria-orientation", "aria-haspopup", "aria-modal", "aria-pressed", "aria-invalid", "aria-live", "aria-busy",
   "data-slot", "data-state", "data-side", "data-align", "data-orientation", "data-variant",
-  "data-size", "data-disabled", "data-highlighted", "data-placeholder", ANALYTICS_UNMASK_ATTRIBUTE,
+  "data-size", "data-disabled", "data-highlighted", "data-placeholder",
 ]);
 
 /** Fixed IDs that page CSS targets (`#root`, `#main-content`); never customer data. */
@@ -76,9 +55,9 @@ const LAYOUT_IDS = new Set(["root", "main-content", "properties-pane-header-slot
 /**
  * Session replay `maskAttributeFn`. Deny by default: only layout attributes,
  * rrweb's own metadata, stylesheets and links outside customer content keep
- * their values. Free-text attributes stay masked even on opted-in chrome,
- * because labels such as `aria-label` often name customer data (for example
- * the organization switcher's "Open <name> switcher").
+ * their values. Free-text attributes stay masked everywhere, because labels
+ * such as `aria-label` often name customer data (for example the
+ * organization switcher's "Open <name> switcher").
  */
 export function maskReplayAttribute(name: string, value: string, element?: Element | null): string {
   const key = name.toLowerCase();

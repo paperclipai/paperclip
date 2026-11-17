@@ -64,12 +64,16 @@ and Tailscale connections.
 ## SSH on a volume-free Cloud stack
 
 Cloud SSH execution uses the same durable task workspace storage as Cloud
-sandboxes. Claude Code and Codex use their existing SSH adapters with
-`engine=cli`. ACP archive staging cannot use an in-place Cloud workspace. An
-explicit engine choice preserves the agent's execution and permission settings.
-The selected
-SSH account supplies the installed harness; the agent's Paperclip AI account
+sandboxes. Claude Code and Codex use their existing SSH adapters. With an
+agent-selected Paperclip AI account, the default ACP engine runs directly in the
+remote task directory and stages only private runtime assets. The CLI engine
+also supports this directory. ACP requires its server command, such as
+`claude-agent-acp`, on the SSH login PATH. Selecting SSH does not change the
+agent's engine or permission settings.
+
+The SSH account supplies the installed harness; the agent's Paperclip AI account
 supplies authentication unless the remote authentication option is enabled.
+Host authentication remains supported by the CLI engine.
 
 Each task receives a private directory below the configured SSH workspace path,
 inside `.paperclip-workspaces`. The task runs in that remote directory. Core

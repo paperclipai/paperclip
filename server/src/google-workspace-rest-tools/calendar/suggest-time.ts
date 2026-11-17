@@ -301,6 +301,7 @@ export const suggestTime = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer suggestions with a smaller preferences.pageSize.",
   async run(input, http) {
     assertTimeZone(input.timeZone);
     parseTimeInput(input.startTime, "startTime");

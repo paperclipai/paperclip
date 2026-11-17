@@ -49,8 +49,6 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({
-    collapsed: false,
-    peeking: false,
     isMobile: false,
     setSidebarOpen: vi.fn(),
   }),

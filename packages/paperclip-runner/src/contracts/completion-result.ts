@@ -166,7 +166,7 @@ const artifactsSchema = {
   },
 } as const;
 
-const waitContinuationSchema = {
+const waitContinuationProperties = {
   type: "object",
   description:
     "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
@@ -183,7 +183,21 @@ const waitContinuationSchema = {
     idempotencyKey: { type: "string", minLength: 1 },
     handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
-  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
+} as const;
+
+const waitContinuationCondition = {
+  if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] },
+  then: { required: ["handoffId"] },
+} as const;
+
+const waitContinuationSchema = {
+  ...waitContinuationProperties,
+  allOf: [waitContinuationCondition],
+} as const;
+
+const providerWaitContinuationSchema = {
+  ...waitContinuationProperties,
+  ...waitContinuationCondition,
 } as const;
 
 const commonResultProperties = {
@@ -391,7 +405,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     // tool calls. Give non-yielding results an explicit absence value instead
     // of forcing callers to invent a response-wake continuation.
     continuation: {
-      ...waitContinuationSchema,
+      ...providerWaitContinuationSchema,
       type: ["object", "null"],
       description:
         "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",

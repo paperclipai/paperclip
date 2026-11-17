@@ -2,13 +2,12 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
-import { boundedStructuredResult, MAX_RESULT_BYTES } from "../tool.js";
+import { structuredResult } from "../tool.js";
 import { checkSheetRange } from "./range.js";
 
 export const SHEETS_HOST = "sheets.googleapis.com" as const;
 export const SHEETS_BASE = "/v4/spreadsheets";
 export const MAX_CELLS_PER_CALL = 50_000;
-export { MAX_RESULT_BYTES };
 export const MAX_REQUEST_CHARS = 1_000_000;
 
 const formatCount = (value: number) => value.toLocaleString("en-US");
@@ -53,7 +52,7 @@ export function boundedReadResult(value: Record<string, unknown>, cells: number,
   if (cells > MAX_CELLS_PER_CALL) {
     throw new GoogleToolError("incomplete", `The result has ${formatCount(cells)} cells; the limit is ${formatCount(MAX_CELLS_PER_CALL)} per call. ${narrow}`);
   }
-  return boundedStructuredResult(value, MAX_RESULT_BYTES, (bytes) => `The result is ${formatCount(bytes)} bytes; the limit is ${formatCount(MAX_RESULT_BYTES)} per call. ${narrow}`);
+  return structuredResult(value);
 }
 
 export async function sendRead<T>(http: GoogleHttp, request: GoogleRequest, narrow: string): Promise<T> {

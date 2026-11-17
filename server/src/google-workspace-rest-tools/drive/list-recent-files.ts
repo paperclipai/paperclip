@@ -1,10 +1,9 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { GoogleRequest } from "../google-http.js";
-import { defineTool } from "../tool.js";
+import { defineTool, structuredResult } from "../tool.js";
 import {
   assertSnippetArgs,
-  boundedResult,
   READ_LESS,
   DRIVE_BASE,
   DRIVE_HOST,
@@ -50,7 +49,7 @@ export function listRecentFilesRequest(input: ListRecentFilesArgs): GoogleReques
 }
 
 export function listRecentFilesResult(list: RestFileList): CallToolResult {
-  return boundedResult(listResult(list), READ_LESS.list);
+  return structuredResult(listResult(list));
 }
 
 export const listRecentFiles = defineTool({
@@ -70,6 +69,7 @@ export const listRecentFiles = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: READ_LESS.list,
   async run(input, http) {
     assertSnippetArgs(input);
     return listRecentFilesResult(await http.send<RestFileList>(listRecentFilesRequest(input)));

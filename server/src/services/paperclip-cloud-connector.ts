@@ -160,7 +160,7 @@ const BROKER_REJECTION_REASONS = new Set([
   "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
-  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
+  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED", "REVOCATION_NOT_AVAILABLE",
   "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
   "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
   "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
@@ -168,6 +168,12 @@ const BROKER_REJECTION_REASONS = new Set([
   "SLACK_FORM_RETIREMENT_CHANGED", "SLACK_FORM_RETIREMENT_PROOF_MISSING", "SLACK_FORM_CUSTODY_CHANGED", "SLACK_FORM_RETIREMENT_SIGNER_UNAVAILABLE", "SLACK_FORM_CANONICAL_FACT_CHANGED", "SLACK_FORM_CANONICAL_FACT_BUDGET_CHANGED", "SLACK_FORM_CANONICAL_FACT_PENDING",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
+
+export const PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES = [
+  "revoked", "other_connections_remain", "provider_revocation_failed",
+  "binding_not_known", "provider_revocation_disabled", "revocation_in_progress",
+] as const;
+export type PaperclipCloudGrantRevocationOutcome = typeof PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES[number];
 
 async function readBrokerRejectionReason(response: Response): Promise<string> {
   if (response.bodyUsed || response.body?.locked) return UNKNOWN_BROKER_REASON;
@@ -301,6 +307,7 @@ export function createPaperclipCloudConnector(input: {
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
     secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment" | "operation"; value: string },
+    timeoutMs = 15_000,
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -344,7 +351,7 @@ export function createPaperclipCloudConnector(input: {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: encodedBody,
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE");
@@ -588,8 +595,13 @@ export function createPaperclipCloudConnector(input: {
         profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }) {
-      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
+    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string; timeoutMs?: number }): Promise<{ outcome?: PaperclipCloudGrantRevocationOutcome }> {
+      const { timeoutMs, ...claims } = values;
+      const response = await call("revoke", { ...claims, profile: claims.profile ?? "gmail.draft" }, { field: "token", value: claims.token }, timeoutMs);
+      const outcome = (response as ConnectorResponse & { outcome?: unknown }).outcome;
+      return typeof outcome === "string" && (PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES as readonly string[]).includes(outcome)
+        ? { outcome: outcome as PaperclipCloudGrantRevocationOutcome }
+        : {};
     },
     async setWebhookBinding(values: {
       subject: string;

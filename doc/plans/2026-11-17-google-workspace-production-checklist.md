@@ -79,16 +79,18 @@ Decisions and the details behind them are kept in the
       is kept"). Users can now delete it per connection. Content agents wrote
       into tasks stays, and task or company deletion does not yet run the same
       cleanup.
-- [ ] REST-backed tool set for all 36 actions, in its own folder inside the
-      server, with the same tool names and shapes as Google's MCP tools.
-      18 of 36 so far: Gmail 9 of 9
+- [x] REST-backed tool set for all 36 actions exists but is not switched on
+      (Nov 17): Gmail 9
       ([#22000](https://github.com/paperclipai/paperclip/pull/22000),
-      [#22014](https://github.com/paperclipai/paperclip/pull/22014)) and
-      Calendar 9 of 9
-      ([#22017](https://github.com/paperclipai/paperclip/pull/22017)). The
+      [#22014](https://github.com/paperclipai/paperclip/pull/22014)),
+      Calendar 9 ([#22017](https://github.com/paperclipai/paperclip/pull/22017)),
+      Sheets 6 ([#22027](https://github.com/paperclipai/paperclip/pull/22027)),
+      Docs 2 and Slides 2
+      ([#22029](https://github.com/paperclipai/paperclip/pull/22029)), Drive 8
+      ([#22028](https://github.com/paperclipai/paperclip/pull/22028)). The
       per-service switch exists
-      ([#22016](https://github.com/paperclipai/paperclip/pull/22016)); no
-      service is switched on yet.
+      ([#22016](https://github.com/paperclipai/paperclip/pull/22016)).
+- [ ] Each service switched to REST after a live test on the staging tester.
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [ ] `googletester.staging.paperclip.app` created and wired to the new Google
@@ -101,12 +103,16 @@ The policy is in the `paperclip-website` repository
 
 - [x] Policy has a Google user data section with the Limited Use statement.
 - [x] Policy states that Google data is not used to train general models.
-- [ ] Policy says Google content is sent to AI model providers to carry out
-      tasks, and names them or the category.
-- [ ] Policy's retention wording matches the product (content read by agents
-      stays in task and run history after disconnect), or the product changes.
-- [ ] Policy says Gmail drafts, not "send".
-- [ ] Policy gives the steps and timeline for deleting data.
+- [x] Policy says Google content is sent to AI model providers to carry out
+      tasks, and names them or the category (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy's retention wording matches the product (content read by agents
+      stays in task and run history after disconnect), or the product changes
+      (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy says Gmail drafts, not "send" (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy gives the steps and timeline for deleting data (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [ ] Legal review of the narrowed no-training wording in [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197) (it now
+      covers only providers Paperclip selects and configures). Not required
+      for Google approval.
 - [ ] Policy's description of the sign-in path matches the current flow.
 - [ ] Model-provider terms and settings checked against that statement.
 - [ ] Data-flow inventory written: Google, broker, server, runner, model

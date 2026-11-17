@@ -2,9 +2,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
-import { compact, defineTool } from "../tool.js";
+import { compact, defineTool, structuredResult } from "../tool.js";
 import { assertWithinCap, exportRequest, fetchContent, mediaRequest, readContentMeta, type ContentPlan } from "./content.js";
-import { boundedResult, DRIVE_HOST, fileId, fileIdInput, filePath, GOOGLE_DOC, GOOGLE_SHEET, GOOGLE_SLIDES, READ_LESS, type RestFile } from "./file.js";
+import { DRIVE_HOST, fileId, fileIdInput, filePath, GOOGLE_DOC, GOOGLE_SHEET, GOOGLE_SLIDES, READ_LESS, type RestFile } from "./file.js";
 
 const args = z.object({ fileId, includeComments: z.boolean().optional() });
 export type ReadFileContentArgs = z.infer<typeof args>;
@@ -22,13 +22,13 @@ export interface ReadPlan extends ContentPlan {
   prefix?: string;
 }
 
-export function readPlan(id: string, file: RestFile): ReadPlan | null {
+export function readPlan(id: string, file: RestFile, maxBytes: number): ReadPlan | null {
   const mimeType = file.mimeType ?? "";
   if (mimeType === GOOGLE_DOC) return { request: exportRequest(id, "text/markdown"), contentType: "text/markdown" };
   if (mimeType === GOOGLE_SLIDES) return { request: exportRequest(id, "text/plain"), contentType: "text/plain" };
   if (mimeType === GOOGLE_SHEET) return { request: exportRequest(id, "text/csv"), contentType: "text/csv", prefix: SHEET_NOTE };
   if (mimeType.startsWith("text/") || TEXT_APPLICATION_TYPES.has(mimeType) || /\+(json|xml)$/.test(mimeType)) {
-    assertWithinCap(file, READ_LESS.read);
+    assertWithinCap(file, READ_LESS.read, maxBytes);
     return { request: mediaRequest(id), contentType: mimeType };
   }
   return null;
@@ -90,13 +90,13 @@ export async function readComments(id: string, http: GoogleHttp): Promise<RestCo
 
 export function readFileContentResult(file: RestFile, text: string | null, comments: RestComment[] | null, includeComments: boolean): CallToolResult {
   const commentable = COMMENTABLE.has(file.mimeType ?? "");
-  return boundedResult(compact({
+  return structuredResult(compact({
     fileContent: text ?? "",
     contentAnchoredComments: includeComments ? [] : undefined,
     unanchoredComments: includeComments ? (comments ?? []).map(toCommentThread) : undefined,
     textFormattingNotSupported: text === null ? true : undefined,
     commentsNotSupported: includeComments && !commentable ? true : undefined,
-  }), READ_LESS.read);
+  }));
 }
 
 const postSchema = {
@@ -121,7 +121,7 @@ const threadSchema = {
 export const readFileContent = defineTool({
   definition: {
     name: "read_file_content",
-    description: "Returns a text version of a Drive file. Google Docs come back as Markdown, Slides as plain text, and Sheets as CSV of the first sheet only (the text says so). Text files (text/*, JSON, XML and similar) are returned as stored. Other files, such as PDFs, Office files and images, are not converted: the result has textFormattingNotSupported true and empty fileContent; use download_file_content for their bytes. The whole result is at most 250,000 bytes (about 120 KB of plain text, since the result carries it twice); a larger file is refused with an error, never cut short. With includeComments, the comment threads of a Google Doc, Sheet or Slides file are listed in unanchoredComments; they are not placed in the text. Get fileId from search_files or list_recent_files first.",
+    description: "Returns a text version of a Drive file. Google Docs come back as Markdown, Slides as plain text, and Sheets as CSV of the first sheet only (the text says so). Text files (text/*, JSON, XML and similar) are returned as stored. Other files, such as PDFs, Office files and images, are not converted: the result has textFormattingNotSupported true and empty fileContent; use download_file_content for their bytes. The whole result has a size limit; a file too large for it is refused with an error that gives the limit, never cut short. With includeComments, the comment threads of a Google Doc, Sheet or Slides file are listed in unanchoredComments; they are not placed in the text. Get fileId from search_files or list_recent_files first.",
     inputSchema: {
       type: "object",
       properties: {
@@ -144,12 +144,13 @@ export const readFileContent = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
-  async run(input, http) {
+  whenTooLarge: READ_LESS.read,
+  async run(input, http, limits) {
     const file = await readContentMeta(input.fileId, http);
-    const plan = readPlan(input.fileId, file);
+    const plan = readPlan(input.fileId, file, limits.maxResultBytes);
     let text: string | null = null;
     if (plan) {
-      const decoded = decodeText(await fetchContent(plan, http, READ_LESS.read));
+      const decoded = decodeText(await fetchContent(plan, http, READ_LESS.read, limits.maxResultBytes));
       text = decoded === null ? null : plan.prefix ? `${plan.prefix}\n${decoded}` : decoded;
     }
     const comments = input.includeComments && COMMENTABLE.has(file.mimeType ?? "") ? await readComments(input.fileId, http) : null;

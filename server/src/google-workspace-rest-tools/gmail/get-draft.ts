@@ -78,6 +78,7 @@ export const getDraft = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Read it with view DRAFT_VIEW_METADATA_ONLY, which leaves out the body.",
   async run(input, http) {
     const draft = await http.send<GmailRestDraftFull>(readDraftRequest(input.draftId, input.view));
     return getDraftResult(draft, input, await readDraftBodies([draft], input.view, http));

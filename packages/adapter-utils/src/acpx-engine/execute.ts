@@ -1752,6 +1752,7 @@ async function stageAcpRemoteRuntime(input: {
   runId: string;
   target: AdapterExecutionTarget;
   privateRuntime?: boolean;
+  syncWorkspace?: boolean;
   adapterKey: string;
   workspaceLocalDir: string;
   // Pin the in-sandbox workspace dir so it provably equals the deterministic
@@ -1774,11 +1775,12 @@ async function stageAcpRemoteRuntime(input: {
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   await input.onLog(
     "stdout",
-    `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(input.target)}.\n`,
+    `[paperclip] Syncing ${input.syncWorkspace === false ? "runtime assets" : "workspace"} to ${describeAdapterExecutionTarget(input.target)}.\n`,
   );
   return await prepareAdapterExecutionTargetRuntime({
     privateRuntime: input.privateRuntime,
     retainRuntime: input.privateRuntime,
+    syncWorkspace: input.syncWorkspace,
     runId: input.runId,
     target: input.target,
     adapterKey: input.adapterKey,
@@ -2350,7 +2352,7 @@ async function buildRuntime(input: {
   const sshWorkspaceRunId = useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
     ? shortHash({ companyId: agent.companyId, agentId: agent.id, taskKey, fingerprintIdentity })
     : null;
-  if (sshWorkspaceRunId && executionTarget?.kind === "remote") {
+  if (sshWorkspaceRunId && executionTarget?.kind === "remote" && executionTarget.workspaceRealization?.mode !== "in_place") {
     sessionCwd = path.posix.join(executionTarget.remoteCwd, ".paperclip-runtime", "runs", sshWorkspaceRunId, "workspace");
     fingerprintIdentity = { ...fingerprintIdentity, cwd: sessionCwd };
   }
@@ -2441,6 +2443,7 @@ async function buildRuntime(input: {
         const staged = await stageAcpRemoteRuntime({
           runId: sshWorkspaceRunId ?? runId,
           privateRuntime: remoteTarget.transport === "ssh",
+          syncWorkspace: remoteTarget.transport === "ssh" ? remoteTarget.workspaceRealization?.mode !== "in_place" : undefined,
           target: remoteTarget,
           adapterKey: input.engine.adapterType,
           workspaceLocalDir: cwd,
