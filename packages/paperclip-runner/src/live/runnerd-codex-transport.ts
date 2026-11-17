@@ -9865,7 +9865,7 @@ export const runnerdRecoveryInternals = Object.freeze({
 
 /** Map controller asset paths to the assigned copy on the provider filesystem. */
 export function resolveRunnerdCodexSkillInputs(
-  inputs: Record<string, unknown>[],
+  inputs: ReadonlyArray<{ name?: unknown; path?: unknown }>,
   context: NativeRuntimeContextSnapshot | null,
   codexHome: string,
   preparedContext?: NativeRuntimeContextSnapshot,
