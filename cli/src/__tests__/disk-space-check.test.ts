@@ -135,7 +135,6 @@ function useHome(home: string): void {
 }
 
 beforeEach(() => {
-  // Overrides the check reads; a value from the caller's shell must not leak in.
   delete process.env.PAPERCLIP_STORAGE_PROVIDER;
   delete process.env.PAPERCLIP_STORAGE_LOCAL_DIR;
   delete process.env.PAPERCLIP_DB_BACKUP_DIR;
