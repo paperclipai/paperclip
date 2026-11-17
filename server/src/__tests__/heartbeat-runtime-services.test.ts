@@ -11,11 +11,13 @@ import { stopRuntimeServicesForExecutionWorkspace, type RuntimeServiceRef } from
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const failedNotices = vi.hoisted(() => new Set<string>());
+const noticeErrors = vi.hoisted(() => new Map<string, Error>());
 vi.mock("../services/issues.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/issues.js")>();
   return { ...actual, issueService: (...args: Parameters<typeof actual.issueService>) => {
     const service = actual.issueService(...args);
     return { ...service, addComment: (...input: Parameters<typeof service.addComment>) => {
+      if (noticeErrors.has(input[0]) && input[1].startsWith("## Workspace Ready")) throw noticeErrors.get(input[0]);
       if (failedNotices.has(input[0]) && input[1].startsWith("## Workspace Ready")) {
         throw new Error("Fixture notice unavailable");
       }
@@ -148,5 +150,20 @@ describePostgres("heartbeat runtime services through adapter dispatch", () => {
     expect(notices).toEqual([]);
     expect(finished.stderrExcerpt).toContain("Failed to post workspace-ready comment: Fixture notice unavailable");
     expect(finished.stderrExcerpt).toContain("Failed to post adapter-managed runtime comment: Fixture notice unavailable");
+  });
+
+  it("includes only validated cause codes when both runtime comment publications fail", async () => {
+    const f = await seed();
+    noticeErrors.set(f.issueId, new Error("Failed query", { cause: {
+      code: "x".repeat(65), cause: { code: 23505, cause: { code: "23503", detail: "private row values", message: "private driver text" } },
+    } }));
+    const { finished, notices } = await execute(f);
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(notices).toEqual([]);
+    expect(finished.stderrExcerpt).toContain("Failed to post workspace-ready comment: Failed query (cause codes: 23503)");
+    expect(finished.stderrExcerpt).toContain("Failed to post adapter-managed runtime comment: Failed query (cause codes: 23503)");
+    expect(finished.stderrExcerpt).not.toContain("private row values");
+    expect(finished.stderrExcerpt).not.toContain("private driver text");
+    noticeErrors.delete(f.issueId);
   });
 });
