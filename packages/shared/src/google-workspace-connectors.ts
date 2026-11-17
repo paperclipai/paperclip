@@ -19,7 +19,10 @@ export const GOOGLE_WORKSPACE_SERVICE_GROUPS = [
 export function googleWorkspaceSelectedScopes(selection: GoogleWorkspaceServiceSelection): string[] {
   return [...new Set(GOOGLE_WORKSPACE_SERVICE_GROUPS.flatMap(group => {
     const access = selection[group.id];
-    return access ? group[access].flatMap(profile => GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes) : [];
+    return access ? [
+      ...group[access].flatMap(profile => GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes),
+      ...(SELECTION_ADDED_SCOPES[group.id]?.[access] ?? []),
+    ] : [];
   }))].sort();
 }
 
@@ -28,7 +31,7 @@ export function googleWorkspaceEffectiveScopes(requested: readonly string[], gra
   const implies: Record<string, string[]> = {
     documents: ["documents.readonly"], spreadsheets: ["spreadsheets.readonly"],
     presentations: ["presentations.readonly"],
-    "calendar.events": ["calendar.events.readonly", "calendar.events.freebusy"],
+    "calendar.events": ["calendar.events.readonly"],
     "calendar.readonly": ["calendar.calendarlist.readonly", "calendar.events.readonly", "calendar.events.freebusy"],
   };
   const expand = (scopes: readonly string[]) => new Set(scopes.flatMap(scope => [scope, ...(implies[scope.replace("https://www.googleapis.com/auth/", "")] ?? []).map(value => `https://www.googleapis.com/auth/${value}`)]));
@@ -74,6 +77,10 @@ export function googleWorkspaceDraftRequestedScopes(
 }
 
 const auth = (scope: string) => `https://www.googleapis.com/auth/${scope}`;
+
+const SELECTION_ADDED_SCOPES: Partial<Record<keyof GoogleWorkspaceServiceSelection, Partial<Record<"read" | "write", readonly string[]>>>> = {
+  calendar: { write: [auth("calendar.events.freebusy")] },
+};
 
 const SERVICE_PROFILES: Readonly<Record<Exclude<GoogleWorkspaceConnectorProfileId, "workspace.all">, {
   appSlug: string;

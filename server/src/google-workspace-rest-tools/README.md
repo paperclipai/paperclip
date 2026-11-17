@@ -12,7 +12,8 @@ Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
 `search_threads`, `list_threads`, `search_messages`, `get_draft`,
 `list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
 There is no send, trash, delete or label-changing tool, and none may be added.
-It also has all nine allowlisted Calendar tools (see "Calendar tools" below).
+It also has all nine allowlisted Calendar tools (see "Calendar tools" below)
+and all six allowlisted Sheets tools (see "Sheets tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -57,8 +58,9 @@ so they can be deleted cleanly when that happens.
   says that the change may or may not have been made. Every method other than
   GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
   request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
-  is allowed only under `/calendar/v3/`, checked after URL normalization.
-- **One tool, one file.** Each tool in `gmail/` and `calendar/` is a set of pure functions
+  is allowed only under `/calendar/v3/` and `sheets.googleapis.com` only under
+  `/v4/spreadsheets/`, checked after URL normalization.
+- **One tool, one file.** Each tool in `gmail/`, `calendar/` and `sheets/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
@@ -140,6 +142,9 @@ plain constant: no environment variable, instance setting or database row.
   | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
   | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
   | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
+
+  Sheets has no probe: every Sheets REST read needs a spreadsheet ID, so a
+  Sheets grant is listed without one.
 
   A grant that allows none of them (for example compose-only Gmail) is listed
   without a probe. An insufficient-scope answer to a probe never makes a
@@ -457,6 +462,150 @@ earliest first; working hours and out-of-office settings are not read.
   comes from REST `transparency`; `conferenceUrl` from `hangoutLink` or the
   video entry point.
 
+## Sheets tools
+
+Names, input fields, result shapes and annotations come from Google's Sheets
+MCP reference
+(<https://developers.google.com/workspace/sheets/api/reference/mcp>, recorded
+2026-11-17). All calls go to the Sheets REST API v4 at
+`https://sheets.googleapis.com/v4/spreadsheets/`; `google-http.ts` allows that
+host only under that path, checked after URL normalization. Each tool works
+with exactly the scopes `toolScopes.sheets` allows.
+
+| Tool | REST call | Works with | Google documentation |
+| --- | --- | --- | --- |
+| `get_values` | `spreadsheets.values.get` | `spreadsheets.readonly` or `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get> |
+| `get_spreadsheet` | `spreadsheets.get` | `spreadsheets.readonly` or `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get> |
+| `update_values` | `spreadsheets.values.update`, `valueInputOption=RAW` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update> |
+| `update_formulas` | `spreadsheets.values.update`, `valueInputOption=USER_ENTERED` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update> |
+| `insert_dimension` | `spreadsheets.batchUpdate` with one `insertDimension` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate> |
+| `update_spreadsheet` | `spreadsheets.batchUpdate` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate> |
+
+Every tool makes exactly one Google request. Writes are never retried; a write
+that fails after it was sent carries the usual "may or may not have been
+made" warning.
+
+### Values
+
+- **`get_values` returns formatted values**, as Google Sheets displays them
+  (`valueRenderOption=FORMATTED_VALUE`, `majorDimension=ROWS`, both sent
+  explicitly; these are the REST defaults, and Google's tool exposes no render
+  option). Numbers, currency, percentages and dates come back as the displayed
+  text (`"$1,200.50"`, `"12%"`, `"1/5/2026"`), booleans as `"TRUE"`/`"FALSE"`,
+  errors as their text (`"#DIV/0!"`), and formula cells as their result.
+  Google's answer is returned unchanged: trailing empty rows and columns are
+  left out, so rows can differ in length; an empty range has no `values`
+  field; in a merged area only the top-left cell holds the value. One range per
+  call, as in Google's tool (no `values.batchGet`).
+- **Unformatted values, formulas and several ranges** come from
+  `get_spreadsheet` with `ranges` and `includeGridData`: each cell has
+  `userEnteredValue` (including the formula), `effectiveValue` (dates and
+  times as serial numbers, days since 1899-12-30) and `formattedValue`; merged
+  areas are listed in `merges`. The Spreadsheet resource is returned unchanged
+  under `content`. `fields` takes Google's field-mask syntax, including
+  groups such as `sheets.properties(sheetId,title)`; a mask with any character
+  other than letters, digits, `_ . , ( ) / *`, or with unbalanced parentheses,
+  is refused before sending.
+- **`update_values` writes raw values** (`RAW`): strings are stored as given,
+  so `"=A1"`, `"2026-01-05"` and `"1,000"` stay text. Google's reference does
+  not name the option; RAW is our reading of it, because Google ships a
+  separate `update_formulas` tool. **`update_formulas`** uses `USER_ENTERED`,
+  so a string starting with `=` becomes a formula and other text may be parsed
+  by the spreadsheet's locale. Both take strings, finite numbers, booleans and
+  `null` (skip the cell); `""` clears a cell; anything else is refused before
+  sending.
+- **Ranges** are checked before sending (`sheets/range.ts`): A1 (`A1`,
+  `A1:C10`, `A:C`, `2:5`, `A2:C`, `$A$1`) or R1C1 (`R1C1:R10C3`), with an
+  optional sheet name. A sheet name with anything other than letters, digits
+  and `_` must be in single quotes with apostrophes doubled (`'Q1 Plan'!A1`,
+  `'Bob''s list'!A:A`); an unquoted one is refused with that hint. A bare name
+  is a sheet or named range. Columns are limited to `ZZZ` and rows to
+  10,000,000.
+
+### Bounds
+
+- At most **50,000 cells** per call, read or written (`MAX_CELLS_PER_CALL`).
+  Reads count the cells Google returns (`values` rows, or `rowData` values in
+  grid data); writes count the cells sent (`values`/`formulas`, or the rows of
+  `updateCells` and `appendCells`).
+- A read's whole tool result is at most **250,000 bytes** of UTF-8 JSON
+  (`MAX_RESULT_BYTES`, checked by `boundedStructuredResult` in `tool.ts`). The
+  measure is this folder's own result, which carries the value twice (as
+  `structuredContent` and as JSON text, since MCP clients read either). This
+  is a conservative default, not a measured fit: how a caller wraps and
+  delivers the result, and its byte budget, are the caller's business and are
+  not modeled here. The caller, which knows its own delivery budget, is
+  expected to supply the exact limit in a follow-up that applies one rule to
+  every service in this folder.
+  A write request body is at most 1,000,000 characters.
+- Over a limit, a read returns an error that starts with the size and asks for
+  a narrower range, fewer or narrower `ranges`, or fewer `fields`, to read in
+  smaller pieces; a write sends nothing. Nothing
+  is ever cut short and presented as complete. A Google answer over the 20 MB
+  transport limit gets the same narrowing message.
+- Server-side operations in `update_spreadsheet` (for example `repeatCell`,
+  `sortRange`, `findReplace`, `copyPaste`) are bounded by Google, not here.
+
+### Write results
+
+Write results are Google's REST response under `content`, plus `status`, a
+sentence naming what changed. Google says its result has a `status` field but
+not what it holds.
+
+- `update_values`/`update_formulas`: `Updated 4 cells in 'Q1 Plan'!A1:B2
+  (2 rows × 2 columns) as raw values.`, from Google's `updatedRange` and
+  `updatedCells`.
+- `insert_dimension`: the inserted rows or columns, 1-based (`sheet ID 0,
+  rows 6–8`), and that no values were written.
+- `update_spreadsheet`: each request in order with the range it touched
+  (`1. deleteDimension on sheet ID 0, columns B–C`), and the cells written by
+  `updateCells`/`appendCells`. Where each request type keeps its range (for
+  example `addNamedRange.namedRange.range`) is listed once in
+  `REQUEST_TARGETS`; a test fails if a supported type has no entry.
+
+### `update_spreadsheet` operations
+
+Google's reference lists 74 request types. 64 are accepted, each request must
+have exactly one of them, and anything else is refused before sending. Refused:
+
+- **Comments** (`insertComment`, `addCommentReply`, `updateCommentPost`,
+  `deleteComment`, `deleteCommentReply`): not part of the Sheets REST API.
+- **Data sources** (`addDataSource`, `updateDataSource`, `deleteDataSource`,
+  `refreshDataSource`, `cancelDataSourceRefresh`): they need a BigQuery scope
+  outside the allowlist, and Google's insufficient-scope answer would wrongly
+  ask the user to reconnect.
+
+Google's documented list includes operations that remove content, and they
+are accepted as documented: `deleteSheet`, `deleteDimension`, `deleteRange`,
+`deleteDuplicates`, `deleteTable`, `deleteNamedRange`, `deleteEmbeddedObject`,
+`deleteFilterView`, `deleteConditionalFormatRule`, `deleteProtectedRange`,
+`deleteBanding`, `deleteDeveloperMetadata`, `deleteDimensionGroup` and
+`clearBasicFilter`; `cutPaste`, `findReplace`, `sortRange`, `pasteData`,
+`trimWhitespace` and `randomizeRange` change existing cells. No operation
+deletes or creates a spreadsheet or changes its sharing. Because of these,
+`update_spreadsheet` says `destructiveHint: true`, where Google's reference
+says `false`.
+
+### Differences from Google's Sheets MCP tools
+
+- **`get_spreadsheet` `commentsIncluded: true` is refused.** `spreadsheets.get`
+  cannot return comments (they are in the Drive API, outside the Sheets
+  scopes). `false` or unset works.
+- **`update_spreadsheet` `writeControl` is refused.** Sheets
+  `spreadsheets.batchUpdate` has no required-revision check, so a write cannot
+  be made conditional; any `writeControl` is an error rather than ignored.
+- **`update_spreadsheet` refuses comment and data source requests** (above)
+  and is marked destructive.
+- **`insert_dimension` refuses `DIMENSION_UNSPECIFIED`** (Google says not to
+  use it), `endIndex` not greater than `startIndex`, and `inheritFromBefore`
+  with `startIndex` 0, before sending.
+- **`status`** in write results is our sentence; Google's value is not
+  documented.
+- **Not verified against Google's servers:** whether Google's `get_values`
+  uses formatted values and whether its `update_values` uses `RAW` (both are
+  the closest reading of the reference). A recorded comparison on the
+  enrolled internal account would settle both.
+
 ## Open questions
 
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
@@ -490,5 +639,5 @@ earliest first; working hours and out-of-office settings are not read.
 cd server && npx vitest run src/google-workspace-rest-tools
 ```
 
-Test fixtures in `fixtures/`, `gmail/fixtures/` and `calendar/fixtures/` are synthetic, in the shape
+Test fixtures in `fixtures/`, `gmail/fixtures/`, `calendar/fixtures/` and `sheets/fixtures/` are synthetic, in the shape
 of Google's REST responses. They contain no real mail, addresses or IDs.
