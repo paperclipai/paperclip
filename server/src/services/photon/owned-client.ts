@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { createGrpcClient, type GrpcClientOptions, type GrpcAdvancedIMessage } from "@photon-ai/advanced-imessage";
@@ -23,19 +23,26 @@ function installedRoot(name: string, version: string): string {
     try { pkg = JSON.parse(readFileSync(join(path, "package.json"), "utf8")); } catch { continue; }
     if (pkg && typeof pkg === "object" && Reflect.get(pkg, "name") === name) {
       if (Reflect.get(pkg, "version") !== version) throw new Error("Photon transport dependency version changed");
-      return path;
+      return realpathSync(path);
     }
   }
   throw new Error("Photon transport dependency ownership is unavailable");
 }
+// Installed package bytes are immutable for this process. Resolve and check both
+// package identities on each call; reuse only a complete successful hash join.
+const validatedTransportJoins = new Set<string>();
 export function assertInstalledPhotonTransportJoin(): void {
-  for (const [root, files] of [[installedRoot("@grpc/grpc-js", "1.14.5"), deliveredGrpc],
-    [installedRoot("@photon-ai/advanced-imessage", "2.2.0"), inspectedSdk]] as const) {
+  const roots = [installedRoot("@grpc/grpc-js", "1.14.5"),
+    installedRoot("@photon-ai/advanced-imessage", "2.2.0")] as const;
+  const key = JSON.stringify(roots);
+  if (validatedTransportJoins.has(key)) return;
+  for (const [root, files] of [[roots[0], deliveredGrpc], [roots[1], inspectedSdk]] as const) {
     for (const [path, expected] of Object.entries(files)) {
       if (createHash("sha256").update(readFileSync(join(root, path))).digest("hex") !== expected)
         throw new Error("Photon transport close-and-join delivery is incomplete");
     }
   }
+  validatedTransportJoins.add(key);
 }
 export function createOwnedPhotonClient(options: GrpcClientOptions): GrpcAdvancedIMessage {
   // Check exact installed delivery BEFORE allocating either SDK channel. This
