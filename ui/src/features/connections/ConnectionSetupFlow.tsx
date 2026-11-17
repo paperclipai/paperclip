@@ -1354,8 +1354,10 @@ function StandardConnectionSetupFlow({
     : null;
   // Apps with an advanced PAT option still need OAuth progress and recovery
   // screens when their selected method is managed sign-in.
-  const entryAutomaticOAuthMethod = selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
-    ? selectedSetupMethod
+  const entryAutomaticOAuthMethod = selectedSetupMethod
+    ? connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
+      ? selectedSetupMethod
+      : null
     : automaticOAuthMethod(entry);
   const automaticOAuthEntry = credentialSource === "paperclip_vault" && entryAutomaticOAuthMethod ? entry : null;
   const directOAuthEntry = credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
@@ -2292,6 +2294,9 @@ function StandardConnectionSetupFlow({
         oauthPhase === "error" || curatedOAuthClientId.trim().length > 0,
       ) ?? null
     : connectionDefaults;
+  const alternativeCredentialMethod = credentialSourceMethods.find((method) =>
+    method.auth !== "oauth" && method.transport !== "runtime_auth",
+  ) ?? null;
 
   const showCuratedOAuthState = Boolean(
     automaticOAuthEntry
@@ -2354,6 +2359,27 @@ function StandardConnectionSetupFlow({
           </div>
         ) : null}
         defaults={curatedOAuthDefaults}
+        alternativeAction={alternativeCredentialMethod ? {
+          label: `Use ${alternativeCredentialMethod.label ?? "another connection method"} instead`,
+          onSelect: () => {
+            cancelOAuthLookup();
+            oauthHandoffAbortRef.current?.abort();
+            oauthPopupRef.current?.close();
+            oauthPopupRef.current = null;
+            setAuthorizationFallbackUrl(null);
+            setAuthorizationHost(null);
+            setOAuthPhase("entry");
+            setOAuthError(null);
+            setConnectResult(null);
+            setConnectionMethodKey(alternativeCredentialMethod.key);
+            setCredentials({});
+            setCuratedOAuthClientId("");
+            setCuratedOAuthClientSecret("");
+            setVercelConnector("");
+            setConfigValues(defaultMethodConfig(alternativeCredentialMethod));
+            connectMutation.reset();
+          },
+        } : undefined}
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
@@ -2892,6 +2918,7 @@ export function OAuthConnectStateScreen({
   steps = { labels: OAUTH_SIGN_IN_STEP_LABELS, activeIndex: 0 },
   guidance,
   defaults,
+  alternativeAction,
   onRetry,
   settingsValid = true,
   onOpenAuthorization,
@@ -2925,6 +2952,8 @@ export function OAuthConnectStateScreen({
   guidance?: ReactNode;
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
+  /** A safe in-place replacement for a retained OAuth draft, such as a PAT. */
+  alternativeAction?: { label: string; onSelect: () => void };
   settingsValid?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
@@ -3011,7 +3040,7 @@ export function OAuthConnectStateScreen({
           </div>
         ) : null}
 
-        <div className="mt-6 flex items-center gap-2">
+        <div className="mt-6 flex flex-wrap items-center gap-2">
           {phase === "error" || phase === "entry" ? (
             <Button type="button" onClick={onRetry} disabled={!settingsValid}>
               {phase === "entry"
@@ -3025,6 +3054,9 @@ export function OAuthConnectStateScreen({
             </Button>
           )}
           {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>Open sign-in in a new tab</a></Button> : null}
+          {phase === "entry" || phase === "error" ? (
+            alternativeAction ? <Button type="button" variant="outline" onClick={alternativeAction.onSelect}>{alternativeAction.label}</Button> : null
+          ) : null}
           <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
         </div>
       </div>
