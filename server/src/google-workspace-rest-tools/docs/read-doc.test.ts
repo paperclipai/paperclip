@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_RESULT_BYTES } from "../documents-shared.js";
+import { MAX_RESULT_BYTES } from "../tool.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { MULTI_TAB_DOCUMENT, MULTI_TAB_TEXT, oneTab, para, run, text } from "./fixtures/docs-rest.js";

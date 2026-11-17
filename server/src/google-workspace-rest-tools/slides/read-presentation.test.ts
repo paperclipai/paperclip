@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_RESULT_BYTES } from "../documents-shared.js";
+import { MAX_RESULT_BYTES } from "../tool.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { DECK, DECK_TEXT, shape, slide } from "./fixtures/slides-rest.js";
